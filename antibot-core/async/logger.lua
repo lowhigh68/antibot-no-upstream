@@ -22,29 +22,42 @@ local function classify_intent(ctx)
         return "good_bot"
     end
 
-    -- Bot: có compound evidence rõ ràng
+    local action    = ctx.action    or "allow"
     local bot_score = ctx.bot_score or 0.0
     local ua_flag   = ctx.ua_flag   or 0.0
     local ip_rep    = ctx.ip_rep    or 0.0
     local ip_risk   = ctx.ip_risk   or 0.0
-    local action    = ctx.action    or "allow"
-    if bot_score >= 0.5
-    or ua_flag >= 0.7
-    or (ip_rep > 0 and (action == "block" or action == "challenge"))
-    or ip_risk >= 0.6 then
+
+    -- Bot: action đã kết luận là xấu + có bot evidence
+    -- action là output của toàn bộ scoring pipeline — đây là signal đáng tin nhất
+    if (action == "block" or action == "challenge") then
+        if bot_score >= 0.3
+        or ua_flag >= 0.5
+        or ip_rep > 0
+        or ip_risk >= 0.4 then
+            return "bot"
+        end
+    end
+
+    -- Bot: score rõ ràng ngay cả khi action=monitor
+    if bot_score >= 0.6 or ua_flag >= 0.7 or ip_risk >= 0.7 then
         return "bot"
     end
 
-    -- Human: đã verify PoW, hoặc có session thật (nhiều page, có resource fetch)
+    -- Human: verified PoW
     if ctx.verified == true then
         return "human"
     end
-    local sess_len = ctx.sess_len or 0
-    if sess_len >= 3 and not ctx.resource_starved then
-        return "human"
+
+    -- Human: action=allow → hệ thống không tìm thấy gì đáng ngờ
+    -- Benefit of the doubt: nếu không có bot evidence thì là người thật
+    if action == "allow" then
+        if bot_score < 0.2 and ua_flag < 0.3 and ip_risk < 0.3 then
+            return "human"
+        end
     end
 
-    -- Ambiguous: không đủ signal để kết luận
+    -- Ambiguous: action=monitor, hoặc allow với signal nhẹ
     return "ambiguous"
 end
 
