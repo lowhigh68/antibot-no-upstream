@@ -17,27 +17,34 @@ local DEVICE_GROUP = {
 }
 
 local function classify_intent(ctx)
+    -- Good bot: đã DNS verify
     if ctx.good_bot_verified == true then
         return "good_bot"
     end
-    if ctx.verified == true then
-        return "human"
-    end
-    local bot_score  = ctx.bot_score  or 0.0
-    local ua_flag    = ctx.ua_flag    or 0.0
-    local ip_rep     = ctx.ip_rep     or 0.0
-    local ip_risk    = ctx.ip_risk    or 0.0
-    local action     = ctx.action     or "allow"
+
+    -- Bot: có compound evidence rõ ràng
+    local bot_score = ctx.bot_score or 0.0
+    local ua_flag   = ctx.ua_flag   or 0.0
+    local ip_rep    = ctx.ip_rep    or 0.0
+    local ip_risk   = ctx.ip_risk   or 0.0
+    local action    = ctx.action    or "allow"
     if bot_score >= 0.5
     or ua_flag >= 0.7
     or (ip_rep > 0 and (action == "block" or action == "challenge"))
     or ip_risk >= 0.6 then
         return "bot"
     end
-    local sess_len = ctx.sess_len or 0
-    if sess_len >= 3 and ctx.resource_starved == false then
+
+    -- Human: đã verify PoW, hoặc có session thật (nhiều page, có resource fetch)
+    if ctx.verified == true then
         return "human"
     end
+    local sess_len = ctx.sess_len or 0
+    if sess_len >= 3 and not ctx.resource_starved then
+        return "human"
+    end
+
+    -- Ambiguous: không đủ signal để kết luận
     return "ambiguous"
 end
 

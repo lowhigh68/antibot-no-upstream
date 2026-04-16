@@ -1204,14 +1204,14 @@ function renderDevices(d){
     var blk     = dev.block     || 0
     var pct     = total > 0 ? ((blk/total)*100).toFixed(1)+'%' : '0%'
     var cls     = blk > total*0.3 ? 'red' : blk > total*0.1 ? 'orange' : 'green'
-    // Bot% = (bot + ambiguous) / total; Human% = (human + good_bot) / total
+    // Bot% = bot confirmed; Human% = human + good_bot; ambiguous = phần còn lại
     var dg      = dev.group
-    var nBot    = ((ibd[dg] && ibd[dg].bot)      || 0)
-                + ((ibd[dg] && ibd[dg].ambiguous) || 0)
-    var nHuman  = ((ibd[dg] && ibd[dg].human)    || 0)
-                + ((ibd[dg] && ibd[dg].good_bot)  || 0)
-    var botPct  = total > 0 ? ((nBot/total)*100).toFixed(0)+'%'   : '-'
-    var humPct  = total > 0 ? ((nHuman/total)*100).toFixed(0)+'%' : '-'
+    var nBot    = (ibd[dg] && ibd[dg].bot)      || 0
+    var nHuman  = ((ibd[dg] && ibd[dg].human)   || 0)
+                + ((ibd[dg] && ibd[dg].good_bot) || 0)
+    var hasIbd  = ibd[dg] && (nBot + nHuman) > 0
+    var botPct  = hasIbd ? ((nBot/total)*100).toFixed(0)+'%'   : '-'
+    var humPct  = hasIbd ? ((nHuman/total)*100).toFixed(0)+'%' : '-'
     var botCls  = nBot > total*0.5 ? 'red' : nBot > total*0.2 ? 'orange' : 'gray'
     var humCls  = nHuman > total*0.5 ? 'green' : 'gray'
     rows += '<tr>'
