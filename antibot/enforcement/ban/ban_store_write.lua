@@ -1,0 +1,93 @@
+local _M   = {}
+local pool = require "antibot.core.redis_pool"
+
+function _M.run(ctx)
+    local id    = ctx.identity or ctx.fp_light
+    local ip    = ctx.ip
+    local ttl   = ctx.ban_ttl
+    local class = ctx.req_class or "unknown"
+
+    local red, err = pool.get()
+    if not red then
+        ngx.log(ngx.ERR, "[ban_write] redis unavailable: ", err)
+        return
+    end
+
+    local ctx_json = ""
+    local ok, cjson = pcall(require, "cjson")
+    if ok then
+        local host = (ctx.req and ctx.req.host) or ngx.var.host or "unknown"
+        local ok2, json = pcall(cjson.encode, {
+            domain    = host,
+            score     = math.floor(ctx.score or 0),
+            eff_score = math.floor(ctx.effective_score or 0),
+            action    = ctx.action or "block",
+            req_class = class,
+            ts        = ngx.time(),
+            identity  = id or "",
+            fp_deg    = ctx.fp_degraded or false,
+        })
+        if ok2 then ctx_json = json end
+    end
+
+    local ctx_ttl = (ttl and ttl > 0) and ttl or 86400
+
+    local ip_risk_val   = ctx.ip_risk or 0.0
+    local swarm_active  = ctx.swarm == true
+
+    local should_ban_ip = ip and (
+        ip_risk_val >= 0.7
+        or (ip_risk_val >= 0.5 and swarm_active)
+    )
+
+    local ip_ban_ttl
+    if ip_risk_val >= 0.95 then
+        ip_ban_ttl = 1800  -- 30 phút: bot đang tấn công tích cực, ngắt session
+    elseif ip_risk_val >= 0.85 then
+        ip_ban_ttl = 900   -- 15 phút: risk cao, nhiều session xấu
+    elseif ip_risk_val >= 0.7 then
+        ip_ban_ttl = 300   -- 5 phút: ngưỡng tối thiểu, tránh block oan CGNAT
+    else
+        ip_ban_ttl = 180   -- 3 phút: swarm case, IP chỉ 1 phần của attack
+    end
+
+    red:init_pipeline()
+
+    if id then
+        if ttl and ttl > 0 then
+            red:setex("ban:" .. id, ttl, "1")
+        else
+            red:set("ban:" .. id, "1")
+        end
+    end
+
+    if should_ban_ip then
+        red:setex("ban:" .. ip, ip_ban_ttl, "1")
+    end
+
+    if ctx_json ~= "" then
+        if id then
+            red:setex("ban_ctx:" .. id, ctx_ttl, ctx_json)
+        end
+        if should_ban_ip then
+            red:setex("ban_ctx:" .. ip, ip_ban_ttl, ctx_json)
+        end
+    end
+
+    red:commit_pipeline()
+    pool.put(red)
+
+    ngx.log(ngx.WARN,
+        "[ban_write]",
+        " class=", class,
+        " ip=", ip or "?",
+        " ip_risk=", string.format("%.3f", ip_risk_val),
+        " ban_ip=", tostring(should_ban_ip ~= false and should_ban_ip ~= nil),
+        " ip_ttl=", should_ban_ip and ip_ban_ttl or "-",
+        " id=", id and id:sub(1, 8) .. "..." or "nil",
+        " ttl=", ttl == 0 and "permanent" or tostring(ttl) .. "s",
+        " score=", ctx.score or 0,
+        " eff=", ctx.effective_score or 0)
+end
+
+return _M
