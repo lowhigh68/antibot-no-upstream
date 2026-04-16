@@ -62,6 +62,7 @@ DRY_RUN=false
 QUIET=false
 INSTALL_HOOKS=false
 DO_REMOVE=false
+IMPORT_GOODBOTS=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -70,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run)       DRY_RUN=true;       shift   ;;
         --quiet)         QUIET=true;         shift   ;;
         --install-hooks) INSTALL_HOOKS=true; shift   ;;
+        --import-goodbots) IMPORT_GOODBOTS=true; shift ;;
         --remove)        DO_REMOVE=true;     shift   ;;
         *) shift ;;
     esac
@@ -518,6 +520,43 @@ remove_conf() {
     fi
 }
 
+# ── Import known good bots vào Redis ─────────────────────────
+import_goodbots() {
+    local REDIS_CLI
+    REDIS_CLI=$(command -v redis-cli) || { fail "redis-cli not found"; return 1; }
+
+    info "Importing known good bots into Redis goodbot:dns:* ..."
+
+    declare -A BOTS=(
+        # Google
+        ["googlebot"]="googlebot.com,google.com"
+        ["googlebot-image"]="googlebot.com,google.com"
+        ["googlebot-video"]="googlebot.com,google.com"
+        ["googleother"]="googlebot.com,google.com"
+        ["adsbot-google"]="google.com"
+        ["adsbot-google-mobile"]="google.com"
+        ["apis-google"]="google.com"
+        ["google-agent"]="google.com"
+        ["google-site-verifier"]="googleusercontent.com,google.com"
+        # Microsoft Bing
+        ["bingbot"]="search.msn.com"
+        # Facebook / Meta
+        ["facebookexternalhit"]="tfbnw.net,facebook.com"
+        ["facebot"]="tfbnw.net,facebook.com"
+        # Apple
+        ["applebot"]="applebot.apple.com"
+        ["applebot-extended"]="applebot.apple.com"
+    )
+
+    for bot in "${!BOTS[@]}"; do
+        local suffixes="${BOTS[$bot]}"
+        $REDIS_CLI SET "goodbot:dns:${bot}" "$suffixes" > /dev/null
+        ok "  goodbot:dns:${bot} = ${suffixes}"
+    done
+
+    info "Done. Total: ${#BOTS[@]} bots imported."
+}
+
 # ── Install DA event hooks ────────────────────────────────────
 install_hooks() {
     local hook_dir="/usr/local/directadmin/scripts/custom"
@@ -584,6 +623,7 @@ HOOKEOF
 
 $DO_REMOVE && { remove_conf "${FILTER_USER}" "${FILTER_DOMAIN:-}"; exit 0; }
 $INSTALL_HOOKS && { install_hooks; exit 0; }
+$IMPORT_GOODBOTS && { import_goodbots; exit 0; }
 
 $QUIET || {
     echo ""

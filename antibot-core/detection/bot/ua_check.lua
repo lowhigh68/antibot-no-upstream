@@ -32,11 +32,20 @@ local function is_headless_by_structure(ua)
     return false, nil
 end
 
+local KNOWN_BOT_TOKENS = {
+    "bot", "spider", "crawler", "scraper",
+    "facebookexternalhit",
+    "google%-agent", "google%-site%-verifier", "googleother",
+    "apis%-google",
+}
+
 local function is_bot_self_identified(ua_lower)
-    return ua_lower:find("bot", 1, true)     ~= nil
-        or ua_lower:find("spider", 1, true)  ~= nil
-        or ua_lower:find("crawler", 1, true) ~= nil
-        or ua_lower:find("scraper", 1, true) ~= nil
+    for _, token in ipairs(KNOWN_BOT_TOKENS) do
+        if ua_lower:find(token, 1, token:find("%%") == nil) then
+            return true
+        end
+    end
+    return false
 end
 
 local function get_good_bot_suffixes(bot_name)
@@ -121,9 +130,15 @@ function _M.run(ctx)
 
     -- Bot self-identification check
     if is_bot_self_identified(ua_lower) then
-        local bot_name = ua:match("([%w%-]+[Bb]ot)")
+        local bot_name = ua:match("([%w%-]+[Bb]ot[%w%-]*)")
                       or ua:match("([%w%-]+[Ss]pider)")
                       or ua:match("([%w%-]+[Cc]rawler)")
+                      or ua:match("(facebookexternalhit)")
+                      or ua:match("(GoogleOther)")
+                      or ua:match("(Google%-Agent)")
+                      or ua:match("(Google%-Site%-Verifier)")
+                      or ua:match("(APIs%-Google)")
+        if bot_name then bot_name = bot_name:lower() end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)
         if suffixes then

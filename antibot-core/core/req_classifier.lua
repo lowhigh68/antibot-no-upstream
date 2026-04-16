@@ -52,18 +52,9 @@ _M.CLASS_CONFIG = {
 }
 
 local RESOURCE_EXT = {
-    css=1, js=1, png=1, jpg=1, jpeg=1, gif=1, webp=1,
-    ico=1, svg=1, woff=1, woff2=1, ttf=1, eot=1,
-    map=1, xml=1, txt=1, pdf=1,
-}
-
-local RESOURCE_PREFIX = {
-    "/media/", "/skin/", "/js/", "/static/",
-    "/pub/static/", "/pub/media/",
-    "/wp-content/uploads/",
-    "/sites/default/files/",
-    "/themes/",
-    "/fonts/",
+    png=1, jpg=1, jpeg=1, gif=1, webp=1,
+    ico=1, svg=1,
+    woff=1, woff2=1, ttf=1, eot=1,
 }
 
 -- Nhận dạng in-app browser bằng pattern chung trong UA.
@@ -134,13 +125,6 @@ local function classify(ctx)
     local ext = uri:match("%.([%a%d]+)$")
     if ext and RESOURCE_EXT[ext:lower()] then
         return "resource"
-    end
-
-    -- Resource: static file path prefixes
-    for _, prefix in ipairs(RESOURCE_PREFIX) do
-        if uri:sub(1, #prefix) == prefix then
-            return "resource"
-        end
     end
 
     -- Resource: browser-declared sub-resource fetch
