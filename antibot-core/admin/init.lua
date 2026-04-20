@@ -199,11 +199,24 @@ local function render_data()
                 ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm"
             })
         elseif is_identity(v) then
-            local risk = red:get("risk:"..v) or "0"
-            local ttl  = red:ttl(k)
+            local risk    = red:get("risk:"..v) or "0"
+            local ttl     = red:ttl(k)
+            local ctx_raw = red:get("ban_ctx:"..v)
+            local dev, ua_short, ip_addr, bs = "?", "", "", 0
+            if ctx_raw then
+                local ok3, obj = pcall(cjson.decode, ctx_raw)
+                if ok3 and obj then
+                    dev      = obj.device_type or "?"
+                    ip_addr  = obj.ip          or ""
+                    bs       = obj.bot_score   or 0
+                    local ua = obj.ua or ""
+                    ua_short = ua:sub(1, 60)
+                end
+            end
             table.insert(ban_id_list, {
                 id=v, risk=tonumber(risk) or 0,
-                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm"
+                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
+                device=dev, ua=ua_short, ip=ip_addr, bot_score=bs,
             })
         end
         if #ban_ip_list >= 50 and #ban_id_list >= 50 then break end
@@ -613,7 +626,7 @@ tr:hover td{background:#1c2129}
     </div>
     <div class="card">
       <h2>🔒 Banned Identities <span id="banid-count" class="tag tag-red">0</span></h2>
-      <table><thead><tr><th>Identity</th><th>Risk</th><th>Level</th><th>Action</th></tr></thead>
+      <table><thead><tr><th>Identity</th><th>Device</th><th>IP</th><th>Risk</th><th>Level</th><th>Action</th></tr></thead>
       <tbody id="t-ban-fp"></tbody></table>
     </div>
   </div>
@@ -972,11 +985,29 @@ function load(){
 
     // Bans tab: Identity list
     var bfp=''
-    for(var r of d.ban_id_list||[]){
-      bfp+=`<tr><td class="mono">${trunc(r.id,28)}</td><td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td><td>${tag(r.risk)}</td>
-      <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button></td></tr>`
+    var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','unknown':'❓'}
+    var devMap={
+      'mobile_chrome_android':'mobile','mobile_safari_ios':'mobile',
+      'mobile_safari_ios_old':'mobile','custom_tab':'mobile','inapp':'mobile',
+      'tablet_ipad':'tablet','tablet_android':'tablet',
+      'desktop_chrome':'desktop','desktop_safari':'desktop',
+      'desktop_firefox':'desktop','desktop_other':'desktop',
     }
-    setHTML('t-ban-fp', bfp||nodata(4))
+    for(var r of d.ban_id_list||[]){
+      var dg = devMap[r.device||''] || 'unknown'
+      var di = devIcons[dg] || '❓'
+      var devLabel = r.device && r.device!='?' ? (di+' '+r.device) : '❓'
+      var ipLabel  = r.ip ? `<span class="mono gray" style="font-size:10px">${r.ip}</span>` : ''
+      bfp+=`<tr>
+        <td class="mono" style="font-size:11px">${trunc(r.id,22)}</td>
+        <td style="font-size:11px">${devLabel}</td>
+        <td>${ipLabel}</td>
+        <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
+        <td>${tag(r.risk)}</td>
+        <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button></td>
+      </tr>`
+    }
+    setHTML('t-ban-fp', bfp||nodata(6))
 
     // Threats: rep IPs
     var rt=''

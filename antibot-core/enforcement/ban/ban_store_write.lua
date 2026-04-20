@@ -18,14 +18,18 @@ function _M.run(ctx)
     if ok then
         local host = (ctx.req and ctx.req.host) or ngx.var.host or "unknown"
         local ok2, json = pcall(cjson.encode, {
-            domain    = host,
-            score     = math.floor(ctx.score or 0),
-            eff_score = math.floor(ctx.effective_score or 0),
-            action    = ctx.action or "block",
-            req_class = class,
-            ts        = ngx.time(),
-            identity  = id or "",
-            fp_deg    = ctx.fp_degraded or false,
+            domain      = host,
+            score       = math.floor(ctx.score or 0),
+            eff_score   = math.floor(ctx.effective_score or 0),
+            action      = ctx.action or "block",
+            req_class   = class,
+            ts          = ngx.time(),
+            identity    = id or "",
+            fp_deg      = ctx.fp_degraded or false,
+            device_type = ctx.device_type or "unknown",
+            ua          = (ctx.ua or ""):sub(1, 120),
+            ip          = ctx.ip or "",
+            bot_score   = ctx.bot_score or 0,
         })
         if ok2 then ctx_json = json end
     end
