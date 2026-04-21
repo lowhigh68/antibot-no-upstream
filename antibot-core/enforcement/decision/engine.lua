@@ -96,6 +96,15 @@ function _M.run(ctx)
         return "allow"
     end
 
+    -- DNS-verified good bot (Googlebot, AdsBot, facebookexternalhit, …):
+    -- reverse PTR + forward A/AAAA đã match — không thể forge.
+    -- JA3/H2/entropy signals chắc chắn fire cho mọi bot thật → bypass scoring.
+    if ctx.good_bot_verified == true then
+        ctx.action        = "allow"
+        ctx.action_reason = "good_bot_verified"
+        return "allow"
+    end
+
     local raw_score  = ctx.score or 0
     local multiplier = ctx.score_multiplier or 1.0
     local class      = ctx.req_class or "navigation"

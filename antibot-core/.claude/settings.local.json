@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/84947/Desktop/Claude Code/antibot-no-upstream/**)"
+    ]
+  }
+}

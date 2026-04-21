@@ -35,6 +35,7 @@ end
 local KNOWN_BOT_TOKENS = {
     "bot", "spider", "crawler", "scraper",
     "facebookexternalhit",
+    "meta%-external",
     "google%-agent", "google%-site%-verifier", "googleother",
     "apis%-google",
 }
@@ -134,6 +135,7 @@ function _M.run(ctx)
                       or ua:match("([%w%-]+[Ss]pider)")
                       or ua:match("([%w%-]+[Cc]rawler)")
                       or ua:match("(facebookexternalhit)")
+                      or ua:match("(Meta%-External%w+)")
                       or ua:match("(GoogleOther)")
                       or ua:match("(Google%-Agent)")
                       or ua:match("(Google%-Site%-Verifier)")
