@@ -26,6 +26,28 @@ local function normalize_ua(ua)
     v = s:match("FxiOS/(%d+)")
     if v then return "FxiOS/" .. v end
 
+    -- Chromium forks — tách bucket riêng để tránh identity collision với
+    -- Chrome gốc (CGNAT VN: nhiều user cùng IP, bot giả Chrome → collision
+    -- → ban lan sang user thật). Các fork gửi UA đầy đủ Chrome/ + token
+    -- riêng; match token riêng trước để không bị Chrome/ ăn.
+    v = s:match("coc_coc_browser/(%d+)")
+    if v then return "CocCoc/" .. v end
+
+    v = s:match("OPR/(%d+)")
+    if v then return "Opera/" .. v end
+
+    v = s:match("YaBrowser/(%d+)")
+    if v then return "Yandex/" .. v end
+
+    v = s:match("Vivaldi/(%d+)")
+    if v then return "Vivaldi/" .. v end
+
+    v = s:match("Whale/(%d+)")
+    if v then return "Whale/" .. v end
+
+    v = s:match("DuckDuckGo/(%d+)")
+    if v then return "DDG/" .. v end
+
     v = s:match("Chrome/(%d+)")
     if v then return "Chrome/" .. v end
 
