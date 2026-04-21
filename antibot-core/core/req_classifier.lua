@@ -177,6 +177,15 @@ local function classify(ctx)
         return "interaction"
     end
 
+    -- In-app browser: có app token (FBAN, Zalo, Instagram, …) + mobile context.
+    -- Đặt TRƯỚC text/html check vì in-app WebView cũng gửi Accept: text/html —
+    -- nếu để sau, branch này là dead code và mọi in-app rơi vào "navigation"
+    -- với multiplier 1.0 → bị challenge oan.
+    -- Real browser không có app token nên vẫn fallback xuống navigation.
+    if is_inapp_browser(ua) then
+        return "inapp_browser"
+    end
+
     -- Navigation: explicit browser navigation
     if accept:find("text/html", 1, true) then
         return "navigation"
@@ -184,15 +193,6 @@ local function classify(ctx)
 
     if sec_fetch_mode == "navigate" then
         return "navigation"
-    end
-
-    -- In-app browser: thiếu Sec-Fetch-* nhưng UA có app token
-    -- Đặt SAU navigation checks để real browser với Sec-Fetch
-    -- vẫn được classify đúng là navigation.
-    -- In-app browser không gửi Sec-Fetch nên không match ở trên,
-    -- rơi xuống đây trước khi bị classify là unknown.
-    if is_inapp_browser(ua) then
-        return "inapp_browser"
     end
 
     return "unknown"
