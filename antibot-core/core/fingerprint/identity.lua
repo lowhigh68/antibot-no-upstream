@@ -26,6 +26,27 @@ local function normalize_ua(ua)
     v = s:match("FxiOS/(%d+)")
     if v then return "FxiOS/" .. v end
 
+    -- Bots dùng Chromium UA (Googlebot Mobile, Bingbot, AdsBot-Google Mobile…).
+    -- UA chứa "Chrome/N" cho render fidelity nhưng token định danh thật nằm
+    -- trong "compatible; BotName[;/]". Các dạng gặp:
+    --   (compatible; Googlebot/2.1; +...)             — có /version
+    --   (compatible; bingbot/2.0; +...)               — có /version
+    --   (compatible; AdsBot-Google; +...)             — không có /version
+    --   (compatible; AdsBot-Google-Mobile; +...)      — không có /version
+    --   (KHTML, like Gecko; compatible; bingbot/2.0)  — "compatible;" giữa "("
+    -- Pattern chỉ đòi identifier sau "compatible;"; dừng ở space/;/.
+    -- Phải detect bot trước Chrome/ để không bị Chrome ăn → tránh identity
+    -- collision với user thật.
+    local bot_in_compat = s:match("compatible;%s*([%a][%w%-_]+)")
+    if bot_in_compat and #bot_in_compat >= 3 and #bot_in_compat <= 32 then
+        local bl = bot_in_compat:lower()
+        if bl:find("bot", 1, true) or bl:find("spider", 1, true)
+        or bl:find("crawler", 1, true) or bl == "mediapartners-google"
+        or bl == "bingpreview" then
+            return "bot:" .. bot_in_compat
+        end
+    end
+
     -- Chromium forks — tách bucket riêng để tránh identity collision với
     -- Chrome gốc (CGNAT VN: nhiều user cùng IP, bot giả Chrome → collision
     -- → ban lan sang user thật). Các fork gửi UA đầy đủ Chrome/ + token

@@ -148,10 +148,14 @@ function _M.run(ctx)
     local host  = (ctx.req and ctx.req.host) or ngx.var.host or "unknown"
     local class = ctx.req_class or "unknown"
 
+    -- UA truncate để grep debug (googlebot, bingbot, facebook, ...).
+    -- Nếu UA chứa space/= sẽ vỡ format parser → thay bằng _.
+    local ua_log = (ctx.ua or "-"):sub(1, 120):gsub("[%s\"]", "_")
+
     -- Build structured log line — all fields on one line, space-separated key=value
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
-        " ip=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
+        " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s" ..
         " top=%s reason=%s",
         os.date("%Y-%m-%d %H:%M:%S"),
@@ -160,6 +164,7 @@ function _M.run(ctx)
         class,
         tostring(ctx.identity or ctx.fp_light or "-"),
         tostring(ctx.ip or "-"),
+        ua_log,
         tostring(ctx.tls13),
         tostring(ctx.h2_is_h2),
         tostring(ctx.ja3 or "-"),

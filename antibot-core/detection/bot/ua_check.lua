@@ -38,6 +38,8 @@ local KNOWN_BOT_TOKENS = {
     "meta%-external",
     "google%-agent", "google%-site%-verifier", "googleother",
     "apis%-google",
+    "mediapartners",       -- Mediapartners-Google (AdSense crawler)
+    "bingpreview",         -- BingPreview (snapshot tool)
 }
 
 local function is_bot_self_identified(ua_lower)
@@ -136,6 +138,8 @@ function _M.run(ctx)
                       or ua:match("([%w%-]+[Cc]rawler)")
                       or ua:match("(facebookexternalhit)")
                       or ua:match("(Meta%-External%w+)")
+                      or ua:match("(Mediapartners%-Google)")
+                      or ua:match("(BingPreview)")
                       or ua:match("(GoogleOther)")
                       or ua:match("(Google%-Agent)")
                       or ua:match("(Google%-Site%-Verifier)")
