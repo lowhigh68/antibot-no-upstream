@@ -197,7 +197,14 @@ local function render_data()
         return "idle", 0
     end
 
+    -- Show entry nếu còn ý nghĩa:
+    --   ACTIVE (đang enforce) → luôn show
+    --   IDLE + TTL >= 60s     → vẫn trong thời gian ban → show với badge IDLE
+    --   IDLE + TTL < 60s      → sắp expire + không enforce → ẩn khỏi bảng
+    --   PERMANENT (TTL = -1)  → show (không bao giờ hết hạn)
+    -- Redis entry không bị xoá, tự expire theo TTL.
     local ban_ip_list, ban_id_list = {}, {}
+    local ban_ip_hidden_count, ban_id_hidden_count = 0, 0
     for _, k in ipairs(ban_keys) do
         local v = k:gsub("^ban:", "")
         -- ban:hit:* là marker của chính dashboard, không phải ban entry
@@ -205,10 +212,14 @@ local function render_data()
             goto continue
         end
         if is_ipv4(v) then
+            local status, last_hit = ban_status(v)
+            local ttl = red:ttl(k)
+            if status ~= "active" and ttl > 0 and ttl < 60 then
+                ban_ip_hidden_count = ban_ip_hidden_count + 1
+                goto continue
+            end
             local rep     = red:get("rep:"..v)     or "0"
             local ip_risk = red:get("ip_risk:"..v) or "0"
-            local ttl     = red:ttl(k)
-            local status, last_hit = ban_status(v)
             table.insert(ban_ip_list, {
                 ip=v,
                 rep=tonumber(rep) or 0,
@@ -218,8 +229,13 @@ local function render_data()
                 last_hit=last_hit > 0 and time_ago(last_hit) or "-",
             })
         elseif is_identity(v) then
+            local status, last_hit = ban_status(v)
+            local ttl = red:ttl(k)
+            if status ~= "active" and ttl > 0 and ttl < 60 then
+                ban_id_hidden_count = ban_id_hidden_count + 1
+                goto continue
+            end
             local risk    = red:get("risk:"..v) or "0"
-            local ttl     = red:ttl(k)
             local ctx_raw = red:get("ban_ctx:"..v)
             local dev, ua_short, ip_addr, bs = "?", "", "", 0
             if ctx_raw then
@@ -232,7 +248,6 @@ local function render_data()
                     ua_short = ua:sub(1, 60)
                 end
             end
-            local status, last_hit = ban_status(v)
             table.insert(ban_id_list, {
                 id=v, risk=tonumber(risk) or 0,
                 ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
@@ -488,6 +503,8 @@ local function render_data()
             ban_total     = #ban_keys,
             ban_ip        = #ban_ip_list,
             ban_id        = #ban_id_list,
+            ban_ip_hidden = ban_ip_hidden_count,
+            ban_id_hidden = ban_id_hidden_count,
             rep_total     = #rep_keys,
             risk_total    = #risk_keys,
             rate_total    = #rate_abusers,
@@ -976,8 +993,12 @@ function load(){
     setText('s-wlip', s.wl_ip_total)
     setText('s-wlurl',s.wl_url_total)
     setText('s-verif',s.verified)
-    setText('ban-count',   s.ban_ip + s.ban_id)
-    setText('banid-count', s.ban_id)
+    // Ẩn khỏi bảng: IDLE + TTL < 60s (sắp expire, không enforce).
+    // IDLE với TTL còn lớn vẫn hiển thị với badge IDLE.
+    var hiddenTotal = (s.ban_ip_hidden||0) + (s.ban_id_hidden||0)
+    var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' expiring hidden)' : ''
+    setText('ban-count',   (s.ban_ip + s.ban_id) + hiddenSfx)
+    setText('banid-count', s.ban_id + ((s.ban_id_hidden||0) > 0 ? ' (+'+s.ban_id_hidden+' expiring)' : ''))
 
     // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
     // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)

@@ -57,16 +57,21 @@ function _M.run(ctx)
 
     red:init_pipeline()
 
+    local now_ts = tostring(ngx.time())
+
     if id then
         if ttl and ttl > 0 then
             red:setex("ban:" .. id, ttl, "1")
         else
             red:set("ban:" .. id, "1")
         end
+        -- Fresh ban → ACTIVE ngay trong 5 phút đầu, không phải chờ hit kế tiếp.
+        red:setex("ban:hit:" .. id, 300, now_ts)
     end
 
     if should_ban_ip then
         red:setex("ban:" .. ip, ip_ban_ttl, "1")
+        red:setex("ban:hit:" .. ip, 300, now_ts)
     end
 
     if ctx_json ~= "" then
