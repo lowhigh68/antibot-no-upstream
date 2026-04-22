@@ -185,18 +185,37 @@ local function render_data()
         return s ~= "" and #s == 32 and s:match("^[0-9a-f]+$") ~= nil
     end
 
+    -- status = "active" nếu L7 có hit trong 5 phút gần đây (ban:hit:<k> tồn tại)
+    -- status = "idle"   nếu entry còn TTL nhưng không có hit —
+    --                   traffic đã ngừng tới L7 (L3 chặn upstream, hoặc bot dừng).
+    -- L7 không biết lý do, chỉ báo chính xác mình có đang enforce hay không.
+    local function ban_status(key_suffix)
+        local hit = red:get("ban:hit:" .. key_suffix)
+        if hit and hit ~= ngx.null and hit ~= "" then
+            return "active", tonumber(hit) or 0
+        end
+        return "idle", 0
+    end
+
     local ban_ip_list, ban_id_list = {}, {}
     for _, k in ipairs(ban_keys) do
         local v = k:gsub("^ban:", "")
+        -- ban:hit:* là marker của chính dashboard, không phải ban entry
+        if v:sub(1, 4) == "hit:" then
+            goto continue
+        end
         if is_ipv4(v) then
             local rep     = red:get("rep:"..v)     or "0"
             local ip_risk = red:get("ip_risk:"..v) or "0"
             local ttl     = red:ttl(k)
+            local status, last_hit = ban_status(v)
             table.insert(ban_ip_list, {
                 ip=v,
                 rep=tonumber(rep) or 0,
                 ip_risk=tonumber(ip_risk) or 0,
-                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm"
+                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
+                status=status,
+                last_hit=last_hit > 0 and time_ago(last_hit) or "-",
             })
         elseif is_identity(v) then
             local risk    = red:get("risk:"..v) or "0"
@@ -213,13 +232,17 @@ local function render_data()
                     ua_short = ua:sub(1, 60)
                 end
             end
+            local status, last_hit = ban_status(v)
             table.insert(ban_id_list, {
                 id=v, risk=tonumber(risk) or 0,
                 ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
                 device=dev, ua=ua_short, ip=ip_addr, bot_score=bs,
+                status=status,
+                last_hit=last_hit > 0 and time_ago(last_hit) or "-",
             })
         end
         if #ban_ip_list >= 50 and #ban_id_list >= 50 then break end
+        ::continue::
     end
     table.sort(ban_ip_list,  function(a,b) return math.max(a.rep,a.ip_risk) > math.max(b.rep,b.ip_risk) end)
     table.sort(ban_id_list,  function(a,b) return a.risk > b.risk end)
@@ -956,12 +979,21 @@ function load(){
     setText('ban-count',   s.ban_ip + s.ban_id)
     setText('banid-count', s.ban_id)
 
+    // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
+    // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)
+    function statusTag(r){
+      if(r.status==='active'){
+        return `<span class="tag tag-red" style="font-size:9px" title="L7 hit: ${r.last_hit||'-'}">ACTIVE</span>`
+      }
+      return `<span class="tag tag-gray" style="font-size:9px" title="No L7 hit in 5m — L3 or traffic stopped">IDLE</span>`
+    }
+
     // Overview: top banned IPs
     var bt=''
     for(var r of (d.ban_ip_list||[]).slice(0,10)){
       var risk=Math.max(r.rep||0, r.ip_risk||0)
       var src=(r.ip_risk||0)>=(r.rep||0)?'Behavior':'Feed'
-      bt+=`<tr><td class="mono">${r.ip}</td>
+      bt+=`<tr><td class="mono">${r.ip} ${statusTag(r)}</td>
       <td>${bar(risk)}${(risk*100).toFixed(0)}% <span class="gray" style="font-size:10px">(${src})</span></td>
       <td>${tag(risk)}</td>
       <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
@@ -974,7 +1006,7 @@ function load(){
     for(var r of d.ban_ip_list||[]){
       var risk=Math.max(r.rep||0, r.ip_risk||0)
       var src=(r.ip_risk||0)>=(r.rep||0)?'Behavior':'Feed'
-      btf+=`<tr><td class="mono">${r.ip}</td>
+      btf+=`<tr><td class="mono">${r.ip} ${statusTag(r)}</td>
       <td>${bar(risk)}${(risk*100).toFixed(0)}% <span class="gray" style="font-size:10px">(${src})</span></td>
       <td>${tag(risk)}</td>
       <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
@@ -999,7 +1031,7 @@ function load(){
       var devLabel = r.device && r.device!='?' ? (di+' '+r.device) : '❓'
       var ipLabel  = r.ip ? `<span class="mono gray" style="font-size:10px">${r.ip}</span>` : ''
       bfp+=`<tr>
-        <td class="mono" style="font-size:11px">${trunc(r.id,22)}</td>
+        <td class="mono" style="font-size:11px">${trunc(r.id,22)} ${statusTag(r)}</td>
         <td style="font-size:11px">${devLabel}</td>
         <td>${ipLabel}</td>
         <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>

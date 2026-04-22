@@ -20,6 +20,9 @@ function _M.run(ctx)
 
     if val == "1" then
         ctx.banned = true
+        -- Dashboard dùng ban:hit:<id> để phân biệt active vs idle.
+        -- TTL 300s: không hit 5 phút → idle.
+        pool.safe_set("ban:hit:" .. id, tostring(ngx.time()), 300)
         ngx.log(ngx.INFO, "[ban_store] blocked id=", id:sub(1, 8), "...")
         ngx.status = 403
         ngx.header["Content-Type"] = "text/plain"

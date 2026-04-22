@@ -10,6 +10,11 @@ function _M.run(ctx)
     local banned = pool.safe_get("ban:" .. ip)
     if banned == "1" then
         ctx.banned = true
+        -- Ghi nhận L7 thực sự enforce ban này. Dashboard dùng để phân biệt
+        -- ban đang active (có hit gần đây) vs idle (entry còn TTL nhưng không
+        -- còn traffic — có thể L3 đã chặn upstream, hoặc bot đã ngừng).
+        -- TTL 300s: sau 5 phút không có hit → coi là idle.
+        pool.safe_set("ban:hit:" .. ip, tostring(ngx.time()), 300)
         ngx.log(ngx.INFO, "[ip_ban] blocked ip=", ip)
         ngx.status = 403
         ngx.header["Content-Type"] = "text/plain"
