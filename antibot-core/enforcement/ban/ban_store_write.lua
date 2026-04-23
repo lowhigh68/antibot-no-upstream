@@ -1,5 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local cfg  = require "antibot.core.config"
 
 function _M.run(ctx)
     local id    = ctx.identity or ctx.fp_light
@@ -67,6 +68,11 @@ function _M.run(ctx)
         end
         -- Fresh ban → ACTIVE ngay trong 5 phút đầu, không phải chờ hit kế tiếp.
         red:setex("ban:hit:" .. id, 300, now_ts)
+        -- Mỗi lần ban = +1 violation để ban_escalation lũy tiến TTL lần sau.
+        -- Trước đây viol chỉ tăng khi rate-limit/challenge-fail → score-based
+        -- block (GPTBot/DotBot...) luôn dừng ở step 1 = 5m dù quay lại nhiều lần.
+        red:incr("viol:" .. id)
+        red:expire("viol:" .. id, cfg.ttl.violation)
     end
 
     if should_ban_ip then
