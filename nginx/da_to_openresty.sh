@@ -149,6 +149,29 @@ get_subdomains() {
     done < "$sub_file"
 }
 
+# ── Static file fast path (shared across HTTP and HTTPS) ─────
+# File tồn tại trên disk → nginx serve + cache 7 ngày (không qua Apache).
+# File không tồn tại      → 404 ở nginx ~1ms (không route qua WordPress 4s).
+# Giải phóng PHP-FPM worker khỏi việc xử lý 404 static file qua .htaccess.
+# Antibot vẫn chạy trong access_by_lua (ở server level) — detect bot quét asset.
+#
+# Deviation từ DA default (dùng @backend fallback): aggressive hơn vì:
+#   - 99%+ plugin caching (WP Rocket, Autoptimize, Elementor, …) generate
+#     file lên disk rồi reference → file tồn tại → serve bởi nginx, OK.
+#   - Dynamic .css/.js qua PHP hiếm; nếu có plugin đặc biệt cần, add
+#     exception riêng per-path với prefix `^~` ưu tiên hơn regex.
+#   - Broken reference (theme thiếu file) → 404 nhanh thay vì WP 4s.
+static_fastpath() {
+    cat << 'LEOF'
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|webp|woff2?|ttf|eot|otf|ico|map|mp4|webm|mp3|ogg|ogv|m4a|m4v|pdf|zip|7z|rar|tgz|gz|txt|xml|json|htc)$ {
+        try_files $uri =404;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+LEOF
+}
+
 # ── Antibot internal locations (shared across HTTP and HTTPS) ─
 antibot_locations() {
     cat << 'LEOF'
@@ -280,6 +303,7 @@ server {
     }
 
 $(antibot_locations)
+$(static_fastpath)
 ${mail_loc}
     location / {
         proxy_buffering off;
@@ -293,7 +317,7 @@ ${mail_loc}
         proxy_hide_header Upgrade;
     }
 
-    location /nginx_static_files/ {
+    location ^~ /nginx_static_files/ {
         alias    "${webroot}/";
         internal;
     }
@@ -357,6 +381,7 @@ server {
     }
 
 $(antibot_locations)
+$(static_fastpath)
 ${mail_loc}
     location / {
         proxy_buffering       off;
@@ -373,7 +398,7 @@ ${mail_loc}
         proxy_hide_header     Upgrade;
     }
 
-    location /nginx_static_files/ {
+    location ^~ /nginx_static_files/ {
         alias    "${webroot}/";
         internal;
     }

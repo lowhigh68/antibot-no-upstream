@@ -82,7 +82,11 @@ function _M.run()
     classifier.run(ctx)
     run_steps(STEPS_COMMON, ctx)
 
-    if ctx.verified then return end
+    -- Short-circuit cho cả verified (PoW) và whitelisted (admin rule, LAN,
+    -- loopback, url/ip whitelist…). Trước đây chỉ check verified → các
+    -- whitelist khác vẫn tiếp tục vào l7 counter + detection + enforcement
+    -- dù access layer đã "allow" → rate counter lên LAN IP oan (wp-cron).
+    if ctx.verified or ctx.whitelisted then return end
 
     local class = ctx.req_class or "unknown"
 
