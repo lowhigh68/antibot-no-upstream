@@ -153,6 +153,14 @@ local function classify(ctx)
         return "interaction"
     end
 
+    -- WP sensitive paths: POST wp-login/xmlrpc luôn là navigation.
+    -- Bruteforce bot strip Sec-Fetch để bị phân vào api_callback (mult 0.5x)
+    -- → tránh bypass score. Path này không có case server-to-server legit cần mult 0.5.
+    if method == "POST" and
+       (uri == "/wp-login.php" or uri == "/xmlrpc.php") then
+        return "navigation"
+    end
+
     -- Navigation: browser form POST with Sec-Fetch context
     if method == "POST" and
        (ct:find("application/x-www-form-urlencoded", 1, true) or

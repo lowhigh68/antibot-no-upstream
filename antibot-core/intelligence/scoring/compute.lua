@@ -35,6 +35,8 @@ local DEFAULT_WEIGHTS = {
 
     resource_starved    = 30,
 
+    wp_attack_score     = 80,
+
     fp_degraded_pen     = 0,
     correlated_boost    = 15,
     corr_rule_weight    = 50,
@@ -86,6 +88,10 @@ local function get_signal(name, ctx)
 
     if name == "resource_starved" then
         return ctx.resource_starved and 1.0 or 0.0
+    end
+
+    if name == "wp_attack_score" then
+        return safe_val(ctx.wp_attack_score)
     end
 
     if name == "fast_solve" then
