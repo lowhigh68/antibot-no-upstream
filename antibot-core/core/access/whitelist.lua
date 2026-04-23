@@ -16,6 +16,34 @@ local BYPASS_PATHS = {
     "/ajaxcart/",
 }
 
+-- Private/loopback ranges — internal infrastructure, bypass antibot.
+-- Bao phủ:
+--   127.0.0.0/8              — loopback
+--   10.0.0.0/8               — RFC1918 class A
+--   172.16.0.0/12            — RFC1918 class B
+--   192.168.0.0/16           — RFC1918 class C
+--   ::1                      — IPv6 loopback
+--   fe80::/10                — IPv6 link-local
+--   fc00::/7                 — IPv6 unique local (fc/fd prefix)
+-- Lý do an toàn: RFC1918 không route qua public Internet; không thể
+-- spoof từ ngoài. Request đến với src=RFC1918 = thật sự từ LAN/server.
+local function is_private_lan(ip)
+    if not ip or ip == "" then return false end
+    if ip:find("^127%.", 1, false) then return true end
+    if ip:find("^10%.", 1, false) then return true end
+    if ip:find("^192%.168%.", 1, false) then return true end
+    local b = ip:match("^172%.(%d+)%.")
+    if b then
+        local n = tonumber(b)
+        if n and n >= 16 and n <= 31 then return true end
+    end
+    if ip == "::1" then return true end
+    local p2 = ip:sub(1, 2):lower()
+    if p2 == "fc" or p2 == "fd" then return true end
+    if ip:sub(1, 4):lower() == "fe80" then return true end
+    return false
+end
+
 -- Tầng 2: Device fingerprint dùng UA + canvas hash.
 --
 -- Kiến trúc no-stream: JA3 luôn partial/nil → không thể dùng JA3.
@@ -86,8 +114,10 @@ function _M.check(ctx)
         if uri:sub(1, #p) == p then return true, "antibot_internal" end
     end
 
-    -- 2. Loopback
-    if ip == "127.0.0.1" or ip == "::1" then return true, "localhost" end
+    -- 2. Loopback + LAN (RFC1918, IPv6 private)
+    -- Internal infrastructure: wp-cron, monitoring, DA hairpin, container bridge.
+    -- KHÔNG count rate, không chạy scoring, không ghi session.
+    if is_private_lan(ip) then return true, "lan_internal" end
 
     -- 3. IP whitelist
     local val = pool.safe_get("wl:" .. ip)
