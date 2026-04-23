@@ -189,7 +189,20 @@ function _M.run(ctx)
             " top=", top_str)
     end
 
-    if ctx.whitelisted then return end
+    -- Chỉ skip stats cho "infrastructure" whitelist (wp-cron LAN, bypass
+    -- resource, admin IP/URL config, antibot endpoints). Các reason verified
+    -- (cookie/device/earlyid) là human thật → vẫn count vào Clean để dashboard
+    -- phản ánh đúng human traffic, không chỉ riêng fresh-visit pass detection.
+    local SKIP_STATS_REASONS = {
+        antibot_internal = true,
+        lan_internal     = true,
+        ip_whitelist     = true,
+        url_whitelist    = true,
+        bypass_path      = true,
+    }
+    if ctx.whitelisted and SKIP_STATS_REASONS[ctx.action_reason or ""] then
+        return
+    end
 
     local action = ctx.action or "allow"
     local date   = os.date("%Y%m%d")
