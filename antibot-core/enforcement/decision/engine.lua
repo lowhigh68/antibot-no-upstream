@@ -20,7 +20,12 @@ local KILL_BLOCK_EFF     = 85
 local FP_DEGRADED_PENALTY  = 5
 local FP_QUALITY_PENALTY   = 3
 local FP_QUALITY_THRESHOLD = 0.5
-local JA3_PARTIAL_PENALTY  = 2
+-- JA3_PARTIAL_PENALTY = 0 vì kiến trúc no-stream không bao giờ capture được
+-- cipher list → ja3_partial = true là CONSTANT của kiến trúc, không phải
+-- signal detect bot. Penalty cũ = 2 áp lên MỌI request HTTPS legit → không
+-- mang thông tin hữu ích. 3 signal khác (chrome+no_h2, chrome+tls12,
+-- h2_tls_mismatch) đủ đánh bot dùng JA3/TLS mismatch.
+local JA3_PARTIAL_PENALTY  = 0
 
 -- Attack 1 — UA switching:
 -- Nếu IP đã có ip_risk cao (từ identity trước đó bị challenge/block),

@@ -4,17 +4,38 @@ local _M = {}
 -- Cross-phase bridge: ssl_client_hello_by_lua → access_by_lua
 --
 -- ngx.ctx KHÔNG persist giữa hai phase trên OpenResty 1.21+.
--- Dùng lua_shared_dict antibot_tls làm bridge, key = connection id.
+-- Dùng lua_shared_dict antibot_tls làm bridge.
 --
--- Key format : "tls:<connection_id>"
+-- Bridge key: md5(TLS client_random) — 32 bytes ngẫu nhiên trong ClientHello,
+-- unique per handshake, truy cập được cả 2 phase qua ngx.ssl.get_client_random().
+-- ngx.var.connection (cũ) không dùng được vì ngx.var bị disable trong
+-- ssl_client_hello_by_lua* từ OpenResty 1.21+.
+--
+-- Key format : "tls:<md5_of_client_random>"
 -- Value      : "tls13_flag|ext1-ext2|curve1-curve2|pt1-pt2"
--- TTL        : 10s (đủ cho handshake + request đầu tiên)
--- HTTP/2     : nhiều request cùng connection → KHÔNG xóa key, để expire tự nhiên
+-- TTL        : 300s (cover HTTP/2 long-lived + HTTP/1.1 keepalive)
+-- HTTP/2     : nhiều request cùng handshake → cùng client_random → cùng key
 -- ============================================================
 
 local SHARED_DICT_NAME = "antibot_tls"
 local TLS_KEY_PREFIX   = "tls:"
-local TLS_KEY_TTL      = 10
+local TLS_KEY_TTL      = 300
+
+-- Lấy bridge key từ TLS client_random.
+-- ngx.ssl.get_client_random() available trong ssl_client_hello_by_lua*,
+-- ssl_certificate_by_lua*, access_by_lua*, log_by_lua*.
+-- HTTP plain (không TLS): trả nil, caller xử lý graceful.
+local function get_bridge_key()
+    local ok, ssl_lib = pcall(require, "ngx.ssl")
+    if not ok then
+        return nil, "ngx.ssl module unavailable"
+    end
+    local random, err = ssl_lib.get_client_random(32)
+    if not random or #random == 0 then
+        return nil, err or "no client_random (plain HTTP?)"
+    end
+    return ngx.md5(random)
+end
 
 local function is_grease(val)
     if not val or val == 0 then return false end
@@ -119,9 +140,9 @@ function _M.capture()
         return
     end
 
-    local conn_id = ngx.var.connection
-    if not conn_id then
-        ngx.log(ngx.WARN, "[ja3] ngx.var.connection unavailable in ssl phase")
+    local bridge_key, err = get_bridge_key()
+    if not bridge_key then
+        ngx.log(ngx.DEBUG, "[ja3.capture] bridge key unavailable: ", err)
         return
     end
 
@@ -164,7 +185,7 @@ function _M.capture()
     local pf_data = ssl_clt.get_client_hello_ext(0x000b)
     if pf_data then pt_fmts = parse_ec_point_formats(pf_data) end
 
-    local key = TLS_KEY_PREFIX .. conn_id
+    local key = TLS_KEY_PREFIX .. bridge_key
     local val = serialize(is_tls13, extensions, curves, pt_fmts)
     local set_ok, set_err = shared:set(key, val, TLS_KEY_TTL)
     if not set_ok then
@@ -173,7 +194,7 @@ function _M.capture()
     end
 
     ngx.log(ngx.DEBUG,
-        "[ja3] capture: conn=", conn_id,
+        "[ja3] capture: key=", bridge_key:sub(1, 8),
         " tls13=", tostring(is_tls13),
         " #exts=", #extensions,
         " #curves=", #curves)
@@ -187,12 +208,23 @@ function _M.run(ctx)
         return
     end
 
-    local conn_id = ngx.var.connection
-    local key     = TLS_KEY_PREFIX .. (conn_id or "")
-    local val     = shared:get(key)
+    local bridge_key, err = get_bridge_key()
+    if not bridge_key then
+        -- HTTP plain hoặc SSL chưa ready (err mô tả lý do)
+        ctx.ja3            = nil
+        ctx.ja3_raw        = nil
+        ctx.ja3_partial    = nil
+        ctx.ja3_cipher_src = nil
+        ctx.tls_version    = nil
+        ctx.tls13          = nil
+        return
+    end
+
+    local key = TLS_KEY_PREFIX .. bridge_key
+    local val = shared:get(key)
 
     if not val then
-        -- HTTP plain hoặc capture() gagal
+        -- capture() không fire (session resumption, HTTP plain, …)
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
@@ -245,7 +277,7 @@ function _M.run(ctx)
     end
 
     ngx.log(ngx.DEBUG,
-        "[ja3] run: conn=", tostring(conn_id),
+        "[ja3] run: key=", bridge_key:sub(1, 8),
         " hash=", ja3_hash,
         " tls13=", tostring(ctx.tls13),
         " partial=", tostring(is_partial),
