@@ -172,7 +172,12 @@ local function render_data()
     local wl_ip_keys = scan_keys(red, "wl:*",      1000)
     local nonce_keys    = scan_keys(red, "nonce:*",    500)
     local verified_keys = scan_keys(red, "verified:*", 500)
-    local stat_keys     = scan_keys(red, "stat:*",    2000)
+    -- Filter stat keys theo HÔM NAY ngay ở SCAN. Toàn bộ stat:* qua 7 ngày
+    -- × nhiều domain × nhiều sub-keys (allow/monitor/challenge/block/dev_*/
+    -- intent_*/ibd_*) dễ vượt 2000 → SCAN cắt ngẫu nhiên → Clean/Monitor/Block
+    -- của một số domain bị thiếu trong khi Total hiện → dashboard sai.
+    local today_key     = os.date("%Y%m%d")
+    local stat_keys     = scan_keys(red, "stat:*:" .. today_key, 5000)
     local ban_ctx_keys  = scan_keys(red, "ban_ctx:*",  500)
     local ua_count     = red:get("badbot:ua_count") or "0"
     local ua_sync_time = red:get("badbot:ua_sync_time") or "never"
