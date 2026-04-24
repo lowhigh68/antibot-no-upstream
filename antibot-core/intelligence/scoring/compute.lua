@@ -37,6 +37,8 @@ local DEFAULT_WEIGHTS = {
 
     wp_attack_score     = 80,
 
+    swarm_attack        = 120,
+
     fp_degraded_pen     = 0,
     correlated_boost    = 15,
     corr_rule_weight    = 50,
@@ -92,6 +94,10 @@ local function get_signal(name, ctx)
 
     if name == "wp_attack_score" then
         return safe_val(ctx.wp_attack_score)
+    end
+
+    if name == "swarm_attack" then
+        return safe_val(ctx.swarm_attack)
     end
 
     if name == "fast_solve" then

@@ -1,13 +1,14 @@
 local _M = {}
 
-local anomaly      = require "antibot.detection.anomaly"
-local behavior     = require "antibot.detection.behavior"
-local bot          = require "antibot.detection.bot"
-local browser      = require "antibot.detection.browser"
-local cluster      = require "antibot.detection.cluster"
-local graph        = require "antibot.detection.graph"
-local session      = require "antibot.detection.session"
-local wp_hardening = require "antibot.detection.wp_hardening"
+local anomaly            = require "antibot.detection.anomaly"
+local behavior           = require "antibot.detection.behavior"
+local bot                = require "antibot.detection.bot"
+local browser            = require "antibot.detection.browser"
+local cluster            = require "antibot.detection.cluster"
+local graph              = require "antibot.detection.graph"
+local session            = require "antibot.detection.session"
+local distributed_swarm  = require "antibot.detection.distributed_swarm"
+local wp_hardening       = require "antibot.detection.wp_hardening"
 
 local function should_run(ctx, layer_name)
     local skip = ctx.skip_layers
@@ -38,6 +39,13 @@ function _M.run(ctx)
     -- Không qua should_run vì api_callback class skip session — nhưng bruteforce
     -- bot POST không Sec-Fetch chính là api_callback và đây là case cần bắt nhất.
     wp_hardening.run(ctx)
+
+    -- distributed_swarm: phát hiện residential-proxy botnet rotate IP.
+    -- Khác cluster/swarm_detect (detect 1 /24 hammer nhiều request): module
+    -- này count unique /24 cùng UA cùng domain → bắt attack ngược lại (nhiều
+    -- /24 mỗi /24 chỉ 1 request). Bổ sung gap cho attack pattern không bắt
+    -- được bởi per-request signals (UA sạch, HTTP/2, không rate).
+    distributed_swarm.run(ctx)
 
     if should_run(ctx, "cluster") then
         cluster.run(ctx)
