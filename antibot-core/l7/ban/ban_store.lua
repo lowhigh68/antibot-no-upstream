@@ -14,7 +14,11 @@ local function ua_claims_good_bot(ua)
 end
 
 function _M.run(ctx)
-    local id = ctx.fp_light or ctx.identity
+    -- PHẢI cùng order với enforcement/ban/ban_store_write.lua (identity trước
+    -- fp_light). identity = md5(ip+ua_norm); fp_light = md5(ip+ua+asn+ja3+h2).
+    -- Hai hash KHÁC NHAU → nếu order ngược, write key X mà read key Y →
+    -- ban Redis tồn tại nhưng không bao giờ được tìm thấy → bot lọt mãi.
+    local id = ctx.identity or ctx.fp_light
     if not id or id == "" then
         ctx.banned = false
         return false, false

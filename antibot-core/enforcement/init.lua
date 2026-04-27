@@ -15,6 +15,14 @@ function _M.run(ctx)
 
     if action == "block" then
         ban.run(ctx)
+        -- Serve 403 NGAY cho request hiện tại, không chỉ ghi ban cho request sau.
+        -- Trước đây chỉ ghi ban Redis rồi return → request hiện tại vẫn đi qua
+        -- upstream Apache → mỗi attack pattern lãng phí 1 request damage trước
+        -- khi defense kick in (consume DB/CPU 1-3s).
+        ngx.status = 403
+        ngx.header["Content-Type"] = "text/plain"
+        ngx.say("Access denied.")
+        ngx.exit(403)
         return true, true
 
     elseif action == "challenge" then
