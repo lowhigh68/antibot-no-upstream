@@ -40,20 +40,29 @@ function _M.run(ctx)
     local ip_risk_val   = ctx.ip_risk or 0.0
     local swarm_active  = ctx.swarm == true
 
+    -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
+    -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
+    local viol_count = id and (tonumber(pool.safe_get("viol:" .. id)) or 0) or 0
+
     local should_ban_ip = ip and (
         ip_risk_val >= 0.7
         or (ip_risk_val >= 0.5 and swarm_active)
+        or viol_count >= 3   -- repeat offender → ban IP kể cả risk thấp
     )
 
     local ip_ban_ttl
-    if ip_risk_val >= 0.95 then
-        ip_ban_ttl = 1800  -- 30 phút: bot đang tấn công tích cực, ngắt session
+    if viol_count >= 4 then
+        ip_ban_ttl = 0           -- permanent: confirmed repeat bot
+    elseif viol_count >= 3 then
+        ip_ban_ttl = 86400       -- 24h: cảnh báo nặng
+    elseif ip_risk_val >= 0.95 then
+        ip_ban_ttl = 1800        -- 30 phút: bot tấn công tích cực
     elseif ip_risk_val >= 0.85 then
-        ip_ban_ttl = 900   -- 15 phút: risk cao, nhiều session xấu
+        ip_ban_ttl = 900         -- 15 phút: risk cao
     elseif ip_risk_val >= 0.7 then
-        ip_ban_ttl = 300   -- 5 phút: ngưỡng tối thiểu, tránh block oan CGNAT
+        ip_ban_ttl = 300         -- 5 phút: ngưỡng tối thiểu
     else
-        ip_ban_ttl = 180   -- 3 phút: swarm case, IP chỉ 1 phần của attack
+        ip_ban_ttl = 180         -- 3 phút: swarm case
     end
 
     red:init_pipeline()
@@ -76,7 +85,11 @@ function _M.run(ctx)
     end
 
     if should_ban_ip then
-        red:setex("ban:" .. ip, ip_ban_ttl, "1")
+        if ip_ban_ttl > 0 then
+            red:setex("ban:" .. ip, ip_ban_ttl, "1")
+        else
+            red:set("ban:" .. ip, "1")  -- permanent
+        end
         red:setex("ban:hit:" .. ip, 300, now_ts)
     end
 

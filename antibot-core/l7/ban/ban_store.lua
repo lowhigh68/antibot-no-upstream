@@ -1,5 +1,8 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local cfg  = require "antibot.core.config"
+
+local ESCALATE_RATE_LIMIT = 60   -- 1 viol incr / 60s tối đa per identity
 
 local function ua_claims_good_bot(ua)
     if not ua or ua == "" then return false end
@@ -46,7 +49,33 @@ function _M.run(ctx)
         end
 
         ctx.banned = true
-        pool.safe_set("ban:hit:" .. id, tostring(ngx.time()), 300)
+        local now = ngx.time()
+
+        -- Mỗi 403 hit = bot vẫn cố tấn công → escalate viol để tiến tới
+        -- permanent ban nhanh hơn (thay vì chờ ban expire rồi mới incr).
+        -- Rate limit 1 incr/60s để không spam Redis (bot retry 30/min không
+        -- thành 30 viol). Tận dụng ban:hit:<id> làm timestamp.
+        local last_hit = pool.safe_get("ban:hit:" .. id)
+        local should_escalate = (not last_hit) or
+                                (now - (tonumber(last_hit) or 0) > ESCALATE_RATE_LIMIT)
+
+        if should_escalate then
+            local new_viol = pool.safe_incr("viol:" .. id, cfg.ttl.violation) or 1
+            local steps    = cfg.ttl.ban_steps
+            local idx      = math.min(new_viol, #steps)
+            local new_ttl  = steps[idx]
+            if new_ttl == 0 then
+                pool.safe_set("ban:" .. id, "1")          -- permanent
+            elseif new_ttl > 0 then
+                pool.safe_set("ban:" .. id, "1", new_ttl) -- extend
+            end
+            ngx.log(ngx.INFO,
+                "[ban_store] escalate id=", id:sub(1, 8),
+                " viol=", new_viol,
+                " ttl=", new_ttl == 0 and "permanent" or tostring(new_ttl) .. "s")
+        end
+
+        pool.safe_set("ban:hit:" .. id, tostring(now), 300)
         ngx.log(ngx.INFO, "[ban_store] blocked id=", id:sub(1, 8), "...")
         ngx.status = 403
         ngx.header["Content-Type"] = "text/plain"
