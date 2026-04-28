@@ -40,6 +40,21 @@ function _M.run(ctx)
             " ip=", ctx.ip,
             " (shared IP, identity rate ok)")
     end
+
+    -- Hard ban khi ip_surge: ip_rate > 1500/60s = 25 req/s sustained.
+    -- Threshold cao đủ để không FP CGNAT lớn (Vietnam mobile carrier ~5-20
+    -- req/s collective). User thật + browser load 1 page có ~50 resource trong
+    -- ~1s đầu = burst nhỏ, không sustain → ip_rate trung bình 60s window thấp.
+    -- Bypass scoring/trust_discount để bot không né được dù có session cũ.
+    if ctx.ip_surge and ctx.ip and ctx.ip ~= "" then
+        pool.safe_set("ban:" .. ctx.ip, "1", 1800)  -- 30 phút
+        pool.safe_set("ban:hit:" .. ctx.ip, tostring(ngx.time()), 300)
+        ngx.log(ngx.WARN,
+            "[rate] HARD BAN ip_surge",
+            " ip=", ctx.ip,
+            " ip_rate=", ip_rate,
+            " thresh=", ip_surge_thresh)
+    end
 end
 
 return _M
