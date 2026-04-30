@@ -53,18 +53,52 @@ URL_X4BNET_DC_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input
 URL_X4BNET_VPN_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/vpn/Asn.list"
 URL_JHASSINE_DC="https://raw.githubusercontent.com/jhassine/server-ip-addresses/master/data/datacenters.csv"
 
-# ─── Manual override — local ISPs cần classify "residential" ─
+# ─── Manual override — VN consumer ISPs (force "residential") ─
 # Generalization principle: chỉ override khi feed comprehensive
 # CÓ THỂ liệt kê sai (vd Viettel có cloud arm bị tag datacenter
 # nhưng phần lớn IP vẫn là residential mobile/FTTH).
+#
+# Coverage ~95% user VN consumer traffic (FTTH + mobile + cable).
+# Mỗi ASN tag residential → ip_score 0.0 → không penalty user thật.
 MANUAL_OVERRIDE_RESIDENTIAL=(
-    24086    # Viettel Group
-    45899    # VNPT
-    18403    # FPT
-    7552     # Viettel Mobile
-    24492    # CMC Telecom
-    131429   # Mobifone
-    7643     # VNPT (legacy)
+    # Top 4 ISPs (>90% market)
+    24086    # Viettel Group (FTTH + corporate)
+    45899    # VNPT (FTTH)
+    18403    # FPT Telecom (FTTH)
+    7552     # Viettel Mobile (4G/5G)
+    # Tier 2 telco
+    131429   # Mobifone (4G/5G)
+    7643     # VNPT (legacy IPv4 block)
+    24492    # CMC Telecom (consumer side; CMC Cloud có ASN riêng)
+    137970   # Gtel Mobile (Gmobile / Beeline VN)
+    133267   # Hanoi Telecom (Vietnamobile mobile)
+    133741   # Hanoi Telecom (HTC FTTH)
+    # Cable TV / regional broadband
+    45903    # SCTV — Saigontourist Cable Television
+    132167   # Hanoi Cable TV
+    45543    # Saigontel
+    # Smaller/legacy ISPs
+    45494    # NetNam Corporation
+    23899    # NETNAM (legacy block)
+    132045   # CMC Saigon (consumer)
+    134715   # Indochina Telecom
+)
+
+# ─── VN datacenter allowlist — KHÔNG override residential ─────
+# Lý do tồn tại list này: feed (X4BNet/jhassine) tag đúng các
+# datacenter này là "datacenter", nhưng nếu admin lỡ thêm nhầm
+# ASN vào MANUAL_OVERRIDE_RESIDENTIAL → user thật bị tag dc và
+# ngược lại. List này guard chống lẫn lộn 2 chiều:
+#   1. Đảm bảo VN datacenter LUÔN có asn:type=datacenter
+#      (kể cả khi feed bỏ sót)
+#   2. Skip residential override nếu trùng với list này
+VN_DATACENTER_ASNS=(
+    38731    # Viettel IDC
+    133571   # VNPT IDC (Net2E)
+    45905    # Vietnix
+    135905   # Bizfly Cloud (VCCorp)
+    138388   # FPT Smart Cloud
+    63956    # OdiCloud / Inet
 )
 
 # ─── Helpers ──────────────────────────────────────────────────
@@ -225,23 +259,40 @@ sync_asn_classification() {
         warn "jhassine datacenters fetch failed"
     fi
 
-    # ── Manual override — local ISPs FORCE residential ──────
+    # ── VN datacenter allowlist — explicit datacenter tag ──
+    # Force tag để feed-miss không làm Bizfly/FPT Cloud rơi vào
+    # "unknown" → mặc định residential trong ip_classify.lua.
+    declare -A VN_DC_SET=()
+    local count_vn_dc=0
+    for asn in "${VN_DATACENTER_ASNS[@]}"; do
+        VN_DC_SET[$asn]=1
+        pipeline_cmds+="SET asn:type:${asn} datacenter EX ${TTL_ASN_TYPE}\n"
+        pipeline_cmds+="SET rep:asn:${asn} ${SCORE_ASN_HOST} EX ${TTL_ASN}\n"
+        count_vn_dc=$((count_vn_dc + 1))
+    done
+    log "  VN datacenter allowlist: $count_vn_dc ASNs"
+
+    # ── Manual override — VN consumer ISPs FORCE residential ─
     # Override AFTER feed sync để chắc chắn priority cao hơn.
-    # Local ISPs có thể bị X4BNet/jhassine tag nhầm datacenter
-    # vì có cloud arm, nhưng phần lớn IP vẫn là residential.
-    # Tag residential = ip_score 0.0 (no penalty cho user thật VN).
+    # Consumer ISPs có thể bị X4BNet/jhassine tag nhầm datacenter
+    # vì có cloud arm, nhưng phần lớn IP vẫn là residential FTTH/mobile.
+    # Guard: nếu ASN trùng VN_DATACENTER_ASNS (config sai) → skip.
     for asn in "${MANUAL_OVERRIDE_RESIDENTIAL[@]}"; do
+        if [[ -n "${VN_DC_SET[$asn]:-}" ]]; then
+            warn "ASN ${asn} in both residential and datacenter lists — keeping datacenter"
+            continue
+        fi
         pipeline_cmds+="SET asn:type:${asn} residential EX ${TTL_ASN_TYPE}\n"
         pipeline_cmds+="DEL rep:asn:${asn}\n"   # xóa rep score nếu có
         count_residential=$((count_residential + 1))
     done
-    log "  Manual override residential: $count_residential ASNs (Vietnam ISPs)"
+    log "  Manual override residential: $count_residential ASNs (VN consumer ISPs)"
 
     # Flush pipeline
     printf "%b" "$pipeline_cmds" | RPIPE >/dev/null 2>&1
 
-    TOTAL_ASN_REP=$((count_dc + count_vpn))
-    TOTAL_ASN_TYPE=$((count_dc + count_vpn + count_residential))
+    TOTAL_ASN_REP=$((count_dc + count_vpn + count_vn_dc))
+    TOTAL_ASN_TYPE=$((count_dc + count_vpn + count_vn_dc + count_residential))
     log "  ASN total: type=$TOTAL_ASN_TYPE rep=$TOTAL_ASN_REP"
 }
 
