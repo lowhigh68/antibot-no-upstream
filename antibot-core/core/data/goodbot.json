@@ -1,0 +1,29 @@
+{
+  "version": "2026-04-30",
+  "description": "Default good-bot DNS registry. Auto-seed Redis at worker init. Admin override (SET goodbot:dns:<name>) takes priority.",
+  "bots": {
+    "googlebot":              ["googlebot.com", "google.com"],
+    "googlebot-image":        ["googlebot.com", "google.com"],
+    "googlebot-video":        ["googlebot.com", "google.com"],
+    "adsbot-google":          ["googlebot.com", "google.com"],
+    "adsbot-google-mobile":   ["googlebot.com", "google.com"],
+    "mediapartners-google":   ["googlebot.com", "google.com"],
+    "googleother":            ["googlebot.com", "google.com"],
+    "apis-google":            ["google.com"],
+    "google-site-verifier":   ["google.com"],
+    "google-agent":           ["google.com"],
+
+    "bingbot":                ["search.msn.com"],
+
+    "applebot":               ["applebot.apple.com"],
+    "applebot-extended":      ["applebot.apple.com"],
+
+    "facebookexternalhit":    ["facebook.com", "fbsv.net"],
+    "facebot":                ["facebook.com", "fbsv.net"],
+    "meta-externalagent":     ["facebook.com", "fbsv.net"],
+    "meta-externalfetcher":   ["facebook.com", "fbsv.net"],
+
+    "coccocbot-web":          ["coccoc.com"],
+    "coccocbot-image":        ["coccoc.com"]
+  }
+}

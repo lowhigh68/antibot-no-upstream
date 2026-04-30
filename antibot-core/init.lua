@@ -118,6 +118,19 @@ end
 function _M.init_worker()
     local mem_guard = require "antibot.async.memory_guard"
     mem_guard.start()
+
+    -- Seed default good-bot DNS registry vào Redis (worker 0 only).
+    -- core/data/goodbot.json đi cùng repo → git pull sync list.
+    -- Admin override qua redis-cli SET không bị ghi đè.
+    if ngx.worker.id() == 0 then
+        local ok, seed = pcall(require, "antibot.core.goodbot_seed")
+        if ok and seed and seed.run then
+            local ok2, err = pcall(seed.run)
+            if not ok2 then
+                ngx.log(ngx.ERR, "[init_worker] goodbot_seed error: ", tostring(err))
+            end
+        end
+    end
 end
 
 return _M
