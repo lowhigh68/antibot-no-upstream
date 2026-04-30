@@ -20,7 +20,8 @@
 
     "facebookexternalhit":    ["facebook.com", "fbsv.net"],
     "facebot":                ["facebook.com", "fbsv.net"],
-    "_comment_meta_external": "meta-externalagent + meta-externalfetcher KHÔNG có reverse PTR → không verify được. Bỏ khỏi list = treat as untrusted bot (block). Re-enable khi có cơ chế ASN-verify (AS32934 Facebook).",
+    "meta-externalagent":     ["facebook.com", "fbsv.net"],
+    "meta-externalfetcher":   ["facebook.com", "fbsv.net"],
 
     "coccocbot-web":          ["coccoc.com"],
     "coccocbot-image":        ["coccoc.com"]

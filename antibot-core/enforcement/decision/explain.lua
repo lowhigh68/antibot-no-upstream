@@ -17,7 +17,8 @@ function _M.run(ctx)
         rules_fired[#rules_fired + 1] = tostring(r.rule or "?")
     end
 
-    ctx.action_reason = string.format(
+    -- Diagnostic detail luôn build cho Redis explain payload phía dưới.
+    local diagnostic = string.format(
         "score=%.1f class=%s | top:[%s] | rules:[%s] | fp_quality=%.2f",
         ctx.score or 0,
         ctx.req_class or "?",
@@ -25,6 +26,15 @@ function _M.run(ctx)
         table.concat(rules_fired, ", "),
         ctx.fp_quality or 0
     )
+
+    -- Giữ semantic reason đã được set bởi engine/access (vd "good_bot_verified",
+    -- "lan_internal", "cookie_verified"). Chỉ ghi diagnostic vào action_reason
+    -- khi nó CHƯA được set → tránh ghi đè reason ngữ nghĩa.
+    -- Diagnostic vẫn được persist riêng vào Redis explain:<fp> để admin trace.
+    if not ctx.action_reason or ctx.action_reason == "" then
+        ctx.action_reason = diagnostic
+    end
+    ctx.action_explain = diagnostic   -- field riêng cho debug/admin dashboard
 
     local fp = ctx.fp_light
     if not fp then
@@ -36,19 +46,20 @@ function _M.run(ctx)
     if not ok then return end
 
     local ok2, payload = pcall(cjson.encode, {
-        ts           = ngx.time(),
-        fp           = fp,
-        ip           = ctx.ip,
-        score        = ctx.score,
-        eff_score    = ctx.effective_score,
-        req_class    = ctx.req_class,
-        action       = ctx.action,
-        action_reason= ctx.action_reason,
-        top_signals  = #top > 0 and top or cjson.empty_array,
-        fp_quality   = ctx.fp_quality,
-        fp_degraded  = ctx.fp_degraded or false,
-        corr_rules   = #rules_fired > 0 and rules_fired or cjson.empty_array,
-        domain       = (ctx.req and ctx.req.host) or ngx.var.host or "?",
+        ts            = ngx.time(),
+        fp            = fp,
+        ip            = ctx.ip,
+        score         = ctx.score,
+        eff_score     = ctx.effective_score,
+        req_class     = ctx.req_class,
+        action        = ctx.action,
+        action_reason = ctx.action_reason,
+        action_explain= ctx.action_explain,  -- diagnostic riêng
+        top_signals   = #top > 0 and top or cjson.empty_array,
+        fp_quality    = ctx.fp_quality,
+        fp_degraded   = ctx.fp_degraded or false,
+        corr_rules    = #rules_fired > 0 and rules_fired or cjson.empty_array,
+        domain        = (ctx.req and ctx.req.host) or ngx.var.host or "?",
     })
     if not ok2 then return end
 
