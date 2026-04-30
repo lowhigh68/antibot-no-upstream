@@ -49,8 +49,8 @@ TTL_ASN_TYPE="90000"       # 25h (margin > cron interval)
 # Feed URLs
 URL_IPSUM="https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
 URL_SPAMHAUS_DROP="https://www.spamhaus.org/drop/drop.txt"
-URL_X4BNET_DC_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/datacenter/Asn.list"
-URL_X4BNET_VPN_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/vpn/Asn.list"
+URL_X4BNET_DC_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/datacenter/ASN.txt"
+URL_X4BNET_VPN_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/vpn/ASN.txt"
 URL_JHASSINE_DC="https://raw.githubusercontent.com/jhassine/server-ip-addresses/master/data/datacenters.csv"
 
 # ─── Manual override — VN consumer ISPs (force "residential") ─
