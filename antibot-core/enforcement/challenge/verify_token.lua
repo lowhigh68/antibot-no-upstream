@@ -115,12 +115,22 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash)
     local device_id = build_device_id(ua, canvas_hash)
     if device_id then
         pool.safe_set("verified:device:" .. device_id, "1", verified_ttl)
-        -- Lưu mapping ua_hash → device_id để whitelist.lua có thể lookup
-        -- mà không cần biết canvas hash trước
-        local ua_hash = ngx.md5(ua)
-        pool.safe_set("device_ua:" .. ua_hash, device_id, verified_ttl)
-        ngx.log(ngx.INFO, "[verify] device_canvas_id=", device_id:sub(1,8),
-                " canvas=", canvas_hash:sub(1,8))
+        -- Bind device_id với (UA, IP /16) để whitelist.lua lookup ANTI cross-
+        -- network leak. Trước đây chỉ bind UA → bot rotate IP cross-country
+        -- với UA phổ biến của user thật bypass toàn bộ verify chain.
+        -- /16 vẫn cho phép user di chuyển trong cùng carrier (4G/WiFi VN).
+        local ip = ctx.ip or ""
+        local ip16 = ip:match("^(%d+%.%d+)%.")
+        if ip16 then
+            local ua_hash = ngx.md5(ua)
+            local key     = "device_ua:" .. ua_hash .. ":" .. ip16
+            pool.safe_set(key, device_id, verified_ttl)
+            ngx.log(ngx.INFO, "[verify] device_canvas_id=", device_id:sub(1,8),
+                    " canvas=", canvas_hash:sub(1,8),
+                    " ip16=", ip16)
+        else
+            ngx.log(ngx.WARN, "[verify] cannot bind device — invalid IP format")
+        end
     else
         ngx.log(ngx.DEBUG, "[verify] no device_id: canvas missing")
     end

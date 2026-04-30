@@ -59,10 +59,23 @@ end
 --
 -- Không cần biết canvas hash khi check — chỉ cần ua_hash để lookup device_id.
 -- Canvas hash chỉ cần khi grant (verify_token.lua).
-local function lookup_device_by_ua(ua, verified_ttl, ctx)
+-- Bind verify với IP /16 để chặn cross-network bypass.
+-- /24: user mobile đổi cell tower thường đổi /24 → re-challenge mỗi lần (UX kém)
+-- /16: cùng carrier mobile share /16 → user di chuyển trong VN cùng ISP vẫn pass
+-- Bot phải compromise IP cùng /16 với user thật → khó hơn nhiều
+local function get_ip16(ip)
+    if not ip or ip == "" then return nil end
+    return ip:match("^(%d+%.%d+)%.")
+end
+
+local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     if not ua or ua == "" then return nil end
-    local ua_hash  = ngx.md5(ua)
-    local device_id = pool.safe_get("device_ua:" .. ua_hash)
+    local ip16 = get_ip16(ip)
+    if not ip16 then return nil end
+
+    local ua_hash = ngx.md5(ua)
+    local key     = "device_ua:" .. ua_hash .. ":" .. ip16
+    local device_id = pool.safe_get(key)
     if not device_id or device_id == "" then return nil end
 
     local dv = pool.safe_get("verified:device:" .. device_id)
@@ -70,7 +83,7 @@ local function lookup_device_by_ua(ua, verified_ttl, ctx)
 
     -- Renew TTL
     pool.safe_set("verified:device:" .. device_id, "1", verified_ttl)
-    pool.safe_set("device_ua:" .. ua_hash, device_id, verified_ttl)
+    pool.safe_set(key, device_id, verified_ttl)
 
     -- Re-issue cookie
     local scheme = ngx.var.scheme or "http"
@@ -153,11 +166,12 @@ function _M.check(ctx)
         end
     end
 
-    -- 6. Device fingerprint — SECONDARY, IP-independent.
-    -- Dùng UA → device_id mapping (canvas-based, lưu khi verify).
-    -- Không cần JA3 — phù hợp kiến trúc no-stream.
-    -- Handles: Safari ITP xóa cookie, cookie expire, đổi mạng.
-    local device_id = lookup_device_by_ua(ua, verified_ttl, ctx)
+    -- 6. Device fingerprint — SECONDARY, /16-bound (NOT IP-independent).
+    -- Dùng (UA, IP /16) → device_id mapping. Trước đây IP-independent
+    -- → bot rotate IP cross-country dùng UA phổ biến của user thật bypass
+    -- được toàn bộ hệ thống. Bind /16 chặn cross-network leak nhưng vẫn
+    -- handle: Safari ITP xóa cookie, đổi mạng cùng carrier (4G ↔ WiFi VN).
+    local device_id = lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     if device_id then
         return true, "device_canvas_verified"
     end
