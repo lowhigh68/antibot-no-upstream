@@ -54,6 +54,13 @@ function _M.run(ctx)
         return true, false
     end
 
+    -- PTR-only verification (Meta family): dns_reverse đã set
+    -- good_bot_verified=true. Skip forward lookup vì rotating IP pool
+    -- của Meta khiến forward A trả về IP khác → fail oan với crawler legit.
+    if ctx.good_bot_ptr_only then
+        return true, false
+    end
+
     local ptr = ctx.dns_rev
     local ip  = normalize_ip(ctx.ip or "")
     if not ptr or ip == "" then return true, false end

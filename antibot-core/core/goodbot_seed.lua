@@ -44,10 +44,26 @@ function _M.run()
         end
     end
 
+    -- Seed ptr_only flags. Bot trong list này skip forward DNS check
+    -- vì rotating IP pool (Meta crawler infra) khiến forward A trả về
+    -- IP khác trong pool → fail oan.
+    local ptr_only_count = 0
+    if type(data.ptr_only) == "table" then
+        for _, name in ipairs(data.ptr_only) do
+            local key = "goodbot:ptr_only:" .. name:lower()
+            local existing = pool.safe_get(key)
+            if not existing or existing == "" then
+                pool.safe_set(key, "1")
+            end
+            ptr_only_count = ptr_only_count + 1
+        end
+    end
+
     ngx.log(ngx.INFO,
         "[goodbot_seed] version=", data.version or "?",
         " seeded=", seeded,
         " skipped=", skipped,
+        " ptr_only=", ptr_only_count,
         " (skipped = admin override sẵn, không ghi đè)")
 end
 

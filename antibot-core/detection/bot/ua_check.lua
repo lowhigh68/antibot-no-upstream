@@ -64,6 +64,16 @@ local function get_good_bot_suffixes(bot_name)
     return nil
 end
 
+-- PTR-only verify: bot dùng rotating IP pool, forward A không match được
+-- IP gốc nên không thể dùng forward verification. Reverse DNS suffix match
+-- là đủ vì PTR delegation chỉ cho IP block owner.
+-- Lưu trong Redis: SET goodbot:ptr_only:<name> "1"
+local function is_ptr_only_bot(bot_name)
+    local key = "goodbot:ptr_only:" .. bot_name:lower()
+    local val = pool.safe_get(key)
+    return val == "1"
+end
+
 local function is_valid_suffix(ptr, suffixes)
     if not ptr or ptr == "" then return false end
     local ptr_lower = ptr:lower():gsub("%.+$", "")
@@ -157,6 +167,7 @@ function _M.run(ctx)
             ctx.good_bot_claimed  = true
             ctx.good_bot_name     = bot_name
             ctx.good_bot_suffixes = suffixes
+            ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
             ctx.bot_ua            = "good_bot_claimed"
             ctx.bot_score         = 0.0
             return true, false

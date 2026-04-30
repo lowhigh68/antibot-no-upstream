@@ -143,6 +143,18 @@ function _M.run(ctx)
                 "[dns_rev] bad suffix ip=", ip,
                 " ptr=", ptr,
                 " bot=", ctx.good_bot_name or "?")
+        elseif ctx.good_bot_ptr_only then
+            -- Bot dùng rotating IP pool (Meta family): PTR resolve về
+            -- *.fbsv.net OK nhưng forward A trả về IP khác trong pool
+            -- → forward verify fail oan → block crawler legit.
+            -- Per Meta docs: reverse DNS suffix match là đủ để verify.
+            -- Setting PTR cho 1 IP cần quyền sở hữu reverse zone (RIPE/ARIN
+            -- chỉ delegate cho chủ IP block) → attacker không spoof được.
+            ctx.good_bot_verified = true
+            ctx.bot_score         = 0.0
+            ngx.log(ngx.INFO,
+                "[dns_rev] VERIFIED ptr_only bot=", ctx.good_bot_name or "?",
+                " ip=", ip, " ptr=", ptr)
         end
     elseif err_type == "TIMEOUT" then
         ctx.dns_rev_timeout = true
