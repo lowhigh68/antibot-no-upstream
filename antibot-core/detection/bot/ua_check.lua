@@ -77,17 +77,44 @@ end
 --   SET goodbot:ptr_only:<name> "1"
 --   SET goodbot:asn:<name>      "<asn1>,<asn2>,..."
 local PTR_ONLY_BOTS = {
-    -- Meta family (AS32934 Facebook). Reverse DNS thường unset hoặc rotating.
-    ["facebookexternalhit"]    = { asns = { 32934 } },
-    ["facebot"]                = { asns = { 32934 } },
-    ["meta-externalagent"]     = { asns = { 32934 } },
-    ["meta-externalfetcher"]   = { asns = { 32934 } },
+    -- Meta family (AS32934 Facebook). Reverse DNS rotating hoặc NXDOMAIN.
+    -- ptr_only=true: skip forward DNS check (rotating pool fail forward A).
+    ["facebookexternalhit"]    = { ptr_only = true, asns = { 32934 } },
+    ["facebot"]                = { ptr_only = true, asns = { 32934 } },
+    ["meta-externalagent"]     = { ptr_only = true, asns = { 32934 } },
+    ["meta-externalfetcher"]   = { ptr_only = true, asns = { 32934 } },
+
+    -- Google family (AS15169 Google LLC). PTR+A symmetric tốt — không cần
+    -- ptr_only. ASN list để fallback nếu Google add IP block mới chưa setup
+    -- reverse DNS.
+    ["googlebot"]              = { asns = { 15169 } },
+    ["googlebot-image"]        = { asns = { 15169 } },
+    ["googlebot-video"]        = { asns = { 15169 } },
+    ["googlebot-news"]         = { asns = { 15169 } },
+    ["adsbot-google"]          = { asns = { 15169 } },
+    ["adsbot-google-mobile"]   = { asns = { 15169 } },
+    ["mediapartners-google"]   = { asns = { 15169 } },
+    ["googleother"]            = { asns = { 15169 } },
+    ["googleother-image"]      = { asns = { 15169 } },
+    ["googleother-video"]      = { asns = { 15169 } },
+    ["apis-google"]            = { asns = { 15169 } },
+    ["google-site-verifier"]   = { asns = { 15169 } },
+    ["google-agent"]           = { asns = { 15169 } },
+
+    -- Microsoft Bing (AS8075 MICROSOFT-CORP-MSN-AS-BLOCK).
+    ["bingbot"]                = { asns = { 8075 } },
+    ["bingpreview"]            = { asns = { 8075 } },
+
+    -- Apple (AS714, AS6185, AS2709 Apple Inc).
+    ["applebot"]               = { asns = { 714, 6185, 2709 } },
+    ["applebot-extended"]      = { asns = { 714, 6185, 2709 } },
 }
 
 local function is_ptr_only_bot(bot_name)
     if not bot_name or bot_name == "" then return false end
     local lname = bot_name:lower()
-    if PTR_ONLY_BOTS[lname] then return true end
+    local entry = PTR_ONLY_BOTS[lname]
+    if entry and entry.ptr_only then return true end
     local val = pool.safe_get("goodbot:ptr_only:" .. lname)
     return val == "1"
 end

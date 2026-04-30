@@ -4,12 +4,14 @@ local dns_rev   = require "antibot.detection.bot.dns_reverse"
 local dns_fwd   = require "antibot.detection.bot.dns_forward"
 local bot_score = require "antibot.detection.bot.bot_score"
 
--- ASN fallback verify: nhiều IP block của Meta crawler không setup reverse DNS
--- → dns_rev_valid=false → bị tag fake_good_bot. Owning ASN từ RIR cần pháp
--- nhân + delegation tương đương sở hữu IP block — equivalent trust với PTR.
--- Match (UA crawler claim, ASN owner thật) đủ verify khi không có PTR.
+-- ASN fallback verify: dùng khi PTR/A verification fail nhưng bot UA + ASN
+-- owner thật khớp với registry → tin được. Sở hữu ASN từ RIR (RIPE/ARIN/APNIC)
+-- yêu cầu pháp nhân + IP block delegation — attack difficulty tương đương
+-- spoof PTR.
+--
+-- Áp dụng cho mọi bot có ctx.good_bot_asns (không gated vào ptr_only).
+-- ptr_only chỉ điều khiển: có skip forward DNS hay không.
 local function asn_fallback_verify(ctx)
-    if not ctx.good_bot_ptr_only then return false end
     local expected = ctx.good_bot_asns
     if not expected or #expected == 0 then return false end
     local actual = ctx.asn and ctx.asn.asn_number
