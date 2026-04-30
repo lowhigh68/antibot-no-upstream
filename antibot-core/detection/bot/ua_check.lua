@@ -67,10 +67,22 @@ end
 -- PTR-only verify: bot dùng rotating IP pool, forward A không match được
 -- IP gốc nên không thể dùng forward verification. Reverse DNS suffix match
 -- là đủ vì PTR delegation chỉ cho IP block owner.
--- Lưu trong Redis: SET goodbot:ptr_only:<name> "1"
+--
+-- Hardcode well-known list để không phụ thuộc Redis seed state — worker khởi
+-- động là có ngay, không có race condition với goodbot_seed timer. Admin
+-- vẫn có thể thêm bot khác bằng SET goodbot:ptr_only:<name> "1".
+local PTR_ONLY_BOTS = {
+    ["facebookexternalhit"]    = true,
+    ["facebot"]                = true,
+    ["meta-externalagent"]     = true,
+    ["meta-externalfetcher"]   = true,
+}
+
 local function is_ptr_only_bot(bot_name)
-    local key = "goodbot:ptr_only:" .. bot_name:lower()
-    local val = pool.safe_get(key)
+    if not bot_name or bot_name == "" then return false end
+    local lname = bot_name:lower()
+    if PTR_ONLY_BOTS[lname] then return true end
+    local val = pool.safe_get("goodbot:ptr_only:" .. lname)
     return val == "1"
 end
 
@@ -170,6 +182,10 @@ function _M.run(ctx)
             ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
             ctx.bot_ua            = "good_bot_claimed"
             ctx.bot_score         = 0.0
+            ngx.log(ngx.INFO,
+                "[ua_check] good_bot_claimed name=", bot_name,
+                " ptr_only=", tostring(ctx.good_bot_ptr_only),
+                " ip=", ctx.ip or "?")
             return true, false
         end
 
