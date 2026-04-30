@@ -100,10 +100,21 @@ local PTR_ONLY_BOTS = {
     ["apis-google"]            = { asns = { 15169 } },
     ["google-site-verifier"]   = { asns = { 15169 } },
     ["google-agent"]           = { asns = { 15169 } },
+    ["storebot-google"]        = { asns = { 15169 } },
+    ["google-inspectiontool"]  = { asns = { 15169 } },
+    ["google-read-aloud"]      = { asns = { 15169 } },
+    ["google-extended"]        = { asns = { 15169 } },
+    ["google-cloudvertexbot"]  = { asns = { 15169 } },
+    ["duplexweb-google"]       = { asns = { 15169 } },
+    ["feedfetcher-google"]     = { asns = { 15169 } },
 
     -- Microsoft Bing (AS8075 MICROSOFT-CORP-MSN-AS-BLOCK).
     ["bingbot"]                = { asns = { 8075 } },
     ["bingpreview"]            = { asns = { 8075 } },
+    ["adidxbot"]               = { asns = { 8075 } },
+    ["msnbot"]                 = { asns = { 8075 } },
+    ["msnbot-media"]           = { asns = { 8075 } },
+    ["microsoftpreview"]       = { asns = { 8075 } },
 
     -- Apple (AS714, AS6185, AS2709 Apple Inc).
     ["applebot"]               = { asns = { 714, 6185, 2709 } },
@@ -214,6 +225,14 @@ function _M.run(ctx)
         -- (Meta documents meta-externalagent/1.1 lowercase). Pattern case-sensitive
         -- trên ua gốc bỏ sót các bot này → bot_name=nil → không lookup goodbot
         -- registry → bị chấm score như bot lạ → block oan.
+        -- Match against ua_lower cho các bot có UA luôn lowercase trong thực tế
+        -- (Meta documents meta-externalagent/1.1 lowercase). Pattern case-sensitive
+        -- trên ua gốc bỏ sót các bot này → bot_name=nil → không lookup goodbot
+        -- registry → bị chấm score như bot lạ → block oan.
+        --
+        -- Order: greedy bot/spider/crawler patterns trước (catch nhiều biến thể),
+        -- sau đó các pattern explicit cho UA không chứa từ khóa bot/spider/crawler
+        -- (Google-Read-Aloud, Google-Extended, Google-InspectionTool, MSNBot, …).
         local bot_name = ua:match("([%w%-]+[Bb]ot[%w%-]*)")
                       or ua:match("([%w%-]+[Ss]pider)")
                       or ua:match("([%w%-]+[Cc]rawler)")
@@ -221,11 +240,19 @@ function _M.run(ctx)
                       or ua_lower:match("(facebot)")
                       or ua_lower:match("(meta%-external%w+)")
                       or ua_lower:match("(mediapartners%-google)")
-                      or ua_lower:match("(bingpreview)")
+                      or ua_lower:match("(googleother%-image)")
+                      or ua_lower:match("(googleother%-video)")
                       or ua_lower:match("(googleother)")
+                      or ua_lower:match("(google%-inspectiontool)")
+                      or ua_lower:match("(google%-read%-aloud)")
+                      or ua_lower:match("(google%-extended)")
                       or ua_lower:match("(google%-agent)")
                       or ua_lower:match("(google%-site%-verifier)")
+                      or ua_lower:match("(duplexweb%-google)")
+                      or ua_lower:match("(feedfetcher%-google)")
                       or ua_lower:match("(apis%-google)")
+                      or ua_lower:match("(bingpreview)")
+                      or ua_lower:match("(microsoftpreview)")
         if bot_name then bot_name = bot_name:lower() end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)
