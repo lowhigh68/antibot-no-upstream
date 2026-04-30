@@ -133,17 +133,22 @@ function _M.run(ctx)
 
     -- Bot self-identification check
     if is_bot_self_identified(ua_lower) then
+        -- Match against ua_lower cho các bot có UA luôn lowercase trong thực tế
+        -- (Meta documents meta-externalagent/1.1 lowercase). Pattern case-sensitive
+        -- trên ua gốc bỏ sót các bot này → bot_name=nil → không lookup goodbot
+        -- registry → bị chấm score như bot lạ → block oan.
         local bot_name = ua:match("([%w%-]+[Bb]ot[%w%-]*)")
                       or ua:match("([%w%-]+[Ss]pider)")
                       or ua:match("([%w%-]+[Cc]rawler)")
-                      or ua:match("(facebookexternalhit)")
-                      or ua:match("(Meta%-External%w+)")
-                      or ua:match("(Mediapartners%-Google)")
-                      or ua:match("(BingPreview)")
-                      or ua:match("(GoogleOther)")
-                      or ua:match("(Google%-Agent)")
-                      or ua:match("(Google%-Site%-Verifier)")
-                      or ua:match("(APIs%-Google)")
+                      or ua_lower:match("(facebookexternalhit)")
+                      or ua_lower:match("(facebot)")
+                      or ua_lower:match("(meta%-external%w+)")
+                      or ua_lower:match("(mediapartners%-google)")
+                      or ua_lower:match("(bingpreview)")
+                      or ua_lower:match("(googleother)")
+                      or ua_lower:match("(google%-agent)")
+                      or ua_lower:match("(google%-site%-verifier)")
+                      or ua_lower:match("(apis%-google)")
         if bot_name then bot_name = bot_name:lower() end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)
