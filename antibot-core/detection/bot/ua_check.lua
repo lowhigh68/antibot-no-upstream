@@ -108,6 +108,10 @@ local PTR_ONLY_BOTS = {
     -- Apple (AS714, AS6185, AS2709 Apple Inc).
     ["applebot"]               = { asns = { 714, 6185, 2709 } },
     ["applebot-extended"]      = { asns = { 714, 6185, 2709 } },
+
+    -- CocCoc (AS135905 Coc Coc Company Limited - Vietnam search engine).
+    ["coccocbot-web"]          = { asns = { 135905 } },
+    ["coccocbot-image"]        = { asns = { 135905 } },
 }
 
 local function is_ptr_only_bot(bot_name)
