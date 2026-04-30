@@ -97,7 +97,8 @@ end
 
 function _M.run(ctx)
     if ctx.whitelisted == true then
-        ctx.action = "allow"
+        ctx.action        = "allow"
+        ctx.action_reason = ctx.action_reason or "whitelisted"
         return "allow"
     end
 

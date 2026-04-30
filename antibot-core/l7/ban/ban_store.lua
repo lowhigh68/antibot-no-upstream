@@ -77,6 +77,8 @@ function _M.run(ctx)
 
         pool.safe_set("ban:hit:" .. id, tostring(now), 300)
         ngx.log(ngx.INFO, "[ban_store] blocked id=", id:sub(1, 8), "...")
+        ctx.action        = "block"
+        ctx.action_reason = "banned_id"
         ngx.status = 403
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("Access denied.")

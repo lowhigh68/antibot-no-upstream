@@ -28,6 +28,24 @@ _M.CLASS_CONFIG = {
                              anomaly=true, behavior=true, session=true },
         is_static        = false,
     },
+    -- Auth/sensitive endpoints: wp-login, xmlrpc, admin-ajax, wp-json users.
+    -- Bruteforce target → multiplier cao hơn navigation để bắt sớm.
+    auth_endpoint = {
+        score_multiplier = 1.5,
+        rate_weight      = 1.5,
+        skip_layers      = {},
+        is_static        = false,
+    },
+    -- Feed / sitemap / robots: crawler legit (Googlebot, Bingbot, RSS readers)
+    -- hit thường xuyên → multiplier thấp tránh FP. Vẫn chạy threat layer
+    -- để chặn bot scraping content qua feed.
+    feed_or_meta = {
+        score_multiplier = 0.4,
+        rate_weight      = 0.3,
+        skip_layers      = { graph=true, cluster=true, browser=true,
+                             anomaly=true, behavior=true, session=true },
+        is_static        = false,
+    },
     -- In-app browser: Zalo, Facebook, Instagram, Line, TikTok, v.v.
     -- Người dùng thật mở link được share qua app chat.
     -- Đặc điểm: thiếu Sec-Fetch-* headers (WebView không gửi),
@@ -127,6 +145,18 @@ local function classify(ctx)
         return "resource"
     end
 
+    -- Feed / sitemap / robots — crawler-friendly endpoints, hit nhiều bởi
+    -- Googlebot/Bingbot/RSS readers. Đặt SỚM (trước branch resource ext
+    -- không match cho /feed/) để tránh rơi vào navigation mult 1.0 và bị
+    -- FP với crawler legit.
+    if uri == "/robots.txt" or
+       uri:find("^/feed/?$") or
+       uri:find("^/feed/") or
+       uri:find("^/sitemap[^/]*%.xml$") or
+       uri:find("^/sitemap%-") then
+        return "feed_or_meta"
+    end
+
     -- Resource: browser-declared sub-resource fetch
     if sec_fetch_dest == "image"  or
        sec_fetch_dest == "script" or
@@ -153,12 +183,16 @@ local function classify(ctx)
         return "interaction"
     end
 
-    -- WP sensitive paths: POST wp-login/xmlrpc luôn là navigation.
-    -- Bruteforce bot strip Sec-Fetch để bị phân vào api_callback (mult 0.5x)
-    -- → tránh bypass score. Path này không có case server-to-server legit cần mult 0.5.
+    -- Auth / sensitive endpoints: wp-login, xmlrpc, admin-ajax, wp-json users.
+    -- Bruteforce target → mult 1.5x để score vượt threshold sớm hơn.
+    -- Đặt TRƯỚC mọi branch POST khác để bot strip Sec-Fetch không bypass
+    -- vào api_callback (mult 0.5x).
     if method == "POST" and
-       (uri == "/wp-login.php" or uri == "/xmlrpc.php") then
-        return "navigation"
+       (uri == "/wp-login.php" or
+        uri == "/xmlrpc.php" or
+        uri:find("^/wp%-admin/admin%-ajax%.php") or
+        uri:find("^/wp%-json/wp/v2/users")) then
+        return "auth_endpoint"
     end
 
     -- Navigation: browser form POST with Sec-Fetch context

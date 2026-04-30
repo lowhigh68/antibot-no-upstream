@@ -36,7 +36,9 @@ function _M.run(ctx)
             return true, false
         end
 
-        ctx.banned = true
+        ctx.banned        = true
+        ctx.action        = "block"
+        ctx.action_reason = "banned_ip"
         pool.safe_set("ban:hit:" .. ip, tostring(ngx.time()), 300)
         ngx.log(ngx.INFO, "[ip_ban] blocked ip=", ip)
         ngx.status = 403
