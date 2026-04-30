@@ -64,18 +64,24 @@ local function get_good_bot_suffixes(bot_name)
     return nil
 end
 
--- PTR-only verify: bot dùng rotating IP pool, forward A không match được
--- IP gốc nên không thể dùng forward verification. Reverse DNS suffix match
--- là đủ vì PTR delegation chỉ cho IP block owner.
+-- PTR-only verify + ASN fallback: bot dùng rotating IP pool, forward A không
+-- match được IP gốc → không thể forward verify. Một số block IP còn không
+-- setup reverse DNS (NXDOMAIN) → cần fallback sang ASN check.
 --
--- Hardcode well-known list để không phụ thuộc Redis seed state — worker khởi
--- động là có ngay, không có race condition với goodbot_seed timer. Admin
--- vẫn có thể thêm bot khác bằng SET goodbot:ptr_only:<name> "1".
+-- Sở hữu ASN từ RIR (RIPE/ARIN/APNIC) yêu cầu pháp nhân + IP block delegation
+-- — attack vector tương đương việc spoof PTR. Match (UA crawler, ASN owner)
+-- đủ để verify identity bot.
+--
+-- Hardcode well-known infra để không phụ thuộc Redis seed state — worker khởi
+-- động là có ngay. Admin vẫn có thể thêm bot khác bằng:
+--   SET goodbot:ptr_only:<name> "1"
+--   SET goodbot:asn:<name>      "<asn1>,<asn2>,..."
 local PTR_ONLY_BOTS = {
-    ["facebookexternalhit"]    = true,
-    ["facebot"]                = true,
-    ["meta-externalagent"]     = true,
-    ["meta-externalfetcher"]   = true,
+    -- Meta family (AS32934 Facebook). Reverse DNS thường unset hoặc rotating.
+    ["facebookexternalhit"]    = { asns = { 32934 } },
+    ["facebot"]                = { asns = { 32934 } },
+    ["meta-externalagent"]     = { asns = { 32934 } },
+    ["meta-externalfetcher"]   = { asns = { 32934 } },
 }
 
 local function is_ptr_only_bot(bot_name)
@@ -84,6 +90,24 @@ local function is_ptr_only_bot(bot_name)
     if PTR_ONLY_BOTS[lname] then return true end
     local val = pool.safe_get("goodbot:ptr_only:" .. lname)
     return val == "1"
+end
+
+-- Trả về list ASN owner expected cho bot. Hardcoded > Redis override.
+local function get_bot_asns(bot_name)
+    if not bot_name or bot_name == "" then return nil end
+    local lname = bot_name:lower()
+    local entry = PTR_ONLY_BOTS[lname]
+    if entry and entry.asns then return entry.asns end
+    local val = pool.safe_get("goodbot:asn:" .. lname)
+    if val and val ~= "" then
+        local out = {}
+        for s in val:gmatch("[^,]+") do
+            local n = tonumber(s)
+            if n then out[#out+1] = n end
+        end
+        return #out > 0 and out or nil
+    end
+    return nil
 end
 
 local function is_valid_suffix(ptr, suffixes)
@@ -180,11 +204,13 @@ function _M.run(ctx)
             ctx.good_bot_name     = bot_name
             ctx.good_bot_suffixes = suffixes
             ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
+            ctx.good_bot_asns     = get_bot_asns(bot_name)
             ctx.bot_ua            = "good_bot_claimed"
             ctx.bot_score         = 0.0
             ngx.log(ngx.INFO,
                 "[ua_check] good_bot_claimed name=", bot_name,
                 " ptr_only=", tostring(ctx.good_bot_ptr_only),
+                " asn_fallback=", ctx.good_bot_asns and #ctx.good_bot_asns or 0,
                 " ip=", ctx.ip or "?")
             return true, false
         end
