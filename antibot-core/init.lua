@@ -122,13 +122,23 @@ function _M.init_worker()
     -- Seed default good-bot DNS registry vào Redis (worker 0 only).
     -- core/data/goodbot.json đi cùng repo → git pull sync list.
     -- Admin override qua redis-cli SET không bị ghi đè.
+    --
+    -- PHẢI defer qua ngx.timer.at vì cosocket (Redis network) bị DISABLE
+    -- trong init_worker_by_lua* context. Timer 0s = chạy ngay sau init_worker
+    -- trong context cho phép cosocket.
     if ngx.worker.id() == 0 then
-        local ok, seed = pcall(require, "antibot.core.goodbot_seed")
-        if ok and seed and seed.run then
-            local ok2, err = pcall(seed.run)
-            if not ok2 then
-                ngx.log(ngx.ERR, "[init_worker] goodbot_seed error: ", tostring(err))
+        local ok, err = ngx.timer.at(0, function(premature)
+            if premature then return end
+            local ok2, seed = pcall(require, "antibot.core.goodbot_seed")
+            if ok2 and seed and seed.run then
+                local ok3, serr = pcall(seed.run)
+                if not ok3 then
+                    ngx.log(ngx.ERR, "[goodbot_seed] run error: ", tostring(serr))
+                end
             end
+        end)
+        if not ok then
+            ngx.log(ngx.ERR, "[init_worker] timer.at failed: ", tostring(err))
         end
     end
 end
