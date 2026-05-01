@@ -9,6 +9,7 @@ local fingerprint_layer  = require "antibot.core.fingerprint"
 local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local detection_layer    = require "antibot.detection"
+local bot_lite_verify    = require "antibot.detection.bot.lite_verify"
 local intelligence_layer = require "antibot.intelligence"
 local enforcement_layer  = require "antibot.enforcement"
 local risk_update        = require "antibot.async.risk_update"
@@ -41,6 +42,11 @@ local STEPS_INTERACTION = {
 }
 
 local STEPS_RESOURCE = {
+    -- Lite bot verify TRƯỚC intelligence: chạy ua_check + asn lookup +
+    -- ASN match (cached, rẻ). Set good_bot_verified=true cho Googlebot/Bingbot
+    -- fetch image → engine bypass scoring → không bị kill_block FP. Skip
+    -- DNS reverse (đắt) — ASN match đủ tin vì RIR delegation chỉ cho IP owner.
+    { layer = bot_lite_verify,    fn = "run" },
     { layer = intelligence_layer, fn = "run" },
     { layer = enforcement_layer,  fn = "run" },
 }
