@@ -46,7 +46,11 @@ function _M.run(ctx)
             ctx.good_bot_verified = true
             ctx.bot_score         = 0.0
             ctx.bot_ua            = "good_bot_asn_verified"
-            ngx.log(ngx.INFO,
+            -- Distinct reason để antibot.log grep được — engine.run sẽ giữ
+            -- nguyên (đã sửa thành action_reason or "good_bot_verified").
+            ctx.action_reason     = "good_bot_asn_lite"
+            -- WARN để xuất hiện trong default error log (INFO bị filter).
+            ngx.log(ngx.WARN,
                 "[bot_lite] VERIFIED bot=", ctx.good_bot_name or "?",
                 " ip=", ctx.ip or "?", " asn=AS", actual,
                 " uri=", ngx.var.uri or "?")
@@ -58,7 +62,7 @@ function _M.run(ctx)
     -- Đây là fake_good_bot (UA spoof). Bot_score sẽ được set qua scoring
     -- bình thường. KHÔNG set good_bot_verified=true ở đây — kill_block
     -- sẽ catch attempt scrape giả Googlebot từ datacenter vô danh.
-    ngx.log(ngx.INFO,
+    ngx.log(ngx.WARN,
         "[bot_lite] asn_mismatch bot=", ctx.good_bot_name or "?",
         " ip=", ctx.ip or "?", " actual=AS", actual,
         " expected=AS", table.concat(expected, ",AS"))

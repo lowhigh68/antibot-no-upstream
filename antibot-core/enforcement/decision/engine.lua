@@ -107,7 +107,9 @@ function _M.run(ctx)
     -- JA3/H2/entropy signals chắc chắn fire cho mọi bot thật → bypass scoring.
     if ctx.good_bot_verified == true then
         ctx.action        = "allow"
-        ctx.action_reason = "good_bot_verified"
+        -- Giữ reason riêng nếu đã set (vd "good_bot_asn_lite" từ
+        -- lite_verify) để antibot.log distinguish path verification.
+        ctx.action_reason = ctx.action_reason or "good_bot_verified"
         return "allow"
     end
 
