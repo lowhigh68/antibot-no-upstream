@@ -91,7 +91,9 @@ function _M.run(ctx)
         local current = tonumber(red:get("risk:" .. id)) or 0.0
         local new_risk
 
-        if action == "allow" or action == "monitor" then
+        -- "throttled" = verified good bot bị rate-limit hợp pháp trên expensive
+        -- URL. KHÔNG phải adversarial → treat như allow/monitor (apply decay).
+        if action == "allow" or action == "monitor" or action == "throttled" then
             -- Verified users decay faster: reconnecting with a valid session
             -- after network disruption should clear accumulated risk quickly.
             local decay = verified and VERIFIED_DECAY or DECAY_FACTOR
@@ -117,9 +119,11 @@ function _M.run(ctx)
             local ip_cur = tonumber(red:get("ip_risk:" .. ip)) or 0.0
             local ip_new
 
-            if action == "allow" or action == "monitor" then
+            if action == "allow" or action == "monitor" or action == "throttled" then
                 -- Verified users: fast decay clears network-instability
                 -- false positives after successful reconnect.
+                -- "throttled" = good bot rate-limited on expensive URL,
+                -- KHÔNG penalty ip_risk vì identity đã verify legit.
                 local decay = verified and VERIFIED_DECAY or IP_RISK_DECAY
                 ip_new = ip_cur * decay
             elseif should_raise_ip_risk(ctx, action, class) then

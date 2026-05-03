@@ -82,4 +82,17 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 
 ## Update log
 - `72f0415` (2026-05-03) — no direct changes. l7 Phase 1 mitigations indirectly lower `ctx.slow`, `ctx.burst` for unstable network users → `ctx.score` lower → action more lenient → fewer false challenges/blocks
-- 2026-05-04 — `engine.lua` good_bot_throttle: verified bots hitting expensive URLs (filter facets, min/max_price, orderby) get rate-limited at 8/min/bot_name with `429 Retry-After: 120`. Reason `good_bot_throttled`. Protects backend from Bingbot/Meta combinatorial filter flood without "blocking" the bot. New constants `GOOD_BOT_FILTER_RPM=8`, `GOOD_BOT_THROTTLE_RETRY=120`. Redis key `gb_throttle:<bot_name>:<minute>` TTL 65s
+- 2026-05-04 (v1) — `engine.lua` good_bot_throttle initial: verified bots hitting hardcoded patterns (filter_/min_price/max_price/orderby) get rate-limited at 8/min/bot_name with `429 Retry-After: 120`. Reason `good_bot_throttled`
+- 2026-05-04 (v2) — `engine.lua` good_bot_throttle REWRITE to **hybrid scoring** (general, no hardcoded names):
+  - **HARD**: `qs_len ≥ 200` OR `params ≥ 8` → trigger immediately (count toward RPM)
+  - **SOFT**: weighted sum of 4 sub-signals ≥ `0.7` → compound subtle expensive
+    - qs_len graduated 0.15/0.35/0.50 at 40/80/120 chars
+    - param_count graduated 0.20/0.40 at 3/5 params
+    - comma density graduated 0.10/0.25/0.40 at 1/2/4 commas (raw `,` + `%2C`)
+    - search_term 0.15 if `+` or `%20` present (lenient — single Việt search pass)
+  - **RPM**: `gb_throttle:<bot>:<minute>` TTL 65s; throttle khi count > 8
+  - Catches WooCommerce filter, WP search, sort, faceted nav cross-site without naming params
+  - Vietnamese URL handled natively (UTF-8 bytes inflate qs_len)
+  - Logs include `trigger` (hard_qs_len|hard_param_count|soft_score) + `score` for tuning
+  - Sets `ctx.expensive_score`, `ctx.expensive_trigger` even when allowed (debugging)
+  - Pair with `async/risk_update.lua` skip when `action="throttled"` (no ip_rep penalty for legit verified bot)

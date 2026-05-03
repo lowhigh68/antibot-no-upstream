@@ -53,3 +53,4 @@ log_by_lua_block { antibot.log() }
 
 ## Update log
 - `72f0415` (2026-05-03) — no changes
+- 2026-05-04 — `risk_update.lua`: treat `action="throttled"` like `allow`/`monitor` for both identity_risk and ip_risk decay paths. Verified good bot bị rate-limit hợp pháp KHÔNG bị penalty rep — bot identity đã verify qua DNS/ASN, throttle chỉ là backend protection

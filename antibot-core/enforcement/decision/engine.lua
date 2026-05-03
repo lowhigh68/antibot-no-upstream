@@ -2,49 +2,159 @@ local _M = {}
 local cfg  = require "antibot.core.config"
 local pool = require "antibot.core.redis_pool"
 
--- Good-bot throttle on expensive URLs (filter facets, price ranges, deep
--- pagination) — combinatorial URLs flood backend even though bot is verified.
--- Strategy: 429 + Retry-After. Bot SDK respect, không bị flag là blocked,
--- không escalate viol, bot quay lại sau cooldown → backend không bị PHP
--- queue overload.
-local GOOD_BOT_FILTER_RPM = 8       -- max expensive request / phút / bot_name
-local GOOD_BOT_THROTTLE_RETRY = 120 -- Retry-After seconds
+-- ============================================================
+-- Good-bot expensive-request throttle (Hybrid scoring)
+-- ============================================================
+-- Verified bots (Bingbot/Meta/Googlebot/...) hammer expensive query
+-- patterns: WooCommerce filter facets, search forms, faceted nav,
+-- deep pagination. Combinatorial → uncacheable → backend overload.
+--
+-- Strategy 3 layers:
+--   1. HARD threshold (qs_len ≥ 200 OR params ≥ 8) → undeniable
+--      abuse. Counts toward RPM immediately.
+--   2. SOFT scoring (weighted sum of 4 sub-signals) ≥ 0.7 → compound
+--      subtle expensive cases. Also counts toward RPM.
+--   3. RPM gate (8 expensive request / minute / bot_name): chỉ thực
+--      sự throttle khi đã vượt budget. Request expensive đầu phút
+--      vẫn pass — bot có headroom crawl normally.
+--
+-- Action: "throttled" (action mới, không trùng block/challenge/monitor).
+-- Status 429 + Retry-After 120s. Bot SDK respect → backoff → quay lại.
+-- Không escalate viol, không penalty SEO ranking.
+--
+-- Sub-signal contributions sum max ≈ 1.45, dư đệm cho borderline cases.
+-- All thresholds in-code constants — git history tracks tuning.
+--
+-- Vietnamese URL handled natively: UTF-8 encoding inflates qs_len bytes,
+-- không cần locale-aware logic. Single Vietnamese search vẫn pass; chỉ
+-- combo (search + filter + page) mới đủ score.
 
-local function is_expensive_url(uri)
-    if not uri or uri == "" then return false end
-    return uri:find("filter_", 1, true) ~= nil
-        or uri:find("min_price=", 1, true) ~= nil
-        or uri:find("max_price=", 1, true) ~= nil
-        or uri:find("orderby=", 1, true) ~= nil
+-- HARD thresholds — single signal đủ kết luận expensive
+local HARD_QS_LEN          = 200
+local HARD_PARAM_COUNT     = 8
+
+-- SOFT scoring threshold
+local SOFT_SCORE_THRESHOLD = 0.7
+
+-- RPM gate
+local GOOD_BOT_RPM         = 8
+local GOOD_BOT_RETRY_AFTER = 120
+
+-- Sub-signal contributions (graduated, none alone is sufficient)
+local CONTRIB_QS_LEN_120 = 0.50
+local CONTRIB_QS_LEN_80  = 0.35
+local CONTRIB_QS_LEN_40  = 0.15
+local CONTRIB_PARAM_5    = 0.40
+local CONTRIB_PARAM_3    = 0.20
+local CONTRIB_COMMA_4    = 0.40
+local CONTRIB_COMMA_2    = 0.25
+local CONTRIB_COMMA_1    = 0.10
+local CONTRIB_SEARCH     = 0.15
+
+local function expensive_score(qs)
+    local s = 0.0
+
+    -- 1. Query string length (graduated)
+    local len = #qs
+    if     len >= 120 then s = s + CONTRIB_QS_LEN_120
+    elseif len >= 80  then s = s + CONTRIB_QS_LEN_80
+    elseif len >= 40  then s = s + CONTRIB_QS_LEN_40
+    end
+
+    -- 2. Parameter count (graduated)
+    local pc = 1
+    for _ in qs:gmatch("&") do pc = pc + 1 end
+    if     pc >= 5 then s = s + CONTRIB_PARAM_5
+    elseif pc >= 3 then s = s + CONTRIB_PARAM_3
+    end
+
+    -- 3. Comma density (multi-value combinatorial — both raw `,` and `%2C`)
+    local commas = 0
+    for _ in qs:gmatch(",")        do commas = commas + 1 end
+    for _ in qs:gmatch("%%2[Cc]")  do commas = commas + 1 end
+    if     commas >= 4 then s = s + CONTRIB_COMMA_4
+    elseif commas >= 2 then s = s + CONTRIB_COMMA_2
+    elseif commas >= 1 then s = s + CONTRIB_COMMA_1
+    end
+
+    -- 4. Search-term hint (lenient — single short Vietnamese search vẫn pass)
+    if qs:find("+", 1, true) or qs:find("%20", 1, true) then
+        s = s + CONTRIB_SEARCH
+    end
+
+    return s
+end
+
+local function classify_request(qs)
+    -- HARD short-circuit: undeniable abuse
+    if #qs >= HARD_QS_LEN then
+        return true, "hard_qs_len", 1.0
+    end
+    local pc = 1
+    for _ in qs:gmatch("&") do pc = pc + 1 end
+    if pc >= HARD_PARAM_COUNT then
+        return true, "hard_param_count", 1.0
+    end
+
+    -- SOFT scoring
+    local s = expensive_score(qs)
+    if s >= SOFT_SCORE_THRESHOLD then
+        return true, "soft_score", s
+    end
+    return false, nil, s
 end
 
 local function throttle_good_bot(ctx)
-    local uri = ctx.req and ctx.req.uri or ""
-    if not is_expensive_url(uri) then return false end
+    local req = ctx.req or {}
 
+    -- Chỉ GET mới throttle (POST thường có CSRF/nonce protection)
+    if (req.method or "GET") ~= "GET" then return false end
+
+    local uri = req.uri or ""
+    local qmark = uri:find("?", 1, true)
+    if not qmark then return false end
+    local qs = uri:sub(qmark + 1)
+    if qs == "" then return false end
+
+    local expensive, trigger, score = classify_request(qs)
+    if not expensive then return false end
+
+    -- RPM gate per bot_name + minute window
     local bot = ctx.good_bot_name or "unknown"
     local minute = math.floor(ngx.time() / 60)
     local key = "gb_throttle:" .. bot .. ":" .. minute
     local count = pool.safe_incr(key, 65) or 0   -- 65s TTL > 60s window
 
-    if count > GOOD_BOT_FILTER_RPM then
-        ctx.action        = "throttled"
-        ctx.action_reason = "good_bot_throttled"
-        ngx.log(ngx.WARN,
-            "[engine] good_bot throttled bot=", bot,
-            " count=", count, "/min",
-            " uri=", uri:sub(1, 80),
-            " ip=", ctx.ip or "?")
-        ngx.status = 429
-        ngx.header["Retry-After"]  = tostring(GOOD_BOT_THROTTLE_RETRY)
-        ngx.header["Cache-Control"] = "no-cache"
-        ngx.header["Content-Type"]  = "text/plain"
-        ngx.say("Rate limited — please retry after ",
-                GOOD_BOT_THROTTLE_RETRY, "s")
-        ngx.exit(429)
-        return true
+    -- Trong budget — allow nhưng đã tính cho RPM. Bot vẫn được fetch
+    -- vài expensive URL đầu phút normal speed.
+    if count <= GOOD_BOT_RPM then
+        ctx.expensive_score   = score
+        ctx.expensive_trigger = trigger
+        return false
     end
-    return false
+
+    -- Vượt budget → 429
+    ctx.action        = "throttled"
+    ctx.action_reason = "good_bot_throttled"
+    ctx.expensive_score   = score
+    ctx.expensive_trigger = trigger
+
+    ngx.log(ngx.WARN,
+        "[engine] good_bot throttled bot=", bot,
+        " trigger=", trigger,
+        " score=", string.format("%.2f", score),
+        " count=", count, "/min",
+        " uri=", uri:sub(1, 80),
+        " ip=", ctx.ip or "?")
+
+    ngx.status = 429
+    ngx.header["Retry-After"]   = tostring(GOOD_BOT_RETRY_AFTER)
+    ngx.header["Cache-Control"] = "no-cache"
+    ngx.header["Content-Type"]  = "text/plain"
+    ngx.say("Rate limited — please retry after ",
+            GOOD_BOT_RETRY_AFTER, "s")
+    ngx.exit(429)
+    return true
 end
 
 local T = {
