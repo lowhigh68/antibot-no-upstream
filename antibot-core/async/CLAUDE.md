@@ -54,3 +54,4 @@ log_by_lua_block { antibot.log() }
 ## Update log
 - `72f0415` (2026-05-03) — no changes
 - 2026-05-04 — `risk_update.lua`: treat `action="throttled"` like `allow`/`monitor` for both identity_risk and ip_risk decay paths. Verified good bot bị rate-limit hợp pháp KHÔNG bị penalty rep — bot identity đã verify qua DNS/ASN, throttle chỉ là backend protection
+- 2026-05-04 — `logger.lua`: append ` trigger=<hard_qs_len|hard_param_count|soft_score> exp_score=<0..1.45>` ở cuối log line **CHỈ** khi `action=throttled`. Field empty cho mọi action khác → không bloat antibot.log cho normal traffic. Cho phép `grep good_bot_throttled antibot.log | grep -oP 'trigger=\w+' \| sort \| uniq -c` work direct (trước phải đọc nginx error log)

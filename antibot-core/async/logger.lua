@@ -152,12 +152,23 @@ function _M.run(ctx)
     -- Nếu UA chứa space/= sẽ vỡ format parser → thay bằng _.
     local ua_log = (ctx.ua or "-"):sub(1, 120):gsub("[%s\"]", "_")
 
+    -- Throttle decision details — chỉ append cho action=throttled để tránh
+    -- bloat log line cho các request bình thường. trigger ∈ {hard_qs_len,
+    -- hard_param_count, soft_score}; exp_score là weighted sum 0..1.45.
+    local throttle_str = ""
+    if ctx.action == "throttled" then
+        throttle_str = string.format(
+            " trigger=%s exp_score=%.2f",
+            tostring(ctx.expensive_trigger or "-"),
+            ctx.expensive_score or 0)
+    end
+
     -- Build structured log line — all fields on one line, space-separated key=value
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s" ..
-        " top=%s reason=%s",
+        " top=%s reason=%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -174,7 +185,8 @@ function _M.run(ctx)
         tostring(ctx.score_multiplier or 1.0),
         tostring(ctx.action or "-"),
         top_str,
-        tostring(ctx.action_reason or "-")
+        tostring(ctx.action_reason or "-"),
+        throttle_str
     )
 
     write_log_line(line)
