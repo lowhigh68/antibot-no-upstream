@@ -4,6 +4,12 @@ local cfg  = require "antibot.core.config"
 
 local ESCALATE_RATE_LIMIT = 60   -- 1 viol incr / 60s tối đa per identity
 
+-- Grace period sau lần ban đầu tiên: user mất mạng / mất internet vài phút,
+-- F5 retry → 403 → nếu escalate ngay sẽ thành permanent ban oan. Đợi 5 phút
+-- mới escalate — bot persistent vẫn vượt threshold này, user thường giải
+-- quyết network rồi quay lại sau ban TTL.
+local BAN_ESCALATE_GRACE = 300
+
 local function ua_claims_good_bot(ua)
     if not ua or ua == "" then return false end
     local ul = ua:lower()
@@ -58,6 +64,24 @@ function _M.run(ctx)
         local last_hit = pool.safe_get("ban:hit:" .. id)
         local should_escalate = (not last_hit) or
                                 (now - (tonumber(last_hit) or 0) > ESCALATE_RATE_LIMIT)
+
+        -- Grace period: chỉ escalate sau khi ban đã active >= BAN_ESCALATE_GRACE.
+        -- User mất mạng F5 retry trong 5 phút đầu KHÔNG bị tăng TTL ban.
+        -- Bot persistent ≥ 5 phút vẫn bị escalate bình thường.
+        local ban_age_key = "ban:age:" .. id
+        local ban_age_str = pool.safe_get(ban_age_key)
+        if not ban_age_str then
+            pool.safe_set(ban_age_key, tostring(now), 86400)
+            should_escalate = false
+        else
+            local age = now - (tonumber(ban_age_str) or now)
+            if age < BAN_ESCALATE_GRACE then
+                should_escalate = false
+                ngx.log(ngx.DEBUG,
+                    "[ban_store] escalate_grace id=", id:sub(1, 8),
+                    " ban_age=", age, "s")
+            end
+        end
 
         if should_escalate then
             local new_viol = pool.safe_incr("viol:" .. id, cfg.ttl.violation) or 1

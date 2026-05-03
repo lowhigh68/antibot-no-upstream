@@ -17,6 +17,34 @@ local function ensure_identity(ctx)
     return id
 end
 
+-- Retry detection: cùng URI từ cùng identity trong < RETRY_WINDOW giây
+-- → likely browser retry vì packet loss / TCP reset, không phải attack.
+-- Discount weight 70% để rate counter không bùng do mạng yếu.
+-- Bot scan đa URI vẫn full weight vì URI khác hash khác.
+local RETRY_WINDOW = 3
+local RETRY_TTL    = 5
+local RETRY_DISCOUNT = 0.3
+
+local function maybe_discount_for_retry(ctx, weight)
+    local id = ctx.identity or ctx.ip
+    local uri = ctx.req and ctx.req.uri or "/"
+    if not id or id == "" then return weight end
+
+    local key = "retry:" .. id .. ":" .. ngx.md5(uri):sub(1, 8)
+    local last = pool.safe_get(key)
+    local now  = ngx.time()
+    pool.safe_set(key, tostring(now), RETRY_TTL)
+
+    if last and (now - (tonumber(last) or 0)) < RETRY_WINDOW then
+        ctx.is_retry = true
+        ngx.log(ngx.DEBUG,
+            "[counter] retry_discount uri=", uri:sub(1, 40),
+            " id=", id:sub(1, 8))
+        return weight * RETRY_DISCOUNT
+    end
+    return weight
+end
+
 function _M.run(ctx)
     if ctx.skip_rate then
         ctx.rate    = 0
@@ -28,6 +56,8 @@ function _M.run(ctx)
     local weight = ctx.rate_weight or 1.0
     local ip     = ctx.ip or "?"
     local id     = ensure_identity(ctx)
+
+    weight = maybe_discount_for_retry(ctx, weight)
 
     local red, err = pool.get()
     if not red then
