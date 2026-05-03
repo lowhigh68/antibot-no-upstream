@@ -82,3 +82,4 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 
 ## Update log
 - `72f0415` (2026-05-03) — no direct changes. l7 Phase 1 mitigations indirectly lower `ctx.slow`, `ctx.burst` for unstable network users → `ctx.score` lower → action more lenient → fewer false challenges/blocks
+- 2026-05-04 — `engine.lua` good_bot_throttle: verified bots hitting expensive URLs (filter facets, min/max_price, orderby) get rate-limited at 8/min/bot_name with `429 Retry-After: 120`. Reason `good_bot_throttled`. Protects backend from Bingbot/Meta combinatorial filter flood without "blocking" the bot. New constants `GOOD_BOT_FILTER_RPM=8`, `GOOD_BOT_THROTTLE_RETRY=120`. Redis key `gb_throttle:<bot_name>:<minute>` TTL 65s

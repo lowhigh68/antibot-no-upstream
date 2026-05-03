@@ -2,6 +2,51 @@ local _M = {}
 local cfg  = require "antibot.core.config"
 local pool = require "antibot.core.redis_pool"
 
+-- Good-bot throttle on expensive URLs (filter facets, price ranges, deep
+-- pagination) — combinatorial URLs flood backend even though bot is verified.
+-- Strategy: 429 + Retry-After. Bot SDK respect, không bị flag là blocked,
+-- không escalate viol, bot quay lại sau cooldown → backend không bị PHP
+-- queue overload.
+local GOOD_BOT_FILTER_RPM = 8       -- max expensive request / phút / bot_name
+local GOOD_BOT_THROTTLE_RETRY = 120 -- Retry-After seconds
+
+local function is_expensive_url(uri)
+    if not uri or uri == "" then return false end
+    return uri:find("filter_", 1, true) ~= nil
+        or uri:find("min_price=", 1, true) ~= nil
+        or uri:find("max_price=", 1, true) ~= nil
+        or uri:find("orderby=", 1, true) ~= nil
+end
+
+local function throttle_good_bot(ctx)
+    local uri = ctx.req and ctx.req.uri or ""
+    if not is_expensive_url(uri) then return false end
+
+    local bot = ctx.good_bot_name or "unknown"
+    local minute = math.floor(ngx.time() / 60)
+    local key = "gb_throttle:" .. bot .. ":" .. minute
+    local count = pool.safe_incr(key, 65) or 0   -- 65s TTL > 60s window
+
+    if count > GOOD_BOT_FILTER_RPM then
+        ctx.action        = "throttled"
+        ctx.action_reason = "good_bot_throttled"
+        ngx.log(ngx.WARN,
+            "[engine] good_bot throttled bot=", bot,
+            " count=", count, "/min",
+            " uri=", uri:sub(1, 80),
+            " ip=", ctx.ip or "?")
+        ngx.status = 429
+        ngx.header["Retry-After"]  = tostring(GOOD_BOT_THROTTLE_RETRY)
+        ngx.header["Cache-Control"] = "no-cache"
+        ngx.header["Content-Type"]  = "text/plain"
+        ngx.say("Rate limited — please retry after ",
+                GOOD_BOT_THROTTLE_RETRY, "s")
+        ngx.exit(429)
+        return true
+    end
+    return false
+end
+
 local T = {
     MONITOR   = 25,
     CHALLENGE = 55,
@@ -106,6 +151,12 @@ function _M.run(ctx)
     -- reverse PTR + forward A/AAAA đã match — không thể forge.
     -- JA3/H2/entropy signals chắc chắn fire cho mọi bot thật → bypass scoring.
     if ctx.good_bot_verified == true then
+        -- Throttle expensive URLs (filter facets, price ranges) BEFORE allow.
+        -- Bot SDK respect 429+Retry-After, không bị flag blocked, backend
+        -- không bị flood combinatorial WP_Query.
+        if throttle_good_bot(ctx) then
+            return "throttled"
+        end
         ctx.action        = "allow"
         -- Giữ reason riêng nếu đã set (vd "good_bot_asn_lite" từ
         -- lite_verify) để antibot.log distinguish path verification.

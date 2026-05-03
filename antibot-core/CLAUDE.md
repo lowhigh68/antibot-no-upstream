@@ -72,6 +72,7 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-04 — `enforcement/decision/engine.lua` good_bot_throttle: rate-limit verified Bingbot/Meta on filter URLs (`filter_*=`, `min/max_price=`, `orderby=`) at 8/min/bot_name → 429 Retry-After 120. Backend protected from combinatorial WP_Query flood without blocking SEO crawlers. Reason `good_bot_throttled`. Pair with robots.txt `Disallow: /*?filter_` for primary defense.
 - `72f0415` (2026-05-03) — l7 Phase 1 client-network FP fixes:
   - slow_detect device-aware threshold (mobile×2.5, trusted×1.5)
   - rate counter retry-aware (0.3× weight for same URI within 3s)
