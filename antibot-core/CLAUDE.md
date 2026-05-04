@@ -72,6 +72,7 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-04 — `detection/distributed_swarm.lua` class-aware thresholds (Option C): navigation `25/45`, auth_endpoint `8/15`, feed_or_meta `45/90`, api_callback `12/25`, interaction `20/35`, inapp_browser `20/35`, unknown `15/30` (legacy). Weight `swarm_attack = 120` GIỮ NGUYÊN. Fix VN flash crowd FP (popular product page 30 /24 cùng UA Chrome bị block oan). Compute.lua scoring math không thay đổi — sensitivity adjusted at signal SOURCE per req_class.
 - 2026-05-04 (v2) — `engine.lua` good_bot_throttle REWRITE to **hybrid scoring** (general, no hardcoded names):
   - HARD: `qs_len ≥ 200` OR `params ≥ 8` → throttle
   - SOFT: weighted sum (qs_len + params + comma + search) ≥ 0.7 → throttle

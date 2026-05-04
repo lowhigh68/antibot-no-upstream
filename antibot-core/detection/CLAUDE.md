@@ -72,3 +72,11 @@ For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_
 
 ## Update log
 - `72f0415` (2026-05-03) — no changes here, Phase 1 only touched l7/
+- 2026-05-04 — `distributed_swarm.lua` class-aware thresholds (Option C):
+  - navigation `25/45` (relax — VN popular product flash crowd OK)
+  - auth_endpoint `8/15` (tighten — credential stuffing protection)
+  - api_callback `12/25`, feed_or_meta `45/90`, interaction `20/35`
+  - inapp_browser `20/35`, unknown `15/30` (legacy default)
+  - Weight `swarm_attack = 120` GIỮ NGUYÊN — không thay đổi scoring math
+  - Logs include `class=` + threshold values for tuning per-class
+  - Fix: VN e-commerce popular product page bị block khi 30 /24 cùng UA Chrome browse simultaneously (organic flash crowd ≠ swarm bot)

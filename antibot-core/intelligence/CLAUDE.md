@@ -65,3 +65,4 @@ enforcement.engine.run    → compute effective_score, decide action
 
 ## Update log
 - `72f0415` (2026-05-03) — no changes here. l7 mitigations may indirectly lower input signal values (ctx.slow, ctx.burst) for legit users, reducing computed score for FP cases
+- 2026-05-04 — no direct change here. `swarm_attack` weight=120 stays. Logic moved into `detection/distributed_swarm.lua` per-class threshold lookup. Sensitivity adjusted at SOURCE (signal value range) not at WEIGHT (multiplier) — preserves contribution ranking in `top_signals`
