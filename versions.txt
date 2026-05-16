@@ -1,0 +1,99 @@
+# Antibot — Versions / Change Log
+# Format: Keep a Changelog (https://keepachangelog.com) + SemVer 2.0
+# Timezone: Asia/Ho_Chi_Minh (UTC+07:00)
+# Entries newest-first.
+
+================================================================================
+
+## [4.3.6] — 2026-05-16 10:45:18 +07:00
+
+### Added
+- async/logger.lua — Beacon coverage telemetry (Step 0 baseline metric).
+  - New log field `beacon=1|0|skip` appended to each line in `/var/log/antibot/antibot.log`.
+    * `1`    = HTML-eligible request AND beacon data available in Redis (canvas/webgl signal analyzable).
+    * `0`    = HTML-eligible request BUT beacon not yet collected (first visit / JS blocked / CSP fail).
+    * `skip` = non-HTML class (resource/api/auth) — beacon not applicable.
+  - New Redis daily counters (TTL 7d):
+    * `stat:<host>:beacon_elig:<YYYYMMDD>` — count of HTML-eligible requests
+    * `stat:<host>:beacon_got:<YYYYMMDD>`  — count of those with beacon data available
+  - Coverage = `beacon_got / beacon_elig` per host per day.
+
+### Rationale
+Prerequisite for upcoming canvas.lua / webgl.lua signal implementation. Without coverage
+baseline, weight tuning for the new signals would be guesswork. Coverage below 30% means
+the JS inject path itself is broken upstream and new signals would be ineffective for
+majority of requests.
+
+### Risk
+- Zero functional impact on request decisioning (telemetry-only).
+- Negligible perf: +2 Redis INCR per HTML-eligible request (already inside existing
+  `write_stats` pipeline → no new round trip).
+- Log line +12 bytes on average.
+
+### Files changed
+- antibot-core/async/logger.lua
+  * write_stats() signature: added `beacon_got` parameter
+  * write_stats() body: added 2 Redis counters block
+  * run() body: added `beacon_state` computation for log line
+  * run() body: added `beacon=%s` field in log format string + arg list
+  * run() body: pass `beacon_got` to write_stats via timer.at
+
+### Deployment
+1. Copy file to /usr/local/openresty/nginx/conf/antibot/async/logger.lua
+2. /usr/local/openresty/nginx/sbin/nginx -t && /usr/local/openresty/nginx/sbin/nginx -s reload
+3. Wait 24-48h for traffic accumulation
+4. Read coverage via:
+   - Log:   awk '/beacon=[01]/ { if (match($0,/beacon=1/)) g++; else m++ } END { print g, m, g*100/(g+m) }' /var/log/antibot/antibot.log
+   - Redis: redis-cli GET stat:<host>:beacon_elig:<YYYYMMDD> ; GET stat:<host>:beacon_got:<YYYYMMDD>
+
+### Next planned (not in this version)
+- canvas.lua implementation — analyze ctx.browser.cv for empty/known-headless/suspicious patterns
+- webgl.lua implementation — analyze ctx.browser.wgl for SwiftShader/Mesa/UA-OS mismatch
+- Weights tuning in intelligence/scoring/compute.lua based on coverage observed
+
+================================================================================
+
+## [4.3.5] — 2026-05-16 (earlier today, pre-release)
+
+### Added
+- nginx/da_to_openresty.sh + nginx/da_to_openresty-running.sh — X-Forwarded-Port header.
+  - Added `proxy_set_header X-Forwarded-Port $server_port;` to both HTTP and HTTPS proxy blocks
+    in both template files.
+  - Total: 4 insertions (2 files × 2 blocks each).
+
+### Fixed
+- "Your request is blocked" on POST/admin login for NukeViet-based sites behind OpenResty.
+  - Root cause: NukeViet vendor/vinades/nukeviet/Core/Server.php constructor's reverse-proxy
+    override block activates when BOTH X-Forwarded-Host AND X-Forwarded-Proto are present.
+    When X-Forwarded-Port is absent, fallback uses pre-formatted `server_port` string
+    (':8081' or ''), then loose-compare `!= 80 and != 443` evaluates true for empty/prefixed
+    string → prepends another ':' → trailing-colon URL like 'https://cntm.edu.vn:'.
+  - Origin from browser is clean 'https://cntm.edu.vn' → string mismatch → REQUEST_BLOCKED
+    at Request.php:451.
+  - Sending X-Forwarded-Port=443 (or 80) gives NukeViet a clean numeric string that PHP
+    loose-compares correctly against 443 → falls into else branch → no extra colon prefix.
+
+### Removed
+- nginx/da_to_openresty-running.sh — Dead code declarations.
+  - Removed `OR_HTTP_PORT="17080"` and `OR_HTTPS_PORT="17443"` (lines 41-42).
+  - These vars were never referenced anywhere in the file — orphan stale declarations from
+    earlier port-mapping experiment that never landed. Align with da_to_openresty.sh which
+    never had them.
+
+### Affected CMSs
+- NukeViet 4.x — primary target, confirmed fix on cntm.edu.vn
+- WordPress, Joomla, Drupal, Laravel, Symfony — receive correct port info (no-op if app
+  doesn't read X-Forwarded-Port, otherwise produces correct canonical URLs)
+- Static / non-PHP — no-op
+
+### Risk assessment
+- Security: Zero — `$server_port` is nginx variable (server listen port), not user-controlled.
+- Backward compat: 100% — header is additive, ignored by apps that don't read it.
+- Antibot/FP impact: Net positive — fewer cross-site/origin false positives because apps
+  build canonical URLs correctly.
+
+### Files changed
+- nginx/da_to_openresty.sh
+- nginx/da_to_openresty-running.sh
+
+================================================================================

@@ -61,7 +61,7 @@ local function classify_intent(ctx)
     return "ambiguous"
 end
 
-local function write_stats(premature, host, class, action, date, device_type, intent)
+local function write_stats(premature, host, class, action, date, device_type, intent, beacon_got)
     if premature then return end
     local ok, pool = pcall(require, "antibot.core.redis_pool")
     if not ok then return end
@@ -105,6 +105,22 @@ local function write_stats(premature, host, class, action, date, device_type, in
     local ibd_key = "stat:" .. host .. ":ibd_" .. dg .. "_" .. ig .. ":" .. date
     red:incr(ibd_key)
     red:expire(ibd_key, ttl_7d)
+
+    -- Beacon coverage telemetry (Step 0 — baseline cho canvas/webgl signal upgrade).
+    -- Nil = không phải HTML-eligible request → không count.
+    -- false = HTML-eligible nhưng beacon chưa về (first visit / inject blocked / JS off).
+    -- true  = HTML-eligible và có beacon data sẵn trong Redis (canvas/webgl analyzable).
+    -- Coverage = beacon_got / beacon_elig; thấp → cần fix inject trước khi tăng weight.
+    if beacon_got ~= nil then
+        local elig_key = "stat:" .. host .. ":beacon_elig:" .. date
+        red:incr(elig_key)
+        red:expire(elig_key, ttl_7d)
+        if beacon_got then
+            local got_key = "stat:" .. host .. ":beacon_got:" .. date
+            red:incr(got_key)
+            red:expire(got_key, ttl_7d)
+        end
+    end
 
     -- Sample UA cho unknown device: lưu tối đa 20 UA gần nhất để admin debug
     if dg == "unknown" and device_type == "unknown" and ua and ua ~= "" then
@@ -163,11 +179,20 @@ function _M.run(ctx)
             ctx.expensive_score or 0)
     end
 
+    -- Beacon coverage state (Step 0 telemetry).
+    -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
+    -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
+    -- 0    = HTML eligible nhưng beacon chưa về (first visit / JS blocked / CSP fail)
+    local beacon_state = "skip"
+    if ctx.inject_candidate then
+        beacon_state = ctx.beacon_received and "1" or "0"
+    end
+
     -- Build structured log line — all fields on one line, space-separated key=value
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
-        " score=%.1f eff=%.1f mult=%s action=%s" ..
+        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s" ..
         " top=%s reason=%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -184,6 +209,7 @@ function _M.run(ctx)
         ctx.effective_score or 0,
         tostring(ctx.score_multiplier or 1.0),
         tostring(ctx.action or "-"),
+        beacon_state,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str
@@ -221,7 +247,14 @@ function _M.run(ctx)
 
     local device_type = ctx.device_type or "unknown"
     local intent      = classify_intent(ctx)
-    local ok, err = ngx.timer.at(0, write_stats, host, class, action, date, device_type, intent)
+
+    -- beacon_got = nil cho non-HTML request (skip counter), bool cho HTML-eligible.
+    local beacon_got
+    if ctx.inject_candidate then
+        beacon_got = ctx.beacon_received == true
+    end
+
+    local ok, err = ngx.timer.at(0, write_stats, host, class, action, date, device_type, intent, beacon_got)
     if not ok then
         ngx.log(ngx.DEBUG, "[logger] timer.at failed: ", tostring(err))
     end
