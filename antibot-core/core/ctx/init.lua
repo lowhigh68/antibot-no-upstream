@@ -79,6 +79,16 @@ function _M.init(ctx)
     ctx.good_bot_claimed = false
     ctx.banned           = false
     ctx.verified         = false
+
+    -- S2.5 attest fields (Phase 1).
+    -- ua_check populates {bot_ua_compliant, bot_contact_host, browser_ua_pattern, analyzer_marker}.
+    -- bot/init.lua sets bot_identity_tier="S2.5" when contact_attest or analyzer_attest fires.
+    -- dns_rev populated by dns_reverse (existing field, kept for back-compat).
+    ctx.bot_ua_compliant    = false
+    ctx.bot_contact_host    = nil
+    ctx.browser_ua_pattern  = false
+    ctx.analyzer_marker     = nil
+    ctx.bot_identity_tier   = nil
     ctx.score            = 0.0
     ctx.action           = "allow"
     ctx.action_reason    = nil

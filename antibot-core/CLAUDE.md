@@ -72,6 +72,14 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-19 — **S2.5 attest tier** (Phase 1) — generic mechanism for legitimate bots/tools not in hardcoded registry:
+  - **Path 1 contact attest** (`bot/init.lua:contact_attest`): UA RFC-compliant `(compatible; *; +http://host)` + PTR suffix-matches eTLD+1 of contact URL → S2.5
+  - **Path 2 analyzer attest** (`bot/init.lua:analyzer_attest`): browser-pattern UA + tool marker tail (`Chrome-Lighthouse`, `GTmetrix`, …) + PTR ends in cloud provider suffix → S2.5
+  - S2.5 reward: `bot_score=0` (auto-breaks `ip_risk` EMA loop via existing `bot_score>0.3` guard), `asn_rep=0` waive (PTR attest covers datacenter prior), skip cluster+graph (cascade prevention), engine **caps action at monitor** (Q17=b — bot SDKs don't solve PoW so challenge=block-effective)
+  - New file `detection/bot/cloud_suffixes.lua` — universal cloud PTR suffix list + browser standard token blacklist. NOT a bot list.
+  - `dns_reverse.lua:lookup_ptr(ip)` exported helper for Path 2 (good_bot_claimed=false branch).
+  - Fixes: Pinterestbot (Path 1, PTR `crawl-*.pinterest.com`), UptimeRobot/Pingdom (Path 1), PageSpeed Lighthouse (Path 2, GCP PTR), GTmetrix (Path 2)
+  - Phase 2 deferred: behavioral signals (rate/path-breadth/header convergence → downgrade), lite_attest before l7 (vấn đề O1)
 - 2026-05-04 — `detection/distributed_swarm.lua` class-aware thresholds (Option C): navigation `25/45`, auth_endpoint `8/15`, feed_or_meta `45/90`, api_callback `12/25`, interaction `20/35`, inapp_browser `20/35`, unknown `15/30` (legacy). Weight `swarm_attack = 120` GIỮ NGUYÊN. Fix VN flash crowd FP (popular product page 30 /24 cùng UA Chrome bị block oan). Compute.lua scoring math không thay đổi — sensitivity adjusted at signal SOURCE per req_class.
 - 2026-05-04 (v2) — `engine.lua` good_bot_throttle REWRITE to **hybrid scoring** (general, no hardcoded names):
   - HARD: `qs_len ≥ 200` OR `params ≥ 8` → throttle

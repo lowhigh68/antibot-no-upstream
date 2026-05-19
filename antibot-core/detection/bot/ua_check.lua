@@ -1,9 +1,12 @@
-local _M   = {}
-local pool = require "antibot.core.redis_pool"
+local _M       = {}
+local pool     = require "antibot.core.redis_pool"
+local cloud_sx = require "antibot.detection.bot.cloud_suffixes"
 
 local ua_cache  = ngx.shared.antibot_ua_cache
 local CACHE_KEY = "ua_patterns"
 local CACHE_TTL = 300
+
+local BROWSER_TOKEN_BLACKLIST = cloud_sx.BROWSER_STANDARD_TOKENS
 
 -- UA check — structural analysis and Redis-driven pattern matching.
 -- No specific bot names, company names, or tool names are hardcoded.
@@ -49,6 +52,48 @@ local function is_bot_self_identified(ua_lower)
         end
     end
     return false
+end
+
+-- Path 1 (contact attest) helpers.
+-- Extracts contact URL from RFC-style compliant UA: "(compatible; ...; +http://host/...)"
+-- Returns: (url_string, etld_plus_one_host) — either may be nil.
+-- eTLD+1 uses heuristic "last 2 labels" (Q7=b) — accepts FP on `*.co.uk` etc.
+local function parse_contact_url(ua)
+    local url = ua:match("%+(https?://[%w%.%-:_]+)")
+    if not url then return nil, nil end
+    local host = url:match("https?://([%w%.%-]+)")
+    if not host then return url, nil end
+    local last2 = host:match("([%w%-]+%.[%w%-]+)$")
+    return url, last2
+end
+
+-- Path 2 (analyzer attest) helpers.
+-- Browser-pattern detection — UA looks like a real browser (Mozilla + WebKit + Chrome/Firefox).
+local function is_browser_pattern(ua)
+    return ua:find("Mozilla/", 1, true) ~= nil
+       and ua:find("AppleWebKit/", 1, true) ~= nil
+       and (ua:find("Chrome/", 1, true) ~= nil
+            or ua:find("Firefox/", 1, true) ~= nil)
+end
+
+-- Strict marker extraction (Q23=a).
+-- Tail token must be EITHER:
+--   - "PascalCase-PascalCase" with hyphen (e.g. "Chrome-Lighthouse"), OR
+--   - single PascalCase token ≥ 5 chars (e.g. "GTmetrix")
+-- AND must NOT be in BROWSER_TOKEN_BLACKLIST (standard browser tail tokens).
+-- Returns marker string or nil.
+local function extract_analyzer_marker(ua)
+    local tail = ua:match("(%S+)%s*$")
+    if not tail or tail == "" then return nil end
+    if BROWSER_TOKEN_BLACKLIST[tail] then return nil end
+    if tail:find("-", 1, true) then
+        if tail:match("^[A-Z][%w]+%-[A-Z][%w]+$") then
+            return tail
+        end
+    elseif #tail >= 5 and tail:match("^[A-Z][%w]+$") then
+        return tail
+    end
+    return nil
 end
 
 local function get_good_bot_suffixes(bot_name)
@@ -202,6 +247,27 @@ function _M.run(ctx)
     end
 
     local ua_lower = ua:lower()
+
+    -- Populate Path 1/2 signals up-front, regardless of bot-claim branches.
+    -- These are consumed by detection/bot/init.lua AFTER ua_check returns.
+    --   bot_ua_compliant  — RFC "(compatible; ...; +http://host)" format
+    --   bot_contact_host  — eTLD+1 from contact URL (Path 1 attest target)
+    --   browser_ua_pattern — UA looks like real browser (Path 2 prereq)
+    --   analyzer_marker   — tool token at UA tail (e.g. Chrome-Lighthouse)
+    local url, contact_host = parse_contact_url(ua)
+    if url then
+        ctx.bot_ua_compliant = true
+        if contact_host then
+            ctx.bot_contact_host = contact_host
+        end
+    end
+    if is_browser_pattern(ua) then
+        ctx.browser_ua_pattern = true
+        local marker = extract_analyzer_marker(ua)
+        if marker then
+            ctx.analyzer_marker = marker
+        end
+    end
 
     -- Structural headless/automation check
     local is_headless, reason = is_headless_by_structure(ua)

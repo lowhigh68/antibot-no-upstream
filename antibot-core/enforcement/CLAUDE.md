@@ -81,6 +81,12 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-05-19 — **S2.5 attest cap** in `engine.lua` after action compute (post trust cap):
+  - if `ctx.bot_identity_tier=="S2.5"` AND action ∈ {challenge, block} → action="monitor", reason="s25_cap_monitor"
+  - Bot SDKs don't execute JS → challenge=PoW-fail=block-effective. Cap at monitor is the only way "cap" actually prevents blocking.
+  - Pairs with `intelligence/threat/asn_reputation.lua` waiver (asn_rep=0 when S2.5) to drop steady-state score below MONITOR threshold (25).
+  - `bot_score=0` from `detection/bot/bot_score.lua` (S2.5 honor) auto-breaks `ip_risk:<ip>` EMA rise via existing `bot_score>0.3` guard in `async/risk_update.lua` — no additional change needed.
+  - Cap also stops `risk:<id>` EMA loop because monitor action triggers decay branch in risk_update (line ~96).
 - `72f0415` (2026-05-03) — no direct changes. l7 Phase 1 mitigations indirectly lower `ctx.slow`, `ctx.burst` for unstable network users → `ctx.score` lower → action more lenient → fewer false challenges/blocks
 - 2026-05-04 (v1) — `engine.lua` good_bot_throttle initial: verified bots hitting hardcoded patterns (filter_/min_price/max_price/orderby) get rate-limited at 8/min/bot_name with `429 Retry-After: 120`. Reason `good_bot_throttled`
 - 2026-05-04 (v2) — `engine.lua` good_bot_throttle REWRITE to **hybrid scoring** (general, no hardcoded names):

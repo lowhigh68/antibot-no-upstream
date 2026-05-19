@@ -179,6 +179,17 @@ function _M.run(ctx)
             ctx.expensive_score or 0)
     end
 
+    -- S2.5 tier details — chỉ append khi attest path fired.
+    -- Lets `grep tier=S2.5 antibot.log` audit attest decisions.
+    -- marker= present only for analyzer_attested (Path 2).
+    local tier_str = ""
+    if ctx.bot_identity_tier then
+        tier_str = " tier=" .. ctx.bot_identity_tier
+        if ctx.analyzer_marker then
+            tier_str = tier_str .. " marker=" .. ctx.analyzer_marker
+        end
+    end
+
     -- Beacon coverage state (Step 0 telemetry).
     -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
     -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
@@ -193,7 +204,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s" ..
-        " top=%s reason=%s%s",
+        " top=%s reason=%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -212,7 +223,8 @@ function _M.run(ctx)
         beacon_state,
         top_str,
         tostring(ctx.action_reason or "-"),
-        throttle_str
+        throttle_str,
+        tier_str
     )
 
     write_log_line(line)

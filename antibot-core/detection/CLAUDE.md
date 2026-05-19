@@ -71,6 +71,12 @@ For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_
 - Beacon injection NEVER short-circuits — CSS/JS/image responses must NEVER have Content-Length cleared (header_filter checks Content-Type)
 
 ## Update log
+- 2026-05-19 — **S2.5 attest tier** in `bot/init.lua`:
+  - 2 new helpers `contact_attest()` (Path 1) + `analyzer_attest()` (Path 2) — both grant `ctx.bot_identity_tier="S2.5"` and set `ctx.skip_layers.cluster/graph = true` (cascade prevention)
+  - `ua_check.lua` populates `bot_ua_compliant`, `bot_contact_host`, `browser_ua_pattern`, `analyzer_marker` up-front before headless/bot-claim branches
+  - `bot_score.lua` honors `ctx.bot_identity_tier=="S2.5"` (returns bot_score=0, skips ua_flag escalation that would re-raise it)
+  - `dns_reverse.lua:lookup_ptr(ip)` exported for Path 2 (called when good_bot_claimed=false)
+  - `cloud_suffixes.lua` (new) — hardcoded `CLOUD_PTR_SUFFIXES` + `BROWSER_STANDARD_TOKENS` blacklist for marker regex
 - `72f0415` (2026-05-03) — no changes here, Phase 1 only touched l7/
 - 2026-05-04 — `distributed_swarm.lua` class-aware thresholds (Option C):
   - navigation `25/45` (relax — VN popular product flash crowd OK)

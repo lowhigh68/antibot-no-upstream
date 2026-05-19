@@ -64,5 +64,6 @@ enforcement.engine.run    → compute effective_score, decide action
 - `top_signals` array: keep at 3 entries, used by explain.lua + antibot.log
 
 ## Update log
+- 2026-05-19 — `threat/asn_reputation.lua` — S2.5 waiver: if `ctx.bot_identity_tier=="S2.5"` (Path 1 contact attest or Path 2 analyzer attest from `detection/bot/init.lua`), set `ctx.asn_rep=0` after threat feed load. Rationale: PTR attest already proves IP belongs to declared operator; the datacenter prior baked into `rep:asn:<asn>` is the wrong signal — Pinterestbot on AWS, PageSpeed on GCP are intentionally on datacenter ASNs. Removing this ~15pt contribution is required to push S2.5 steady-state score under MONITOR threshold.
 - `72f0415` (2026-05-03) — no changes here. l7 mitigations may indirectly lower input signal values (ctx.slow, ctx.burst) for legit users, reducing computed score for FP cases
 - 2026-05-04 — no direct change here. `swarm_attack` weight=120 stays. Logic moved into `detection/distributed_swarm.lua` per-class threshold lookup. Sensitivity adjusted at SOURCE (signal value range) not at WEIGHT (multiplier) — preserves contribution ranking in `top_signals`

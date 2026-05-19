@@ -92,6 +92,40 @@ local function do_ptr_lookup(ip)
     return nil, "no_ptr_record"
 end
 
+-- Cached PTR lookup — returns (ptr_or_nil, err_type_or_nil).
+-- err_type ∈ {"TIMEOUT", "NXDOMAIN", "FAIL", "skip"} on failure.
+-- Exposed so Path 2 (analyzer attest) in bot/init.lua can fetch PTR
+-- for IPs whose UA does NOT trigger good_bot_claimed.
+function _M.lookup_ptr(ip)
+    if not ip or ip == "" or ip == "127.0.0.1" or ip == "::1" then
+        return nil, "skip"
+    end
+    local cache_key = "dns_ptr:" .. ip
+    local cached    = pool.safe_get(cache_key)
+    if cached then
+        if cached == "TIMEOUT" or cached == "NXDOMAIN" or cached == "FAIL" then
+            return nil, cached
+        end
+        return cached, nil
+    end
+    local p, e = do_ptr_lookup(ip)
+    if p then
+        pool.safe_set(cache_key, p, cfg.ttl.dns or 300)
+        return p, nil
+    end
+    local err_type
+    if e and e:find("timeout") then
+        err_type = "TIMEOUT"
+    elseif e == "nxdomain" or e == "no_ptr_record" then
+        err_type = "NXDOMAIN"
+    else
+        err_type = "FAIL"
+    end
+    pool.safe_set(cache_key, err_type, cfg.ttl.dns or 300)
+    ngx.log(ngx.DEBUG, "[dns_rev] ip=", ip, " err=", tostring(e))
+    return nil, err_type
+end
+
 function _M.run(ctx)
     if not ctx.good_bot_claimed then
         return true, false
@@ -103,34 +137,7 @@ function _M.run(ctx)
         return true, false
     end
 
-    local cache_key = "dns_ptr:" .. ip
-    local cached    = pool.safe_get(cache_key)
-    local ptr, err_type
-
-    if cached then
-        if cached == "TIMEOUT" or cached == "NXDOMAIN" or cached == "FAIL" then
-            ptr      = nil
-            err_type = cached
-        else
-            ptr = cached
-        end
-    else
-        local p, e = do_ptr_lookup(ip)
-        if p then
-            ptr = p
-            pool.safe_set(cache_key, ptr, cfg.ttl.dns or 300)
-        else
-            if e and e:find("timeout") then
-                err_type = "TIMEOUT"
-            elseif e == "nxdomain" or e == "no_ptr_record" then
-                err_type = "NXDOMAIN"
-            else
-                err_type = "FAIL"
-            end
-            pool.safe_set(cache_key, err_type, cfg.ttl.dns or 300)
-            ngx.log(ngx.DEBUG, "[dns_rev] ip=", ip, " err=", tostring(e))
-        end
-    end
+    local ptr, err_type = _M.lookup_ptr(ip)
 
     ctx.dns_rev = ptr
 

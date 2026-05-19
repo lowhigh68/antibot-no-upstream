@@ -352,6 +352,25 @@ function _M.run(ctx)
         ctx.monitor_flag = true
     end
 
+    -- S2.5 attest cap (Q17=b): contact-attested or analyzer-attested bots
+    -- never become user-visible challenge/block. Bot SDKs don't execute JS
+    -- → challenge=fail=effective_block, so capping at monitor is the only
+    -- way "cap" actually prevents blocking. Cap at monitor also stops the
+    -- risk:<id> EMA loop (async/risk_update decays on monitor/allow).
+    -- bot_score=0 from S2.5 already prevents ip_risk:<ip> from rising via
+    -- the existing bot_score>0.3 guard in risk_update.
+    if ctx.bot_identity_tier == "S2.5"
+       and (action == "block" or action == "challenge") then
+        ngx.log(ngx.INFO,
+            "[engine] S2.5 cap action=", action, "->monitor",
+            " attest=", ctx.action_reason or "?",
+            " eff=", math.floor(ctx.effective_score),
+            " ip=", ctx.ip or "?")
+        action = "monitor"
+        ctx.action_reason = "s25_cap_monitor"
+        ctx.monitor_flag  = true
+    end
+
     ctx.action = action
 
     if kill_reason then
