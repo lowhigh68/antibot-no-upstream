@@ -72,6 +72,7 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-19 (v2) — `bot/init.lua:contact_attest` Path 1b cloud fallback. When good_bot_claimed + compliant UA + PTR resolved but PTR does NOT suffix-match contact URL eTLD+1, accept PTR ending in cloud provider suffix (`cloud_suffixes.lua`) as sufficient for S2.5. Fixes Pingdom screenshot fleet on AWS (UA `(pingbot/2.0; +http://www.pingdom.com/)`, PTR `ec2-*.amazonaws.com` — Pingdom doesn't setup their domain reverse DNS for cloud-rented IPs). Reason `contact_cloud_attested`. Threat trade-off: attacker can spin up cloud VM + register domain + compliant UA → S2.5 cap monitor; mitigated by anomaly/behavior signals still scoring under cap.
 - 2026-05-19 — **S2.5 attest tier** (Phase 1) — generic mechanism for legitimate bots/tools not in hardcoded registry:
   - **Path 1 contact attest** (`bot/init.lua:contact_attest`): UA RFC-compliant `(compatible; *; +http://host)` + PTR suffix-matches eTLD+1 of contact URL → S2.5
   - **Path 2 analyzer attest** (`bot/init.lua:analyzer_attest`): browser-pattern UA + tool marker tail (`Chrome-Lighthouse`, `GTmetrix`, …) + PTR ends in cloud provider suffix → S2.5

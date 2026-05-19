@@ -71,6 +71,7 @@ For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_
 - Beacon injection NEVER short-circuits — CSS/JS/image responses must NEVER have Content-Length cleared (header_filter checks Content-Type)
 
 ## Update log
+- 2026-05-19 (v2) — `bot/init.lua:contact_attest` Path 1b — fall back to cloud-PTR check when PTR doesn't match contact URL eTLD+1 (Pingdom-on-AWS case). Same S2.5 reward but new reason `contact_cloud_attested`. Single function edit.
 - 2026-05-19 — **S2.5 attest tier** in `bot/init.lua`:
   - 2 new helpers `contact_attest()` (Path 1) + `analyzer_attest()` (Path 2) — both grant `ctx.bot_identity_tier="S2.5"` and set `ctx.skip_layers.cluster/graph = true` (cascade prevention)
   - `ua_check.lua` populates `bot_ua_compliant`, `bot_contact_host`, `browser_ua_pattern`, `analyzer_marker` up-front before headless/bot-claim branches

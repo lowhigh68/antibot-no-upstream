@@ -31,30 +31,54 @@ local function ptr_matches_cloud(ptr)
     return false
 end
 
--- Path 1 — contact attest (S2.5).
--- Fires when good_bot_claimed + dns_rev resolved + UA is RFC-compliant
--- + PTR suffix-matches eTLD+1 of contact URL in UA.
--- Example: UA "Pinterestbot/1.0; +http://www.pinterest.com/bot.html"
---          + PTR "crawl-54-236-1-11.pinterest.com" → match → S2.5.
--- Sets tier S2.5, bot_score=0, skip cluster+graph. Does NOT set
--- good_bot_verified (engine still scores, but caps action at monitor).
+-- Path 1 — contact attest (S2.5). Two sub-paths:
+--
+--   1a (strong) — PTR suffix matches contact URL eTLD+1.
+--      Example: UA `(Pinterestbot/1.0; +http://www.pinterest.com/bot.html)`
+--               + PTR `crawl-54-236-1-11.pinterest.com` → match → S2.5
+--               reason="contact_ptr_match".
+--
+--   1b (cloud fallback) — compliant UA + PTR ends in a known cloud provider
+--      suffix. Operator runs from major cloud but does NOT setup their
+--      domain's reverse DNS for cloud-rented IPs (very common — only Pinterest,
+--      Google, Microsoft do the full PTR-on-AWS-pool work).
+--      Example: UA `(pingbot/2.0; +http://www.pingdom.com/)` from AWS
+--               + PTR `ec2-54-153-18-201.us-west-1.compute.amazonaws.com`
+--               → contact URL host `pingdom.com` does NOT appear in PTR,
+--               but PTR ends in `amazonaws.com` (cloud list) → S2.5
+--               reason="contact_cloud_attested".
+--
+-- Threat model 1b: attacker needs domain (~$10) + cloud account (anti-abuse
+-- friction) + matching compliant UA. Higher bar than UA-only residential spoof.
+-- Cap monitor (engine.lua) still scores via anomaly/behavior — true bad actors
+-- get caught by signals, not bypassed entirely.
+--
+-- Both sub-paths set tier S2.5, bot_score=0, skip cluster+graph. Do NOT set
+-- good_bot_verified (engine still scores, caps action at monitor).
 local function contact_attest(ctx)
     if not ctx.bot_ua_compliant then return false end
     if not ctx.bot_contact_host then return false end
     if not ctx.dns_rev then return false end
-    if not ptr_suffix_matches(ctx.dns_rev, ctx.bot_contact_host) then
+
+    local reason
+    if ptr_suffix_matches(ctx.dns_rev, ctx.bot_contact_host) then
+        reason = "contact_ptr_match"
+    elseif ptr_matches_cloud(ctx.dns_rev) then
+        reason = "contact_cloud_attested"
+    else
         return false
     end
 
     ctx.bot_identity_tier = "S2.5"
     ctx.bot_score         = 0.0
-    ctx.action_reason     = "contact_ptr_match"
+    ctx.action_reason     = reason
     ctx.skip_layers       = ctx.skip_layers or {}
     ctx.skip_layers.cluster = true
     ctx.skip_layers.graph   = true
 
     ngx.log(ngx.INFO,
-        "[bot] S2.5 contact_ptr_match bot=", ctx.good_bot_name or "?",
+        "[bot] S2.5 ", reason,
+        " bot=", ctx.good_bot_name or "?",
         " ip=", ctx.ip or "?",
         " ptr=", ctx.dns_rev,
         " host=", ctx.bot_contact_host)

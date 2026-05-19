@@ -83,7 +83,7 @@ For multi-step tasks, state a brief plan:
 
 **Beacon injection** is two-phase: `trigger.lua` sets `ctx.inject_candidate` from `Accept` header; `header_filter_by_lua` confirms via actual response `Content-Type`. Both must agree. Never short-circuit — CSS/JS/image responses must never have `Content-Length` cleared.
 
-## Bot Verification (6 paths, see `memory/project_bot_verification.md`)
+## Bot Verification (7 paths, see `memory/project_bot_verification.md`)
 
 Pipeline `detection/bot/init.lua:run` (full classes) and `detection/bot/lite_verify.lua:run` (resource class). UA self-claim → `ctx.good_bot_claimed=true` + populates `ctx.good_bot_asns` and `ctx.good_bot_ptr_only` from hardcoded `PTR_ONLY_BOTS` registry in `ua_check.lua` (Redis override: `goodbot:asn:<name>`, `goodbot:ptr_only:<name>`).
 
@@ -93,7 +93,8 @@ Pipeline `detection/bot/init.lua:run` (full classes) and `detection/bot/lite_ver
 | PTR-only (S4) | Meta family — rotating IPs break forward A | `dns_reverse` only; `dns_forward` returns early when `ctx.good_bot_ptr_only` | `good_bot_verified` | bypass scoring, allow |
 | ASN fallback (S3) | DNS NXDOMAIN/timeout/bad-suffix but UA claims good bot | `bot/init.lua:asn_fallback_verify` matches `ctx.asn.asn_number` against `good_bot_asns` | `good_bot_asn_verified` | bypass scoring, allow |
 | Lite verify (S3) | resource class (skips fingerprint+detection) | `STEPS_RESOURCE[1]` runs `lite_verify.lua` (ua_check + asn lookup + match, no DNS) | `good_bot_asn_lite` | bypass scoring, allow |
-| **Contact attest (S2.5)** | UA RFC-compliant `(compatible; *; +http://host)` + PTR suffix-matches contact URL eTLD+1 | `bot/init.lua:contact_attest` after `dns_reverse` returns `dns_rev_valid=false` | `contact_ptr_match` | scored, **cap monitor**, waive `bot_score` + `asn_rep`, skip cluster+graph |
+| **Contact attest — PTR (S2.5)** | UA RFC-compliant `(compatible; *; +http://host)` + PTR suffix-matches contact URL eTLD+1 | `bot/init.lua:contact_attest` 1a after `dns_reverse` returns `dns_rev_valid=false` | `contact_ptr_match` | scored, **cap monitor**, waive `bot_score` + `asn_rep`, skip cluster+graph |
+| **Contact attest — cloud (S2.5)** | UA compliant + PTR ends in known cloud provider suffix (operator runs on cloud, no domain reverse-DNS setup — e.g. Pingdom screenshot from AWS) | `bot/init.lua:contact_attest` 1b cloud fallback | `contact_cloud_attested` | scored, **cap monitor**, waive `bot_score` + `asn_rep`, skip cluster+graph |
 | **Analyzer attest (S2.5)** | Browser-pattern UA + tool marker tail (e.g. `Chrome-Lighthouse`) + PTR ends in cloud provider suffix | `bot/init.lua:analyzer_attest` runs when `good_bot_claimed=false` | `analyzer_attested` | scored, **cap monitor**, waive `bot_score` + `asn_rep`, skip cluster+graph |
 
 Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/2709` Apple, `AS135905` CocCoc. Default registry seeded into Redis from `core/data/goodbot.json` by `core/goodbot_seed.lua` on worker 0 (deferred via `ngx.timer.at` because cosocket is disabled in `init_worker_by_lua`).
