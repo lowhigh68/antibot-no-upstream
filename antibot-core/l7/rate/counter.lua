@@ -76,6 +76,11 @@ function _M.run(ctx)
     if id then
         red:incrbyfloat("rl:" .. id, weight)
         red:expire("rl:" .. id, TTL)
+        -- Track distinct identities per IP for adaptive_limit hard-ban gating.
+        -- Set is cheap (SADD no-op for repeat id within window) but lets the
+        -- ip_surge extreme path tell single-source surge from CGNAT aggregate.
+        red:sadd("rate:ids:" .. ip, id)
+        red:expire("rate:ids:" .. ip, TTL)
     else
         red:get("__noop__")
         red:get("__noop__")

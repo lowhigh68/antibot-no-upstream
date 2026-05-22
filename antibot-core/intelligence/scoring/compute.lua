@@ -5,6 +5,13 @@ local DEFAULT_WEIGHTS = {
 
     rate_flag           = 30,
     burst_flag          = 25,
+    -- ip_surge: aggregate per-IP rate exceeded cfg.rate.ip_surge_threshold.
+    -- Weight kept moderate — alone, ip_surge=1 contributes 25 toward MONITOR
+    -- threshold (engine.lua T.MONITOR=25), not CHALLENGE (55) or BLOCK (80).
+    -- A real bot at high rate usually also fires ua_flag/header_flag/cluster
+    -- → combined score reaches block. A clean-fingerprint browser bursting
+    -- briefly contributes ip_surge alone → stays at monitor → allowed.
+    ip_surge            = 25,
     behavior_score      = 20,
     session_flag        = 20,
     graph_flag          = 20,
@@ -59,6 +66,7 @@ end
 local function get_signal(name, ctx)
     if name == "rate_flag"          then return safe_val(ctx.rate_flag) end
     if name == "burst_flag"         then return safe_val(ctx.burst_flag) end
+    if name == "ip_surge"           then return ctx.ip_surge and 1.0 or 0.0 end
     if name == "behavior_score"     then return safe_val(ctx.behavior_score) end
     if name == "session_flag"       then return safe_val(ctx.session_flag) end
     if name == "graph_flag"         then return safe_val(ctx.graph_flag) end

@@ -83,11 +83,31 @@ _M.ttl = {
 }
 
 _M.rate = {
-    base_threshold      = 300,
-    burst_threshold     = 30,
-    slow_threshold_s    = 10,
-    risk_factor         = 0.5,
-    ip_surge_threshold  = 1500,
+    base_threshold        = 300,
+    burst_threshold       = 30,
+    slow_threshold_s      = 10,
+    risk_factor           = 0.5,
+    -- ip_surge_threshold: SIGNAL trigger (~25 req/s sustained over 60s window).
+    -- Beyond this, set ctx.ip_surge=true → contributes weight in scoring
+    -- (intelligence/scoring/compute.lua). Engine decides via aggregate score,
+    -- not a unilateral ban. Allows extension/multi-tab/AI-agent users (single
+    -- identity, clean fingerprint) to pass even when bursting briefly.
+    ip_surge_threshold    = 1500,
+    -- ip_surge_extreme: HARD-BAN trigger (~83 req/s sustained over 60s window).
+    -- This rate is implausible for human + browser even with aggressive
+    -- extension/multi-tab activity. Gated additionally by distinct-identity
+    -- count to protect CGNAT (Vietnam carriers, office NAT). Pairs with
+    -- ip_surge_distinct_min and ip_surge_ban_ttl below.
+    ip_surge_extreme      = 5000,
+    -- ip_surge_distinct_min: minimum distinct identities seen from this IP in
+    -- the current rate window. ≥ this → CGNAT/shared infra (multiple users
+    -- behind 1 IP), do NOT hard-ban regardless of aggregate rate. < this →
+    -- single-source surge (single host hammering), hard-ban applies.
+    ip_surge_distinct_min = 3,
+    -- ip_surge_ban_ttl: hard-ban duration when extreme path fires. Shortened
+    -- from legacy 1800s to 300s — auto-recovery after 5 min, repeat surges
+    -- re-ban naturally. Reduces blast radius if extreme threshold is mis-tuned.
+    ip_surge_ban_ttl      = 300,
 }
 
 _M.trust = {

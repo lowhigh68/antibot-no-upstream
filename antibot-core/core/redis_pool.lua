@@ -91,4 +91,13 @@ function _M.safe_incr(key, ttl)
     return results[1]
 end
 
+function _M.safe_scard(key)
+    local red, err = _M.get()
+    if not red then return nil, err end
+    local n, rerr = red:scard(key)
+    _M.put(red)
+    if n == ngx.null then return 0 end
+    return tonumber(n) or 0, rerr
+end
+
 return _M

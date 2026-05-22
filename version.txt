@@ -1,0 +1,29 @@
+AntiBot v4.x — version log
+
+2026-05-22 — l7/rate ip_surge hybrid (S2.6)
+  Problem: l7/rate/adaptive_limit.lua hard-banned ip on ip_rate>1500/60s
+  (~25 req/s) with 1800s TTL, blind to identity diversity and overall score.
+  Single user installing/testing a browser extension (Claude Code observed,
+  but pattern applies to any extension that prefetches or AI-agent that
+  navigates) bursts 1000-1500 requests during first 60s — exceeded threshold,
+  whole public IP (CGNAT) banned for 30 min. Affected user's NAT peers too.
+  Fix (hybrid model):
+    - ip_rate > cfg.rate.ip_surge_threshold (1500) → ctx.ip_surge=true signal
+      only. Contributes weight=25 in intelligence/scoring/compute.lua →
+      reaches MONITOR (25) alone; needs other signals to escalate.
+    - ip_rate > cfg.rate.ip_surge_extreme (5000, ~83 req/s) AND distinct
+      identities seen in window < cfg.rate.ip_surge_distinct_min (3) → hard
+      ban with cfg.rate.ip_surge_ban_ttl (300s, was 1800).
+    - core/redis_pool.lua: new safe_scard() helper.
+    - l7/rate/counter.lua: SADD rate:ids:<ip> per request (TTL=ttl.rate) so
+      adaptive_limit can compute distinct-identity diversity cheaply.
+    - intelligence/scoring/compute.lua: register ip_surge signal + weight 25.
+  Files touched:
+    antibot-core/core/config.lua
+    antibot-core/core/redis_pool.lua
+    antibot-core/l7/rate/counter.lua
+    antibot-core/l7/rate/adaptive_limit.lua
+    antibot-core/intelligence/scoring/compute.lua
+  Operator action after deploy:
+    redis-cli DEL ban:118.70.131.98 ban:hit:118.70.131.98
+    (optional) redis-cli DEL wl:118.70.131.98  # if removing temp whitelist

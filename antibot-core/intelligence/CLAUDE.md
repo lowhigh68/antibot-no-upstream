@@ -32,6 +32,7 @@ Convert dozens of individual signals (each [0,1]) into a single weighted score [
 | `mismatch` | varies | threat correlation |
 | `burst` | varies | l7/burst |
 | `slow` | varies | l7/slow (boolean → multiplied) |
+| `ip_surge` | 25 | l7/rate/adaptive_limit (boolean → 1.0/0.0) |
 
 ## ctx fields written
 `score`, `top_signals` (array of `{signal, contribution_pct, value, weight}`), `corr_score`, `corr_rules`, `mismatch`
@@ -64,6 +65,7 @@ enforcement.engine.run    → compute effective_score, decide action
 - `top_signals` array: keep at 3 entries, used by explain.lua + antibot.log
 
 ## Update log
+- 2026-05-22 — **ip_surge signal registered** (`scoring/compute.lua`): added `ip_surge = 25` to `DEFAULT_WEIGHTS` + `if name == "ip_surge"` branch in `get_signal()`. Reads `ctx.ip_surge` (boolean set by `l7/rate/adaptive_limit.lua` Tier 1 when `ip_rate > cfg.rate.ip_surge_threshold`). Weight tuned so signal alone reaches MONITOR (25) but not CHALLENGE (55) — clean-fingerprint browser bursting briefly stays in monitor; aggregate with other bot signals (ua_flag, header_flag, cluster_score) is what escalates to block. See `antibot-core/l7/CLAUDE.md` 2026-05-22 entry for the design rationale and incident that motivated the rewrite.
 - 2026-05-19 — `threat/asn_reputation.lua` — S2.5 waiver: if `ctx.bot_identity_tier=="S2.5"` (Path 1 contact attest or Path 2 analyzer attest from `detection/bot/init.lua`), set `ctx.asn_rep=0` after threat feed load. Rationale: PTR attest already proves IP belongs to declared operator; the datacenter prior baked into `rep:asn:<asn>` is the wrong signal — Pinterestbot on AWS, PageSpeed on GCP are intentionally on datacenter ASNs. Removing this ~15pt contribution is required to push S2.5 steady-state score under MONITOR threshold.
 - `72f0415` (2026-05-03) — no changes here. l7 mitigations may indirectly lower input signal values (ctx.slow, ctx.burst) for legit users, reducing computed score for FP cases
 - 2026-05-04 — no direct change here. `swarm_attack` weight=120 stays. Logic moved into `detection/distributed_swarm.lua` per-class threshold lookup. Sensitivity adjusted at SOURCE (signal value range) not at WEIGHT (multiplier) — preserves contribution ranking in `top_signals`

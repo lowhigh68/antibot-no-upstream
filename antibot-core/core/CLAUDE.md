@@ -10,7 +10,7 @@ Config, Redis pool, ctx lifecycle, request classification, fingerprint primitive
 | File | Role |
 |---|---|
 | `config.lua` | Thresholds (rate, burst, slow, trust), TTL, PoW difficulty, weights |
-| `redis_pool.lua` | `safe_get/safe_set/safe_incr/pipeline/get/put` — only Redis interface allowed |
+| `redis_pool.lua` | `safe_get/safe_set/safe_incr/safe_scard/pipeline/get/put` — only Redis interface allowed |
 | `req_classifier.lua` | Sets `ctx.req_class` ∈ `{resource, navigation, interaction, api_callback, auth_endpoint, feed_or_meta, inapp_browser, unknown}`, plus `score_multiplier`, `rate_weight`, `skip_layers` |
 | `ctx/init.lua` | `init(ctx)` — populate `ctx.ip`, `ctx.ua`, `ctx.req` from nginx vars; reset all flags. `finalize(ctx)` — fallback identity if missing |
 | `fingerprint/identity.lua` | `build_from(ip, ua)` → md5 — coarse identity (used by rate counter when no full fp yet) |
@@ -43,4 +43,7 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-22 — supporting changes for l7 ip_surge hybrid (see `l7/CLAUDE.md`):
+  - `config.lua` — new keys in `_M.rate`: `ip_surge_extreme=5000`, `ip_surge_distinct_min=3`, `ip_surge_ban_ttl=300`. Existing `ip_surge_threshold=1500` now means "signal trigger" not "hard-ban trigger".
+  - `redis_pool.lua` — new `safe_scard(key)` helper used by `l7/rate/adaptive_limit.lua` to read distinct-identity count from `rate:ids:<ip>` set.
 - `72f0415` (2026-05-03) — no changes here, Phase 1 only touched l7/

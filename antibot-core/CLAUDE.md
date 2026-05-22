@@ -72,6 +72,11 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-22 — **ip_surge hybrid model** in `l7/rate/adaptive_limit.lua` (rewrite) + `l7/rate/counter.lua` (distinct-id SADD) + `intelligence/scoring/compute.lua` (signal registration) + `core/config.lua` (new `ip_surge_extreme`, `ip_surge_distinct_min`, `ip_surge_ban_ttl`) + `core/redis_pool.lua` (`safe_scard` helper).
+  - Old: `ip_rate > 1500/60s` → unilateral hard-ban IP 1800s. False-positive on first-run extension users (Claude Code observed), CGNAT, AI-agent browsing, multi-tab e-commerce.
+  - New Tier 1 (signal): `ip_rate > ip_surge_threshold` (1500) → `ctx.ip_surge=true` → scoring layer decides via aggregate. Clean-fingerprint browser passes (reaches MONITOR only).
+  - New Tier 2 (hard ban): `ip_rate > ip_surge_extreme` (5000) **AND** `distinct identities < ip_surge_distinct_min` (3) → ban with `ip_surge_ban_ttl` (300s). Extreme rate gated by NAT diversity check.
+  - Operator note: clear stale ban with `redis-cli DEL ban:<ip> ban:hit:<ip>` after deploy if you whitelisted any IPs as workaround.
 - 2026-05-19 (v2) — `bot/init.lua:contact_attest` Path 1b cloud fallback. When good_bot_claimed + compliant UA + PTR resolved but PTR does NOT suffix-match contact URL eTLD+1, accept PTR ending in cloud provider suffix (`cloud_suffixes.lua`) as sufficient for S2.5. Fixes Pingdom screenshot fleet on AWS (UA `(pingbot/2.0; +http://www.pingdom.com/)`, PTR `ec2-*.amazonaws.com` — Pingdom doesn't setup their domain reverse DNS for cloud-rented IPs). Reason `contact_cloud_attested`. Threat trade-off: attacker can spin up cloud VM + register domain + compliant UA → S2.5 cap monitor; mitigated by anomaly/behavior signals still scoring under cap.
 - 2026-05-19 — **S2.5 attest tier** (Phase 1) — generic mechanism for legitimate bots/tools not in hardcoded registry:
   - **Path 1 contact attest** (`bot/init.lua:contact_attest`): UA RFC-compliant `(compatible; *; +http://host)` + PTR suffix-matches eTLD+1 of contact URL → S2.5
