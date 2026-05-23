@@ -14,6 +14,16 @@ local RESOURCE_RATIO_MIN    = 1.0   -- hạ từ 2.0 → 1.0
                                     -- có thể đến muộn hơn nav → cần threshold thấp hơn
 local RESOURCE_COUNT_WINDOW = 300   -- TTL 5 phút
 
+-- Gating cho resource_starved: trước khi fire signal, verify IP có resource
+-- activity thật trong 60s window. Bypass FP cho browser session đang load
+-- CSS/JS (resource class skip fingerprint → ctx.identity=nil → res_count per
+-- identity LUÔN = 0, bất kể browser có load CSS/JS hay không).
+--
+-- Threshold 5: yêu cầu TỐI THIỂU 5 resource hit/60s từ IP để confident IP
+-- thực sự là browser đang load. 1 stray hit từ user khác trên NAT không
+-- đủ giải vây cho bot (giảm FN risk shared-NAT).
+local RES_IP_MIN_HITS = 5
+
 function _M.run(ctx)
     local fp  = ctx.fp_light
     local uri = (ctx.req and ctx.req.uri) or ngx.var.request_uri
@@ -86,19 +96,45 @@ function _M.run(ctx)
         --
         -- nav_count >= 10 (thay vì 5) để tránh flag session mới
         -- nav_count >= 15 (thay vì 8) để tính ratio
+        local would_fire = false
+        local fire_reason
+
         if nav_count >= 10 and res_count == 0 then
-            ctx.resource_starved = true
-            ngx.log(ngx.DEBUG,
-                "[session_store] resource_starved fp=", fp:sub(1,8),
-                " nav=", nav_count, " res=", res_count)
+            would_fire = true
+            fire_reason = "resource_starved"
         elseif nav_count >= 15 then
             local ratio = res_count / nav_count
             if ratio < RESOURCE_RATIO_MIN then
+                would_fire = true
+                fire_reason = "low_resource_ratio ratio=" ..
+                              string.format("%.1f", ratio)
+            end
+        end
+
+        if would_fire then
+            -- IP-level gate: verify IP có resource activity thật trong window
+            -- trước khi fire. Tránh FP với browser session vì resource class
+            -- skip fingerprint → res_count per identity LUÔN = 0.
+            local ip = ctx.ip
+            local res_ip = 0
+            if ip and ip ~= "" then
+                local rv = pool.safe_get("res_ip:" .. ip)
+                res_ip = tonumber(rv) or 0
+            end
+
+            if res_ip >= RES_IP_MIN_HITS then
+                ngx.log(ngx.DEBUG,
+                    "[session_store] resource_starved suppressed ",
+                    "(ip has res activity) fp=", fp:sub(1,8),
+                    " nav=", nav_count, " res_id=", res_count,
+                    " res_ip=", res_ip)
+            else
                 ctx.resource_starved = true
                 ngx.log(ngx.DEBUG,
-                    "[session_store] low_resource_ratio fp=", fp:sub(1,8),
-                    " nav=", nav_count, " res=", res_count,
-                    " ratio=", string.format("%.1f", ratio))
+                    "[session_store] ", fire_reason,
+                    " fp=", fp:sub(1,8),
+                    " nav=", nav_count, " res_id=", res_count,
+                    " res_ip=", res_ip)
             end
         end
     end

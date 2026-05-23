@@ -43,6 +43,7 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-23 — `req_classifier.lua` — `unknown` class `score_multiplier` 1.0 → 0.5, `rate_weight` 1.0 → 0.5. Nguyên tắc: uncertainty class nên GIẢM penalty, không tăng. Trước đây path không match rule nào (CMS admin lạ: Joomla `/administrator`, Drupal `/?q=admin`, Magento `/admin/dashboard`, custom paths) bị áp full score×1.0 → escalate sớm. Bot thật imitate navigation/interaction pattern (đã rơi class cụ thể). Signal khác (anomaly/h2_bot/cluster) vẫn fire độc lập, đủ bắt nếu thực sự bot. Fix FP cho tuart.xuongweb.com WP admin install — xem `version.txt` 2026-05-23.
 - 2026-05-22 — supporting changes for l7 ip_surge hybrid (see `l7/CLAUDE.md`):
   - `config.lua` — new keys in `_M.rate`: `ip_surge_extreme=5000`, `ip_surge_distinct_min=3`, `ip_surge_ban_ttl=300`. Existing `ip_surge_threshold=1500` now means "signal trigger" not "hard-ban trigger".
   - `redis_pool.lua` — new `safe_scard(key)` helper used by `l7/rate/adaptive_limit.lua` to read distinct-identity count from `rate:ids:<ip>` set.

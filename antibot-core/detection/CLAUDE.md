@@ -71,6 +71,7 @@ For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_
 - Beacon injection NEVER short-circuits — CSS/JS/image responses must NEVER have Content-Length cleared (header_filter checks Content-Type)
 
 ## Update log
+- 2026-05-23 — **`session/session_store.lua` IP-level resource_starved gating** — before setting `ctx.resource_starved=true`, read `res_ip:<ip>` (populated by new `l7/rate/res_ip_counter.lua` running in `STEPS_RESOURCE`). If `res_ip >= 5` → suppress signal (IP đang load resource thật, signal sai semantic). Threshold 5 chọn để 1 stray hit từ user khác trên NAT không giải vây cho bot — giảm FN risk shared-NAT khi mix bot+human traffic. Root cause cũ: resource class skip fingerprint → res_count tracked per identity LUÔN = 0 cho mọi browser → signal fire oan. Fix FP cho WordPress admin install (Flatsome theme, tuart.xuongweb.com). New log markers: `resource_starved suppressed (ip has res activity)` (gating thắng), `resource_starved ... res_ip=X` (fire thật). See `version.txt` 2026-05-23 + `l7/CLAUDE.md`.
 - 2026-05-19 (v2) — `bot/init.lua:contact_attest` Path 1b — fall back to cloud-PTR check when PTR doesn't match contact URL eTLD+1 (Pingdom-on-AWS case). Same S2.5 reward but new reason `contact_cloud_attested`. Single function edit.
 - 2026-05-19 — **S2.5 attest tier** in `bot/init.lua`:
   - 2 new helpers `contact_attest()` (Path 1) + `analyzer_attest()` (Path 2) — both grant `ctx.bot_identity_tier="S2.5"` and set `ctx.skip_layers.cluster/graph = true` (cascade prevention)

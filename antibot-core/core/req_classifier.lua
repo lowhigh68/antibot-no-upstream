@@ -61,9 +61,17 @@ _M.CLASS_CONFIG = {
                              anomaly=true, behavior=true },
         is_static        = false,
     },
+    -- Path/method không match rule nào → không classify được.
+    -- Nguyên tắc bayesian: uncertainty GIẢM penalty, không tăng.
+    -- Bot thật hiếm khi tạo edge-case URL — chúng thường imitate
+    -- navigation/interaction pattern → đã rơi vào class cụ thể.
+    -- Path lạ thường là CMS admin panel (Joomla /administrator,
+    -- Drupal /?q=admin, Magento /admin/dashboard, custom apps).
+    -- Mult 0.5 vẫn cho phép signal khác (anomaly/h2_bot/cluster)
+    -- escalate nếu thực sự bot.
     unknown = {
-        score_multiplier = 1.0,
-        rate_weight      = 1.0,
+        score_multiplier = 0.5,
+        rate_weight      = 0.5,
         skip_layers      = {},
         is_static        = false,
     },

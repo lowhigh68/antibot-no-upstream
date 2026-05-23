@@ -10,6 +10,7 @@ local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local detection_layer    = require "antibot.detection"
 local bot_lite_verify    = require "antibot.detection.bot.lite_verify"
+local res_ip_counter     = require "antibot.l7.rate.res_ip_counter"
 local intelligence_layer = require "antibot.intelligence"
 local enforcement_layer  = require "antibot.enforcement"
 local risk_update        = require "antibot.async.risk_update"
@@ -42,6 +43,11 @@ local STEPS_INTERACTION = {
 }
 
 local STEPS_RESOURCE = {
+    -- res_ip_counter ĐẦU TIÊN: tăng res_ip:<ip> để session_store.lua
+    -- (chạy ở các class khác) đọc và verify IP có resource activity
+    -- trước khi fire resource_starved. Không phụ thuộc identity (resource
+    -- skip fingerprint nên ctx.identity = nil). 1 INCR + 1 EXPIRE rẻ.
+    { layer = res_ip_counter,     fn = "run" },
     -- Lite bot verify TRƯỚC intelligence: chạy ua_check + asn lookup +
     -- ASN match (cached, rẻ). Set good_bot_verified=true cho Googlebot/Bingbot
     -- fetch image → engine bypass scoring → không bị kill_block FP. Skip

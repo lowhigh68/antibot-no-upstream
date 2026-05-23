@@ -1,5 +1,64 @@
 AntiBot v4.x — version log
 
+2026-05-23 — Generic FP fixes: unknown-class dampening + res_ip gating
+  Problem: tuart.xuongweb.com (WordPress + Flatsome theme install) blocked
+  legitimate admin user 14.232.154.94. Two compounding root causes:
+
+    A) class=unknown score_multiplier=1.0 — uncertainty principle ngược:
+       request không classify được nhận FULL penalty thay vì giảm. Path
+       như /wp-admin/themes.php (GET), Joomla /administrator, Drupal /?q=admin
+       rơi vào unknown → score x1.0 → vượt block threshold dễ.
+
+    B) resource_starved (weight=30) đếm res_count theo identity. Nhưng
+       resource class skip fingerprint → ctx.identity=nil → res_count per
+       identity LUÔN = 0 cho mọi browser session. Browser thật load CSS/JS
+       hàng chục lần nhưng signal vẫn fire vì counter bị tách bởi class.
+
+  Fix A' — Uncertainty dampening (generic, mọi CMS):
+    core/req_classifier.lua: unknown class score_multiplier 1.0 → 0.5,
+    rate_weight 1.0 → 0.5. Nguyên tắc bayesian: uncertainty GIẢM penalty,
+    không tăng. Bot thật imitate navigation/interaction pattern → đã rơi
+    vào class cụ thể; edge-case URL thường là admin panel legitimate.
+    Signal khác (anomaly/h2_bot/cluster) vẫn fire độc lập, đủ escalate
+    nếu thực sự bot.
+
+  Fix B' — Resource counting by IP (semantic fix):
+    + l7/rate/res_ip_counter.lua (NEW): chạy trong STEPS_RESOURCE, INCR
+      res_ip:<ip> với TTL=ttl.rate (60s). Không cần identity.
+    + init.lua: thêm res_ip_counter đầu STEPS_RESOURCE.
+    + detection/session/session_store.lua: trước khi fire resource_starved,
+      đọc res_ip:<ip>. Nếu >= 5 → skip (IP đang load resource, signal sai
+      semantic). Threshold 5 chọn để 1 stray hit từ user khác trên NAT
+      không giải vây cho bot (giảm FN risk shared-NAT).
+    + log: "resource_starved suppressed (ip has res activity)" khi gating
+      thắng, "resource_starved fp=... res_ip=X" khi fire thật.
+
+  Defer (next commit):
+    Fix C' — h2_bot_confidence warm-up grace (×0.3 trong 3 request đầu của
+    identity) để xử lý Chrome H1→H2 connection coalescing FP. Quan sát log
+    sau khi deploy A'+B' để xác định còn cần không.
+
+  Files touched:
+    antibot-core/core/req_classifier.lua
+    antibot-core/l7/rate/res_ip_counter.lua  (new)
+    antibot-core/init.lua
+    antibot-core/detection/session/session_store.lua
+
+  Operator action after deploy:
+    redis-cli DEL "ban:9d24102d4ea42f791bee1c9699ec9a31" \
+                  "ban:hit:9d24102d4ea42f791bee1c9699ec9a31" \
+                  "viol:9d24102d4ea42f791bee1c9699ec9a31"
+    redis-cli DEL "ban:14.232.154.94" "ban:hit:14.232.154.94"
+    redis-cli DEL "ip_risk:14.232.154.94"
+    (optional) redis-cli setex "wl:14.232.154.94" 86400 "1"
+                  # 24h whitelist trong lúc verify fix
+
+  Monitoring:
+    tail -f /var/log/antibot/antibot.log | grep "tuart.xuongweb.com" \
+      | grep -E "resource_starved|action=(block|challenge)"
+    grep "resource_starved suppressed" /var/log/nginx/error.log | tail
+    # Suppression markers cho thấy gating đang hoạt động đúng
+
 2026-05-22 — l7/rate ip_surge hybrid (S2.6)
   Problem: l7/rate/adaptive_limit.lua hard-banned ip on ip_rate>1500/60s
   (~25 req/s) with 1800s TTL, blind to identity diversity and overall score.
