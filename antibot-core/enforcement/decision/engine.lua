@@ -172,6 +172,27 @@ local KILL_BLOCK_RAW     = 95
 local KILL_CHALLENGE_EFF = 60
 local KILL_BLOCK_EFF     = 85
 
+-- Generic kill-switch cho mọi dampened class KHÁC resource (resource đã có
+-- kill riêng ở trên với threshold thấp hơn do mult=0.2). Áp dụng cho
+-- interaction (0.6), api_callback (0.5), feed_or_meta (0.4), inapp_browser
+-- (0.4), unknown (0.5) — tất cả classes có score_multiplier < 1.0.
+--
+-- Lý do tồn tại: dampening class mult được thiết kế để giảm FP cho normal
+-- traffic. Nhưng khi raw_score cực cao (≥110), đây không còn là normal —
+-- pure threat signal storm. Dampening "che chở" sai cho bot rõ ràng → bot
+-- ở mãi challenge eff=70 không lên được block 80 (incident 20.9.70.139:
+-- Azure UA-empty, raw 140 nhưng eff cap 70 → challenge mãi không block).
+--
+-- Threshold cao hơn resource kill (resource: raw 80/95) vì các class này
+-- mult ít aggressive hơn (0.4-0.6 vs 0.2) → cần raw cao hơn mới cần kill.
+--
+-- raw ≥ 150 → floor 85% raw (signal storm — bot rõ ràng, near-full enforcement)
+-- raw ≥ 110 → floor 65% raw (high signal — vẫn cần block path)
+local KILL_DAMP_HARD_RAW = 150
+local KILL_DAMP_SOFT_RAW = 110
+local KILL_DAMP_HARD_PCT = 0.85
+local KILL_DAMP_SOFT_PCT = 0.65
+
 local FP_DEGRADED_PENALTY  = 5
 local FP_QUALITY_PENALTY   = 3
 local FP_QUALITY_THRESHOLD = 0.5
@@ -307,6 +328,23 @@ function _M.run(ctx)
             if effective_score < KILL_CHALLENGE_EFF then
                 effective_score = KILL_CHALLENGE_EFF
                 kill_reason     = "kill_challenge"
+            end
+        end
+    elseif multiplier < 1.0 then
+        -- Generic kill-switch cho dampened class non-resource. Khi raw_score
+        -- cực cao, dampening "che chở" sai cho bot rõ ràng → áp floor theo
+        -- % raw để escalation block path hoạt động.
+        if raw_score >= KILL_DAMP_HARD_RAW then
+            local floor = raw_score * KILL_DAMP_HARD_PCT
+            if effective_score < floor then
+                effective_score = floor
+                kill_reason     = "kill_damp_hard"
+            end
+        elseif raw_score >= KILL_DAMP_SOFT_RAW then
+            local floor = raw_score * KILL_DAMP_SOFT_PCT
+            if effective_score < floor then
+                effective_score = floor
+                kill_reason     = "kill_damp_soft"
             end
         end
     end

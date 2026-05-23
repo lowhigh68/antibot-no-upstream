@@ -1,5 +1,87 @@
 AntiBot v4.x — version log
 
+2026-05-23 (v3) — Generic kill-switch cho dampened class non-resource
+  Problem: Fix A' (commit 649031e — unknown mult 1.0 → 0.5) tạo ra FN.
+  Incident observed in log:
+    domain=www.bachhoathaomoc.com class=unknown ip=20.9.70.139 (Azure
+    AS8075 Microsoft cloud), ua=EMPTY, tls13=nil h2=false, raw_score=140
+    + multipliers: bot_score 22%, anomaly 17%, asn_rep 13%, resource_starved
+    25%, ua_flag 12%. CLEARLY bot — UA empty là red flag tối đa.
+
+    NHƯNG eff = raw × mult = 140 × 0.5 = 70 → action=challenge MÃI MÃI,
+    không bao giờ vượt block threshold (80). Bot không solve PoW → fail
+    challenge → request mới lại challenge → loop vô hạn. Detection ĐÚNG
+    nhưng enforcement BẤT LỰC do class dampening "che chở" bot.
+
+  Root cause architectural: dampening class_multiplier (resource 0.2,
+  interaction 0.6, api_callback 0.5, unknown 0.5, ...) designed để giảm
+  FP cho normal traffic, KHÔNG để bảo vệ pure-threat signal storm. Khi
+  raw score cực cao (multiple bot signals fire đồng thời), dampening đè
+  effective xuống dưới block threshold → bot lách.
+
+  Resource class đã có kill-switch riêng từ trước (KILL_BLOCK_RAW=95→
+  EFF=85, KILL_CHALLENGE_RAW=80→EFF=60). Pattern này cần áp dụng generic
+  cho mọi class dampened — không phải chỉ resource.
+
+  Fix — generic kill-switch trong enforcement/decision/engine.lua:
+    Constants mới:
+      KILL_DAMP_HARD_RAW = 150  → floor 85% raw  ("kill_damp_hard")
+      KILL_DAMP_SOFT_RAW = 110  → floor 65% raw  ("kill_damp_soft")
+
+    Logic chèn vào nhánh `elseif multiplier < 1.0 then` sau resource block:
+      if raw >= 150 then
+          eff = max(eff, raw × 0.85)
+      elseif raw >= 110 then
+          eff = max(eff, raw × 0.65)
+      end
+
+    Áp dụng cho: interaction (0.6), api_callback (0.5), feed_or_meta (0.4),
+    inapp_browser (0.4), unknown (0.5). KHÔNG áp dụng cho resource (đã có
+    kill riêng) và navigation (mult=1.0, không dampened).
+
+  Verification case 20.9.70.139:
+    raw=140, mult=0.5 (unknown), eff trước fp_penalty = 70.
+    140 >= 110 → soft kill → floor = 140×0.65 = 91 → eff = max(70, 91) = 91.
+    91 >= 80 → action=block ✓
+    kill_reason = "kill_damp_soft" → logged in error.log + antibot.log.
+
+  FP analysis (chống over-kill):
+    Threshold raw 110 chọn cao vì:
+      - Logged-in admin user có session_richness 0.7-0.9 → -21 đến -27 pts
+        trừ vào raw → "raw" thực tế đã account cho trust.
+      - Để đạt raw 110 SAU khi trừ trust, signals threat thực tế phải
+        ~135 pts → multiple bot signals fire đồng thời.
+      - Legit user load AJAX heavy bị mismatch + h2_bot_confidence khi
+        H2 coalescing chỉ contribute ~30-50 pts. Không đạt 110.
+      - Resource_starved signal đã có IP-level gating (commit trước) → không
+        fire cho legit browser.
+
+    FN coverage cho bot:
+      - Bot raw 90 (vừa dưới 110): eff=45 → monitor. KHÔNG bị block.
+        Đây là vùng grey, các signal khác (ip_rep tăng lần sau) sẽ
+        escalate. Acceptable.
+      - Bot raw 110-149: soft kill, eff = 71-97 → challenge/block.
+      - Bot raw ≥ 150: hard kill, eff ≥ 127 → block chắc chắn.
+
+  Files touched:
+    antibot-core/enforcement/decision/engine.lua  (constants + logic)
+    antibot-core/enforcement/CLAUDE.md            (constants table + update log)
+    antibot-core/CLAUDE.md                        (top-level update log)
+
+  Monitoring sau deploy:
+    # Đếm các lần kill-switch fire cho non-resource
+    grep "kill-switch=kill_damp" /var/log/nginx/error.log | tail
+
+    # Verify case 20.9.70.139 không còn challenge mãi
+    grep "20.9.70.139" /var/log/antibot/antibot.log | grep -E "action=(block|challenge)" | tail -20
+
+    # Distribution kill_reason types
+    grep "kill-switch=" /var/log/nginx/error.log | \
+      grep -oE "kill-switch=[a-z_]+" | sort | uniq -c
+
+  Operator action: không cần. Kill-switch hoạt động ngay sau reload nginx.
+  Bot đang loop challenge sẽ chuyển sang block trong request kế tiếp.
+
 2026-05-23 (v2) — Generic burst handling: session_richness + class_burst_factor
   Problem: burst handling chỉ có 1 ngưỡng cứng (30/1s/identity) cho mọi class
   + mọi client. Hai dimension không được phân biệt:

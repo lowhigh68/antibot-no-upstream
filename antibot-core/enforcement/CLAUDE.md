@@ -21,6 +21,7 @@ Translate aggregated score into HTTP action. Apply class-based multipliers, kill
 - Thresholds: `MONITOR=25, CHALLENGE=55, BLOCK=80`
 - `RESOURCE_MAX_SCORE=40`, `RESOURCE_BOOST_MAX=15`
 - Resource kill: `KILL_BLOCK_RAW=95→EFF=85`, `KILL_CHALLENGE_RAW=80→EFF=60`
+- Generic dampened-class kill (non-resource, `mult<1.0`): `KILL_DAMP_HARD_RAW=150→floor 85% raw`, `KILL_DAMP_SOFT_RAW=110→floor 65% raw`. Bảo vệ chống FN khi raw cao nhưng class dampening che pure-threat signal storm (incident 20.9.70.139 — Azure UA-empty bot, raw 140 + unknown mult 0.5 = eff 70 = challenge mãi không lên block).
 - FP penalty: `FP_DEGRADED=5`, `FP_QUALITY=3` (threshold 0.5), **`JA3_PARTIAL_PENALTY=0`** (no-stream architecture constant)
 - Attack 1 IP-risk: `THRESHOLD_LOWER=0.4` → CHALLENGE cap 40 (skip for api_callback)
 
@@ -81,6 +82,12 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-05-23 (v3) — **Generic kill-switch cho dampened class non-resource** (`engine.lua`). Resource class đã có kill-switch riêng từ trước (raw 80/95). Thêm kill cho class còn lại có `multiplier < 1.0` (interaction 0.6, api_callback 0.5, feed_or_meta 0.4, inapp_browser 0.4, unknown 0.5):
+  - `raw ≥ 150` → floor effective tại 85% raw (`kill_damp_hard`)
+  - `raw ≥ 110` → floor effective tại 65% raw (`kill_damp_soft`)
+  - Logic chèn vào `elseif multiplier < 1.0 then` branch ngay sau resource block.
+  - **Lý do**: Fix A' giảm unknown mult 1.0 → 0.5 (commit 649031e) tạo FN cho bot Azure UA-empty raw 140 — eff cap 70 → challenge mãi không lên block 80. Dampening designed để giảm FP cho normal traffic, KHÔNG bảo vệ pure-threat storm. Kill threshold cao (110) đảm bảo legit logged-in user không trigger (session_richness -30 đã trừ ~24 pts cho admin → khó đạt raw 110 nếu không bị multiple bot signal fire).
+  - Verified case 20.9.70.139: raw 140 ≥ 110 → eff = max(70, 140×0.65) = 91 → block ✓
 - 2026-05-19 — **S2.5 attest cap** in `engine.lua` after action compute (post trust cap):
   - if `ctx.bot_identity_tier=="S2.5"` AND action ∈ {challenge, block} → action="monitor", reason="s25_cap_monitor"
   - Bot SDKs don't execute JS → challenge=PoW-fail=block-effective. Cap at monitor is the only way "cap" actually prevents blocking.
