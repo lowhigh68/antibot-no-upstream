@@ -42,6 +42,16 @@ local DEFAULT_WEIGHTS = {
 
     resource_starved    = 30,
 
+    -- session_richness: NEGATIVE weight = TRUST signal (trừ score).
+    -- ctx.session_richness ∈ [0,1] đo client state với server (cookie payload,
+    -- auth header). Logged-in user (r=0.8) trừ 24 pts → đẩy fresh-warmup
+    -- FP (mismatch + h2_bot_confidence khi connection coalescing) dưới
+    -- challenge threshold. Bot fake cookie vẫn phải qua anomaly/h2_bot/
+    -- ip_score → không bypass detection.
+    -- Lưu ý compute loop dưới: pts âm không vào top_signals (filter pts>0.5),
+    -- nhưng vẫn trừ vào total. Antibot.log có field richness riêng để debug.
+    session_richness    = -30,
+
     wp_attack_score     = 80,
 
     swarm_attack        = 120,
@@ -100,6 +110,10 @@ local function get_signal(name, ctx)
         return ctx.resource_starved and 1.0 or 0.0
     end
 
+    if name == "session_richness" then
+        return ctx.session_richness or 0.0
+    end
+
     if name == "wp_attack_score" then
         return safe_val(ctx.wp_attack_score)
     end
@@ -123,6 +137,8 @@ function _M.run(ctx)
     local skip    = ctx.skip_layers or {}
 
     local total      = 0.0
+    local pos_total  = 0.0  -- Sum of positive contributions cho %, không bị
+                            -- méo bởi trust signal âm (session_richness).
     local top        = {}
     local corr_bonus = 0.0
 
@@ -141,7 +157,10 @@ function _M.run(ctx)
         local val = get_signal(name, ctx)
 
         if name == "fp_degraded_pen" then
-            if ctx.fp_degraded then total = total + weight end
+            if ctx.fp_degraded then
+                total     = total     + weight
+                pos_total = pos_total + weight
+            end
             goto continue
         end
 
@@ -152,7 +171,9 @@ function _M.run(ctx)
         if name == "corr_rule_weight" then
             if ctx.corr_rules then
                 for _, rule in ipairs(ctx.corr_rules) do
-                    corr_bonus = corr_bonus + (rule.score or 0) * weight
+                    local add = (rule.score or 0) * weight
+                    corr_bonus = corr_bonus + add
+                    if add > 0 then pos_total = pos_total + add end
                 end
             end
             goto continue
@@ -161,7 +182,10 @@ function _M.run(ctx)
         local pts = val * weight
         if pts > 0.5 then
             top[#top+1] = { signal = name, pts = pts, weight = weight, val = val }
+            pos_total = pos_total + pts
         end
+        -- pts âm (trust signal như session_richness) vẫn vào total nhưng KHÔNG
+        -- vào pos_total → contribution_pct của các signal threat không bị méo.
         total = total + pts
 
         ::continue::
@@ -177,7 +201,7 @@ function _M.run(ctx)
         top_out[i] = {
             signal           = top[i].signal,
             pts              = top[i].pts,
-            contribution_pct = math.floor(top[i].pts / math.max(total, 1) * 100),
+            contribution_pct = math.floor(top[i].pts / math.max(pos_total, 1) * 100),
         }
     end
 

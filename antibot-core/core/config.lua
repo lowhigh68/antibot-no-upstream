@@ -108,6 +108,41 @@ _M.rate = {
     -- from legacy 1800s to 300s — auto-recovery after 5 min, repeat surges
     -- re-ban naturally. Reduces blast radius if extreme threshold is mis-tuned.
     ip_surge_ban_ttl      = 300,
+
+    -- Class-aware burst factor: multiplies burst_threshold per req_class.
+    -- Orthogonal với session_richness lift — combine multiplicative cho
+    -- effective_threshold = base × class_factor × (1 + richness × 2).
+    --
+    -- Nguyên tắc:
+    --   < 1.0 = tighten (request type không tự nhiên burst → bot signal)
+    --   > 1.0 = relax  (request type có legitimate burst pattern)
+    --
+    -- Calibration:
+    --   navigation 0.67   → 20/s. Human khó burst > 20 nav/s ngay cả khi
+    --                       F5 storm hoặc multi-tab bookmark "Open All".
+    --                       Retry discount (counter.lua) đã xử lý same-URI
+    --                       F5 ở rate layer. Tighten đây bắt nav-crawl bot.
+    --   interaction 1.5  → 45/s. SPA frontend (Magento Luma, Shopify,
+    --                       headless Next.js) fire 30-50 XHR đồng thời on
+    --                       page load. Đây là vùng FP cao nhất.
+    --   api_callback 2.0 → 60/s. Server-to-server webhook retry (Stripe,
+    --                       MoMo, VNPay) có thể burst nếu integration lỗi.
+    --   auth_endpoint 0.8 → 24/s. Login không có lý do burst. Tighten chống
+    --                       credential stuffing 1-second hammer.
+    --   feed_or_meta 0.5 → 15/s. Crawler hit individually (1 IP = 1-3 fetch
+    --                       per minute), không có per-identity burst.
+    --   inapp_browser/unknown: giữ baseline 1.0.
+    --   resource: giá trị bất kỳ (resource skip burst counter qua STEPS_RESOURCE).
+    class_burst_factor = {
+        resource      = 1.0,
+        navigation    = 0.67,
+        interaction   = 1.5,
+        api_callback  = 2.0,
+        auth_endpoint = 0.8,
+        feed_or_meta  = 0.5,
+        inapp_browser = 1.0,
+        unknown       = 1.0,
+    },
 }
 
 _M.trust = {

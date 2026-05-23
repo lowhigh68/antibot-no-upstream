@@ -33,7 +33,14 @@ local cfg  = require "antibot.core.config"
 function _M.run(ctx)
     local base   = cfg.rate.base_threshold
     local risk   = ctx.ip_score or 0
-    local thresh = math.floor(base * (1.0 - risk * cfg.rate.risk_factor))
+    -- Per-identity threshold: tighten theo ip_score (datacenter rủi ro), relax
+    -- theo session_richness (logged-in user). KHÔNG apply richness vào ip_rate
+    -- threshold (ip_surge/extreme) vì 1 IP có nhiều session — richness của
+    -- request hiện tại không đại diện toàn IP.
+    local r            = ctx.session_richness or 0
+    local risk_thresh  = base * (1.0 - risk * cfg.rate.risk_factor)
+    local session_lift = 1.0 + r * 2.0
+    local thresh       = math.floor(risk_thresh * session_lift)
 
     local id_rate = ctx.rate    or 0
     local ip_rate = ctx.ip_rate or 0

@@ -53,6 +53,11 @@ FULL/INT → ban_store             → exit 403 if identity banned (defer if goo
 - Ban grace `ban:age:<id>` TTL 24h — first-time ban hit doesn't escalate
 
 ## Update log
+- 2026-05-23 (v2) — **burst/rate threshold lift hai chiều**:
+  - `burst/burst_decision.lua` rewrite: `effective = burst_threshold × class_burst_factor[class] × (1 + ctx.session_richness × 2)`. Hai dimension orthogonal × multiplicative.
+  - `rate/adaptive_limit.lua` per-ID `thresh = base × (1 - ip_score×risk_factor) × (1 + richness×2)`. KHÔNG apply richness vào ip_surge/extreme (per-IP có NAT mixed traffic).
+  - Effective thresholds: WP admin AJAX 117/s, anonymous SPA 58/s, bot 45/s, multi-tab nav 20/s, login bot 24/s.
+  - `class_burst_factor` config ở `core/config.lua rate.class_burst_factor`. `session_richness` compute ở `core/session_richness.lua` (STEPS_COMMON).
 - 2026-05-23 — **`rate/res_ip_counter.lua` NEW** — track resource hit per IP (60s window) to feed `detection/session/session_store.lua` resource_starved IP-level gating. Wired into `STEPS_RESOURCE` (init.lua) because resource class bypasses `l7_layer.run`. Single `safe_incr("res_ip:<ip>", ttl.rate)` — lightweight, no pipeline. Solves FP: browser session loads CSS/JS but res_count per identity LUÔN = 0 (resource class skips fingerprint). With this counter, session_store can verify IP has actual resource activity before firing the signal. See `version.txt` 2026-05-23 + `detection/CLAUDE.md` for the gating logic.
 - 2026-05-22 — **ip_surge hybrid model** (`rate/adaptive_limit.lua` rewrite + `rate/counter.lua` distinct-id SADD):
   - Old logic: `ip_rate > 1500/60s` → unilateral hard-ban IP for 1800s. Blind to identity diversity → false-positive on first-run browser-extension users (single identity bursts 1000-1500 in 60s during install/test), NAT/CGNAT, AI-agent navigation.

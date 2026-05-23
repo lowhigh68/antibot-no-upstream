@@ -1,5 +1,104 @@
 AntiBot v4.x — version log
 
+2026-05-23 (v2) — Generic burst handling: session_richness + class_burst_factor
+  Problem: burst handling chỉ có 1 ngưỡng cứng (30/1s/identity) cho mọi class
+  + mọi client. Hai dimension không được phân biệt:
+
+    1) Client state — logged-in admin có session với server vs anonymous
+       first-visit. Mỗi CMS dùng cookie schema riêng (WP wp_logged_in_*,
+       Joomla, Drupal SESS<hash>, Magento admin/frontend, SPA JWT trong
+       Authorization header). Hardcode list = dead end maintenance.
+
+    2) Request nature — AJAX-heavy SPA frontend (Magento Luma, Shopify,
+       headless commerce) fire 30-50 XHR đồng thời trên page load. Nav
+       request thì human không thể burst > 20/s. Một threshold không
+       fit cả hai.
+
+  Fix architecture:
+    + core/session_richness.lua (NEW): ctx.session_richness ∈ [0,1].
+      Generic proxy — measure BẰNG CHỨNG VẬT LÝ rằng client có state:
+        - Cookie payload bytes (SIZE_SATURATION 500)
+        - Cookie count (COUNT_SATURATION 4)
+        - Authorization header present (+0.3 bonus)
+        - X-CSRF-Token / X-XSRF-TOKEN present (+0.2 bonus)
+      Hoạt động cho MỌI CMS hiện tại + tương lai — không hardcode tên.
+      Run trong STEPS_COMMON (sau ctx_layer.init).
+
+    + core/config.lua: rate.class_burst_factor table.
+      Multiplier theo class nature:
+        navigation 0.67   → 20/s (tighten — F5 storm + multi-tab realistic max)
+        interaction 1.5  → 45/s (relax — SPA legit AJAX burst)
+        api_callback 2.0 → 60/s (relax — webhook retry storm)
+        auth_endpoint 0.8 → 24/s (tighten — credential stuffing 1s hammer)
+        feed_or_meta 0.5 → 15/s (tighten — crawler 1 fetch/identity)
+        inapp_browser/unknown 1.0 → baseline
+
+    + l7/burst/burst_decision.lua: rewrite threshold logic.
+      effective = base × class_burst_factor[class] × (1 + richness × 2)
+      Hai dimension orthogonal × multiplicative combine.
+
+    + l7/rate/adaptive_limit.lua: apply session_richness lift vào per-ID
+      rate threshold. KHÔNG apply vào ip_surge (per-IP) vì NAT 1 IP có
+      nhiều session — richness request hiện tại không đại diện cả IP.
+
+    + intelligence/scoring/compute.lua: session_richness là NEGATIVE
+      signal (weight -30) — TRUST proxy. richness 0.8 trừ 24 pts khỏi
+      score → đẩy connection-warmup FP (mismatch + h2_bot_confidence
+      khi Chrome H1→H2 coalescing) dưới challenge threshold.
+
+      Phân biệt pos_total (sum positive contributions cho %) vs total
+      (gồm cả negative) để contribution_pct không méo bởi trust signal.
+
+    + async/logger.lua: append richness=X.XX field vào antibot.log mỗi
+      request. grep richness=0\\.[89] → logged-in user, richness=0\\.0
+      → first-visit/bot.
+
+  Effective thresholds với richness lift:
+    WP admin AJAX (richness 0.8, interaction):  117/s   (=30×1.5×2.6)
+    Anonymous SPA (richness 0.15, interaction):  58/s   (=30×1.5×1.3)
+    Bot scrape (richness 0, interaction):        45/s   (=30×1.5×1.0)
+    Multi-tab user (richness 0, nav):            20/s   (=30×0.67×1.0)
+    Login bot (richness 0, auth_endpoint):       24/s   (=30×0.8×1.0)
+
+  Threat coverage (anti-FN):
+    Bot fake cookie 500 byte random → richness ≈ 1.0 → threshold × 3 +
+    score -30, NHƯNG vẫn phải qua:
+      - rate_flag (per-60s budget không thay đổi nhiều với cookie fake)
+      - anomaly_score (malformed cookie value detect)
+      - h2_bot_confidence (TLS/H2 fingerprint)
+      - ip_score (datacenter ASN)
+      - cluster/swarm signals
+    Mất ~65 pts (burst_flag 25 + rate_flag 30 + session_richness 30) trên
+    100+ pts budget — defense-in-depth OK.
+
+  Files touched:
+    antibot-core/core/session_richness.lua   (NEW)
+    antibot-core/core/config.lua             (class_burst_factor table)
+    antibot-core/init.lua                    (STEPS_COMMON wiring)
+    antibot-core/l7/burst/burst_decision.lua (threshold rewrite)
+    antibot-core/l7/rate/adaptive_limit.lua  (apply richness lift)
+    antibot-core/intelligence/scoring/compute.lua (signal register + %)
+    antibot-core/async/logger.lua            (richness field in log)
+
+  Monitoring:
+    tail -f /var/log/antibot/antibot.log | grep "tuart.xuongweb.com"
+    # Expect: richness=0.7+ cho WP admin user → action=allow even ở
+    # heavy AJAX burst.
+
+    grep "richness=0.0" /var/log/antibot/antibot.log | head
+    # First-visit/bot pattern — baseline threshold.
+
+    grep "\\[burst\\] violation" /var/log/nginx/error.log | tail
+    # Expect: thresh value > 30 cho session-rich client, base 30 cho anon.
+
+  Notes for tuning:
+    - SIZE_SATURATION/COUNT_SATURATION trong session_richness.lua —
+      observe richness distribution sau 1 tuần, recalibrate nếu cần.
+    - class_burst_factor có thể fine-tune per-domain qua adaptive_weight
+      future work.
+    - Bot fake cookie scenario: nếu observe FN tăng, có thể thêm cookie
+      value entropy check (giá trị có phải base64/hex valid không).
+
 2026-05-23 — Generic FP fixes: unknown-class dampening + res_ip gating
   Problem: tuart.xuongweb.com (WordPress + Flatsome theme install) blocked
   legitimate admin user 14.232.154.94. Two compounding root causes:

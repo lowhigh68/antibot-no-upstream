@@ -2,6 +2,7 @@ local _M = {}
 
 local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
+local session_richness   = require "antibot.core.session_richness"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
@@ -20,6 +21,10 @@ local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
+    -- session_richness: compute ctx.session_richness ∈ [0,1] từ cookie
+    -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
+    -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
+    { layer = session_richness,  fn = "run"           },
     { layer = ip_ban_check,      fn = "run"           },
     { layer = device_classifier, fn = "run"           },
     { layer = access_layer,      fn = "run"           },

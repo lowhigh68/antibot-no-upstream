@@ -199,11 +199,15 @@ function _M.run(ctx)
         beacon_state = ctx.beacon_received and "1" or "0"
     end
 
-    -- Build structured log line — all fields on one line, space-separated key=value
+    -- Build structured log line — all fields on one line, space-separated key=value.
+    -- richness ∈ [0,1] = ctx.session_richness, trust proxy (cookie payload +
+    -- auth header). Log mỗi request để debug/audit; volume control qua daily
+    -- rotate. grep richness=0\\.[89] antibot.log → tìm logged-in user, grep
+    -- richness=0\\.0 → first-visit/bot pattern.
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
-        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s" ..
+        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f" ..
         " top=%s reason=%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -221,6 +225,7 @@ function _M.run(ctx)
         tostring(ctx.score_multiplier or 1.0),
         tostring(ctx.action or "-"),
         beacon_state,
+        ctx.session_richness or 0,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,

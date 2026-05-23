@@ -72,6 +72,15 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-05-23 (v2) — **Generic burst handling: session_richness + class_burst_factor** — orthogonal lift cho burst/rate threshold:
+  - **`core/session_richness.lua` (NEW)** — generic trust proxy. Measure BẰNG CHỨNG VẬT LÝ client có state: cookie payload bytes + count + Authorization/CSRF header. `ctx.session_richness ∈ [0,1]`. Không hardcode tên cookie → cover MỌI CMS hiện tại + tương lai. Run trong STEPS_COMMON sau ctx_layer.init.
+  - **`core/config.lua rate.class_burst_factor`** — multiplier per req_class: navigation 0.67 (20/s, tighten), interaction 1.5 (45/s, SPA AJAX), api_callback 2.0 (webhook retry), auth_endpoint 0.8 (anti credential-stuffing), feed_or_meta 0.5 (crawler 1-shot).
+  - **`l7/burst/burst_decision.lua`** — rewrite: `effective = base × class_factor × (1 + richness×2)`. Orthogonal 2-dim threshold.
+  - **`l7/rate/adaptive_limit.lua`** — per-ID rate cũng hưởng richness lift. KHÔNG apply vào ip_surge (per-IP, NAT có nhiều session).
+  - **`intelligence/scoring/compute.lua`** — `session_richness` = NEGATIVE signal (weight -30). richness 0.8 trừ 24 pts khỏi total. Fix `contribution_pct` calc dùng `pos_total` riêng để trust signal không méo % của threat signals.
+  - **`async/logger.lua`** — append `richness=X.XX` vào antibot.log mỗi request (volume control qua daily rotate).
+  - Effective thresholds: WP admin AJAX = 117/s, anonymous SPA = 58/s, bot scrape = 45/s, multi-tab user (nav) = 20/s, login bot = 24/s.
+  - Threat coverage: bot fake cookie 500 byte random vẫn bị anomaly + h2_bot + ip_score + rate_flag bắt. Mất ~65/100+ pts → defense-in-depth OK.
 - 2026-05-23 — **Generic FP fixes: unknown-class dampening + res_ip gating** (`core/req_classifier.lua` + new `l7/rate/res_ip_counter.lua` + `init.lua` + `detection/session/session_store.lua`):
   - **Fix A'** — `unknown` class `score_multiplier` 1.0 → 0.5, `rate_weight` 1.0 → 0.5. Nguyên tắc bayesian: uncertainty GIẢM penalty (không tăng). Request không classify được thường là CMS admin lạ (Joomla/Drupal/Magento/custom), không phải bot — bot imitate browser pattern → đã vào class cụ thể. Signal anomaly/h2_bot/cluster vẫn fire độc lập đủ bắt nếu thực sự bot.
   - **Fix B'** — `resource_starved` IP-level gating. Root cause: resource class skip fingerprint → `ctx.identity=nil` → `res_count` per identity LUÔN = 0 cho mọi browser session. Browser thật load CSS/JS hàng chục lần mà signal vẫn fire. Fix: NEW `l7/rate/res_ip_counter.lua` runs in `STEPS_RESOURCE` (init.lua) → INCR `res_ip:<ip>` (TTL 60s). `session_store.lua` đọc trước khi fire — nếu `res_ip >= 5` thì suppress. Threshold 5 để stray hit từ NAT peer không giải vây cho bot.
