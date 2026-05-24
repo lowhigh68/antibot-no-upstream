@@ -43,6 +43,7 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-24 (v4.4.10) — `req_classifier.lua` — **AUTH_LEGACY_PATHS multi-CMS expansion**: thêm `^/wp-json/wp/v2/users`, `^/admin/` (Drupal/Magento/OpenCart/NukeViet/MyBB), `^/typo3/`, `^/ghost/`, `^/adm/` (phpBB), `^/admin%.php$` (XenForo), `^/admincp/` (vBulletin). File upload xác nhận không ảnh hưởng: multipart blocked bởi CT guard (Fix A) và /wp-admin/ caught bởi FAST PATH 2 trước slow path.
 - 2026-05-24 (v4.4.9) — `req_classifier.lua` — **Fix A: body scan CT guard + Fix B: AUTH_LEGACY_PATHS expansion**.
   - Fix A: `body_contains_auth_marker(ct)` — gate trên `application/x-www-form-urlencoded` trước `read_body()`. REST/JSON/multipart → return false ngay, zero read_body overhead. `AUTH_BODY_MARKERS` giảm 19 → 11 entries (loại bỏ JSON/multipart markers — orphaned bởi Fix A).
   - Fix B: `AUTH_LEGACY_PATHS` mở rộng: `^/wp-admin/admin-ajax.php` → `^/wp-admin/` (all WP admin POST); thêm `^/administrator/` (Joomla), `^/filament/` (Laravel Filament), `^/nova/` (Laravel Nova). Mục tiêu: rate_weight=1.5 throttle admin AJAX burst trên multi-CMS server.

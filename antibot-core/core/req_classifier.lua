@@ -129,22 +129,45 @@ local AUTH_KEYWORDS = {
 -- semantic keyword nào trong URI VÀ body không có form-urlencoded credential
 -- marker. Rate limiting (rate_weight=1.5) là mục tiêu chính — ngăn
 -- burst AJAX từ nhiều admin session đồng thời. Mỗi entry phải justify.
+-- CMS admin backend paths không có auth keyword trong URI.
+-- Mục tiêu chính: rate_weight=1.5 throttle admin AJAX burst (cùng lý do
+-- wp-admin/admin-ajax.php ban đầu). is_auth_endpoint() guard method=POST
+-- nên GET navigation đến admin panel không bị ảnh hưởng.
+-- FP risk "/admin/": custom app không phải CMS có POST đến /admin/ sẽ
+-- nhận rate_weight=1.5 thay vì 0.3. Chấp nhận được — admin authenticated
+-- user được bảo vệ bởi session_richness threshold lift.
 local AUTH_LEGACY_PATHS = {
-    -- WordPress XML-RPC — XML body format, không có literal "password=" →
-    -- body detection miss. Bruteforce qua system.multicall.
-    "^/xmlrpc%.php$",
-    -- WordPress admin panel — tất cả admin POST: heartbeat (15s/session),
-    -- autosave, plugin AJAX, form saves. Không có auth keyword trong URI.
-    -- Rate limiting primary: nhiều admin session đồng thời burst → 503.
-    "^/wp%-admin/",
-    -- Joomla admin dispatcher — tất cả CMS admin POST đi qua /administrator/.
-    -- Global #2 CMS, phổ biến trên site chính phủ + doanh nghiệp VN.
-    -- Targeted cho com_users credential attack.
+    -- WordPress
+    "^/xmlrpc%.php$",        -- XML-RPC: xml body, bruteforce via system.multicall
+    "^/wp%-admin/",          -- admin panel: heartbeat/AJAX/autosave burst
+    "^/wp%-json/wp/v2/users",-- REST user endpoint: creation + enumeration target
+
+    -- Joomla (global #2 CMS, VN government/enterprise sites)
     "^/administrator/",
-    -- Laravel Filament admin panel — growing VN Laravel ecosystem.
-    -- Admin AJAX calls go through /filament/*. No auth keyword in path.
+
+    -- Generic /admin/ prefix — một entry cover nhiều CMS:
+    --   Drupal (không đổi được path), Magento 2 (default, thường rename),
+    --   OpenCart (default), NukeViet (VN gov CMS), MyBB, Bagisto, Strapi...
+    -- Note: PrestaShop random /admin[suffix]/ không thể hardcode (by design).
+    "^/admin/",
+
+    -- TYPO3 backend (European CMS: German gov, universities — fixed path)
+    "^/typo3/",
+
+    -- Ghost CMS admin panel (popular blog platform)
+    "^/ghost/",
+
+    -- phpBB admin area (popular VN community forums — fixed /adm/ path)
+    "^/adm/",
+
+    -- XenForo admin front-controller (popular VN forum platform)
+    "^/admin%.php$",
+
+    -- vBulletin admin control panel (legacy VN forums)
+    "^/admincp/",
+
+    -- Laravel admin packages (growing VN Laravel ecosystem)
     "^/filament/",
-    -- Laravel Nova admin panel — popular Laravel admin package.
     "^/nova/",
 }
 

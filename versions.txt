@@ -5,6 +5,33 @@
 
 ================================================================================
 
+## [4.4.10] — 2026-05-24 +07:00
+
+### Changed
+- **AUTH_LEGACY_PATHS mở rộng — multi-CMS coverage** (`core/req_classifier.lua`).
+  Thêm các CMS admin backend phổ biến global + Vietnam vào `auth_endpoint` class
+  (rate_weight=1.5 throttle admin AJAX burst, cùng lý do wp-admin/admin-ajax.php):
+
+  | Entry | CMS | Ghi chú |
+  |---|---|---|
+  | `^/wp-json/wp/v2/users` | WordPress REST | User creation + enumeration target |
+  | `^/admin/` | Drupal, Magento (default), OpenCart (default), NukeViet (VN gov), MyBB, Bagisto | Broad nhưng justified — auth endpoint không block |
+  | `^/typo3/` | TYPO3 | European CMS, German gov/university, fixed path |
+  | `^/ghost/` | Ghost CMS | Blog platform |
+  | `^/adm/` | phpBB | VN community forums, fixed path |
+  | `^/admin.php$` | XenForo | VN forum platform front-controller |
+  | `^/admincp/` | vBulletin | Legacy VN forums |
+
+  Không thể thêm: PrestaShop (`/admin[random]/` — randomized by design).
+  Confirmed: file upload không bị ảnh hưởng — multipart/form-data bị chặn bởi
+  CT guard trong body_contains_auth_marker (Fix A) VÀ /wp-admin/ upload caught
+  bởi FAST PATH 2 trước khi reach slow path.
+
+### Files changed
+- antibot-core/core/req_classifier.lua  (AUTH_LEGACY_PATHS expansion)
+
+================================================================================
+
 ## [4.4.9] — 2026-05-24 +07:00
 
 ### Changed / Performance
