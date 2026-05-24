@@ -5,6 +5,180 @@
 
 ================================================================================
 
+## [4.4.6] — 2026-05-24 +07:00
+
+### Changed
+- nginx/nginx.conf — tuning: `client_max_body_size 50M`, `server_names_hash_bucket_size 128`,
+  `server_names_hash_max_size 1024`.
+
+### Files changed
+- nginx/nginx.conf
+
+================================================================================
+
+## [4.4.5] — 2026-05-24 +07:00
+
+### Changed
+- core/req_classifier.lua — **inapp_browser: generic structural detection, xoá brand-token enumeration**.
+  - Xoá `INAPP_UA_TOKENS` (FBAN, ZALO, INSTAPP, ...) và `is_inapp_browser()`. Same anti-pattern:
+    app mới → thêm token = dead-end maintenance.
+  - Thay bằng `compute_inapp_likeness(ua, xrw, sec_ch_ua)` → 3 structural signals:
+    * Signal 1 (0.6): X-Requested-With = reverse-domain bundle ID (Android WebView tự set).
+      Covers ALL Android WebView apps kể cả chưa ra đời. Standalone browser không set header này.
+    * Signal 2 (0.3): UA không kết thúc canonical `Safari/X.Y`. WebView/in-app append token
+      sau Safari hoặc bỏ hẳn (iOS Facebook: `... Mobile/15E148 [FBAN/FBIOS;...]`).
+    * Signal 3 (0.15): Chrome 90+ UA nhưng thiếu `Sec-Ch-Ua` — WebView không expose client hints.
+    * OS-engine safety net (0.3): OpenHarmony, HarmonyOS, HMSCore, ArkWeb, TBS/, KAIOS.
+  - Output: `ctx.inapp_likeness ∈ [0,1]`. Threshold 0.4 → class=`inapp_browser`.
+  - async/logger.lua: thêm `inapp=%.2f` vào antibot.log format.
+
+### Rationale
+Generic catches MỌI app hiện tại + tương lai (Android/iOS WebView, HarmonyOS NEXT). Zero code
+change khi app mới ra. OS-engine list thay đổi 1-2 lần/decade — acceptable maintenance.
+
+### Files changed
+- antibot-core/core/req_classifier.lua  (replace INAPP_UA_TOKENS → compute_inapp_likeness/detect_inapp)
+- antibot-core/async/logger.lua         (thêm inapp=%.2f)
+
+================================================================================
+
+## [4.4.4] — 2026-05-24 +07:00
+
+### Changed
+- core/req_classifier.lua — **auth_endpoint v3-hybrid: keyword fast path + body semantic fallback**.
+  - v1: enumeration ~30 CMS hardcoded patterns — anti-pattern, removed.
+  - v2: `AUTH_KEYWORDS` semantic vocabulary (login, signin, auth, oauth, password, token, 2fa...).
+    `has_auth_keyword_in_path()` split URI theo "/", word-boundary check `[-_.]`. Catches
+    `/wp-login.php`, `/user/login`, `/customer/account/login`, `/api/v1/auth/login` via single
+    keyword, zero CMS-specific code. `has_auth_keyword_in_args()` cho Joomla/OpenCart query routing.
+  - v3 body fallback (NEW): `ngx.req.read_body()` + scan `AUTH_BODY_MARKERS` (password=, passwd=,
+    "password", name="password", client_secret=, grant_type=password, otp=, mfa_code=...).
+    Body cap 8KB. Defense-in-depth: attacker phải bypass URI keyword AND body marker.
+  - `AUTH_LEGACY_PATHS` giảm 2→1 entry (`/xmlrpc.php` only — XML body không có `password=` literal).
+    `/wp-admin/admin-ajax.php` removed — body detection catches `pwd=` / `password=`.
+  - Order fix: auth check trước interaction JSON (tránh `/wp-json/wp/v2/users` bị classify nhầm).
+
+### Rationale
+v3 catches obfuscated paths (Magento `loginpost`, `/portal/enter`, `/api/v9/handshake`) khi body
+chứa credential field. Fast path (95% traffic) zero overhead. Slow path ~10-50µs chỉ trigger POST.
+
+### Files changed
+- antibot-core/core/req_classifier.lua
+
+================================================================================
+
+## [4.4.3] — 2026-05-23 +07:00
+
+### Added
+- enforcement/decision/engine.lua — **Generic kill-switch cho dampened non-resource classes**.
+  - Constants: `KILL_DAMP_HARD_RAW=150` → floor 85% raw; `KILL_DAMP_SOFT_RAW=110` → floor 65% raw.
+  - Logic trong `elseif multiplier < 1.0` branch sau resource kill-switch.
+  - Áp dụng: interaction(0.6), api_callback(0.5), feed_or_meta(0.4), inapp_browser(0.4), unknown(0.5).
+
+### Fixed
+- FN: incident 20.9.70.139 (Azure AS8075, UA empty, raw=140, unknown mult=0.5 → eff=70).
+  Bot challenge-loop vô hạn vì eff không bao giờ vượt block(80). Soft kill: eff=max(70,91)=91 → block ✓.
+
+### Rationale
+Class dampening designed để giảm FP cho normal traffic, KHÔNG bảo vệ pure-threat storm. Khi raw
+≥110, multiple bot signals fire đồng thời — dampening che bot là bug, không phải feature.
+Threshold 110 an toàn: logged-in admin (richness 0.7-0.9 → -21 đến -27 pts) cần raw ~135 để trigger.
+
+### Files changed
+- antibot-core/enforcement/decision/engine.lua
+
+================================================================================
+
+## [4.4.2] — 2026-05-23 +07:00
+
+### Added
+- core/session_richness.lua (NEW) — Generic trust proxy `ctx.session_richness ∈ [0,1]`.
+  Measures cookie payload bytes (saturation 500B) + count (saturation 4) + Authorization(+0.3)
+  + CSRF header(+0.2). KHÔNG hardcode tên cookie — works for WP/Joomla/Drupal/Magento/SPA/JWT.
+  Wired in `STEPS_COMMON` after ctx_layer.init.
+- core/config.lua — `rate.class_burst_factor` table: per-class burst multiplier
+  (navigation 0.67, interaction 1.5, api_callback 2.0, auth_endpoint 0.8, feed_or_meta 0.5).
+
+### Changed
+- l7/burst/burst_decision.lua — rewrite: `effective = base × class_burst_factor × (1 + richness×2)`.
+- l7/rate/adaptive_limit.lua — apply richness lift vào per-ID rate threshold.
+- intelligence/scoring/compute.lua — `session_richness` NEGATIVE signal weight=−30 (trust proxy).
+  Refactor: `pos_total` tracked separately so negative signal không méo `contribution_pct`.
+- async/logger.lua — append `richness=X.XX` field vào antibot.log mỗi request.
+
+### Rationale
+Hai dimension orthogonal × multiplicative: class nature × client state.
+WP admin AJAX (richness 0.8, interaction): 117/s threshold. Bot scrape (richness 0): 45/s.
+Login bot (richness 0, auth_endpoint): 24/s.
+
+### Files changed
+- antibot-core/core/session_richness.lua  (new)
+- antibot-core/core/config.lua
+- antibot-core/init.lua
+- antibot-core/l7/burst/burst_decision.lua
+- antibot-core/l7/rate/adaptive_limit.lua
+- antibot-core/intelligence/scoring/compute.lua
+- antibot-core/async/logger.lua
+
+================================================================================
+
+## [4.4.1] — 2026-05-23 +07:00
+
+### Fixed
+- **FP: tuart.xuongweb.com** — WordPress + Flatsome admin install blocked legitimate user 14.232.154.94.
+  Two root causes:
+
+  A) `unknown` class `score_multiplier` 1.0→0.5, `rate_weight` 1.0→0.5.
+     Uncertainty principle: paths không match rule nào (Joomla `/administrator`, Drupal `/?q=admin`,
+     Magento `/admin/dashboard`, custom CMS) nhận FULL penalty thay vì giảm. Bayesian fix:
+     uncertainty GIẢM penalty. Bot thật imitate navigation/interaction → đã rơi class cụ thể.
+
+  B) `resource_starved` signal (weight=30) đếm res_count theo identity. Resource class skip fingerprint
+     → identity=nil → res_count LUÔN=0 → signal fire oan cho mọi browser thật.
+     Fix: IP-level gating via `l7/rate/res_ip_counter.lua` (NEW) chạy trong STEPS_RESOURCE.
+     `session_store.lua`: nếu `res_ip:<ip> >= 5` → suppress resource_starved (IP đang load resource thật).
+     Threshold 5 giảm FN risk shared-NAT.
+
+### Added
+- l7/rate/res_ip_counter.lua (NEW) — INCR `res_ip:<ip>` TTL=ttl.rate cho resource class.
+
+### Files changed
+- antibot-core/core/req_classifier.lua
+- antibot-core/l7/rate/res_ip_counter.lua  (new)
+- antibot-core/init.lua
+- antibot-core/detection/session/session_store.lua
+
+================================================================================
+
+## [4.4.0] — 2026-05-22 +07:00
+
+### Changed
+- l7/rate/adaptive_limit.lua — **ip_surge hybrid: signal tier + gated hard-ban tier**.
+  - Tier 1 (signal): `ip_rate > cfg.rate.ip_surge_threshold (1500)` → `ctx.ip_surge=true`.
+    Contributes weight=25 in compute.lua → reaches MONITOR alone; needs other signals to escalate.
+  - Tier 2 (hard ban): `ip_rate > cfg.rate.ip_surge_extreme (5000)` AND distinct identities
+    `< cfg.rate.ip_surge_distinct_min (3)` → hard ban TTL `cfg.rate.ip_surge_ban_ttl (300s)`.
+    NAT/CGNAT escaped via identity diversity check.
+- core/redis_pool.lua — new `safe_scard(key)` helper.
+- l7/rate/counter.lua — `SADD rate:ids:<ip>` per request (TTL=ttl.rate) for diversity check.
+- intelligence/scoring/compute.lua — register `ip_surge` signal weight=25.
+- core/config.lua — new keys: `ip_surge_extreme=5000`, `ip_surge_distinct_min=3`,
+  `ip_surge_ban_ttl=300`. Existing `ip_surge_threshold=1500` now signal-only (not hard-ban).
+
+### Fixed
+- FP: IP 118.70.131.98 banned 2026-05-21 during Claude Code extension install — single-user
+  session burst 1500 req/60s, entire CGNAT banned 1800s. Tier 1 (signal-only) + Tier 2 gated
+  by identity diversity prevents this class of FP.
+
+### Files changed
+- antibot-core/core/config.lua
+- antibot-core/core/redis_pool.lua
+- antibot-core/l7/rate/counter.lua
+- antibot-core/l7/rate/adaptive_limit.lua
+- antibot-core/intelligence/scoring/compute.lua
+
+================================================================================
+
 ## [4.3.6] — 2026-05-16 10:45:18 +07:00
 
 ### Added
