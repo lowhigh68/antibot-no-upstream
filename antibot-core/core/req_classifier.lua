@@ -56,7 +56,7 @@ _M.CLASS_CONFIG = {
     -- không có ý nghĩa với in-app browser.
     inapp_browser = {
         score_multiplier = 0.4,
-        rate_weight      = 0.3,
+        rate_weight      = 0.6,
         skip_layers      = { graph=true, cluster=true, browser=true,
                              anomaly=true, behavior=true },
         is_static        = false,
@@ -135,10 +135,17 @@ local AUTH_LEGACY_PATHS = {
     -- "password=" trong body → body detection miss. URI cũng không có
     -- semantic auth keyword → cần explicit exception.
     "^/xmlrpc%.php$",
-    -- Lưu ý: /wp-admin/admin-ajax.php KHÔNG có ở đây nữa.
-    -- Body detection (commit này) catch nó qua body có pwd= hoặc password=
-    -- khi bruteforce action=login. Nếu admin-ajax không có credential
-    -- field trong body, không phải auth attempt → không cần amplify.
+    -- WordPress admin-ajax.php — dispatcher cho toàn bộ WP admin AJAX:
+    -- heartbeat (mỗi 15s), autosave, widget update, WooCommerce ops, v.v.
+    -- Không có semantic auth keyword trong URI. Body thường không chứa
+    -- credential marker (action=heartbeat, action=autosave, ...).
+    -- Rate limiting là lý do chính: không có entry này → classify là
+    -- interaction (rate_weight=0.3) → heartbeat + autosave từ nhiều
+    -- admin session đồng thời burst qua Apache không bị kìm → 503.
+    -- auth_endpoint (rate_weight=1.5) cũng đúng về bản chất: đây là
+    -- CMS backend dispatcher — brute force action=login và credential
+    -- operations đi qua endpoint này.
+    "^/wp%-admin/admin%-ajax%.php$",
 }
 
 -- Body markers — semantic invariants của credential transmission.

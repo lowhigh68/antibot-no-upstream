@@ -5,6 +5,31 @@
 
 ================================================================================
 
+## [4.4.8] — 2026-05-24 +07:00
+
+### Fixed
+- **503 Service Unavailable trên toàn bộ WordPress sites** sau khi deploy v4.4.4+v4.4.5.
+  Hai nguyên nhân cộng hưởng:
+
+  A) `inapp_browser rate_weight` 0.3 → 0.6.
+     v4.4.5 classify mobile in-app requests (Zalo/FB) vào class mới `inapp_browser`
+     với rate_weight=0.3 — chỉ 30% so với navigation (1.0). Kết quả: 3× nhiều traffic
+     hơn pass qua Apache/PHP so với trước. Trên các site VN có lượng Zalo in-app
+     cao → Apache workers tăng → PHP memory pool cạn → 503.
+
+  B) `/wp-admin/admin-ajax.php` thêm lại vào `AUTH_LEGACY_PATHS`.
+     v4.4.4 xóa admin-ajax.php khỏi AUTH_LEGACY_PATHS (lý do: body detection catch
+     brute force action=login). Side effect: endpoint bị reclassify từ
+     `auth_endpoint` (rate_weight=1.5) → `interaction` (rate_weight=0.3) vì URI
+     không có auth keyword và body heartbeat/autosave không chứa credential marker.
+     WordPress Heartbeat API (mỗi 15s/session) + autosave + WooCommerce admin ops
+     burst qua Apache không bị rate limit → overload.
+
+### Files changed
+- antibot-core/core/req_classifier.lua  (inapp_browser rate_weight + AUTH_LEGACY_PATHS)
+
+================================================================================
+
 ## [4.4.7] — 2026-05-24 +07:00
 
 ### Fixed
