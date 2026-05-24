@@ -83,96 +83,127 @@ local RESOURCE_EXT = {
     woff=1, woff2=1, ttf=1, eot=1,
 }
 
--- Auth endpoint detection — generic patterns cover WordPress, Joomla, Drupal,
--- Magento, OpenCart, custom REST API, OAuth, OpenID Connect, 2FA.
+-- Auth endpoint detection — generic semantic vocabulary, KHÔNG framework
+-- enumeration.
 --
--- Nguyên tắc: path/query string patterns chuẩn của các framework phổ biến.
--- Không hardcode CMS-specific config; mọi pattern đều là well-known
--- standard (WP file paths, REST API conventions, OAuth RFC 6749 endpoints).
+-- Nguyên lý (cùng nguyên lý session_richness):
+--   Đo BẢN CHẤT (semantic), không đo BRAND (framework). Một auth endpoint
+--   có gì chung bất kể CMS? — Path component (giữa các /) chứa keyword
+--   thuộc semantic auth vocabulary. Endpoint nào dùng tên `/login`,
+--   `/auth/*`, `/register` CỐ Ý signal "đây là auth-related" — semantic
+--   intent rõ ràng, ngôn ngữ vocabulary stable theo thời gian.
 --
--- Chỉ match POST method — GET tới login page là user mở trang, không
--- phải bruteforce attempt. POST tới các endpoint dưới đây là credential
--- submission/registration → cần amplified mult 1.5 chống brute force.
+-- Vd cùng được catch bởi single keyword "login":
+--   /wp-login.php             (WP)
+--   /user/login               (Drupal)
+--   /customer/account/login   (Magento)
+--   /api/v1/auth/login        (REST custom)
+--   /login                    (any custom CMS)
+--   /strapi/admin/auth/login  (CMS tương lai chưa có hiện tại)
 --
--- Anchored với "^/" để tránh FP với path lồng (vd /api/cart/login-required
--- không trigger pattern "^/login").
-local AUTH_PATH_PATTERNS = {
-    -- WordPress (existing patterns, preserved)
-    "^/wp%-login%.php",
-    "^/xmlrpc%.php",
-    "^/wp%-admin/admin%-ajax%.php",
-    "^/wp%-json/wp/v[12]/users",
+-- Trade-off vs enumeration:
+--   + Pro: zero maintenance khi CMS mới ra; cover custom apps; consistent
+--          với principle "không hardcode brand list" áp dụng cho cookies,
+--          inapp_browser, ASN, etc.
+--   − Con: CMS đặt tên unconventional (Magento `loginpost` component)
+--          có thể miss. Chấp nhận trade-off vì 95%+ frameworks dùng
+--          semantic naming.
+--
+-- Chỉ match POST: GET tới /login là user mở trang đăng nhập (legitimate
+-- navigation), không phải bruteforce attempt.
 
-    -- Drupal
-    "^/user/login$", "^/user/login/",
-    "^/user/register$", "^/user/register/",
-    "^/user/password$",
-
-    -- Magento 1 & 2
-    "^/customer/account/loginpost",
-    "^/customer/account/login$", "^/customer/account/login/",
-    "^/customer/account/createpost",
-    "^/customer/account/forgotpasswordpost",
-
-    -- Generic root paths (anchored)
-    "^/login$", "^/login/",
-    "^/signin$", "^/signin/",
-    "^/sign%-in$", "^/sign%-in/",
-    "^/register$", "^/register/",
-    "^/signup$", "^/sign%-up$",
-    "^/forgot%-password", "^/forgot_password",
-    "^/password/reset", "^/reset%-password", "^/password%-reset",
-
-    -- REST API auth (nested under /api/.+)
-    "^/api/.+/login",
-    "^/api/.+/auth$", "^/api/.+/auth/",
-    "^/api/.+/signin",
-    "^/api/.+/sessions$", "^/api/.+/sessions/",
-    "^/api/.+/token",
-    "^/api/.+/register",
-
-    -- OAuth 2.0 / OpenID Connect / Keycloak
-    "^/oauth/token", "^/oauth/authorize",
-    "^/oauth2/token", "^/oauth2/authorize",
-    "^/connect/token", "^/connect/authorize",
-    "^/auth/realms/.+/protocol/openid%-connect/token",
-
-    -- 2FA / MFA
-    "^/2fa/", "^/2fa$",
-    "^/verify%-2fa", "^/verify_2fa",
-    "^/two%-factor", "^/two_factor",
-    "^/mfa/", "^/mfa$",
+-- Semantic auth vocabulary — KHÔNG phải framework list.
+-- Mỗi keyword là một concept auth chuẩn. Anyone naming an endpoint
+-- với các từ này CỐ Ý chỉ ra intent "auth-related".
+local AUTH_KEYWORDS = {
+    "login", "signin", "signup", "register", "logon",
+    "auth", "oauth", "oauth2", "sso",
+    "password", "passwd",
+    "token",
+    "session", "sessions",
+    "2fa", "mfa",
+    "credentials",
 }
 
--- Query string patterns (Joomla, OpenCart use ?option=/route= routing)
--- Match khi BOTH keywords present trong query string (giảm FP).
-local function args_match_auth(lower_args)
-    -- Joomla: option=com_users + task=user.{login,register,remind,reset}
-    if lower_args:find("option=com_users", 1, true) and
-       lower_args:find("task=user%.") then
-        return true
+-- Legacy exception list — paths bị abuse bruteforce nhưng KHÔNG chứa
+-- semantic keyword nào trong URI (semantic detection miss). Mỗi entry
+-- PHẢI có justification rõ ràng tại sao không thể detect generic.
+-- Nếu list này phát triển > 5 entry, signal rằng design có vấn đề.
+local AUTH_LEGACY_PATHS = {
+    -- WordPress xmlrpc.php — XML-RPC dispatcher đa năng (không phải auth
+    -- file). #1 bruteforce target historic qua system.multicall. Tên
+    -- file "xmlrpc" không có semantic auth → semantic detection miss.
+    "^/xmlrpc%.php$",
+
+    -- WordPress wp-admin/admin-ajax.php — general AJAX dispatcher.
+    -- Bruteforce qua action=login parameter trong body, không phải URI.
+    -- URI không chứa keyword auth → semantic miss.
+    "^/wp%-admin/admin%-ajax%.php",
+}
+
+-- Word-boundary match: keyword phải LÀ component hoặc bounded bởi
+-- separator path-safe (- _ .). Tránh FP như "author" matching "auth"
+-- (không separator giữa "auth" và "or" → không match).
+local function path_component_matches_kw(component, kw)
+    return component == kw                          -- /login
+        or component:find("^" .. kw .. "[-_.]")     -- /login-form, /login.do
+        or component:find("[-_.]" .. kw .. "$")     -- /wp-login, /user_login
+        or component:find("[-_.]" .. kw .. "[-_.]") -- /wp-login.php
+end
+
+local function has_auth_keyword_in_path(lower_uri)
+    for component in lower_uri:gmatch("[^/]+") do
+        for i = 1, #AUTH_KEYWORDS do
+            if path_component_matches_kw(component, AUTH_KEYWORDS[i]) then
+                return true
+            end
+        end
     end
-    -- OpenCart: route=account/{login,register,forgotten}
-    if lower_args:find("route=account/login", 1, true) or
-       lower_args:find("route=account/register", 1, true) or
-       lower_args:find("route=account/forgotten", 1, true) then
-        return true
+    return false
+end
+
+local function matches_legacy_path(lower_uri)
+    for i = 1, #AUTH_LEGACY_PATHS do
+        if lower_uri:find(AUTH_LEGACY_PATHS[i]) then return true end
+    end
+    return false
+end
+
+-- Query string keyword detection — Joomla/OpenCart routing patterns
+-- (?option=com_users&task=user.login, ?route=account/login). Boundary
+-- thêm "/" vì query value có thể chứa nested path.
+local function has_auth_keyword_in_args(lower_args)
+    for param in lower_args:gmatch("[^&]+") do
+        local _, val = param:match("([^=]+)=(.+)")
+        if val then
+            for i = 1, #AUTH_KEYWORDS do
+                local kw = AUTH_KEYWORDS[i]
+                if val == kw
+                    or val:find("^" .. kw .. "[-_./]")
+                    or val:find("[-_./]" .. kw .. "$")
+                    or val:find("[-_./]" .. kw .. "[-_./]") then
+                    return true
+                end
+            end
+        end
     end
     return false
 end
 
 local function is_auth_endpoint(method, uri, args)
-    -- Chỉ POST mới là bruteforce attempt. GET tới login page là user
-    -- mở trang đăng nhập bình thường → navigation chuẩn.
     if method ~= "POST" then return false end
 
     local lower_uri = uri:lower()
-    for i = 1, #AUTH_PATH_PATTERNS do
-        if lower_uri:find(AUTH_PATH_PATTERNS[i]) then return true end
-    end
 
+    -- Generic semantic detection — catches majority frameworks
+    if has_auth_keyword_in_path(lower_uri) then return true end
+
+    -- Legacy non-semantic paths (residual exception list)
+    if matches_legacy_path(lower_uri) then return true end
+
+    -- Query string semantic (Joomla com_users, OpenCart routing, custom)
     if args and args ~= "" then
-        return args_match_auth(args:lower())
+        return has_auth_keyword_in_args(args:lower())
     end
 
     return false
