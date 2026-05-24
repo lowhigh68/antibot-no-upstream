@@ -307,12 +307,18 @@ local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
     if not ua or ua == "" then return 0.0 end
 
     -- Bot self-identification: crawlers intentionally append tokens after
-    -- Safari/X.Y (RFC 9309 contact URL) → Signal 2 fires as FP.
+    -- Safari/X.Y (RFC 9309 contact URL / compatible comment) → Signal 2 FP.
     -- In-app browsers never self-identify as bots.
+    -- Two structural patterns:
+    --   (a) name token: "bot"/"spider"/"crawler" — Googlebot, Bingbot, ...
+    --   (b) RFC 9309 compatible comment at UA tail: "(compatible; GoogleOther)"
+    --       or "(compatible; Googlebot/2.1; +http://...)". No in-app browser
+    --       uses this format.
     local ua_l = ua:lower()
-    if ua_l:find("bot",     1, true) or
-       ua_l:find("spider",  1, true) or
-       ua_l:find("crawler", 1, true) then
+    if ua_l:find("bot",    1, true) or
+       ua_l:find("spider", 1, true) or
+       ua_l:find("crawler",1, true) or
+       ua_l:match("%(compatible;[^%)]+%)%s*$") then
         return 0.0
     end
 
