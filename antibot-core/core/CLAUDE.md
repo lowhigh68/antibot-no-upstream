@@ -43,6 +43,9 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-24 (v4.4.9) — `req_classifier.lua` — **Fix A: body scan CT guard + Fix B: AUTH_LEGACY_PATHS expansion**.
+  - Fix A: `body_contains_auth_marker(ct)` — gate trên `application/x-www-form-urlencoded` trước `read_body()`. REST/JSON/multipart → return false ngay, zero read_body overhead. `AUTH_BODY_MARKERS` giảm 19 → 11 entries (loại bỏ JSON/multipart markers — orphaned bởi Fix A).
+  - Fix B: `AUTH_LEGACY_PATHS` mở rộng: `^/wp-admin/admin-ajax.php` → `^/wp-admin/` (all WP admin POST); thêm `^/administrator/` (Joomla), `^/filament/` (Laravel Filament), `^/nova/` (Laravel Nova). Mục tiêu: rate_weight=1.5 throttle admin AJAX burst trên multi-CMS server.
 - 2026-05-24 (v4.4.7) — `req_classifier.lua` — **inapp_browser FP fix: bot-exclusion guard**.
   - `compute_inapp_likeness()`: thêm guard đầu hàm — nếu `ua` chứa `bot`/`spider`/`crawler` → return 0.0. Bots tự identify tên mình trong UA (RFC 9309); Signal 2 (non-canonical Safari tail) fire oan vì chúng gắn contact URL sau `Safari/X.Y`. In-app browser KHÔNG bao giờ self-identify là bot.
   - Incident: Googlebot smartphone UA `...Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://...)` → inapp_likeness=0.45 → blocked 13 lần trên www.hoanmy.vn (IPs 66.249.66.40, 66.249.71.132 = AS15169). Xác nhận từ log thực tế.

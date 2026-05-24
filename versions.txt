@@ -5,6 +5,43 @@
 
 ================================================================================
 
+## [4.4.9] — 2026-05-24 +07:00
+
+### Changed / Performance
+- **Fix A — body scan scoped to `application/x-www-form-urlencoded` only** (`core/req_classifier.lua`).
+  Root cause: `body_contains_auth_marker()` gọi `ngx.req.read_body()` cho MỌI POST không match
+  keyword/legacy/qs path — kể cả REST/JSON (WooCommerce API, SPA AJAX), GraphQL, multipart upload.
+  Cost ~10-50µs mỗi call, trên 150 site / 100 CCU với nhiều JSON POST → aggregate latency đáng kể.
+
+  Fix: thêm Content-Type guard đầu `body_contains_auth_marker(ct)` — nếu CT không phải
+  `application/x-www-form-urlencoded` → return false ngay, zero `read_body`.
+  - JSON POST: REST API, WooCommerce add-to-cart/checkout, SPA → zero overhead (caught by keyword path anyway)
+  - multipart POST: file upload → zero overhead (never a credential vector)
+  - form-urlencoded POST: browser login form, credential submit → body scanned as before
+  Cleanup: `AUTH_BODY_MARKERS` loại bỏ JSON/multipart markers (orphaned by Fix A — chúng không
+  bao giờ được check nữa). List giảm từ 19 → 11 entries, chỉ giữ form-urlencoded markers.
+
+- **Fix B — mở rộng `AUTH_LEGACY_PATHS` cho multi-CMS server** (`core/req_classifier.lua`).
+  Root cause: CMS admin backends ngoài WordPress không có auth semantic keyword trong URI và không
+  dùng standard form-urlencoded credential fields → classify là `interaction` (rate_weight=0.3)
+  → admin AJAX burst không bị throttle.
+
+  Changes:
+  - `"^/wp%-admin/admin%-ajax%.php$"` → mở rộng thành `"^/wp%-admin/"` (tất cả WP admin POST:
+    heartbeat, autosave, plugin AJAX, form saves — không chỉ admin-ajax.php).
+  - `"^/administrator/"` — Joomla admin dispatcher (global #2 CMS, phổ biến VN government sites).
+    Tất cả Joomla admin ops POST qua /administrator/, targeted cho com_users credential attack.
+  - `"^/filament/"` — Laravel Filament admin panel (growing VN Laravel ecosystem).
+  - `"^/nova/"` — Laravel Nova admin panel.
+  Sau fix: tất cả paths trên → `auth_endpoint` (rate_weight=1.5) → throttle admin burst.
+  Note: Drupal `/admin/`, OpenCart `/admin/`, NukeViet `/admin/` không thêm vì path quá broad
+  trên multi-site server (FP risk). Login page của các CMS này đã caught bởi semantic keyword.
+
+### Files changed
+- antibot-core/core/req_classifier.lua  (Fix A: body scan CT guard + markers cleanup; Fix B: AUTH_LEGACY_PATHS expansion)
+
+================================================================================
+
 ## [4.4.8] — 2026-05-24 +07:00
 
 ### Fixed
