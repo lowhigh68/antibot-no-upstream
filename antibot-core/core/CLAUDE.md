@@ -43,6 +43,12 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-24 — `req_classifier.lua` — **inapp_browser: generic structural detection, xoá brand-token enumeration**:
+  - Xoá `INAPP_UA_TOKENS` (FBAN, ZALO, INSTAPP, ...) và `is_inapp_browser()`. Same anti-pattern: app mới → thêm token = dead-end maintenance.
+  - Thay bằng `compute_inapp_likeness(ua, xrw, sec_ch_ua)` → Signal 1 (X-Requested-With reverse-domain `0.6`), Signal 2 (non-canonical Safari tail `0.3`), Signal 3 (Chrome 90+ thiếu Sec-Ch-Ua `0.15`), OS-engine safety net (`0.3` — HarmonyOS, TBS/, KaiOS). Output: `ctx.inapp_likeness ∈ [0,1]`. Threshold 0.4 → class=`inapp_browser`.
+  - Mọi Android WebView app hiện tại + tương lai auto-covered qua Signal 1. iOS in-app via Signal 2. Zero code change khi app mới ra.
+  - `classify()` updated: call `detect_inapp(ua)` → set `ctx.inapp_likeness` + return class. DEBUG log thêm `inapp=X.XX`.
+  - `async/logger.lua`: thêm `inapp=%.2f` vào log format.
 - 2026-05-24 (v3-hybrid) — `req_classifier.lua` — **auth_endpoint thêm body semantic fallback**:
   - v2 keyword path detection vẫn assume framework dùng semantic naming. Gap với Magento `loginpost` (no separator), custom obfuscated paths.
   - v3 thêm SLOW PATH: `ngx.req.read_body()` + scan body cho `AUTH_BODY_MARKERS` (password=, passwd=, pwd=, "password", name="password", client_secret=, grant_type=password, otp=, totp=, mfa_code=, verification_code=, ...). Body cap 8KB, chỉ POST mới đến nhánh này. Fast path keyword catches 95% requests → slow path chỉ trigger minority POST.

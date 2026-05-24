@@ -263,57 +263,104 @@ local function is_auth_endpoint(method, uri, args)
     return body_contains_auth_marker()
 end
 
--- Nhận dạng in-app browser bằng pattern chung trong UA.
--- Nguyên tắc: KHÔNG hardcode từng app — dùng đặc điểm cấu trúc UA:
---   1. Phải có dấu hiệu mobile thật (Mobile/ hoặc Android)
---      → loại bot dùng desktop UA hoặc UA rỗng
---   2. Có app token đặc trưng của in-app WebView
---      → phân biệt với Safari/Chrome thật trên mobile
+-- In-app browser detection — generic structural signals, KHÔNG app brand
+-- enumeration.
 --
--- App tokens: các app chat/social phổ biến đều nhúng tên vào UA
--- khi mở WebView. Pattern này ổn định qua các version vì là
--- identifier của app, không phải version string.
-local INAPP_UA_TOKENS = {
-    -- Vietnamese apps
-    "Zalo",           -- Zalo iOS/Android
-    -- Meta platforms
-    "FBAN",           -- Facebook App
-    "FBAV",           -- Facebook App variant
-    "FBIOS",          -- Facebook iOS
-    "Instagram",      -- Instagram
-    -- International chat/social
-    "Line/",          -- Line messenger
-    "Twitter",        -- Twitter/X
-    "TikTok",         -- TikTok
-    "Snapchat",       -- Snapchat
-    "Pinterest",      -- Pinterest
-    "LinkedIn",       -- LinkedIn
-    "MicroMessenger", -- WeChat
-    "Viber",          -- Viber
-    -- Telegram WebView gửi UA bình thường, không cần token riêng
-    -- Shopee, Lazada, Tiki in-app browser
-    "Shopee",
-    "Lazada",
-    "TikiApp",
+-- Nguyên lý (cùng pattern session_richness, auth_endpoint v3):
+--   Đo BẢN CHẤT của WebView request thay vì list app brands. WebView có
+--   structural signatures khác standalone browser:
+--     - Android: X-Requested-With = app bundle ID (com.X.Y reverse-domain)
+--     - UA tail: append brand token sau Safari version (non-canonical)
+--     - Missing client hints despite Chrome UA (WebView không expose)
+--
+-- Output: ctx.inapp_likeness ∈ [0,1] — continuous modifier (cùng pattern
+-- session_richness). Threshold 0.4 swap class → inapp_browser (apply
+-- existing skip_layers + mult 0.4 config). Class+modifiers hybrid.
+--
+-- Generic catches MỌI app hiện tại và tương lai:
+--   Android: Facebook (com.facebook.katana), Zalo (com.zing.zalo),
+--            Instagram, TikTok, WeChat, Alipay, DingTalk, Douyin, ...
+--   iOS:     Facebook, Instagram, Zalo, Line, ... (UA tail token)
+--   Tương lai: Threads, BeReal, Lemon8 — auto-covered, zero code change.
+
+-- OS-level engine markers — safety net cho platforms KHÔNG có
+-- Android/iOS WebView signals (Signal 1+2 miss).
+--
+-- Quy tắc IN LIST: chỉ OS-level identifier hoặc WebView engine, KHÔNG
+-- app brand. App brand caught bởi Signal 1+2. Standalone browser brand
+-- caught bởi Signal 2 (non-canonical Safari ending).
+--
+-- Event launch: 1-2 lần / decade. Maintain simple — add 1 string với
+-- inline comment khi OS mới launch.
+local OS_ENGINE_MARKERS = {
+    "OpenHarmony",   -- HarmonyOS NEXT pure runtime (2024+, post-Android)
+    "HarmonyOS",     -- HarmonyOS legacy (≤4.x, Android-compatible)
+    "HMSCore",       -- Huawei Mobile Services (any Huawei device)
+    "ArkWeb",        -- HarmonyOS NEXT WebView engine
+    "TBS/",          -- Tencent X5 WebView (WeChat/QQ embedded browser)
+    "KAIOS",         -- KaiOS feature phones (India/Africa market)
 }
 
-local function is_inapp_browser(ua)
-    if not ua or ua == "" then return false end
+local INAPP_CLASS_THRESHOLD = 0.4   -- threshold swap class
 
-    -- Điều kiện 1: phải có dấu hiệu mobile thật
-    -- Bot thường không có "Mobile/" hoặc dùng UA không có Android/iOS context
-    local is_mobile = ua:find("Mobile/", 1, true) or
-                      ua:find("Android", 1, true)
-    if not is_mobile then return false end
+local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
+    if not ua or ua == "" then return 0.0 end
 
-    -- Điều kiện 2: UA phải chứa app token
-    for _, token in ipairs(INAPP_UA_TOKENS) do
-        if ua:find(token, 1, true) then
-            return true
+    -- Prerequisite: mobile context (extended cho non-Android/iOS OS)
+    local is_mobile = ua:find("Mobile/", 1, true)
+                   or ua:find("Android", 1, true)
+                   or ua:find("OpenHarmony", 1, true)
+                   or ua:find("HarmonyOS", 1, true)
+                   or ua:find("KAIOS", 1, true)
+    if not is_mobile then return 0.0 end
+
+    local score = 0.0
+
+    -- SIGNAL 1 (strong, 0.6): Android WebView X-Requested-With reverse-domain.
+    -- Pattern com.X.Y / vn.X.Y / io.X.Y / app.X.Y (any TLD-style prefix).
+    -- Android tự động set header này = app bundle ID. Standalone browser
+    -- không có. Strongest signal vì khó fake mà không break UX.
+    if xrw and xrw ~= "" and
+       xrw:find("^%l[%l%d]*%.[%l%d][%w%-%.]+") then
+        score = score + 0.6
+    end
+
+    -- SIGNAL 2 (medium, 0.3): UA không kết thúc canonical Safari/X.Y.
+    -- Standard browser: "... Safari/537.36" hoặc "... Safari/604.1"
+    -- WebView/non-standard: append tokens SAU Safari version, hoặc bỏ
+    -- Safari hẳn (iOS WKWebView Facebook: "... Mobile/15E148 [FBAN/...]")
+    if not ua:match("Safari/[%d%.]+%s*$") then
+        score = score + 0.3
+    end
+
+    -- SIGNAL 3 (weak, 0.15): Chrome 90+ UA thiếu Sec-Ch-Ua client hints.
+    -- Standalone Chrome 90+ luôn gửi. WebView thường thiếu (not exposed
+    -- through WebView API).
+    local chrome_ver = ua:match("Chrome/(%d+)")
+    if chrome_ver and tonumber(chrome_ver) >= 90
+       and (not sec_ch_ua or sec_ch_ua == "") then
+        score = score + 0.15
+    end
+
+    -- SIGNAL 4 (safety net, 0.3): OS-level engine marker (HarmonyOS NEXT,
+    -- Tencent X5, KaiOS — edge case khi UA canonical ending + xrw không set).
+    for i = 1, #OS_ENGINE_MARKERS do
+        if ua:find(OS_ENGINE_MARKERS[i], 1, true) then
+            score = score + 0.3
+            break   -- no double-count nếu UA chứa multiple markers
         end
     end
 
-    return false
+    if score > 1.0 then score = 1.0 end
+    return score
+end
+
+-- Detect inapp + return (is_inapp, likeness) cho caller mutate ctx.
+local function detect_inapp(ua)
+    local xrw       = ngx.var.http_x_requested_with or ""
+    local sec_ch_ua = ngx.var.http_sec_ch_ua or ""
+    local likeness  = compute_inapp_likeness(ua, xrw, sec_ch_ua)
+    return likeness >= INAPP_CLASS_THRESHOLD, likeness
 end
 
 local function classify(ctx)
@@ -406,12 +453,13 @@ local function classify(ctx)
         return "interaction"
     end
 
-    -- In-app browser: có app token (FBAN, Zalo, Instagram, …) + mobile context.
-    -- Đặt TRƯỚC text/html check vì in-app WebView cũng gửi Accept: text/html —
-    -- nếu để sau, branch này là dead code và mọi in-app rơi vào "navigation"
-    -- với multiplier 1.0 → bị challenge oan.
-    -- Real browser không có app token nên vẫn fallback xuống navigation.
-    if is_inapp_browser(ua) then
+    -- In-app browser: structural WebView signals (X-Requested-With bundle ID,
+    -- non-canonical Safari tail, missing client hints). Đặt TRƯỚC text/html
+    -- check vì in-app WebView cũng gửi Accept: text/html — nếu để sau,
+    -- branch này là dead code và mọi in-app rơi vào "navigation" mult 1.0.
+    local is_inapp, inapp_likeness = detect_inapp(ua)
+    ctx.inapp_likeness = inapp_likeness
+    if is_inapp then
         return "inapp_browser"
     end
 
@@ -441,6 +489,7 @@ function _M.run(ctx)
         "[classifier] class=", class,
         " mult=", config.score_multiplier,
         " rate_w=", config.rate_weight,
+        " inapp=", string.format("%.2f", ctx.inapp_likeness or 0),
         " uri=", ngx.var.uri or "?")
 
     return true, false

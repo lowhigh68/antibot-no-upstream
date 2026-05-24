@@ -207,7 +207,7 @@ function _M.run(ctx)
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
-        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f" ..
+        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " top=%s reason=%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -226,6 +226,7 @@ function _M.run(ctx)
         tostring(ctx.action or "-"),
         beacon_state,
         ctx.session_richness or 0,
+        ctx.inapp_likeness or 0,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,

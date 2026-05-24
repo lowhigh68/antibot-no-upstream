@@ -1,5 +1,52 @@
 AntiBot v4.x — version log
 
+2026-05-24 — inapp_browser: generic structural detection, xoá brand-token enumeration
+  v1 (legacy): INAPP_UA_TOKENS list liệt kê FBAN, ZALO, INSTAPP, FBDV, ...
+  Cùng anti-pattern đã fix ở session_richness (cookie list) và auth_endpoint
+  (CMS path list): app mới ra = thêm token, không scalable.
+
+  Refactor — đo BẢN CHẤT WebView request, không đo brand:
+    Một in-app request khác standalone browser ở 3 structural signals:
+      Signal 1 (0.6, strong): Android WebView set X-Requested-With = app
+        bundle ID (com.X.Y / vn.X.Y / io.X.Y reverse-domain pattern).
+        Automatically covers ALL Android WebView apps kể cả chưa ra đời.
+        Standalone browser không set header này.
+
+      Signal 2 (0.3, medium): UA không kết thúc canonical "Safari/X.Y".
+        Browser chuẩn: "... Mobile/15E148 Safari/604.1" hoặc
+                       "... Chrome/124 Mobile Safari/537.36"
+        WebView/in-app: append token SAU Safari, hoặc bỏ hẳn Safari
+        (iOS Facebook: "... Mobile/15E148 [FBAN/FBIOS;...]")
+
+      Signal 3 (0.15, weak): Chrome 90+ UA nhưng thiếu Sec-Ch-Ua header.
+        Standalone Chrome 90+ luôn gửi client hints. WebView thường không
+        expose qua WebView API → thiếu header dù UA nói Chrome.
+
+    OS-level safety net (0.3): OpenHarmony, HarmonyOS, HMSCore, ArkWeb,
+    TBS/ (Tencent X5 WebView), KAIOS — dùng cho OS không có Android/iOS
+    WebView signals. List này sự kiện thay đổi 1-2 lần/decade (OS-level
+    marker, không phải app brand).
+
+  Output: ctx.inapp_likeness ∈ [0,1] — continuous modifier, cùng pattern
+  session_richness. Threshold 0.4 → swap class sang inapp_browser. Giá trị
+  < 0.4 cho non-inapp: vẫn ghi ctx.inapp_likeness cho debug (logger).
+
+  Coverage tự động (không thêm code khi app mới ra):
+    Android: Facebook (com.facebook.katana), Zalo (com.zing.zalo),
+             Instagram, TikTok, WeChat (TBS/), DingTalk, Douyin, ...
+    iOS: Facebook, Zalo, Instagram, Line (non-canonical Safari tail)
+    HarmonyOS NEXT: ArkWeb token trong UA
+    Future: Threads, BeReal, Lemon8 — auto-covered.
+
+  logger.lua: thêm `inapp=%.2f` vào antibot.log.
+  req_classifier.lua DEBUG log: thêm `inapp=X.XX`.
+
+  Files touched:
+    antibot-core/core/req_classifier.lua  (replace INAPP_UA_TOKENS + is_inapp_browser
+                                           bằng compute_inapp_likeness + detect_inapp;
+                                           cập nhật classify() call site + debug log)
+    antibot-core/async/logger.lua         (thêm inapp=%.2f vào log format)
+
 2026-05-24 (v3-hybrid) — auth_endpoint: thêm body semantic fallback
   v2 (commit 6298a44) dùng semantic keyword path detection. Vẫn còn gap:
   CMS đặt tên endpoint unconventional (Magento `loginpost` component
