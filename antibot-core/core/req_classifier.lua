@@ -306,6 +306,12 @@ local INAPP_CLASS_THRESHOLD = 0.4   -- threshold swap class
 local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
     if not ua or ua == "" then return 0.0 end
 
+    -- RFC 9309 bot self-identification: "(compatible; BotName/X.Y; +http://...)"
+    -- Real WebView apps NEVER use this format. Googlebot/Bingbot/any compliant
+    -- crawler declares itself this way — zero false positives for app traffic.
+    -- Structural pattern, not brand list: no specific bot names hardcoded.
+    if ua:find("%(compatible;", 1, true) then return 0.0 end
+
     -- Prerequisite: mobile context (extended cho non-Android/iOS OS)
     local is_mobile = ua:find("Mobile/", 1, true)
                    or ua:find("Android", 1, true)
