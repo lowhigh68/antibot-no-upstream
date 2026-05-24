@@ -83,6 +83,101 @@ local RESOURCE_EXT = {
     woff=1, woff2=1, ttf=1, eot=1,
 }
 
+-- Auth endpoint detection — generic patterns cover WordPress, Joomla, Drupal,
+-- Magento, OpenCart, custom REST API, OAuth, OpenID Connect, 2FA.
+--
+-- Nguyên tắc: path/query string patterns chuẩn của các framework phổ biến.
+-- Không hardcode CMS-specific config; mọi pattern đều là well-known
+-- standard (WP file paths, REST API conventions, OAuth RFC 6749 endpoints).
+--
+-- Chỉ match POST method — GET tới login page là user mở trang, không
+-- phải bruteforce attempt. POST tới các endpoint dưới đây là credential
+-- submission/registration → cần amplified mult 1.5 chống brute force.
+--
+-- Anchored với "^/" để tránh FP với path lồng (vd /api/cart/login-required
+-- không trigger pattern "^/login").
+local AUTH_PATH_PATTERNS = {
+    -- WordPress (existing patterns, preserved)
+    "^/wp%-login%.php",
+    "^/xmlrpc%.php",
+    "^/wp%-admin/admin%-ajax%.php",
+    "^/wp%-json/wp/v[12]/users",
+
+    -- Drupal
+    "^/user/login$", "^/user/login/",
+    "^/user/register$", "^/user/register/",
+    "^/user/password$",
+
+    -- Magento 1 & 2
+    "^/customer/account/loginpost",
+    "^/customer/account/login$", "^/customer/account/login/",
+    "^/customer/account/createpost",
+    "^/customer/account/forgotpasswordpost",
+
+    -- Generic root paths (anchored)
+    "^/login$", "^/login/",
+    "^/signin$", "^/signin/",
+    "^/sign%-in$", "^/sign%-in/",
+    "^/register$", "^/register/",
+    "^/signup$", "^/sign%-up$",
+    "^/forgot%-password", "^/forgot_password",
+    "^/password/reset", "^/reset%-password", "^/password%-reset",
+
+    -- REST API auth (nested under /api/.+)
+    "^/api/.+/login",
+    "^/api/.+/auth$", "^/api/.+/auth/",
+    "^/api/.+/signin",
+    "^/api/.+/sessions$", "^/api/.+/sessions/",
+    "^/api/.+/token",
+    "^/api/.+/register",
+
+    -- OAuth 2.0 / OpenID Connect / Keycloak
+    "^/oauth/token", "^/oauth/authorize",
+    "^/oauth2/token", "^/oauth2/authorize",
+    "^/connect/token", "^/connect/authorize",
+    "^/auth/realms/.+/protocol/openid%-connect/token",
+
+    -- 2FA / MFA
+    "^/2fa/", "^/2fa$",
+    "^/verify%-2fa", "^/verify_2fa",
+    "^/two%-factor", "^/two_factor",
+    "^/mfa/", "^/mfa$",
+}
+
+-- Query string patterns (Joomla, OpenCart use ?option=/route= routing)
+-- Match khi BOTH keywords present trong query string (giảm FP).
+local function args_match_auth(lower_args)
+    -- Joomla: option=com_users + task=user.{login,register,remind,reset}
+    if lower_args:find("option=com_users", 1, true) and
+       lower_args:find("task=user%.") then
+        return true
+    end
+    -- OpenCart: route=account/{login,register,forgotten}
+    if lower_args:find("route=account/login", 1, true) or
+       lower_args:find("route=account/register", 1, true) or
+       lower_args:find("route=account/forgotten", 1, true) then
+        return true
+    end
+    return false
+end
+
+local function is_auth_endpoint(method, uri, args)
+    -- Chỉ POST mới là bruteforce attempt. GET tới login page là user
+    -- mở trang đăng nhập bình thường → navigation chuẩn.
+    if method ~= "POST" then return false end
+
+    local lower_uri = uri:lower()
+    for i = 1, #AUTH_PATH_PATTERNS do
+        if lower_uri:find(AUTH_PATH_PATTERNS[i]) then return true end
+    end
+
+    if args and args ~= "" then
+        return args_match_auth(args:lower())
+    end
+
+    return false
+end
+
 -- Nhận dạng in-app browser bằng pattern chung trong UA.
 -- Nguyên tắc: KHÔNG hardcode từng app — dùng đặc điểm cấu trúc UA:
 --   1. Phải có dấu hiệu mobile thật (Mobile/ hoặc Android)
@@ -138,6 +233,7 @@ end
 
 local function classify(ctx)
     local uri    = ngx.var.uri                or ""
+    local args   = ngx.var.args               or ""
     local method = ngx.var.request_method     or "GET"
     local accept = ngx.var.http_accept        or ""
     local ct     = ngx.var.http_content_type  or ""
@@ -173,6 +269,16 @@ local function classify(ctx)
         return "resource"
     end
 
+    -- Auth endpoint — PHẢI check TRƯỚC interaction JSON.
+    -- POST tới /wp-json/wp/v2/users với Content-Type: application/json
+    -- (REST API modern) sẽ match interaction nếu để sau → bypass auth
+    -- amplified mult 1.5. Đặt sớm để mọi auth POST đi đúng class
+    -- bất kể content-type. Generic patterns cover WP/Joomla/Drupal/
+    -- Magento/OAuth/2FA — xem AUTH_PATH_PATTERNS ở đầu file.
+    if is_auth_endpoint(method, uri, args) then
+        return "auth_endpoint"
+    end
+
     -- Interaction: explicit API/data requests
     if ct:find("application/json", 1, true) or
        accept:find("application/json", 1, true) then
@@ -189,18 +295,6 @@ local function classify(ctx)
 
     if sec_fetch_dest == "empty" then
         return "interaction"
-    end
-
-    -- Auth / sensitive endpoints: wp-login, xmlrpc, admin-ajax, wp-json users.
-    -- Bruteforce target → mult 1.5x để score vượt threshold sớm hơn.
-    -- Đặt TRƯỚC mọi branch POST khác để bot strip Sec-Fetch không bypass
-    -- vào api_callback (mult 0.5x).
-    if method == "POST" and
-       (uri == "/wp-login.php" or
-        uri == "/xmlrpc.php" or
-        uri:find("^/wp%-admin/admin%-ajax%.php") or
-        uri:find("^/wp%-json/wp/v2/users")) then
-        return "auth_endpoint"
     end
 
     -- Navigation: browser form POST with Sec-Fetch context

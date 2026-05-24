@@ -1,5 +1,67 @@
 AntiBot v4.x — version log
 
+2026-05-24 — Generic auth_endpoint detection + classify order fix
+  Problem 1 — Security gap: auth_endpoint chỉ hardcode 4 path WordPress
+  (wp-login.php, xmlrpc.php, wp-admin/admin-ajax.php, wp-json/wp/v2/users).
+  Mọi CMS khác (Joomla, Drupal, Magento, OpenCart, custom REST, OAuth) khi
+  POST login bị classify thành navigation/interaction (mult 1.0 hoặc 0.6)
+  thay vì auth_endpoint (mult 1.5). Bruteforce protection chỉ hoạt động
+  cho WordPress — gap nghiêm trọng cho site multi-CMS hosting.
+
+  Problem 2 — Classify order bug: interaction check (Content-Type: application/json
+  hoặc Accept: application/json) đặt TRƯỚC auth_endpoint check trong classify()
+  flow. POST tới /wp-json/wp/v2/users với CT=application/json (chuẩn REST API
+  modern) match interaction FIRST → never reach auth_endpoint check → mult 0.6
+  thay vì 1.5. Bug đã tồn tại từ khi viết classifier.
+
+  Fix — core/req_classifier.lua:
+    + AUTH_PATH_PATTERNS table (~30 patterns):
+        - WordPress (4 original)
+        - Drupal (/user/login, /user/register, /user/password)
+        - Magento 1+2 (/customer/account/loginpost, /customer/account/login,
+                       /customer/account/createpost, .../forgotpasswordpost)
+        - Generic root (/login, /signin, /sign-in, /register, /signup,
+                        /forgot-password, /password/reset, /reset-password)
+        - REST API (/api/.+/login, /api/.+/auth, /api/.+/signin,
+                    /api/.+/sessions, /api/.+/token, /api/.+/register)
+        - OAuth 2.0 (/oauth/token, /oauth/authorize, /oauth2/*, /connect/token)
+        - Keycloak (/auth/realms/.+/protocol/openid-connect/token)
+        - 2FA/MFA (/2fa, /verify-2fa, /two-factor, /mfa)
+    + args_match_auth() helper cho query string patterns:
+        - Joomla: option=com_users + task=user.{login,register,remind,reset}
+        - OpenCart: route=account/{login,register,forgotten}
+    + is_auth_endpoint(method, uri, args) — chỉ match POST. GET tới login
+      page là user mở trang đăng nhập bình thường, không phải bruteforce.
+    + Anchored "^/" để tránh FP với path lồng (/api/cart/login-required
+      không match "^/login").
+
+  Order fix:
+    Auth_endpoint check dời TỪ sau interaction JSON LÊN ngay sau resource
+    Sec-Fetch-Dest check. Mọi auth POST giờ vào class auth_endpoint bất
+    kể Content-Type (form-urlencoded, json, multipart).
+
+  Coverage trước/sau:
+    Site WordPress only:         covered → covered  (no regression)
+    Site Joomla/Drupal/Magento:  NAVIGATION (mult 1.0) → AUTH (mult 1.5)
+    REST API login (JSON POST):  INTERACTION (mult 0.6) → AUTH (mult 1.5)
+    OAuth token endpoint:        UNKNOWN (mult 0.5) → AUTH (mult 1.5)
+    2FA verify:                  INTERACTION → AUTH
+
+  FP risk: thấp. Patterns anchored ^/, chỉ POST, common login conventions.
+  Vd POST /api/cart/checkout không match (không có "login/auth/signin"
+  trong path). POST /login từ chatbot widget (rare) sẽ amplify → đúng
+  semantic vì widget login cũng nên anti-bruteforce.
+
+  Files touched:
+    antibot-core/core/req_classifier.lua
+
+  Verification:
+    grep "auth_endpoint" /var/log/antibot/antibot.log | \
+      grep -oE "domain=[^ ]+ class=auth_endpoint id=[^ ]+ ip=[^ ]+" | \
+      sort | uniq -c | sort -rn
+    # Quan sát: count auth_endpoint cho Joomla/Drupal/Magento domain tăng
+    # nếu trước đây bị classify nhầm. WordPress count giữ nguyên.
+
 2026-05-23 (v3) — Generic kill-switch cho dampened class non-resource
   Problem: Fix A' (commit 649031e — unknown mult 1.0 → 0.5) tạo ra FN.
   Incident observed in log:
