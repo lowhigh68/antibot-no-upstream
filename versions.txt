@@ -12,10 +12,15 @@
   Two root causes:
 
   A) `compute_inapp_likeness()` — Signal 2 (non-canonical Safari tail) + Signal 3 (Chrome-missing-Sec-Ch-Ua)
-     fire on Googlebot UA `...Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://...)`:
-     score=0.45 → classified as `inapp_browser`. Bot self-identified UAs are NOT in-app browsers —
-     crawlers intentionally append RFC 9309 contact tokens after `Safari/X.Y`.
-     Fix: guard at top of `compute_inapp_likeness` — if UA contains `bot`/`spider`/`crawler`, return 0.0.
+     fire on Google bot UAs (inapp_likeness=0.45 → classified as `inapp_browser`):
+       `...Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://...)`
+       `...Mobile Safari/537.36 (compatible; GoogleOther)`
+     Crawlers intentionally append RFC 9309 tokens after `Safari/X.Y`. In-app browsers never do this.
+     Fix: two-part guard in `compute_inapp_likeness`:
+       (a) name token: `bot`/`spider`/`crawler` — catches Googlebot, Bingbot, etc.
+       (b) RFC 9309 compatible-comment at UA tail `%(compatible;[^%)]+%)%s*$` —
+           catches GoogleOther and any future compliant bot without "bot" in name.
+     Confirmed from actual access log: both IPs use BOTH UA forms.
 
   B) `ua_check.lua` unregistered_bot path — when Redis doesn't have `goodbot:dns:<name>` (seed
      not yet run, transient flush), `ctx.good_bot_asns` was not set. ASN fallback in `bot/init.lua`
@@ -24,7 +29,7 @@
      hardcoded PTR_ONLY_BOTS ASNs are always available as fallback regardless of Redis state.
 
 ### Files changed
-- antibot-core/core/req_classifier.lua  (bot-exclusion guard in compute_inapp_likeness)
+- antibot-core/core/req_classifier.lua  (two-part bot-exclusion guard in compute_inapp_likeness)
 - antibot-core/detection/bot/ua_check.lua  (unregistered_bot path: set ctx.good_bot_asns)
 
 ================================================================================
