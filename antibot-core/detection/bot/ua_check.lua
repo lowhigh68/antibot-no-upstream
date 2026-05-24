@@ -347,6 +347,7 @@ function _M.run(ctx)
             ctx.good_bot_claimed  = true
             ctx.good_bot_name     = bot_name
             ctx.good_bot_suffixes = {}   -- empty → dns_reverse will fail verify
+            ctx.good_bot_asns     = get_bot_asns(bot_name)  -- ASN fallback if Redis DNS miss
             ctx.bot_ua            = "unregistered_bot"
             ctx.bot_score         = 0.0  -- dns_reverse decides the score
             return true, false

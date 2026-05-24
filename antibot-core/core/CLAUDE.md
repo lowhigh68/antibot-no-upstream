@@ -43,6 +43,9 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-24 (v4.4.7) — `req_classifier.lua` — **inapp_browser FP fix: bot-exclusion guard**.
+  - `compute_inapp_likeness()`: thêm guard đầu hàm — nếu `ua` chứa `bot`/`spider`/`crawler` → return 0.0. Bots tự identify tên mình trong UA (RFC 9309); Signal 2 (non-canonical Safari tail) fire oan vì chúng gắn contact URL sau `Safari/X.Y`. In-app browser KHÔNG bao giờ self-identify là bot.
+  - Incident: Googlebot smartphone UA `...Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://...)` → inapp_likeness=0.45 → blocked 13 lần trên www.hoanmy.vn (IPs 66.249.66.40, 66.249.71.132 = AS15169). Xác nhận từ log thực tế.
 - 2026-05-24 — `req_classifier.lua` — **inapp_browser: generic structural detection, xoá brand-token enumeration**:
   - Xoá `INAPP_UA_TOKENS` (FBAN, ZALO, INSTAPP, ...) và `is_inapp_browser()`. Same anti-pattern: app mới → thêm token = dead-end maintenance.
   - Thay bằng `compute_inapp_likeness(ua, xrw, sec_ch_ua)` → Signal 1 (X-Requested-With reverse-domain `0.6`), Signal 2 (non-canonical Safari tail `0.3`), Signal 3 (Chrome 90+ thiếu Sec-Ch-Ua `0.15`), OS-engine safety net (`0.3` — HarmonyOS, TBS/, KaiOS). Output: `ctx.inapp_likeness ∈ [0,1]`. Threshold 0.4 → class=`inapp_browser`.

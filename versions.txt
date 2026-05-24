@@ -5,6 +5,30 @@
 
 ================================================================================
 
+## [4.4.7] — 2026-05-24 +07:00
+
+### Fixed
+- **FP: Googlebot smartphone UA blocked as inapp_browser on www.hoanmy.vn** (IPs 66.249.66.40, 66.249.71.132).
+  Two root causes:
+
+  A) `compute_inapp_likeness()` — Signal 2 (non-canonical Safari tail) + Signal 3 (Chrome-missing-Sec-Ch-Ua)
+     fire on Googlebot UA `...Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://...)`:
+     score=0.45 → classified as `inapp_browser`. Bot self-identified UAs are NOT in-app browsers —
+     crawlers intentionally append RFC 9309 contact tokens after `Safari/X.Y`.
+     Fix: guard at top of `compute_inapp_likeness` — if UA contains `bot`/`spider`/`crawler`, return 0.0.
+
+  B) `ua_check.lua` unregistered_bot path — when Redis doesn't have `goodbot:dns:<name>` (seed
+     not yet run, transient flush), `ctx.good_bot_asns` was not set. ASN fallback in `bot/init.lua`
+     checks `ctx.good_bot_asns` → nil → can't fallback to hardcoded AS15169.
+     Fix: add `ctx.good_bot_asns = get_bot_asns(bot_name)` in unregistered_bot path so
+     hardcoded PTR_ONLY_BOTS ASNs are always available as fallback regardless of Redis state.
+
+### Files changed
+- antibot-core/core/req_classifier.lua  (bot-exclusion guard in compute_inapp_likeness)
+- antibot-core/detection/bot/ua_check.lua  (unregistered_bot path: set ctx.good_bot_asns)
+
+================================================================================
+
 ## [4.4.6] — 2026-05-24 +07:00
 
 ### Changed

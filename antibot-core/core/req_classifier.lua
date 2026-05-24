@@ -306,6 +306,16 @@ local INAPP_CLASS_THRESHOLD = 0.4   -- threshold swap class
 local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
     if not ua or ua == "" then return 0.0 end
 
+    -- Bot self-identification: crawlers intentionally append tokens after
+    -- Safari/X.Y (RFC 9309 contact URL) → Signal 2 fires as FP.
+    -- In-app browsers never self-identify as bots.
+    local ua_l = ua:lower()
+    if ua_l:find("bot",     1, true) or
+       ua_l:find("spider",  1, true) or
+       ua_l:find("crawler", 1, true) then
+        return 0.0
+    end
+
     -- Prerequisite: mobile context (extended cho non-Android/iOS OS)
     local is_mobile = ua:find("Mobile/", 1, true)
                    or ua:find("Android", 1, true)
