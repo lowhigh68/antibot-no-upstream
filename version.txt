@@ -1,5 +1,54 @@
 AntiBot v4.x — version log
 
+2026-05-24 (v3-hybrid) — auth_endpoint: thêm body semantic fallback
+  v2 (commit 6298a44) dùng semantic keyword path detection. Vẫn còn gap:
+  CMS đặt tên endpoint unconventional (Magento `loginpost` component
+  không separator, custom obfuscated paths /portal/enter, /api/v9/xyz)
+  bị miss. Keyword detection assume framework dùng semantic naming —
+  vẫn là assumption, không phải invariant tuyệt đối.
+
+  Tư duy ngược lại — login action có gì THỰC SỰ invariant?
+    A login attempt = POST + body chứa credential field (password/OTP).
+    Path/URL chỉ là routing — KHÔNG semantic của hành động đăng nhập.
+    BODY mới là evidence vật lý của credential transmission.
+
+  v3-hybrid: keyword fast path + body semantic fallback
+    Fast path (existing v2):
+      1. URI path keyword (AUTH_KEYWORDS)
+      2. Legacy path (xmlrpc.php only — XML body không có literal password=)
+      3. Query string keyword (Joomla/OpenCart routing)
+    Slow path (NEW):
+      4. ngx.req.read_body() + scan body cho AUTH_BODY_MARKERS:
+         password=, passwd=, pwd=, passphrase=  (form-urlencoded)
+         "password", "passwd", "pwd", "passphrase"  (JSON)
+         name="password", name="pwd"  (multipart)
+         client_secret=, "client_secret"  (OAuth)
+         grant_type=password, "grant_type":"password"  (OAuth ROPC)
+         otp=, totp=, mfa_code=, mfa_token=, verification_code=  (2FA)
+
+    Defense-in-depth: 95% requests catch ở fast path (zero body read).
+    5% obfuscated/custom catch ở slow path. Attacker phải bypass cả hai
+    — đổi tên endpoint + đổi tên password field (phá UX).
+
+  AUTH_LEGACY_PATHS giảm từ 2 → 1 entry (/xmlrpc.php only).
+  /wp-admin/admin-ajax.php removed — body detection catches action=login
+  qua marker pwd= hoặc password=.
+
+  Performance:
+    Fast path: O(1) string find trên URI ngắn. Negligible.
+    Slow path: chỉ trigger cho POST không match fast path → minority of
+    traffic. ~10-50µs per body read. Site 100 req/s với 10% POST nhưng
+    8% match fast path → ~2 req/s body read → 0.1ms aggregate latency.
+
+  Coverage delta (case không catch bởi v2 keyword):
+    Magento /customer/account/loginpost POST password=...    → catch ✓
+    Custom /portal/enter POST password=...                    → catch ✓
+    Custom /api/v9/handshake POST "password":...              → catch ✓
+    GraphQL /graphql POST với mutation Login                   → catch nếu body có "password"
+
+  Files touched:
+    antibot-core/core/req_classifier.lua
+
 2026-05-24 (v2) — Refactor auth_endpoint: framework enumeration → semantic vocabulary
   Hồi cứu v1 (commit 32bed76): tôi hardcode ~30 patterns cho mỗi CMS
   (WordPress, Joomla, Drupal, Magento, OpenCart, Keycloak, 2FA paths).

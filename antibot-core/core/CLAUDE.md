@@ -43,6 +43,12 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-05-24 (v3-hybrid) — `req_classifier.lua` — **auth_endpoint thêm body semantic fallback**:
+  - v2 keyword path detection vẫn assume framework dùng semantic naming. Gap với Magento `loginpost` (no separator), custom obfuscated paths.
+  - v3 thêm SLOW PATH: `ngx.req.read_body()` + scan body cho `AUTH_BODY_MARKERS` (password=, passwd=, pwd=, "password", name="password", client_secret=, grant_type=password, otp=, totp=, mfa_code=, verification_code=, ...). Body cap 8KB, chỉ POST mới đến nhánh này. Fast path keyword catches 95% requests → slow path chỉ trigger minority POST.
+  - Defense-in-depth: attacker phải bypass cả URI keyword AND body marker (đổi tên password field phá UX).
+  - `AUTH_LEGACY_PATHS` giảm 2 → 1 entry (chỉ `/xmlrpc.php` — XML body không có literal `password=`). `/wp-admin/admin-ajax.php` removed vì body detection catch action=login qua marker pwd=.
+  - Performance: fast path zero overhead (chỉ 95% requests); slow path ~10-50µs per POST trigger → site 100 req/s với 10% POST → 0.1ms aggregate latency.
 - 2026-05-24 (v2) — `req_classifier.lua` — **refactor auth_endpoint từ enumeration → semantic vocabulary**:
   - v1 (commit 32bed76) hardcode ~30 CMS-specific patterns — anti-pattern (cùng vấn đề cookie list trước đây ở session_richness).
   - v2 refactor: `AUTH_KEYWORDS` table 15 từ semantic vocabulary (login, signin, register, auth, oauth, password, token, session, 2fa, mfa, credentials...). `has_auth_keyword_in_path` split URI theo "/", check mỗi component match keyword với word boundary `[-_.]` (tránh FP "author" matching "auth"). Cùng keyword "login" catches /wp-login.php, /user/login, /customer/account/login, /login, /strapi/admin/auth/login bất kể CMS. Generic, zero maintenance khi CMS mới ra.

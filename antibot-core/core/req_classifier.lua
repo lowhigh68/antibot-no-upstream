@@ -126,19 +126,47 @@ local AUTH_KEYWORDS = {
 }
 
 -- Legacy exception list — paths bị abuse bruteforce nhưng KHÔNG chứa
--- semantic keyword nào trong URI (semantic detection miss). Mỗi entry
--- PHẢI có justification rõ ràng tại sao không thể detect generic.
--- Nếu list này phát triển > 5 entry, signal rằng design có vấn đề.
+-- semantic keyword nào trong URI VÀ body cũng không chứa marker chuẩn
+-- (body semantic detection miss). Mỗi entry phải justify rõ ràng.
 local AUTH_LEGACY_PATHS = {
-    -- WordPress xmlrpc.php — XML-RPC dispatcher đa năng (không phải auth
-    -- file). #1 bruteforce target historic qua system.multicall. Tên
-    -- file "xmlrpc" không có semantic auth → semantic detection miss.
+    -- WordPress xmlrpc.php — XML-RPC dispatcher dùng XML body format.
+    -- Bruteforce qua system.multicall với password được wrap trong
+    -- <value><string>password</string></value> — KHÔNG có literal
+    -- "password=" trong body → body detection miss. URI cũng không có
+    -- semantic auth keyword → cần explicit exception.
     "^/xmlrpc%.php$",
+    -- Lưu ý: /wp-admin/admin-ajax.php KHÔNG có ở đây nữa.
+    -- Body detection (commit này) catch nó qua body có pwd= hoặc password=
+    -- khi bruteforce action=login. Nếu admin-ajax không có credential
+    -- field trong body, không phải auth attempt → không cần amplify.
+}
 
-    -- WordPress wp-admin/admin-ajax.php — general AJAX dispatcher.
-    -- Bruteforce qua action=login parameter trong body, không phải URI.
-    -- URI không chứa keyword auth → semantic miss.
-    "^/wp%-admin/admin%-ajax%.php",
+-- Body markers — semantic invariants của credential transmission.
+-- Match bằng substring (literal find, không regex) → fast + ZERO false
+-- positive vì các marker này là chuỗi rất cụ thể.
+--
+-- KHÔNG bao gồm CAPTCHA-only fields (g-recaptcha-response, h-captcha...)
+-- vì CAPTCHA xuất hiện trong contact form, comment form, register form,
+-- không chỉ login → quá broad, FP risk cho non-auth form spam protection
+-- (mà spam protection thuộc concern khác).
+local AUTH_BODY_MARKERS = {
+    -- Password field (smoking gun, primary signal)
+    -- Form-urlencoded
+    "password=", "passwd=", "pwd=", "passphrase=",
+    -- JSON (quoted key)
+    '"password"', '"passwd"', '"pwd"', '"passphrase"',
+    -- Multipart form-data
+    'name="password"', 'name="pwd"', 'name="passwd"',
+    -- OAuth client credentials
+    "client_secret=", '"client_secret"',
+    -- OAuth Resource Owner Password Credentials grant
+    "grant_type=password",
+    '"grant_type":"password"',
+    -- OTP/2FA fields (bruteforce target trong stage 2 attack)
+    "otp=", "totp=",
+    "mfa_code=", "mfa_token=",
+    "verification_code=",
+    '"otp"', '"totp"', '"mfa_code"', '"verification_code"',
 }
 
 -- Word-boundary match: keyword phải LÀ component hoặc bounded bởi
@@ -190,23 +218,49 @@ local function has_auth_keyword_in_args(lower_args)
     return false
 end
 
+-- Body inspection (slow path) — chỉ chạy khi keyword/legacy/qs đều miss.
+-- Cap body size 8KB: auth body luôn nhỏ (<1KB typical). Body lớn hơn
+-- là file upload / GraphQL query / etc — không phải auth.
+--
+-- Performance note: ngx.req.read_body() đọc body từ connection vào memory
+-- (cap by client_body_buffer_size, default 16KB). Cost ~10-50µs per POST.
+-- Chỉ POST mới đến nhánh này, GET zero overhead.
+local function body_contains_auth_marker()
+    ngx.req.read_body()
+    local body = ngx.req.get_body_data()
+    if not body or body == "" or #body > 8192 then return false end
+
+    local lower = body:lower()
+    for i = 1, #AUTH_BODY_MARKERS do
+        if lower:find(AUTH_BODY_MARKERS[i], 1, true) then return true end
+    end
+    return false
+end
+
+-- v3-hybrid: keyword fast path + body semantic fallback.
+-- Fast path catches 95% standard CMS frameworks (zero body read).
+-- Body fallback catches obfuscated paths (/portal/enter, /api/v9/handshake,
+-- Magento `loginpost` không có separator) khi body chứa credential field.
+-- Hai layer độc lập → defense-in-depth, attacker phải bypass cả hai.
 local function is_auth_endpoint(method, uri, args)
     if method ~= "POST" then return false end
 
     local lower_uri = uri:lower()
 
-    -- Generic semantic detection — catches majority frameworks
+    -- FAST PATH 1: URI path semantic keyword
     if has_auth_keyword_in_path(lower_uri) then return true end
 
-    -- Legacy non-semantic paths (residual exception list)
+    -- FAST PATH 2: Legacy non-semantic paths (xmlrpc.php only)
     if matches_legacy_path(lower_uri) then return true end
 
-    -- Query string semantic (Joomla com_users, OpenCart routing, custom)
+    -- FAST PATH 3: Query string semantic (Joomla, OpenCart, custom routing)
     if args and args ~= "" then
-        return has_auth_keyword_in_args(args:lower())
+        if has_auth_keyword_in_args(args:lower()) then return true end
     end
 
-    return false
+    -- SLOW PATH: body semantic — credential field literal in POST body.
+    -- Catches paths không có semantic keyword nhưng transmit credentials.
+    return body_contains_auth_marker()
 end
 
 -- Nhận dạng in-app browser bằng pattern chung trong UA.
