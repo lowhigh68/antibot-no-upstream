@@ -44,7 +44,7 @@ local GOOD_BOT_RETRY_AFTER = 120
 -- Observed: 57.141.2.x subnet ~8-9 req/s (~8 concurrent PHP workers).
 -- Limit 5 req/s = 300/60s. Minute-aligned window (same pattern as GOOD_BOT_RPM).
 -- Applies only after good_bot_verified — unverified traffic handled by bot detection.
-local META_ASN         = "AS32934"
+local META_ASN         = 32934
 local META_RATE_LIMIT  = 300
 local META_RETRY_AFTER = 60
 
