@@ -40,6 +40,14 @@ local SOFT_SCORE_THRESHOLD = 0.7
 local GOOD_BOT_RPM         = 8
 local GOOD_BOT_RETRY_AFTER = 120
 
+-- Meta AI crawler (AS32934) raw rate limit.
+-- Observed: 57.141.2.x subnet ~8-9 req/s (~8 concurrent PHP workers).
+-- Limit 5 req/s = 300/60s. Minute-aligned window (same pattern as GOOD_BOT_RPM).
+-- Applies only after good_bot_verified — unverified traffic handled by bot detection.
+local META_ASN         = "AS32934"
+local META_RATE_LIMIT  = 300
+local META_RETRY_AFTER = 60
+
 -- Sub-signal contributions (graduated, none alone is sufficient)
 local CONTRIB_QS_LEN_120 = 0.50
 local CONTRIB_QS_LEN_80  = 0.35
@@ -83,6 +91,30 @@ local function expensive_score(qs)
     end
 
     return s
+end
+
+local function throttle_meta_asn(ctx)
+    if not (ctx.asn and ctx.asn.asn_number == META_ASN) then return false end
+
+    local minute = math.floor(ngx.time() / 60)
+    local key    = "rate:goodbot:meta:" .. minute
+    local count  = pool.safe_incr(key, 65) or 0
+
+    if count <= META_RATE_LIMIT then return false end
+
+    ctx.action        = "throttled"
+    ctx.action_reason = "meta_rate"
+    ngx.log(ngx.WARN,
+        "[engine] meta_asn_rate count=", count,
+        " limit=", META_RATE_LIMIT,
+        " ip=", ctx.ip or "?")
+    ngx.status = 429
+    ngx.header["Retry-After"]   = tostring(META_RETRY_AFTER)
+    ngx.header["Cache-Control"] = "no-cache"
+    ngx.header["Content-Type"]  = "text/plain"
+    ngx.say("Rate limited — retry after ", META_RETRY_AFTER, "s")
+    ngx.exit(429)
+    return true
 end
 
 local function classify_request(qs)
@@ -286,6 +318,10 @@ function _M.run(ctx)
         -- Bot SDK respect 429+Retry-After, không bị flag blocked, backend
         -- không bị flood combinatorial WP_Query.
         if throttle_good_bot(ctx) then
+            return "throttled"
+        end
+        -- Meta ASN raw rate limit (5 req/s aggregate across all 57.141.x.x IPs).
+        if throttle_meta_asn(ctx) then
             return "throttled"
         end
         ctx.action        = "allow"
