@@ -210,6 +210,28 @@ _M.trust = {
     action_cap         = "monitor",
 }
 
+-- Cookie anti-sharing tracking.
+--
+-- Bot scrapers solve PoW once on 1 IP, capture the verified cookie, then
+-- replay that SAME cookie from many IPs (~35 IPs observed in 43.172.0.0/15
+-- subnet attack 2026-06-18). Cookie fast-path bypasses ALL detection ->
+-- attacker gets permanent allow across whole fleet.
+--
+-- Defense: track distinct IPs per cookie via `cookie_ips:<cookie>` Redis
+-- SET (TTL 86400s). On each cookie fast-path hit, SADD source IP then
+-- SCARD. If distinct IPs > max -> cookie is shared -> revoke (DEL
+-- verified:<cookie> + DEL cookie_ips:<cookie>) and force re-challenge.
+--
+-- Threshold tuning:
+--   2 -> too tight, FP on mobile users (4G/wifi switch in same day)
+--   3 -> sweet spot: home wifi + mobile + occasional public wifi
+--   5 -> permissive, bot still has 5-IP budget
+-- Real users observed: 1-3 distinct IPs/day. Bot: 35+ IPs immediately.
+_M.cookie = {
+    max_ips_per_cookie  = 3,
+    ip_tracking_ttl     = 86400,  -- 24h window
+}
+
 _M.cluster = {
     ua_baseline_threshold_mult = 10,
     subnet_diversity_nat_max   = 3,

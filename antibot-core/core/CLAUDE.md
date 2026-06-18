@@ -43,6 +43,11 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-06-18 — `config.lua` — **`_M.cookie` table** for cookie anti-sharing defense:
+  - `max_ips_per_cookie = 3` — max distinct source IPs a single `antibot_fp` cookie may appear from within 24h window before it's auto-revoked
+  - `ip_tracking_ttl = 86400` — TTL for `cookie_ips:<cookie>` Redis SET
+  - Consumed by `init.lua:check_verified_cookie` (cookie fast-path). Defends against PoW-bypass via cookie sharing across 35+ IPs from `43.172.0.0/15` subnet (incident 2026-06-18). See `antibot-core/CLAUDE.md` update log for full context.
+- 2026-06-18 — `config.lua` — **`_M.rate.good_bot_rate` table** for generic verified-bot rate ceiling (replaces ad-hoc Meta ASN limit). 3 classes polite/moderate/aggressive/default + bot_name→class map. Adaptive promotion via `gb_aggression:<bot>` TTL self-decay. See `enforcement/CLAUDE.md`.
 - 2026-05-24 (v4.4.10) — `req_classifier.lua` — **AUTH_LEGACY_PATHS multi-CMS expansion**: thêm `^/wp-json/wp/v2/users`, `^/admin/` (Drupal/Magento/OpenCart/NukeViet/MyBB), `^/typo3/`, `^/ghost/`, `^/adm/` (phpBB), `^/admin%.php$` (XenForo), `^/admincp/` (vBulletin). File upload xác nhận không ảnh hưởng: multipart blocked bởi CT guard (Fix A) và /wp-admin/ caught bởi FAST PATH 2 trước slow path.
 - 2026-05-24 (v4.4.9) — `req_classifier.lua` — **Fix A: body scan CT guard + Fix B: AUTH_LEGACY_PATHS expansion**.
   - Fix A: `body_contains_auth_marker(ct)` — gate trên `application/x-www-form-urlencoded` trước `read_body()`. REST/JSON/multipart → return false ngay, zero read_body overhead. `AUTH_BODY_MARKERS` giảm 19 → 11 entries (loại bỏ JSON/multipart markers — orphaned bởi Fix A).
