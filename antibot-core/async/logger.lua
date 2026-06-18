@@ -179,6 +179,29 @@ function _M.run(ctx)
             ctx.expensive_score or 0)
     end
 
+    -- Good-bot rate fields — ALWAYS append for good_bot_verified requests
+    -- (not just on throttle) so operator có thể audit "đến lúc nào bot bị
+    -- siết". `bot=` = good_bot_name từ verification, `base_class` = static
+    -- assignment trong cfg.rate.good_bot_rate.map, `eff_class` = effective
+    -- class sau adaptive promotion, `agg` = aggression score (sliding 10
+    -- min), `rpm` = count/limit cho phút hiện tại.
+    --
+    -- Khi base_class != eff_class -> grep nhanh case bot bị auto-promote:
+    --   grep -E 'base_class=moderate eff_class=aggressive' antibot.log
+    --
+    -- Khi action=throttled với reason=good_bot_rate_<class> -> rate ceiling hit.
+    local gbrate_str = ""
+    if ctx.good_bot_class then
+        gbrate_str = string.format(
+            " bot=%s base_class=%s eff_class=%s agg=%d rpm=%d/%d",
+            tostring(ctx.good_bot_name or "-"),
+            tostring(ctx.good_bot_class_base or "-"),
+            tostring(ctx.good_bot_class or "-"),
+            ctx.good_bot_aggression or 0,
+            ctx.good_bot_rate_count or 0,
+            ctx.good_bot_rate_limit or 0)
+    end
+
     -- S2.5 tier details — chỉ append khi attest path fired.
     -- Lets `grep tier=S2.5 antibot.log` audit attest decisions.
     -- marker= present only for analyzer_attested (Path 2).
@@ -208,7 +231,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " top=%s reason=%s%s%s",
+        " top=%s reason=%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -230,7 +253,8 @@ function _M.run(ctx)
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,
-        tier_str
+        tier_str,
+        gbrate_str
     )
 
     write_log_line(line)

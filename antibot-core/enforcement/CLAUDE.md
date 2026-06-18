@@ -24,9 +24,10 @@ Translate aggregated score into HTTP action. Apply class-based multipliers, kill
 - Generic dampened-class kill (non-resource, `mult<1.0`): `KILL_DAMP_HARD_RAW=150→floor 85% raw`, `KILL_DAMP_SOFT_RAW=110→floor 65% raw`. Bảo vệ chống FN khi raw cao nhưng class dampening che pure-threat signal storm (incident 20.9.70.139 — Azure UA-empty bot, raw 140 + unknown mult 0.5 = eff 70 = challenge mãi không lên block).
 - FP penalty: `FP_DEGRADED=5`, `FP_QUALITY=3` (threshold 0.5), **`JA3_PARTIAL_PENALTY=0`** (no-stream architecture constant)
 - Attack 1 IP-risk: `THRESHOLD_LOWER=0.4` → CHALLENGE cap 40 (skip for api_callback)
+- Good-bot rate ceiling: `cfg.rate.good_bot_rate` table (config.lua). 3 classes (polite=180/moderate=60/aggressive=30/default=60 req/min). Adaptive promotion via `gb_aggression:<bot>` (TTL 600s self-decay): `>=10 → +1 tier`, `>=30 → +2 tier`. `action_reason="good_bot_rate_<class>"`
 
 ## ctx fields written
-`action`, `action_reason`, `effective_score`, `kill_reason`, `trust_reason`, `monitor_flag`, `ip_risk_lowered`
+`action`, `action_reason`, `effective_score`, `kill_reason`, `trust_reason`, `monitor_flag`, `ip_risk_lowered`, `good_bot_class_base`, `good_bot_class`, `good_bot_aggression`, `good_bot_rate_count`, `good_bot_rate_limit` (cuối 5 fields set khi `good_bot_verified=true`)
 
 ## ctx fields read
 `whitelisted`, `good_bot_verified`, `score`, `score_multiplier`, `req_class`, `sess_len`, `session_flag`, `ip_risk`, `fp_degraded`, `fp_quality`, `ja3_partial`, `ip` plus all signals (for debug headers)
@@ -82,6 +83,33 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-06-18 — **Generic verified-bot rate ceiling + adaptive class promotion** (`engine.lua` + `core/config.lua` + `async/logger.lua`). REPLACES old `throttle_meta_asn` (Meta-specific per-ASN limit 300/min).
+  - **Why**: Meta-specific hardcode was anti-pattern (mai Bytespider/GPTBot tương tự lại phải add 1 function nữa). Industry pattern (Cloudflare Bot Categories, Akamai Crawler Profiles, DataDome) là per-bot-family rate ceiling — generic cho mọi verified bot.
+  - **`cfg.rate.good_bot_rate`** (NEW): 3 classes với req/min ceiling:
+    - `polite=180` (Google/Bing/Apple/DuckDuck — search engine ổn định)
+    - `moderate=60` (Meta/CocCoc/Yandex — verified nhưng có history aggressive)
+    - `aggressive=30` (Bytespider/Semrush/Ahrefs/MJ12 — known low-value crawl)
+    - `default=60` (unknown verified bot fallback)
+  - **`map`**: bot_name → class. Small finite list (~15 bots), stable. Metadata cho TUNING known entities, KHÔNG phải detection pattern list — distinct với anti-pattern enumeration. Đã có list verified bot trong `core/data/goodbot.json` rồi, class chỉ thêm 1 chiều thông tin.
+  - **Adaptive promotion** (TTL self-decay, cùng triết lý `ip_risk` EMA decay trong `async/risk_update.lua`):
+    - Mỗi 429 → INCR `gb_aggression:<bot>` với TTL 600s (10-min sliding window — TTL refresh on each violation)
+    - Score thresholds: `>= 10` → +1 tier, `>= 30` → +2 tier (skip thẳng aggressive)
+    - Bot quiet 10 phút → key expires → score reset → effective_class restore về base
+    - "default" class fallback semantics: treat as moderate cho promotion ladder
+  - **Logic flow trong `throttle_good_bot_rate(ctx)`**:
+    1. Resolve `base_class` từ `cfg.rate.good_bot_rate.map[bot] or "default"`
+    2. Read `gb_aggression:<bot>` → compute `effective_class` qua promotion ladder
+    3. Get `limit = classes[effective_class]`
+    4. INCR `gb_rate:<bot>:<minute>` (TTL 65s, minute-aligned fixed window)
+    5. If `count > limit` → INCR aggression + 429 + Retry-After
+    6. Set ctx fields cho logger: `good_bot_class_base`, `good_bot_class`, `good_bot_aggression`, `good_bot_rate_count`, `good_bot_rate_limit`
+  - **`action_reason`**: `good_bot_rate_<class>` (e.g., `good_bot_rate_aggressive`, `good_bot_rate_moderate`). Grep theo class dễ.
+  - **antibot.log** (cập nhật `async/logger.lua`): append cho MỌI good_bot_verified request (không chỉ throttle):
+    - `bot=<name> base_class=<base> eff_class=<effective> agg=<score> rpm=<count>/<limit>`
+    - Khi `base_class != eff_class` → bot đang bị auto-promote → grep `eff_class=aggressive base_class=moderate` audit case này
+    - Khi `agg > 0` không kèm throttle → bot đã misbehave trước đó, đang trong window decay
+  - **Replaces**: cũ `throttle_meta_asn` (Redis key `rate:goodbot:meta:<min>`, hardcode 300/min cho AS32934). Mới `throttle_good_bot_rate` áp universal qua `cfg.rate.good_bot_rate.map`. Meta giờ ở class moderate=60/min (chặt hơn cũ 5x), backend protect tốt hơn khi Meta aggressive.
+  - **Risk update integration**: `async/risk_update.lua` đã skip `action=throttled` cho ip_rep penalty (từ 2026-05-04). Reason mới `good_bot_rate_*` cũng là throttled → giữ nguyên hành vi, verified bot không bị ip_rep penalty khi chỉ exceed rate ceiling.
 - 2026-05-23 (v3) — **Generic kill-switch cho dampened class non-resource** (`engine.lua`). Resource class đã có kill-switch riêng từ trước (raw 80/95). Thêm kill cho class còn lại có `multiplier < 1.0` (interaction 0.6, api_callback 0.5, feed_or_meta 0.4, inapp_browser 0.4, unknown 0.5):
   - `raw ≥ 150` → floor effective tại 85% raw (`kill_damp_hard`)
   - `raw ≥ 110` → floor effective tại 65% raw (`kill_damp_soft`)

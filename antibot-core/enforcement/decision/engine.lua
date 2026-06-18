@@ -40,13 +40,24 @@ local SOFT_SCORE_THRESHOLD = 0.7
 local GOOD_BOT_RPM         = 8
 local GOOD_BOT_RETRY_AFTER = 120
 
--- Meta AI crawler (AS32934) raw rate limit.
--- Observed: 57.141.2.x subnet ~8-9 req/s (~8 concurrent PHP workers).
--- Limit 5 req/s = 300/60s. Minute-aligned window (same pattern as GOOD_BOT_RPM).
--- Applies only after good_bot_verified — unverified traffic handled by bot detection.
-local META_ASN         = 32934
-local META_RATE_LIMIT  = 300
-local META_RETRY_AFTER = 60
+-- Generic verified good-bot rate ceiling with adaptive class promotion.
+-- Replaces the ad-hoc per-ASN Meta limit (was `throttle_meta_asn`).
+-- Industry pattern (Cloudflare Bot Categories, Akamai Crawler Profiles).
+--
+-- Config lives in cfg.rate.good_bot_rate (core/config.lua):
+--   classes:  per-class req/min ceiling (polite/moderate/aggressive/default)
+--   map:      bot_name -> class (small finite list of known verified bots)
+--   thresholds: adaptive promotion ladder
+--
+-- Adaptive promotion: every 429 increments `gb_aggression:<bot>` (TTL 600s
+-- = 10-min sliding window via TTL refresh, same pattern as ip_risk). When
+-- aggression crosses threshold, effective_class steps up:
+--   < 10            -> base class
+--   >= 10           -> +1 tier
+--   >= 30           -> +2 tier (skip straight to aggressive)
+-- Bot quiet 10 min -> aggression key expires -> class restored to base.
+local CLASS_LADDER  = { polite = 1, moderate = 2, aggressive = 3 }
+local CLASS_LABELS  = { "polite", "moderate", "aggressive" }
 
 -- Sub-signal contributions (graduated, none alone is sufficient)
 local CONTRIB_QS_LEN_120 = 0.50
@@ -93,26 +104,66 @@ local function expensive_score(qs)
     return s
 end
 
-local function throttle_meta_asn(ctx)
-    if not (ctx.asn and ctx.asn.asn_number == META_ASN) then return false end
+-- effective_class: resolve base class -> effective class via adaptive promotion.
+-- Reads `gb_aggression:<bot>` (Redis counter, TTL self-decay).
+-- Returns (effective_class_label, aggression_score).
+local function effective_class(bot)
+    local conf       = cfg.rate.good_bot_rate
+    local base_class = conf.map[bot] or "default"
+    local agg        = tonumber(pool.safe_get("gb_aggression:" .. bot)) or 0
+
+    if agg < conf.promotion_threshold_1 then
+        return base_class, agg, base_class
+    end
+
+    -- "default" class falls under moderate semantics for promotion ladder
+    local base_for_ladder = (base_class == "default") and "moderate" or base_class
+    local base_idx        = CLASS_LADDER[base_for_ladder] or 2
+    local promotion       = (agg >= conf.promotion_threshold_2) and 2 or 1
+    local new_idx         = math.min(3, base_idx + promotion)
+    return CLASS_LABELS[new_idx], agg, base_class
+end
+
+local function throttle_good_bot_rate(ctx)
+    local bot                       = ctx.good_bot_name or "unknown"
+    local conf                      = cfg.rate.good_bot_rate
+    local eff_class, agg, base_class = effective_class(bot)
+    local limit                     = conf.classes[eff_class] or conf.classes.default
+
+    -- Expose to logger/explain for debugging (always, not just on throttle)
+    ctx.good_bot_class_base = base_class
+    ctx.good_bot_class      = eff_class
+    ctx.good_bot_aggression = agg
+    ctx.good_bot_rate_limit = limit
 
     local minute = math.floor(ngx.time() / 60)
-    local key    = "rate:goodbot:meta:" .. minute
+    local key    = "gb_rate:" .. bot .. ":" .. minute
     local count  = pool.safe_incr(key, 65) or 0
+    ctx.good_bot_rate_count = count
 
-    if count <= META_RATE_LIMIT then return false end
+    if count <= limit then return false end
+
+    -- Violation -> tăng aggression score (TTL self-decay = sliding window)
+    pool.safe_incr("gb_aggression:" .. bot, conf.aggression_decay_ttl)
 
     ctx.action        = "throttled"
-    ctx.action_reason = "meta_rate"
+    ctx.action_reason = "good_bot_rate_" .. eff_class
+
     ngx.log(ngx.WARN,
-        "[engine] meta_asn_rate count=", count,
-        " limit=", META_RATE_LIMIT,
+        "[engine] good_bot rate exceeded",
+        " bot=", bot,
+        " base_class=", base_class,
+        " effective_class=", eff_class,
+        " aggression=", agg,
+        " count=", count, "/min",
+        " limit=", limit,
         " ip=", ctx.ip or "?")
+
     ngx.status = 429
-    ngx.header["Retry-After"]   = tostring(META_RETRY_AFTER)
+    ngx.header["Retry-After"]   = tostring(conf.retry_after)
     ngx.header["Cache-Control"] = "no-cache"
     ngx.header["Content-Type"]  = "text/plain"
-    ngx.say("Rate limited — retry after ", META_RETRY_AFTER, "s")
+    ngx.say("Rate limited — retry after ", conf.retry_after, "s")
     ngx.exit(429)
     return true
 end
@@ -320,8 +371,11 @@ function _M.run(ctx)
         if throttle_good_bot(ctx) then
             return "throttled"
         end
-        -- Meta ASN raw rate limit (5 req/s aggregate across all 57.141.x.x IPs).
-        if throttle_meta_asn(ctx) then
+        -- Generic verified-bot rate ceiling with adaptive class promotion.
+        -- Replaces old Meta-specific per-ASN limit. Catches Meta + any
+        -- verified bot exceeding its class ceiling. Aggression EMA promotes
+        -- misbehaving bots toward `aggressive` class automatically.
+        if throttle_good_bot_rate(ctx) then
             return "throttled"
         end
         ctx.action        = "allow"

@@ -143,6 +143,62 @@ _M.rate = {
         inapp_browser = 1.0,
         unknown       = 1.0,
     },
+
+    -- Verified good-bot rate ceiling (replaces hard-coded per-ASN limits).
+    --
+    -- Each verified bot (after DNS/ASN verification in detection/bot/) is
+    -- assigned a class. Class -> req/min ceiling. Operator tune by editing
+    -- table below. Industry pattern (Cloudflare Bot Categories, Akamai
+    -- Crawler Profiles, DataDome bot tiers).
+    --
+    -- Adaptive promotion: every 429 (rate exceeded) increments
+    -- `gb_aggression:<bot>` (TTL 600s = 10-min self-decay). When aggression
+    -- score crosses threshold, effective_class is promoted toward the most
+    -- restrictive tier. Bot quiet 10 min -> aggression key expires -> class
+    -- restored to base. Same pattern as `ip_risk` EMA decay in
+    -- async/risk_update.lua.
+    --
+    -- Class ladder (low -> high restriction): polite -> moderate -> aggressive
+    -- Aggression score thresholds (count of 429s in last 10-min sliding window):
+    --   <  promotion_t1 -> base class
+    --   >= promotion_t1 -> +1 tier
+    --   >= promotion_t2 -> +2 tier (skip straight to aggressive)
+    --
+    -- `map` is enumeration of KNOWN verified bots — finite (~20 globally),
+    -- stable list, paired with bot verification registry (data/goodbot.json).
+    -- This is metadata for tuning, NOT a detection pattern list.
+    good_bot_rate = {
+        classes = {
+            polite     = 180,  -- 3 req/sec — search engine ổn định
+            moderate   = 60,   -- 1 req/sec — verified nhưng từng có history aggressive
+            aggressive = 30,   -- 0.5 req/sec — known low-quality crawl
+            default    = 60,   -- unknown verified bot fallback
+        },
+        map = {
+            -- Polite: established search engines, stable crawl patterns
+            googlebot   = "polite",
+            bingbot     = "polite",
+            applebot    = "polite",
+            duckduckbot = "polite",
+
+            -- Moderate: verified but observed aggressive on this stack
+            meta             = "moderate",
+            coccocbot        = "moderate",
+            yandexbot        = "moderate",
+
+            -- Aggressive: known low-value or aggressive crawlers
+            bytespider  = "aggressive",
+            semrushbot  = "aggressive",
+            ahrefsbot   = "aggressive",
+            mj12bot     = "aggressive",
+        },
+
+        -- Adaptive promotion tunables
+        aggression_decay_ttl  = 600,  -- 10-min sliding window via TTL refresh
+        promotion_threshold_1 = 10,   -- score >= 10  -> +1 tier
+        promotion_threshold_2 = 30,   -- score >= 30  -> +2 tier
+        retry_after           = 60,   -- 429 Retry-After header value
+    },
 }
 
 _M.trust = {
