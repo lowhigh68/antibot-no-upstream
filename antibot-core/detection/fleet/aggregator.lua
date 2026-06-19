@@ -104,11 +104,14 @@ function _M.write(ctx)
     local k_uab  = "fl:24:uab:"  .. cidr_24 .. ":" .. minute
     local k_act  = "fl:active:24:" .. minute
 
-    local k16_hit = "fl:16:hit:" .. cidr_16 .. ":" .. minute
-    local k16_ips = "fl:16:ips:" .. cidr_16 .. ":" .. minute
-    local k16_ver = "fl:16:ver:" .. cidr_16 .. ":" .. minute
-    local k16_ck  = "fl:16:ck:"  .. cidr_16 .. ":" .. minute
-    local k16_act = "fl:active:16:" .. minute
+    local k16_hit  = "fl:16:hit:"  .. cidr_16 .. ":" .. minute
+    local k16_ips  = "fl:16:ips:"  .. cidr_16 .. ":" .. minute
+    local k16_fp   = "fl:16:fp:"   .. cidr_16 .. ":" .. minute
+    local k16_path = "fl:16:path:" .. cidr_16 .. ":" .. minute
+    local k16_ver  = "fl:16:ver:"  .. cidr_16 .. ":" .. minute
+    local k16_ck   = "fl:16:ck:"   .. cidr_16 .. ":" .. minute
+    local k16_uab  = "fl:16:uab:"  .. cidr_16 .. ":" .. minute
+    local k16_act  = "fl:active:16:" .. minute
 
     local _, err = pool.pipeline(function(red)
         -- /24 counters
@@ -122,11 +125,16 @@ function _M.write(ctx)
         if is_browser  then red:incr(k_uab); red:expire(k_uab, BUCKET_TTL) end
         red:sadd(k_act, cidr_24); red:expire(k_act, BUCKET_TTL)
 
-        -- /16 mirror (no fp HLL — derived via roll-up logic)
+        -- /16 aggregation — full parallel set so analyzer can evaluate
+        -- the parent prefix directly when rotation thins out per /24.
         red:incr(k16_hit);  red:expire(k16_hit, BUCKET_TTL)
-        red:pfadd(k16_ips, ip); red:expire(k16_ips, BUCKET_TTL)
+        red:pfadd(k16_ips, ip);  red:expire(k16_ips, BUCKET_TTL)
+        red:pfadd(k16_fp,  fp);  red:expire(k16_fp,  BUCKET_TTL)
+        red:zincrby(k16_path, 1, ph); red:expire(k16_path, BUCKET_TTL)
+        red:zremrangebyrank(k16_path, 0, -1 - PATH_ZSET_CAP)
         if is_verified then red:incr(k16_ver); red:expire(k16_ver, BUCKET_TTL) end
         if has_cookie  then red:incr(k16_ck);  red:expire(k16_ck,  BUCKET_TTL) end
+        if is_browser  then red:incr(k16_uab); red:expire(k16_uab, BUCKET_TTL) end
         red:sadd(k16_act, cidr_16); red:expire(k16_act, BUCKET_TTL)
     end)
 

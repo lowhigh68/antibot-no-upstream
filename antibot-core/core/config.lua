@@ -258,7 +258,12 @@ _M.fleet_detection = {
     thresholds = {
         suspect  = 0.5,
         confirm  = 0.7,
-        min_hits = 100,   -- skip evaluation if /24 has fewer than this in window
+        -- Per-window sample-size floors. Rotation attacks spread thin per
+        -- /24 (43.172/15 case: ~5 hits/24/min), so /24 floor must stay low
+        -- enough to evaluate at all. /16 floor is independent — it catches
+        -- spread-thin attacks that defeat /24 thresholds.
+        min_hits     = 30,    -- /24 evaluator floor (was 100; missed rotation)
+        min_hits_16  = 50,    -- /16 evaluator floor
     },
 
     rollup = {
