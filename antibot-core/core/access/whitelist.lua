@@ -86,8 +86,15 @@ local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     -- with stockpile of (ua_hash, /16) entries can rotate 35+ IPs/device
     -- (43.172/43.173 attack 2026-06-19). If > max -> revoke device + ua
     -- mapping -> bot must re-solve PoW.
+    --
+    -- Threshold = max_ips_device (default 10) is intentionally HIGHER than
+    -- cookie scope (3) because device_id is N:1 with users — multiple real
+    -- Vietnamese carrier users in same /16 + same UA share one device_id
+    -- by design. Threshold tuned to catch observed 35-IP bot attack within
+    -- 10-15 min while protecting popular (UA, /16) real-user pools that
+    -- may legitimately see 15-30 IPs/24h.
     local ips_key = "verified_ips:device:" .. device_id
-    local max_ips = cfg.verified_share.max_ips_per_handle
+    local max_ips = cfg.verified_share.max_ips_device
     local share_ttl = cfg.verified_share.ip_tracking_ttl
     local results = pool.pipeline(function(red)
         red:sadd(ips_key, ip)

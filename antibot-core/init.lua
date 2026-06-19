@@ -102,7 +102,7 @@ local function check_verified_cookie(ctx)
         return true
     end
 
-    local max_ips = cfg.verified_share.max_ips_per_handle
+    local max_ips = cfg.verified_share.max_ips_cookie
     local ttl     = cfg.verified_share.ip_tracking_ttl
     local ips_key = "verified_ips:cookie:" .. cookie
 

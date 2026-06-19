@@ -224,18 +224,31 @@ _M.trust = {
 -- on every verified-path hit. If SCARD > max -> handle is shared ->
 -- revoke (DEL all related keys) -> request falls through to re-challenge.
 --
--- Scopes:
---   cookie  -> verified_ips:cookie:<cookie>   (init.lua check_verified_cookie)
---   device  -> verified_ips:device:<dev_id>   (whitelist.lua lookup_device_by_ua)
+-- Scopes & separate thresholds (CRITICAL — different sharing semantics):
 --
--- Threshold tuning (max_ips_per_handle):
---   2 -> too tight, FP on mobile users (4G/wifi switch in same day)
---   3 -> sweet spot: home wifi + mobile + occasional public wifi
---   5 -> permissive, bot still has 5-IP budget
--- Real users observed: 1-3 distinct IPs/day. Bot: 35+ IPs immediately.
+--   cookie  -> `verified_ips:cookie:<cookie>` (init.lua check_verified_cookie)
+--     Cookie is 1:1 with user (only that user has the cookie). Real users
+--     hit 1-3 distinct IPs/day (home wifi + mobile + occasional public).
+--     -> max_ips_cookie = 3 catches replication early, low FP.
+--
+--   device  -> `verified_ips:device:<dev_id>` (whitelist.lua lookup_device_by_ua)
+--     device_id is N:1 with users — keyed on (UA, /16). All users in same
+--     Vietnamese carrier /16 + same Chrome version inherit the SAME
+--     device_id (free verification by design). Popular (UA, /16) combos
+--     may legitimately see 15-30 distinct user IPs / 24h. Threshold 3
+--     would trigger mass re-challenge for VN carrier users.
+--     -> max_ips_device = 10 is calibrated against observed 43.172/43.173
+--        bot pattern: ~5-15 IPs/combo per 10-min window of sustained attack
+--        → catches bot in ~10-15 min, while leaving room for moderate
+--        real-user pools. Tune up (15-30) for high-traffic sites, down
+--        (5-7) for low-traffic sites.
+--
+-- Real users observed: cookie 1-3 IPs/day, device pool 5-30 IPs/day.
+-- Bot observed: 35+ IPs immediately, multiple UAs.
 _M.verified_share = {
-    max_ips_per_handle = 3,
-    ip_tracking_ttl    = 86400,  -- 24h window
+    max_ips_cookie  = 3,
+    max_ips_device  = 10,
+    ip_tracking_ttl = 86400,  -- 24h window
 }
 
 -- Backward-compat alias (older code references cfg.cookie.*)
