@@ -210,27 +210,36 @@ _M.trust = {
     action_cap         = "monitor",
 }
 
--- Cookie anti-sharing tracking.
+-- Verified-state anti-sharing tracking (applies to ALL verified paths).
 --
--- Bot scrapers solve PoW once on 1 IP, capture the verified cookie, then
--- replay that SAME cookie from many IPs (~35 IPs observed in 43.172.0.0/15
--- subnet attack 2026-06-18). Cookie fast-path bypasses ALL detection ->
--- attacker gets permanent allow across whole fleet.
+-- Bot scrapers compromise the verified-user state in multiple ways:
+--   - Cookie sharing: solve PoW once, replicate `antibot_fp` cookie to
+--     35+ IPs (43.172.0.0/15 attack 2026-06-18)
+--   - Device-canvas reuse: PoW once per UA, then ANY IP within same /16
+--     using that UA matches `device_ua:<ua_hash>:<ip16>` -> verified
+--     (continued 43.172/43.173 attack after cookie defense deployed)
 --
--- Defense: track distinct IPs per cookie via `cookie_ips:<cookie>` Redis
--- SET (TTL 86400s). On each cookie fast-path hit, SADD source IP then
--- SCARD. If distinct IPs > max -> cookie is shared -> revoke (DEL
--- verified:<cookie> + DEL cookie_ips:<cookie>) and force re-challenge.
+-- Defense: track distinct source IPs per verified handle in Redis SET
+-- `verified_ips:<scope>:<handle>` (TTL 86400s). Atomic SADD+EXPIRE+SCARD
+-- on every verified-path hit. If SCARD > max -> handle is shared ->
+-- revoke (DEL all related keys) -> request falls through to re-challenge.
 --
--- Threshold tuning:
+-- Scopes:
+--   cookie  -> verified_ips:cookie:<cookie>   (init.lua check_verified_cookie)
+--   device  -> verified_ips:device:<dev_id>   (whitelist.lua lookup_device_by_ua)
+--
+-- Threshold tuning (max_ips_per_handle):
 --   2 -> too tight, FP on mobile users (4G/wifi switch in same day)
 --   3 -> sweet spot: home wifi + mobile + occasional public wifi
 --   5 -> permissive, bot still has 5-IP budget
 -- Real users observed: 1-3 distinct IPs/day. Bot: 35+ IPs immediately.
-_M.cookie = {
-    max_ips_per_cookie  = 3,
-    ip_tracking_ttl     = 86400,  -- 24h window
+_M.verified_share = {
+    max_ips_per_handle = 3,
+    ip_tracking_ttl    = 86400,  -- 24h window
 }
+
+-- Backward-compat alias (older code references cfg.cookie.*)
+_M.cookie = _M.verified_share
 
 _M.cluster = {
     ua_baseline_threshold_mult = 10,

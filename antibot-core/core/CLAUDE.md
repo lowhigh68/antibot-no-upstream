@@ -43,6 +43,7 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-06-19 — `config.lua` — **rename `_M.cookie` → `_M.verified_share`** (with backward-compat alias). Scope expanded from cookie-only to ALL verified-state paths (cookie, device-canvas). Field rename: `max_ips_per_cookie` → `max_ips_per_handle`. Same defaults (3 IPs / 24h). Consumed by `init.lua:check_verified_cookie` AND `core/access/whitelist.lua:lookup_device_by_ua`. Redis key namespace `verified_ips:<scope>:<handle>` (was `cookie_ips:<cookie>`).
 - 2026-06-18 — `config.lua` — **`_M.cookie` table** for cookie anti-sharing defense:
   - `max_ips_per_cookie = 3` — max distinct source IPs a single `antibot_fp` cookie may appear from within 24h window before it's auto-revoked
   - `ip_tracking_ttl = 86400` — TTL for `cookie_ips:<cookie>` Redis SET

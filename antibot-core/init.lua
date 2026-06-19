@@ -102,9 +102,9 @@ local function check_verified_cookie(ctx)
         return true
     end
 
-    local max_ips = cfg.cookie.max_ips_per_cookie
-    local ttl     = cfg.cookie.ip_tracking_ttl
-    local ips_key = "cookie_ips:" .. cookie
+    local max_ips = cfg.verified_share.max_ips_per_handle
+    local ttl     = cfg.verified_share.ip_tracking_ttl
+    local ips_key = "verified_ips:cookie:" .. cookie
 
     -- Atomic batch: SADD ip + refresh TTL + read distinct count = 1 RTT
     local results = pool.pipeline(function(red)
@@ -125,8 +125,8 @@ local function check_verified_cookie(ctx)
             red:del("verified:" .. cookie)
             red:del(ips_key)
         end)
-        ngx.log(ngx.WARN, "[antibot] cookie revoked: shared across ",
-                distinct, " IPs cookie=", cookie:sub(1, 16),
+        ngx.log(ngx.WARN, "[antibot] verified_share revoked scope=cookie shared=",
+                distinct, " handle=", cookie:sub(1, 16),
                 " ip=", ip)
         return false  -- Fall through to normal pipeline (re-challenge)
     end
