@@ -47,13 +47,34 @@ local function ip_to_cidr_16(ip)
     return a .. "." .. b .. ".0.0/16"
 end
 
--- Compact fingerprint hash: UA + accept-language + accept-encoding
--- ordering. Bot fleet rotating Chrome versions cycles only the UA tail
--- (Chrome/118 → 119 → …) but accept-* headers remain identical → still
--- collapses many "rotating" UAs into same fp_hash. This is precisely the
--- signature poverty we want to detect.
+-- Normalize UA into a version-agnostic template by replacing every digit/
+-- dot/underscore run with `X`. Examples:
+--   "Mozilla/5.0 (Windows NT 10.0) Chrome/117.0.0.0 Safari/537.36"
+--     → "Mozilla/X (Windows NT X) Chrome/X Safari/X"
+--   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X)"
+--     → "Mozilla/X (iPhone; CPU iPhone OS X like Mac OS X)"
+--
+-- Field test 2026-06-19: bot fleet cycled Chrome/103..125 across thousands
+-- of IPs. Hashing the raw UA produced ~15 distinct fingerprints per /16,
+-- making fp_poverty (= distinct_IPs / distinct_fp) too low to cross the
+-- confirm threshold. After normalization, all cycled Chrome versions on
+-- Windows collapse to a single template → distinct_fp drops to ~1 → ratio
+-- explodes → fp_poverty clamps to 1.0 → confirm.
+--
+-- Real users keep diversity through OS / browser engine / accept-language,
+-- which the template preserves (different OS = different template, and
+-- accept-language is hashed un-normalized in fp_hash below).
+local function normalize_ua_template(ua)
+    if not ua or ua == "" then return "" end
+    return (ua:gsub("[%d%._]+", "X"))
+end
+
+-- Compact fingerprint hash: normalized UA template + raw accept-language
+-- + raw accept-encoding. Accept-language stays un-normalized — real VN
+-- users vary it heavily (vi-VN, vi, en-US, en;q=0.8 combinations) so it
+-- adds discriminating bits without inflating bot diversity.
 local function fp_hash(ua, accept_lang, accept_enc)
-    local s = (ua or "") .. "|"
+    local s = normalize_ua_template(ua) .. "|"
         .. (accept_lang or "") .. "|"
         .. (accept_enc or "")
     return ngx.md5(s):sub(1, 12)

@@ -23,17 +23,23 @@ local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
-    -- fleet_check_block: GET fl:dyn:<cidr_24|16> — short-circuit 403 if
-    -- the analyzer auto-promoted this subnet to a dynamic block. Runs
-    -- FIRST after ctx (need ctx.ip) so blocked traffic costs only 1 RTT
-    -- and never touches downstream layers. Fail-open on Redis errors.
-    { layer = fleet_check_block, fn = "run"           },
-    -- fleet: subnet-level aggregator for Distributed Web Scraping with
-    -- Rotating IP Fleet (cfg.fleet_detection). Sub-millisecond pipeline of
-    -- HLL + INCR writes — see detection/fleet/aggregator.lua. Runs BEFORE
-    -- ip_ban_check so banned hits are still counted into the bucket
-    -- (operator visibility — fleet keeps hitting even when banned per-IP).
+    -- fleet: aggregate FIRST, BEFORE check_block. The analyzer must keep
+    -- seeing fleet traffic that's already dyn-blocked, otherwise as soon
+    -- as a dyn key fires, the bucket goes empty and the 1h dyn TTL
+    -- expires with nothing to re-detect from — bot returns for the
+    -- expiry gap, then cycle repeats. With aggregate-first, blocked
+    -- requests keep refreshing the dyn key continuously while the
+    -- attack continues, and the key only expires when the attack
+    -- genuinely stops (bucket drops below min_hits naturally).
+    --
+    -- Cost: ~1 extra Redis RTT per blocked request (full 27-op
+    -- pipeline). Acceptable: blocked traffic is small fraction of
+    -- total once attack is identified.
     { layer = fleet,             fn = "run"           },
+    -- fleet_check_block: GET fl:dyn:<cidr_24|16> — short-circuit 403 if
+    -- the analyzer auto-promoted this subnet to a dynamic block.
+    -- Runs AFTER aggregator so blocked traffic still counts (see above).
+    { layer = fleet_check_block, fn = "run"           },
     -- session_richness: compute ctx.session_richness ∈ [0,1] từ cookie
     -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
