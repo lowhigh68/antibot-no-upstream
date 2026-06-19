@@ -494,32 +494,84 @@ local function render_data()
     -- Unknown UA samples để debug
     local ua_unknown_samples = red:lrange("stat:ua_unknown_sample", 0, 19) or {}
 
-    -- Subnet blocks: list configured CIDR rules with label, note, and
-    -- per-day hit telemetry from `subnet_hit:<cidr>:<YYYYMMDD>` keys.
+    -- Fleet detection candidates: read /24 flags + scores from Redis.
     -- MUST run before pool.put(red) — connection used below.
-    local subnet_blocks = {}
+    local fleet_candidates = {}
     do
-        local ok, sb = pcall(require, "antibot.core.access.subnet_block")
-        if ok and sb and sb.list_rules then
-            local rules = sb.list_rules()
-            for _, r in ipairs(rules) do
-                local v_today = red:get("subnet_hit:" .. r.cidr .. ":" .. today_key)
-                local hits_today = tonumber(v_today) or 0
-                local hits_7d = 0
-                for i = 0, 6 do
-                    local d = os.date("%Y%m%d", ngx.time() - i * 86400)
-                    local v = red:get("subnet_hit:" .. r.cidr .. ":" .. d)
-                    hits_7d = hits_7d + (tonumber(v) or 0)
-                end
-                table.insert(subnet_blocks, {
-                    cidr       = r.cidr,
-                    label      = r.label,
-                    note       = r.note,
-                    prefix     = r.prefix,
-                    hits_today = hits_today,
-                    hits_7d    = hits_7d,
+        local flag_keys = scan_keys(red, "fl:flag:24:*", 500)
+        for _, fkey in ipairs(flag_keys) do
+            local cidr = fkey:gsub("^fl:flag:24:", "")
+            local status = red:get(fkey)
+            if status and status ~= ngx.null then
+                local score      = tonumber(red:get("fl:score:24:" .. cidr)) or 0
+                local fp_poverty = tonumber(red:get("fl:axis:fp:"    .. cidr)) or 0
+                local path_conv  = tonumber(red:get("fl:axis:path:"  .. cidr)) or 0
+                local cookie_vac = tonumber(red:get("fl:axis:ck:"    .. cidr)) or 0
+                local hits       = tonumber(red:get("fl:last:hits:"  .. cidr)) or 0
+                local d_ips      = tonumber(red:get("fl:last:ips:"   .. cidr)) or 0
+                local d_fp       = tonumber(red:get("fl:last:fp:"    .. cidr)) or 0
+                local first_seen = tonumber(red:get("fl:first:"      .. cidr)) or 0
+                table.insert(fleet_candidates, {
+                    cidr             = cidr,
+                    status           = status,
+                    score            = score,
+                    fp_poverty       = fp_poverty,
+                    path_convergence = path_conv,
+                    cookie_vacuum    = cookie_vac,
+                    hits             = hits,
+                    distinct_ips     = d_ips,
+                    distinct_fp      = d_fp,
+                    first_seen       = first_seen,
                 })
             end
+        end
+        table.sort(fleet_candidates, function(a, b) return a.score > b.score end)
+    end
+
+    -- /16 roll-up flags
+    local fleet_rollup_16 = {}
+    do
+        local rkeys = scan_keys(red, "fl:flag:16:*", 200)
+        for _, fkey in ipairs(rkeys) do
+            local cidr = fkey:gsub("^fl:flag:16:", "")
+            local status = red:get(fkey)
+            if status and status ~= ngx.null then
+                local sub_count = tonumber(red:get("fl:rollup:count:" .. cidr)) or 0
+                local first_seen = tonumber(red:get("fl:first:16:" .. cidr)) or 0
+                table.insert(fleet_rollup_16, {
+                    cidr        = cidr,
+                    status      = status,
+                    sub_count   = sub_count,
+                    first_seen  = first_seen,
+                })
+            end
+        end
+        table.sort(fleet_rollup_16, function(a, b) return a.sub_count > b.sub_count end)
+    end
+
+    -- Dynamic blocks (enforce mode only)
+    local fleet_dyn_blocks = {}
+    do
+        local dkeys = scan_keys(red, "fl:dyn:*", 500)
+        for _, dkey in ipairs(dkeys) do
+            local cidr = dkey:gsub("^fl:dyn:", "")
+            local val = red:get(dkey)
+            local ttl = red:ttl(dkey)
+            if val and val ~= ngx.null then
+                table.insert(fleet_dyn_blocks, {
+                    cidr = cidr,
+                    info = val,
+                    ttl  = tonumber(ttl) or 0,
+                })
+            end
+        end
+    end
+
+    local fleet_mode = "shadow"
+    do
+        local ok, cfg_mod = pcall(require, "antibot.core.config")
+        if ok and cfg_mod.fleet_detection and cfg_mod.fleet_detection.mode then
+            fleet_mode = cfg_mod.fleet_detection.mode
         end
     end
 
@@ -574,7 +626,10 @@ local function render_data()
             good_bot  = intent_map["good_bot"]  or {total=0,block=0,challenge=0},
             ambiguous = intent_map["ambiguous"] or {total=0,block=0,challenge=0},
         },
-        subnet_blocks = arr(subnet_blocks),
+        fleet_mode       = fleet_mode,
+        fleet_candidates = arr(fleet_candidates),
+        fleet_rollup_16  = arr(fleet_rollup_16),
+        fleet_dyn_blocks = arr(fleet_dyn_blocks),
     }))
 end
 
@@ -661,7 +716,7 @@ tr:hover td{background:#1c2129}
     <div class="tab" onclick="showTab('domains')">🌐 Domains</div>
     <div class="tab" onclick="showTab('intelligence')">🧠 Intelligence</div>
     <div class="tab" onclick="showTab('devices')">📱 Devices</div>
-    <div class="tab" onclick="showTab('subnets')">🛡️ Subnet Blocks</div>
+    <div class="tab" onclick="showTab('fleet')">🎯 Fleet Detection</div>
   </div>
 
   <!-- -->
@@ -908,25 +963,58 @@ tr:hover td{background:#1c2129}
     </div>
   </div>
 
-  <!-- Subnet Blocks pane -->
-  <div id="tab-subnets" class="pane">
+  <!-- Fleet Detection pane -->
+  <div id="tab-fleet" class="pane">
     <div class="card">
-      <h2>🛡️ Configured Subnet Block Rules</h2>
-      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
-        Operator-managed CIDR blocklist for empirically-confirmed pure-bot subnets.
-        Edit <code>cfg.subnet_block</code> in <code>core/config.lua</code> → reload nginx.
-        Hits counted from <code>action=block reason=banned_subnet:&lt;label&gt;</code> events.
+      <h2>🎯 Fleet Detection — Distributed Web Scraping with Rotating IP Fleet</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
+        Active /24 + /16 detection via 3-axis confidence:
+        <b>fp_poverty</b> (distinct_IPs / distinct_fingerprints — bot fleet rotates IPs cheaper than fingerprints),
+        <b>path_convergence</b> (top-3 path share — bots target few endpoints),
+        <b>cookie_vacuum</b> (1 − cookie present ratio — bots have no cookies).
+        Mode: <b id="fleet-mode">—</b>.
+        Confirm ≥ 0.7 → fleet detected. Suspect ≥ 0.5 → eligible for /16 roll-up.
       </div>
+    </div>
+    <div class="card">
+      <h2>🔴 /24 Candidates <span id="fleet-cand-count" class="tag tag-red">0</span></h2>
+      <table>
+        <thead><tr>
+          <th>/24 CIDR</th>
+          <th>Status</th>
+          <th>Score</th>
+          <th>fp_poverty</th>
+          <th>path_conv</th>
+          <th>cookie_vac</th>
+          <th>Hits</th>
+          <th>D-IPs</th>
+          <th>D-FP</th>
+          <th>First seen</th>
+        </tr></thead>
+        <tbody id="t-fleet-24"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>🌐 /16 Roll-up <span id="fleet-r16-count" class="tag tag-orange">0</span></h2>
+      <table>
+        <thead><tr>
+          <th>/16 CIDR</th>
+          <th>Status</th>
+          <th>Confirmed /24 inside</th>
+          <th>First seen</th>
+        </tr></thead>
+        <tbody id="t-fleet-16"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>⛔ Dynamic Blocks (enforce mode) <span id="fleet-dyn-count" class="tag tag-red">0</span></h2>
       <table>
         <thead><tr>
           <th>CIDR</th>
-          <th>Label</th>
-          <th>Prefix</th>
-          <th class="red">Hits Today</th>
-          <th class="orange">Hits 7d</th>
-          <th>Note</th>
+          <th>Info</th>
+          <th>TTL (s)</th>
         </tr></thead>
-        <tbody id="t-subnet-blocks"></tbody>
+        <tbody id="t-fleet-dyn"></tbody>
       </table>
     </div>
   </div>
@@ -1141,7 +1229,7 @@ function load(){
     setText('status','Updated: '+new Date().toLocaleTimeString('vi-VN'))
     renderDomains(d)
     renderDevices(d)
-    renderSubnetBlocks(d)
+    renderFleet(d)
     // UA info
     if(d.ua_info){
       setText('ua-count', (d.ua_info.count||0).toLocaleString())
@@ -1410,23 +1498,68 @@ function renderDevices(d){
   setHTML('t-intent-stats', irows || nodata(6))
 }
 
-function renderSubnetBlocks(d){
+function fmtFirstSeen(ts){
+  if(!ts || ts<=0) return '-'
+  var diff = Math.floor(Date.now()/1000) - ts
+  if(diff < 60)    return diff + 's ago'
+  if(diff < 3600)  return Math.floor(diff/60) + 'm ago'
+  if(diff < 86400) return Math.floor(diff/3600) + 'h ago'
+  return Math.floor(diff/86400) + 'd ago'
+}
+
+function fleetStatusTag(s){
+  if(s === 'confirm') return '<span class="tag tag-red">CONFIRM</span>'
+  if(s === 'suspect') return '<span class="tag tag-orange">SUSPECT</span>'
+  return '<span class="tag tag-gray">'+(s||'-')+'</span>'
+}
+
+function renderFleet(d){
+  setText('fleet-mode', d.fleet_mode || 'shadow')
+
+  var cands = d.fleet_candidates || []
+  setText('fleet-cand-count', cands.length)
   var rows = ''
-  var list = d.subnet_blocks || []
-  for(var s of list){
-    var todayCls = s.hits_today > 0 ? 'red' : 'gray'
-    var weekCls  = s.hits_7d > 0 ? 'orange' : 'gray'
-    var note = trunc(s.note || '', 200)
+  for(var c of cands){
+    var scoreCls = c.score >= 0.7 ? 'red' : (c.score >= 0.5 ? 'orange' : 'gray')
     rows += '<tr>'
-      + '<td class="mono"><b>' + s.cidr + '</b></td>'
-      + '<td><span class="tag tag-red">' + (s.label || 'default') + '</span></td>'
-      + '<td class="mono">/' + s.prefix + '</td>'
-      + '<td class="' + todayCls + '"><b>' + (s.hits_today || 0).toLocaleString() + '</b></td>'
-      + '<td class="' + weekCls  + '">' + (s.hits_7d   || 0).toLocaleString() + '</td>'
-      + '<td style="font-size:11px;color:var(--color-text-secondary);max-width:400px;word-break:break-word">' + note + '</td>'
+      + '<td class="mono"><b>' + c.cidr + '</b></td>'
+      + '<td>' + fleetStatusTag(c.status) + '</td>'
+      + '<td class="' + scoreCls + '"><b>' + (c.score||0).toFixed(2) + '</b></td>'
+      + '<td>' + (c.fp_poverty||0).toFixed(2) + '</td>'
+      + '<td>' + (c.path_convergence||0).toFixed(2) + '</td>'
+      + '<td>' + (c.cookie_vacuum||0).toFixed(2) + '</td>'
+      + '<td class="mono">' + (c.hits||0).toLocaleString() + '</td>'
+      + '<td class="mono">' + (c.distinct_ips||0) + '</td>'
+      + '<td class="mono">' + (c.distinct_fp||0) + '</td>'
+      + '<td>' + fmtFirstSeen(c.first_seen) + '</td>'
       + '</tr>'
   }
-  setHTML('t-subnet-blocks', rows || nodata(6))
+  setHTML('t-fleet-24', rows || nodata(10))
+
+  var r16 = d.fleet_rollup_16 || []
+  setText('fleet-r16-count', r16.length)
+  var rows16 = ''
+  for(var r of r16){
+    rows16 += '<tr>'
+      + '<td class="mono"><b>' + r.cidr + '</b></td>'
+      + '<td>' + fleetStatusTag(r.status) + '</td>'
+      + '<td class="mono">' + (r.sub_count||0) + '</td>'
+      + '<td>' + fmtFirstSeen(r.first_seen) + '</td>'
+      + '</tr>'
+  }
+  setHTML('t-fleet-16', rows16 || nodata(4))
+
+  var dyn = d.fleet_dyn_blocks || []
+  setText('fleet-dyn-count', dyn.length)
+  var rowsd = ''
+  for(var dn of dyn){
+    rowsd += '<tr>'
+      + '<td class="mono"><b>' + dn.cidr + '</b></td>'
+      + '<td style="font-size:11px;color:#8b949e">' + (dn.info||'-') + '</td>'
+      + '<td class="mono">' + (dn.ttl||0) + '</td>'
+      + '</tr>'
+  }
+  setHTML('t-fleet-dyn', rowsd || nodata(3))
 }
 
 setInterval(load,10000)

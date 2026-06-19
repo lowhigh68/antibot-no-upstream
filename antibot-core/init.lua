@@ -3,7 +3,7 @@ local _M = {}
 local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
-local subnet_block       = require "antibot.core.access.subnet_block"
+local fleet              = require "antibot.detection.fleet"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
@@ -22,11 +22,12 @@ local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
-    -- subnet_block: deterministic CIDR block list for empirically-confirmed
-    -- pure-bot subnets (cfg.subnet_block). Runs EARLY (after ctx populated,
-    -- before any Redis ops) to short-circuit bot traffic at minimum cost.
-    -- Pure bit ops on pre-parsed CIDR tuples — zero Redis, sub-microsecond.
-    { layer = subnet_block,      fn = "run"           },
+    -- fleet: subnet-level aggregator for Distributed Web Scraping with
+    -- Rotating IP Fleet (cfg.fleet_detection). Sub-millisecond pipeline of
+    -- HLL + INCR writes — see detection/fleet/aggregator.lua. Runs BEFORE
+    -- ip_ban_check so banned hits are still counted into the bucket
+    -- (operator visibility — fleet keeps hitting even when banned per-IP).
+    { layer = fleet,             fn = "run"           },
     -- session_richness: compute ctx.session_richness ∈ [0,1] từ cookie
     -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
@@ -89,6 +90,14 @@ local function check_verified_cookie(ctx)
         ctx.verified = true
         ctx.identity = cookie
         ctx.fp_light = cookie
+        -- Populate minimal ctx so fleet aggregator can record this hit as
+        -- a verified observation (raises verified_count in the /24 bucket,
+        -- which lowers cookie_vacuum → keeps real-user subnets below the
+        -- fleet trigger threshold).
+        ctx.ip = ngx.var.remote_addr
+        ctx.ua = ngx.var.http_user_agent or ""
+        ctx.req = ctx.req or { uri = ngx.var.uri or "" }
+        fleet.aggregate(ctx)
         ngx.log(ngx.DEBUG, "[antibot] cookie_fast_path id=", cookie)
         return true
     end
@@ -162,6 +171,21 @@ function _M.init_worker()
         end)
         if not ok then
             ngx.log(ngx.ERR, "[init_worker] timer.at failed: ", tostring(err))
+        end
+
+        -- Fleet detection analyzer timer — periodic 3-axis evaluation of
+        -- previous-minute /24 buckets. Worker 0 only to avoid N-way
+        -- duplicate evaluation across worker processes. Deferred via
+        -- timer.at(0) for the same cosocket-disabled-in-init_worker reason.
+        local ok_fl, err_fl = ngx.timer.at(0, function(premature)
+            if premature then return end
+            local ok2 = pcall(fleet.start_timer)
+            if not ok2 then
+                ngx.log(ngx.ERR, "[fleet.timer] start failed")
+            end
+        end)
+        if not ok_fl then
+            ngx.log(ngx.ERR, "[init_worker] fleet timer.at failed: ", tostring(err_fl))
         end
     end
 end

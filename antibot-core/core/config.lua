@@ -210,50 +210,83 @@ _M.trust = {
     action_cap         = "monitor",
 }
 
--- Operator-managed subnet blocklist (CIDR format).
+-- Fleet Detection (Distributed Web Scraping with Rotating IP Fleet).
 --
--- Deterministic block at antibot edge for subnets EMPIRICALLY confirmed
--- as pure bot infrastructure (no legitimate users mixed in). Equivalent
--- to iptables block but git-versioned, log-integrated, hot-reload via
--- nginx -s reload.
+-- Active subnet-level detection. Three independent axes aggregated into a
+-- single confidence score in [0,1]:
 --
--- Validation protocol before adding a subnet:
---   1. Identify suspicious /16 or /15 in nginx access logs
---   2. Temporarily firewall-block at OS level (iptables -I INPUT)
---   3. Observe load: if drops to baseline within minutes AND stays
---      normal for ≥30 min → subnet has no legitimate users
---   4. Add CIDR to this list, deploy antibot reload
---   5. Remove firewall rule (antibot now handles it)
+--   fp_poverty       (weight 0.6) — distinct_IPs / distinct_fingerprints
+--                                   ratio. Bot fleet rotate IPs cheaper than
+--                                   fingerprints → high ratio. Real users
+--                                   ratio ~1 (each IP = unique device).
+--   path_convergence (weight 0.25) — share of top-3 paths over total hits.
+--                                    Bots target few endpoints; real users
+--                                    spread.
+--   cookie_vacuum    (weight 0.15) — fraction without verified cookie nor
+--                                    any cookie. Bots zero; real users mixed.
 --
--- Entry format:
---   { cidr = "X.Y.Z.W/N", label = "<category>", note = "<context>" }
+-- Final score = fp_poverty*0.6 + path_convergence*0.25 + cookie_vacuum*0.15
+--   > thresholds.confirm → confirmed fleet
+--   > thresholds.suspect → suspect, eligible for /16 roll-up
+--   < suspect            → ignored
 --
---   cidr:  required, CIDR notation
---   label: required, operator-defined category (used in action_reason +
---          admin dashboard for grouping/audit). Snake_case suggested.
---   note:  optional, free-form description of the incident/evidence
+-- /16 roll-up: when ≥ rollup.min_24s_per_16 distinct /24 inside same /16
+-- are confirmed in the same window → /16 marked confirmed too.
 --
--- Bare string format `"X.Y.Z.W/N"` also accepted (label = "default") for
--- backward compatibility.
+-- Modes (rollout knob, edit here + reload):
+--   "shadow"  — aggregate Redis + write flags, DO NOT affect scoring/blocking.
+--               Operator observes dashboard candidates to tune thresholds.
+--   "scoring" — confirm/suspect contribute weight into ctx.score (engine
+--               handles via per-request scoring pipeline).
+--   "enforce" — sustained confirm ≥ enforce.sustained_minutes → auto write
+--               dynamic block key; subsequent requests from that /24 (or /16
+--               on roll-up) → immediate 403.
 --
--- Common label categories operators use:
---   scraper_fleet_<region>   - distributed scraper bot from region X
---   ddos_pool                - DDoS attack fleet
---   credential_stuffing      - login bruteforce subnet
---   ai_crawler_unauth        - AI crawler bypassing robots.txt
---   vpn_abuse                - residential VPN provider abused for attacks
-_M.subnet_block = {
-    {
-        cidr  = "43.172.0.0/15",
-        label = "scraper_fleet_cn_hk",
-        note  = "2026-06-19 incident: 44+ distinct IPs in 2-min window, " ..
-                "16+ Chrome versions cycled (incl. ancient 103/104/105), " ..
-                "100% Windows Chrome (zero platform diversity), 20+ expensive " ..
-                "VN logistics endpoints targeted in parallel, zero verified " ..
-                "cookie hits, PHP-FPM saturation. Firewall test confirmed: " ..
-                "load returns to baseline. APNIC Chinese/HK delegation — " ..
-                "no rationale for VN logistics site traffic.",
+-- trusted_asn: ASN allowlist that SKIPS aggregation entirely (performance —
+-- VN consumer ISPs have huge legitimate traffic; skipping saves Redis ops).
+-- Detection correctness is independent of this list — false negatives if a
+-- listed ASN turns out to host a bot fleet are acceptable in v1.
+_M.fleet_detection = {
+    mode = "shadow",
+
+    weights = {
+        fp_poverty       = 0.6,
+        path_convergence = 0.25,
+        cookie_vacuum    = 0.15,
     },
+
+    thresholds = {
+        suspect  = 0.5,
+        confirm  = 0.7,
+        min_hits = 100,   -- skip evaluation if /24 has fewer than this in window
+    },
+
+    rollup = {
+        min_24s_per_16 = 3,
+    },
+
+    timing = {
+        bucket_ttl       = 180,   -- Redis bucket retention (3 minutes)
+        flag_ttl         = 300,   -- /24 + /16 flag TTL (5 minutes)
+        dyn_block_ttl    = 3600,  -- dynamic block TTL when enforce mode (1h)
+        evaluator_period = 30,    -- analyzer timer interval (seconds)
+    },
+
+    scoring = {
+        weight_suspect = 25,
+        weight_confirm = 50,
+    },
+
+    enforce = {
+        sustained_minutes = 5,
+    },
+
+    -- Empty by default — every request from every ASN goes through the
+    -- aggregator. Adds ~0.5 ms / request (single Redis pipeline) but keeps
+    -- detection 100% data-driven with no operator-curated blind spots.
+    -- Populate later from real log analysis if Redis load becomes a
+    -- bottleneck (top-N ASNs by verified-cookie hit volume = candidates).
+    trusted_asn = {},
 }
 
 _M.cluster = {

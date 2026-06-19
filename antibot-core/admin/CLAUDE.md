@@ -48,5 +48,6 @@ respond JSON or HTML
 - Modifications via API mirror Redis writes — same TTL/key conventions as core code
 
 ## Update log
-- 2026-06-19 — **Subnet Blocks dashboard tab** (`init.lua`). New tab `🛡️ Subnet Blocks` shows operator-managed CIDR blocklist with label, prefix, hits today/7d, note. Data sourced from `subnet_block.list_rules()` + Redis `subnet_hit:<cidr>:<date>` counters. Lets operator monitor which blocked subnets still active and review for removal. See `antibot-core/CLAUDE.md` update log 2026-06-19 (followup) for full context.
+- 2026-06-19 (later) — **Subnet Blocks tab REMOVED, Fleet Detection tab ADDED** (`init.lua`). Old `🛡️ Subnet Blocks` tab + its data path removed alongside `core/access/subnet_block.lua` deletion. New `🎯 Fleet Detection` tab shows: mode (shadow/scoring/enforce), /24 candidates with 3-axis breakdown (fp_poverty, path_convergence, cookie_vacuum) + status (suspect/confirm), /16 roll-up flags, dynamic block list (enforce mode). Reads `fl:flag:24:*`, `fl:flag:16:*`, `fl:dyn:*` + score/axis/last keys via existing `scan_keys` helper. See `antibot-core/CLAUDE.md` 2026-06-19 (replace operator-driven CIDR list) for the detection model.
+- 2026-06-19 — **Subnet Blocks dashboard tab** added then removed same day (see entry above).
 - `72f0415` (2026-05-03) — no changes
