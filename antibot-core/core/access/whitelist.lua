@@ -81,42 +81,6 @@ local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     local dv = pool.safe_get("verified:device:" .. device_id)
     if dv ~= "1" then return nil end
 
-    -- Anti-sharing: track distinct IPs per device_id. The /16 binding above
-    -- means ANY IP in same /16 + same UA matches this device_id. Bot fleet
-    -- with stockpile of (ua_hash, /16) entries can rotate 35+ IPs/device
-    -- (43.172/43.173 attack 2026-06-19). If > max -> revoke device + ua
-    -- mapping -> bot must re-solve PoW.
-    --
-    -- Threshold = max_ips_device (default 10) is intentionally HIGHER than
-    -- cookie scope (3) because device_id is N:1 with users — multiple real
-    -- Vietnamese carrier users in same /16 + same UA share one device_id
-    -- by design. Threshold tuned to catch observed 35-IP bot attack within
-    -- 10-15 min while protecting popular (UA, /16) real-user pools that
-    -- may legitimately see 15-30 IPs/24h.
-    local ips_key = "verified_ips:device:" .. device_id
-    local max_ips = cfg.verified_share.max_ips_device
-    local share_ttl = cfg.verified_share.ip_tracking_ttl
-    local results = pool.pipeline(function(red)
-        red:sadd(ips_key, ip)
-        red:expire(ips_key, share_ttl)
-        red:scard(ips_key)
-    end)
-    local distinct = 1
-    if results and results[3] then
-        distinct = tonumber(results[3]) or 1
-    end
-    if distinct > max_ips then
-        pool.pipeline(function(red)
-            red:del("verified:device:" .. device_id)
-            red:del(key)
-            red:del(ips_key)
-        end)
-        ngx.log(ngx.WARN, "[whitelist] verified_share revoked scope=device shared=",
-                distinct, " handle=", device_id:sub(1, 8),
-                " ip=", ip, " ua=", ua:sub(1, 40))
-        return nil  -- Fall through to next check (earlyid or re-challenge)
-    end
-
     -- Renew TTL
     pool.safe_set("verified:device:" .. device_id, "1", verified_ttl)
     pool.safe_set(key, device_id, verified_ttl)

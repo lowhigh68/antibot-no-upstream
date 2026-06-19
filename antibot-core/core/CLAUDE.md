@@ -43,12 +43,8 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
-- 2026-06-19 (followup) — `config.lua` — **split threshold by scope**: `max_ips_cookie = 3` + `max_ips_device = 10` (was single `max_ips_per_handle = 3`). Cookie is 1:1 with user (low FP at 3), device is N:1 pool shared across Vietnamese carrier /16+UA users (needs 10+ headroom). Calibration math in `antibot-core/CLAUDE.md` update log.
-- 2026-06-19 — `config.lua` — **rename `_M.cookie` → `_M.verified_share`** (with backward-compat alias). Scope expanded from cookie-only to ALL verified-state paths (cookie, device-canvas). Field rename: `max_ips_per_cookie` → `max_ips_per_handle`. Same defaults (3 IPs / 24h). Consumed by `init.lua:check_verified_cookie` AND `core/access/whitelist.lua:lookup_device_by_ua`. Redis key namespace `verified_ips:<scope>:<handle>` (was `cookie_ips:<cookie>`).
-- 2026-06-18 — `config.lua` — **`_M.cookie` table** for cookie anti-sharing defense:
-  - `max_ips_per_cookie = 3` — max distinct source IPs a single `antibot_fp` cookie may appear from within 24h window before it's auto-revoked
-  - `ip_tracking_ttl = 86400` — TTL for `cookie_ips:<cookie>` Redis SET
-  - Consumed by `init.lua:check_verified_cookie` (cookie fast-path). Defends against PoW-bypass via cookie sharing across 35+ IPs from `43.172.0.0/15` subnet (incident 2026-06-18). See `antibot-core/CLAUDE.md` update log for full context.
+- 2026-06-19 — `config.lua` — **`_M.subnet_block` list** (CIDR strings) consumed by `core/access/subnet_block.lua`. Operator-managed deterministic block for empirically-confirmed pure-bot subnets. Seeded with `43.172.0.0/15` (incident 2026-06-18→19). See `antibot-core/CLAUDE.md` for full context.
+- 2026-06-19 — `config.lua` — **reverted threshold-based anti-sharing tables** (`_M.cookie` / `_M.verified_share`). Methodology was thin; operator empirical test proved subnet-level block is correct layer. See `antibot-core/CLAUDE.md` update log.
 - 2026-06-18 — `config.lua` — **`_M.rate.good_bot_rate` table** for generic verified-bot rate ceiling (replaces ad-hoc Meta ASN limit). 3 classes polite/moderate/aggressive/default + bot_name→class map. Adaptive promotion via `gb_aggression:<bot>` TTL self-decay. See `enforcement/CLAUDE.md`.
 - 2026-05-24 (v4.4.10) — `req_classifier.lua` — **AUTH_LEGACY_PATHS multi-CMS expansion**: thêm `^/wp-json/wp/v2/users`, `^/admin/` (Drupal/Magento/OpenCart/NukeViet/MyBB), `^/typo3/`, `^/ghost/`, `^/adm/` (phpBB), `^/admin%.php$` (XenForo), `^/admincp/` (vBulletin). File upload xác nhận không ảnh hưởng: multipart blocked bởi CT guard (Fix A) và /wp-admin/ caught bởi FAST PATH 2 trước slow path.
 - 2026-05-24 (v4.4.9) — `req_classifier.lua` — **Fix A: body scan CT guard + Fix B: AUTH_LEGACY_PATHS expansion**.

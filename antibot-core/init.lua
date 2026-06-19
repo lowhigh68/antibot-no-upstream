@@ -19,7 +19,6 @@ local risk_update        = require "antibot.async.risk_update"
 local adaptive_weight    = require "antibot.async.adaptive_weight"
 local logger             = require "antibot.async.logger"
 local pool               = require "antibot.core.redis_pool"
-local cfg                = require "antibot.core.config"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
@@ -81,66 +80,20 @@ local function run_steps(steps, ctx)
     end
 end
 
--- Cookie fast-path with anti-sharing defense.
---
--- Bot scrapers solve PoW once, capture the verified cookie, then replay
--- across many IPs to bypass detection (35-IP distributed attack from
--- 43.172.0.0/15 observed 2026-06-18). Defense: track distinct source IPs
--- per cookie in Redis SET `cookie_ips:<cookie>` (TTL 86400s). When the
--- set grows past `cfg.cookie.max_ips_per_cookie`, the cookie is treated
--- as shared and revoked (DEL verified:<cookie> + DEL cookie_ips:<cookie>),
--- forcing re-challenge. Real users stay under threshold 3 normally.
 local function check_verified_cookie(ctx)
     local cookie = ngx.var.cookie_antibot_fp
     if not cookie or cookie == "" then return false end
 
     local verified = pool.safe_get("verified:" .. cookie)
-    if verified ~= "1" then return false end
-
-    -- Cookie marked verified by PoW solve. Now enforce anti-sharing.
-    -- ctx.ip is not yet populated (ctx_layer.init runs later) — read ngx.var directly.
-    local ip = ngx.var.remote_addr
-    if not ip or ip == "" then
-        -- No source IP available — fail open to legacy fast-path behavior
+    if verified == "1" then
         ctx.verified = true
         ctx.identity = cookie
         ctx.fp_light = cookie
+        ngx.log(ngx.DEBUG, "[antibot] cookie_fast_path id=", cookie)
         return true
     end
 
-    local max_ips = cfg.verified_share.max_ips_cookie
-    local ttl     = cfg.verified_share.ip_tracking_ttl
-    local ips_key = "verified_ips:cookie:" .. cookie
-
-    -- Atomic batch: SADD ip + refresh TTL + read distinct count = 1 RTT
-    local results = pool.pipeline(function(red)
-        red:sadd(ips_key, ip)
-        red:expire(ips_key, ttl)
-        red:scard(ips_key)
-    end)
-
-    local distinct = 1
-    if results and results[3] then
-        distinct = tonumber(results[3]) or 1
-    end
-
-    if distinct > max_ips then
-        -- Cookie shared across too many IPs -> revoke verification.
-        -- Bot fleet must now re-solve PoW per IP (defeats the bypass).
-        pool.pipeline(function(red)
-            red:del("verified:" .. cookie)
-            red:del(ips_key)
-        end)
-        ngx.log(ngx.WARN, "[antibot] verified_share revoked scope=cookie shared=",
-                distinct, " handle=", cookie:sub(1, 16),
-                " ip=", ip)
-        return false  -- Fall through to normal pipeline (re-challenge)
-    end
-
-    ctx.verified = true
-    ctx.identity = cookie
-    ctx.fp_light = cookie
-    return true
+    return false
 end
 
 function _M.run()
