@@ -4,6 +4,7 @@ local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
 local fleet              = require "antibot.detection.fleet"
+local fleet_check_block  = require "antibot.detection.fleet.check_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
@@ -22,6 +23,11 @@ local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
+    -- fleet_check_block: GET fl:dyn:<cidr_24|16> — short-circuit 403 if
+    -- the analyzer auto-promoted this subnet to a dynamic block. Runs
+    -- FIRST after ctx (need ctx.ip) so blocked traffic costs only 1 RTT
+    -- and never touches downstream layers. Fail-open on Redis errors.
+    { layer = fleet_check_block, fn = "run"           },
     -- fleet: subnet-level aggregator for Distributed Web Scraping with
     -- Rotating IP Fleet (cfg.fleet_detection). Sub-millisecond pipeline of
     -- HLL + INCR writes — see detection/fleet/aggregator.lua. Runs BEFORE

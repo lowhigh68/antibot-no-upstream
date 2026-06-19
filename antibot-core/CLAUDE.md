@@ -81,10 +81,10 @@ See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md).
     - Score ≥ 0.7 → confirm, ≥ 0.5 → suspect, < 0.5 → ignored.
   - **/16 roll-up**: if ≥3 distinct /24 inside same /16 are confirmed in window → /16 also flagged. Catches the 43.172/15-style spread that defeats per-/24 detection.
   - **Trusted ASN bypass** (`cfg.fleet_detection.trusted_asn`): 11 entries for VN/SEA consumer ISPs (VNPT/Viettel/FPT/CMC/CocCoc/Digi MY/TM MY/TRUE TH/AIS TH). Skips aggregation entirely — performance optimization only, NOT a correctness gate.
-  - **Rollout via `cfg.fleet_detection.mode`**:
-    - `shadow` (default) — aggregate + flag, NO scoring/blocking effect. Dashboard shows candidates only.
+  - **Rollout via `cfg.fleet_detection.mode`** (ships as `enforce`):
+    - `shadow` — aggregate + flag, NO scoring/blocking effect. Dashboard shows candidates only.
     - `scoring` — confirm/suspect contribute weight (50/25) into ctx.score. Engine decides action via normal scoring pipeline.
-    - `enforce` — sustained ≥5 min confirm → auto-write `fl:dyn:<cidr>` block key TTL 1h. Subsequent requests from that /24 → 403.
+    - `enforce` (default) — sustained ≥5 min confirm → auto-write `fl:dyn:<cidr>` block key TTL 1h. `detection/fleet/check_block.lua` (FIRST step in STEPS_COMMON after ctx_layer.init) GETs `fl:dyn:<cidr_24>` + `fl:dyn:<cidr_16>` per request → 403 immediately if present. `action_reason = fleet_dyn_block_<24|16>:<cidr>`. Enforcement is read-only on the dyn keys; flipping mode back to `shadow` does NOT delete existing keys — they expire via TTL (operator can `redis-cli DEL fl:dyn:<cidr>` to revoke immediately).
     - Edit `mode = "..."` → `nginx -s reload`, no code change.
   - **Redis schema** (TTL 180s bucket, 300s flag, 3600s dyn block): `fl:24:hit|ips|fp|path|ver|ck|uab:<cidr>:<min>`, `fl:active:24:<min>` SADD, `fl:16:hit|ips|ver|ck`, `fl:flag:24|16:<cidr>`, `fl:score:24:<cidr>`, `fl:axis:fp|path|ck:<cidr>`, `fl:last:hits|ips|fp:<cidr>`, `fl:first:<cidr>`, `fl:sustained:<cidr>`, `fl:rollup:set|count:<cidr_16>`, `fl:dyn:<cidr>`.
   - **Timer**: `ngx.timer.every(30s, analyzer.evaluate)` registered from worker 0 init_worker. Reads previous-minute bucket (closed window) via `fl:active:24:<min>` SMEMBERS, evaluates each /24, writes flags, then /16 roll-up evaluation.

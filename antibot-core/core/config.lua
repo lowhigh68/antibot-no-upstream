@@ -247,7 +247,7 @@ _M.trust = {
 -- Detection correctness is independent of this list — false negatives if a
 -- listed ASN turns out to host a bot fleet are acceptable in v1.
 _M.fleet_detection = {
-    mode = "shadow",
+    mode = "enforce",
 
     weights = {
         fp_poverty       = 0.6,
