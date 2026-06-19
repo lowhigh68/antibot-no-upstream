@@ -101,23 +101,23 @@ function _M.write(ctx)
     local is_verified = ctx.verified and true or false
     local has_cookie = (ngx.var.http_cookie ~= nil and ngx.var.http_cookie ~= "") and true or false
 
-    local k_hit  = "fl:24:hit:"  .. cidr_24 .. ":" .. minute
-    local k_ips  = "fl:24:ips:"  .. cidr_24 .. ":" .. minute
-    local k_fp   = "fl:24:fp:"   .. cidr_24 .. ":" .. minute
-    local k_path = "fl:24:path:" .. cidr_24 .. ":" .. minute
-    local k_ver  = "fl:24:ver:"  .. cidr_24 .. ":" .. minute
-    local k_ck   = "fl:24:ck:"   .. cidr_24 .. ":" .. minute
-    local k_uab  = "fl:24:uab:"  .. cidr_24 .. ":" .. minute
-    local k_act  = "fl:active:24:" .. minute
+    local k_hit  = "fl:24:hit:"  .. cidr_24 .. ":" .. bucket
+    local k_ips  = "fl:24:ips:"  .. cidr_24 .. ":" .. bucket
+    local k_fp   = "fl:24:fp:"   .. cidr_24 .. ":" .. bucket
+    local k_path = "fl:24:path:" .. cidr_24 .. ":" .. bucket
+    local k_ver  = "fl:24:ver:"  .. cidr_24 .. ":" .. bucket
+    local k_ck   = "fl:24:ck:"   .. cidr_24 .. ":" .. bucket
+    local k_uab  = "fl:24:uab:"  .. cidr_24 .. ":" .. bucket
+    local k_act  = "fl:active:24:" .. bucket
 
-    local k16_hit  = "fl:16:hit:"  .. cidr_16 .. ":" .. minute
-    local k16_ips  = "fl:16:ips:"  .. cidr_16 .. ":" .. minute
-    local k16_fp   = "fl:16:fp:"   .. cidr_16 .. ":" .. minute
-    local k16_path = "fl:16:path:" .. cidr_16 .. ":" .. minute
-    local k16_ver  = "fl:16:ver:"  .. cidr_16 .. ":" .. minute
-    local k16_ck   = "fl:16:ck:"   .. cidr_16 .. ":" .. minute
-    local k16_uab  = "fl:16:uab:"  .. cidr_16 .. ":" .. minute
-    local k16_act  = "fl:active:16:" .. minute
+    local k16_hit  = "fl:16:hit:"  .. cidr_16 .. ":" .. bucket
+    local k16_ips  = "fl:16:ips:"  .. cidr_16 .. ":" .. bucket
+    local k16_fp   = "fl:16:fp:"   .. cidr_16 .. ":" .. bucket
+    local k16_path = "fl:16:path:" .. cidr_16 .. ":" .. bucket
+    local k16_ver  = "fl:16:ver:"  .. cidr_16 .. ":" .. bucket
+    local k16_ck   = "fl:16:ck:"   .. cidr_16 .. ":" .. bucket
+    local k16_uab  = "fl:16:uab:"  .. cidr_16 .. ":" .. bucket
+    local k16_act  = "fl:active:16:" .. bucket
 
     local _, err = pool.pipeline(function(red)
         -- /24 counters
