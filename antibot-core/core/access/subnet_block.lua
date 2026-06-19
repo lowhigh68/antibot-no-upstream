@@ -1,6 +1,7 @@
-local _M  = {}
-local bit = require "bit"
-local cfg = require "antibot.core.config"
+local _M   = {}
+local bit  = require "bit"
+local cfg  = require "antibot.core.config"
+local pool = require "antibot.core.redis_pool"
 
 -- Subnet-level deterministic block list.
 --
@@ -135,16 +136,15 @@ function _M.run(ctx)
         return true, false
     end
 
-    -- Hit telemetry: INCR per (cidr, day). 8-day TTL gives 7-day window
-    -- for admin dashboard + 1-day safety margin. ngx.timer.at defers to
-    -- log phase context — never block request path.
-    ngx.timer.at(0, function(premature)
-        if premature then return end
-        local ok, pool = pcall(require, "antibot.core.redis_pool")
-        if not ok then return end
-        local key = "subnet_hit:" .. matched.cidr .. ":" .. os.date("%Y%m%d")
-        pool.safe_incr(key, 8 * 86400)
-    end)
+    -- Hit telemetry: sync INCR per (cidr, day). 8-day TTL = 7-day dashboard
+    -- window + 1-day safety. Sync because async ngx.timer.at(0, ...) proved
+    -- unreliable — timer may not fire when ngx.exit(403) terminates request
+    -- immediately after scheduling (incident 2026-06-19: log showed 47+
+    -- block events but Redis KEYS 'subnet_hit:*' returned empty array).
+    -- Cost: +1 Redis RTT (~0.1ms local). Block path is rare (only matches
+    -- confirmed bot subnets), acceptable for diagnostic value.
+    local key = "subnet_hit:" .. matched.cidr .. ":" .. os.date("%Y%m%d")
+    pool.safe_incr(key, 8 * 86400)
 
     ctx.action        = "block"
     ctx.action_reason = "banned_subnet:" .. matched.label
