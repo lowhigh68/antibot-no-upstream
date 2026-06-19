@@ -2,33 +2,32 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 
--- Analyzer — 3-axis evaluation at BOTH /24 and /16 granularities.
+-- Analyzer — 3-axis evaluation at BOTH /24 and /16 granularities, reading
+-- 5-minute sliding aggregation buckets written by aggregator.lua.
 --
--- Runs on a periodic timer (cfg.fleet_detection.timing.evaluator_period s).
--- For each closed-window minute bucket, iterates `fl:active:24:<min>` and
--- `fl:active:16:<min>` sets and computes the same axis triple at each
--- prefix length:
+-- Reads previous CLOSED bucket (math.floor(ngx.time() / 300) - 1). Tracks
+-- last-evaluated bucket in Redis to dedup repeat evaluations within the
+-- 5-min window (analyzer timer fires every 30s but only does real work
+-- when a new bucket has closed).
 --
+-- Axes (same math as before, on cumulative 5-min counters):
 --   fp_poverty       = clamp(distinct_IPs / distinct_fp / 20, 0, 1)
 --   path_convergence = (sum top-3 zset scores) / total_hits
 --   cookie_vacuum    = 1 - max(verified, has_cookie) / total_hits
 --
--- Score gates:
---   ≥ confirm  → fl:flag:<scope>:<cidr> = "confirm"
---   ≥ suspect  → fl:flag:<scope>:<cidr> = "suspect"
---   else       → clear flag
+-- Score gates (cfg.fleet_detection.thresholds): suspect/confirm.
 --
--- Why evaluate /16 directly (in addition to /24 roll-up):
--- rotation attacks (43.172/15 case) spread thin per /24 — each /24 may see
--- only 5-15 hits per minute, below the /24 min_hits floor. The /16 prefix
--- aggregates 256 /24s and reliably crosses min_hits_16 even under heavy
--- rotation. fp_poverty at /16 still discriminates: real users in a /16
--- bring many distinct fingerprints (~hundreds of devices), bot fleet
--- collapses to a handful (Chrome version cycling).
+-- Connection error handling: if Redis pipeline returns "closed" mid-cycle,
+-- abort the rest of the cycle (don't burn through 80+ iterations writing
+-- identical warnings — see incident 2026-06-19 22:03:40). Next cycle gets
+-- a fresh connection.
 --
--- Sustained tracking (enforce mode only): per-cidr counter increments while
--- status stays "confirm", resets otherwise. When counter ≥
--- enforce.sustained_minutes → write fl:dyn:<cidr> dynamic block key.
+-- Sustained tracking (enforce mode): incremented once per fresh bucket
+-- evaluation. cfg.enforce.sustained_minutes is semantically "consecutive
+-- closed-bucket confirms" with this 5-min-bucket design. Set to 1 for
+-- immediate block on first confirm; raise for more conservative behaviour.
+
+local BUCKET_SECS = 300
 
 local function fdcfg() return cfg.fleet_detection or {} end
 
@@ -43,6 +42,18 @@ local function n(v)
     return tonumber(v) or 0
 end
 
+-- ── Connection-dead flag (per-cycle) ───────────────────────────────────
+-- Set when any pipeline commit returns an error containing "closed".
+-- Subsequent helpers short-circuit so we don't spam the error log.
+local _CONN_DEAD = false
+
+local function note_pipeline_err(perr)
+    if perr and tostring(perr):find("closed", 1, true) then
+        _CONN_DEAD = true
+    end
+end
+
+-- ── Score / status helpers ─────────────────────────────────────────────
 local function compute_score(hits, d_ips, d_fp, path_zrange, verified, cookies)
     local fdc = fdcfg()
     local w   = fdc.weights or {}
@@ -85,29 +96,25 @@ local function status_for(score)
     return nil
 end
 
--- Read previous-minute bucket for a /24 → (status, score, axes).
-local function evaluate_24(red, cidr, minute)
-    local fdc = fdcfg()
-    local thr = fdc.thresholds or {}
-    local min_hits = thr.min_hits or 30
+-- ── Bucket read ────────────────────────────────────────────────────────
+local function evaluate_prefix(red, scope, cidr, bucket, min_hits)
+    if _CONN_DEAD then return nil, 0, nil end
 
-    local k_hit  = "fl:24:hit:"  .. cidr .. ":" .. minute
-    local k_ips  = "fl:24:ips:"  .. cidr .. ":" .. minute
-    local k_fp   = "fl:24:fp:"   .. cidr .. ":" .. minute
-    local k_path = "fl:24:path:" .. cidr .. ":" .. minute
-    local k_ver  = "fl:24:ver:"  .. cidr .. ":" .. minute
-    local k_ck   = "fl:24:ck:"   .. cidr .. ":" .. minute
-
+    local p = "fl:" .. scope .. ":"
     red:init_pipeline()
-    red:get(k_hit)
-    red:pfcount(k_ips)
-    red:pfcount(k_fp)
-    red:zrevrange(k_path, 0, 2, "WITHSCORES")
-    red:get(k_ver)
-    red:get(k_ck)
+    red:get(p .. "hit:"  .. cidr .. ":" .. bucket)
+    red:pfcount(p .. "ips:" .. cidr .. ":" .. bucket)
+    red:pfcount(p .. "fp:"  .. cidr .. ":" .. bucket)
+    red:zrevrange(p .. "path:" .. cidr .. ":" .. bucket, 0, 2, "WITHSCORES")
+    red:get(p .. "ver:" .. cidr .. ":" .. bucket)
+    red:get(p .. "ck:"  .. cidr .. ":" .. bucket)
     local res, perr = red:commit_pipeline()
     if not res then
-        ngx.log(ngx.WARN, "[fleet.analyzer] read24 err: ", tostring(perr))
+        note_pipeline_err(perr)
+        if not _CONN_DEAD then
+            ngx.log(ngx.WARN, "[fleet.analyzer] read", scope,
+                    " err: ", tostring(perr))
+        end
         return nil, 0, nil
     end
 
@@ -118,41 +125,9 @@ local function evaluate_24(red, cidr, minute)
     return status_for(score), score, axes
 end
 
--- Same but for a /16.
-local function evaluate_16(red, cidr, minute)
-    local fdc = fdcfg()
-    local thr = fdc.thresholds or {}
-    local min_hits = thr.min_hits_16 or 50
-
-    local k_hit  = "fl:16:hit:"  .. cidr .. ":" .. minute
-    local k_ips  = "fl:16:ips:"  .. cidr .. ":" .. minute
-    local k_fp   = "fl:16:fp:"   .. cidr .. ":" .. minute
-    local k_path = "fl:16:path:" .. cidr .. ":" .. minute
-    local k_ver  = "fl:16:ver:"  .. cidr .. ":" .. minute
-    local k_ck   = "fl:16:ck:"   .. cidr .. ":" .. minute
-
-    red:init_pipeline()
-    red:get(k_hit)
-    red:pfcount(k_ips)
-    red:pfcount(k_fp)
-    red:zrevrange(k_path, 0, 2, "WITHSCORES")
-    red:get(k_ver)
-    red:get(k_ck)
-    local res, perr = red:commit_pipeline()
-    if not res then
-        ngx.log(ngx.WARN, "[fleet.analyzer] read16 err: ", tostring(perr))
-        return nil, 0, nil
-    end
-
-    local hits = n(res[1])
-    if hits < min_hits then return nil, 0, nil end
-    local score, axes = compute_score(hits, n(res[2]), n(res[3]),
-                                      res[4], n(res[5]), n(res[6]))
-    return status_for(score), score, axes
-end
-
--- Generic flag writer. scope = "24" or "16".
+-- ── Flag writer ────────────────────────────────────────────────────────
 local function write_flag(red, scope, cidr, status, score, axes, flag_ttl, parent_16)
+    if _CONN_DEAD then return end
     red:init_pipeline()
     if status then
         red:setex("fl:flag:"  .. scope .. ":" .. cidr, flag_ttl, status)
@@ -175,7 +150,10 @@ local function write_flag(red, scope, cidr, status, score, axes, flag_ttl, paren
     end
     local _, perr = red:commit_pipeline()
     if perr then
-        ngx.log(ngx.WARN, "[fleet.analyzer] flag pipeline err: ", tostring(perr))
+        note_pipeline_err(perr)
+        if not _CONN_DEAD then
+            ngx.log(ngx.WARN, "[fleet.analyzer] flag pipeline err: ", tostring(perr))
+        end
     end
 end
 
@@ -186,39 +164,60 @@ local function parent_16_of(cidr_24)
 end
 
 local function update_sustained(red, cidr, status, sustained_target, dyn_ttl, scope)
+    if _CONN_DEAD then return end
     local skey = "fl:sustained:" .. cidr
     if status == "confirm" then
         red:init_pipeline()
         red:incr(skey)
-        red:expire(skey, 180)  -- gap > 3 min breaks streak
-        local res = red:commit_pipeline()
+        red:expire(skey, 2 * BUCKET_SECS + 60)  -- gap > 1 bucket breaks streak
+        local res, perr = red:commit_pipeline()
+        if not res then
+            note_pipeline_err(perr)
+            return
+        end
         local cnt = (res and tonumber(res[1])) or 0
         if cnt >= sustained_target then
-            local info = string.format("auto:scope=%s:sustained=%d:t=%d",
+            local info = string.format("auto:scope=%s:buckets=%d:t=%d",
                                        scope or "?", cnt, ngx.time())
             pool.safe_set("fl:dyn:" .. cidr, info, dyn_ttl)
             ngx.log(ngx.WARN, "[fleet.analyzer] DYN BLOCK ", cidr,
                     " scope=", tostring(scope),
-                    " sustained=", cnt, "min ttl=", dyn_ttl)
+                    " sustained_buckets=", cnt, " ttl=", dyn_ttl)
         end
     else
         red:del(skey)
     end
 end
 
--- Single evaluation pass over previous-minute bucket.
+-- Returns bucket number to evaluate (previous closed bucket) if it hasn't
+-- been evaluated yet; otherwise nil (skip cycle).
+local function pick_bucket()
+    local prev_bucket = math.floor(ngx.time() / BUCKET_SECS) - 1
+    local last = tonumber(pool.safe_get("fl:analyzer:last_bucket")) or 0
+    if prev_bucket <= last then return nil end
+    pool.safe_set("fl:analyzer:last_bucket", tostring(prev_bucket), 2 * BUCKET_SECS)
+    return prev_bucket
+end
+
+-- ── Main evaluator ─────────────────────────────────────────────────────
 function _M.evaluate()
+    _CONN_DEAD = false
+
     local fdc = fdcfg()
     local timing = fdc.timing or {}
-    local flag_ttl = timing.flag_ttl or 300
+    local flag_ttl = timing.flag_ttl or 600
     local dyn_ttl  = timing.dyn_block_ttl or 3600
+    local thr = fdc.thresholds or {}
+    local min_hits_24 = thr.min_hits or 20
+    local min_hits_16 = thr.min_hits_16 or 30
     local enforce_cfg = fdc.enforce or {}
     local rollup_cfg  = fdc.rollup or {}
     local rollup_min  = rollup_cfg.min_24s_per_16 or 3
-    local sustained_target = enforce_cfg.sustained_minutes or 5
+    local sustained_target = enforce_cfg.sustained_minutes or 1
     local mode = fdc.mode or "shadow"
 
-    local minute = math.floor(ngx.time() / 60) - 1   -- closed window
+    local bucket = pick_bucket()
+    if bucket == nil then return end  -- already evaluated this bucket
 
     local red, err = pool.get()
     if not red then
@@ -227,9 +226,10 @@ function _M.evaluate()
     end
 
     -- ── /24 pass ──────────────────────────────────────────────────
-    local active_24, smerr = red:smembers("fl:active:24:" .. minute)
+    local active_24, smerr = red:smembers("fl:active:24:" .. bucket)
     if smerr then
         ngx.log(ngx.WARN, "[fleet.analyzer] smembers24 err: ", tostring(smerr))
+        note_pipeline_err(smerr)
     end
     if not active_24 or active_24 == ngx.null then active_24 = {} end
 
@@ -237,7 +237,8 @@ function _M.evaluate()
     local rollup_pending = {}
 
     for _, cidr_24 in ipairs(active_24) do
-        local status, score, axes = evaluate_24(red, cidr_24, minute)
+        if _CONN_DEAD then break end
+        local status, score, axes = evaluate_prefix(red, "24", cidr_24, bucket, min_hits_24)
         if axes == nil then
             n_skip_24 = n_skip_24 + 1
         else
@@ -258,60 +259,68 @@ function _M.evaluate()
     end
 
     -- ── /16 pass (direct evaluation) ──────────────────────────────
-    local active_16, smerr16 = red:smembers("fl:active:16:" .. minute)
-    if smerr16 then
-        ngx.log(ngx.WARN, "[fleet.analyzer] smembers16 err: ", tostring(smerr16))
-    end
-    if not active_16 or active_16 == ngx.null then active_16 = {} end
-
     local n_eval_16, n_conf_16, n_susp_16, n_skip_16 = 0, 0, 0, 0
-    for _, cidr_16 in ipairs(active_16) do
-        local status, score, axes = evaluate_16(red, cidr_16, minute)
-        if axes == nil then
-            n_skip_16 = n_skip_16 + 1
-        else
-            n_eval_16 = n_eval_16 + 1
-            if status == "confirm" then n_conf_16 = n_conf_16 + 1 end
-            if status == "suspect" then n_susp_16 = n_susp_16 + 1 end
+    local active_16 = {}
+    if not _CONN_DEAD then
+        local a16, smerr16 = red:smembers("fl:active:16:" .. bucket)
+        if smerr16 then
+            ngx.log(ngx.WARN, "[fleet.analyzer] smembers16 err: ", tostring(smerr16))
+            note_pipeline_err(smerr16)
         end
-        write_flag(red, "16", cidr_16, status, score, axes or {}, flag_ttl, nil)
+        if a16 and a16 ~= ngx.null then active_16 = a16 end
 
-        if mode == "enforce" then
-            update_sustained(red, cidr_16, status, sustained_target, dyn_ttl, "16")
-        end
-    end
+        for _, cidr_16 in ipairs(active_16) do
+            if _CONN_DEAD then break end
+            local status, score, axes = evaluate_prefix(red, "16", cidr_16, bucket, min_hits_16)
+            if axes == nil then
+                n_skip_16 = n_skip_16 + 1
+            else
+                n_eval_16 = n_eval_16 + 1
+                if status == "confirm" then n_conf_16 = n_conf_16 + 1 end
+                if status == "suspect" then n_susp_16 = n_susp_16 + 1 end
+            end
+            write_flag(red, "16", cidr_16, status, score, axes or {}, flag_ttl, nil)
 
-    -- ── /16 roll-up: dyn block any /16 with ≥ rollup_min confirmed /24s ──
-    -- (Independent of /16 direct evaluation above — a /16 may roll up even
-    --  if its own aggregate score didn't cross confirm, because multiple
-    --  /24 hot-spots are themselves enough evidence.)
-    for cidr_16, _ in pairs(rollup_pending) do
-        local n_confirmed = red:scard("fl:rollup:set:" .. cidr_16)
-        n_confirmed = tonumber(n_confirmed) or 0
-        red:init_pipeline()
-        red:setex("fl:rollup:count:" .. cidr_16, flag_ttl, tostring(n_confirmed))
-        if n_confirmed >= rollup_min then
-            red:setex("fl:flag:16:" .. cidr_16, flag_ttl, "confirm")
-            red:setnx("fl:first:16:" .. cidr_16, tostring(ngx.time()))
-            red:expire("fl:first:16:" .. cidr_16, flag_ttl)
             if mode == "enforce" then
-                local info = string.format("auto:rollup_16=%d:t=%d",
-                                           n_confirmed, ngx.time())
-                red:setex("fl:dyn:" .. cidr_16, dyn_ttl, info)
-                ngx.log(ngx.WARN, "[fleet.analyzer] DYN BLOCK rollup ", cidr_16,
-                        " confirmed_24=", n_confirmed)
+                update_sustained(red, cidr_16, status, sustained_target, dyn_ttl, "16")
             end
         end
-        local _, perr = red:commit_pipeline()
-        if perr then
-            ngx.log(ngx.WARN, "[fleet.analyzer] rollup pipeline err: ", tostring(perr))
+    end
+
+    -- ── /16 roll-up ───────────────────────────────────────────────
+    if not _CONN_DEAD then
+        for cidr_16, _ in pairs(rollup_pending) do
+            local n_confirmed = red:scard("fl:rollup:set:" .. cidr_16)
+            n_confirmed = tonumber(n_confirmed) or 0
+            red:init_pipeline()
+            red:setex("fl:rollup:count:" .. cidr_16, flag_ttl, tostring(n_confirmed))
+            if n_confirmed >= rollup_min then
+                red:setex("fl:flag:16:" .. cidr_16, flag_ttl, "confirm")
+                red:setnx("fl:first:16:" .. cidr_16, tostring(ngx.time()))
+                red:expire("fl:first:16:" .. cidr_16, flag_ttl)
+                if mode == "enforce" then
+                    local info = string.format("auto:rollup_16=%d:t=%d",
+                                               n_confirmed, ngx.time())
+                    red:setex("fl:dyn:" .. cidr_16, dyn_ttl, info)
+                    ngx.log(ngx.WARN, "[fleet.analyzer] DYN BLOCK rollup ", cidr_16,
+                            " confirmed_24=", n_confirmed)
+                end
+            end
+            local _, perr = red:commit_pipeline()
+            if perr then
+                note_pipeline_err(perr)
+                if not _CONN_DEAD then
+                    ngx.log(ngx.WARN, "[fleet.analyzer] rollup err: ", tostring(perr))
+                end
+            end
         end
     end
 
     pool.put(red)
 
     ngx.log(ngx.WARN,
-        "[fleet.analyzer] cycle min=", minute,
+        "[fleet.analyzer] cycle bucket=", bucket,
+        " window=", BUCKET_SECS, "s",
         " /24 active=", #active_24,
         " eval=", n_eval_24,
         " skip=", n_skip_24,
@@ -322,7 +331,8 @@ function _M.evaluate()
         " skip=", n_skip_16,
         " confirm=", n_conf_16,
         " suspect=", n_susp_16,
-        " mode=", mode)
+        " mode=", mode,
+        _CONN_DEAD and " CONN_DEAD" or "")
 end
 
 return _M

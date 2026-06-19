@@ -23,9 +23,15 @@ local trusted = require "antibot.detection.fleet.trusted"
 -- Bucket TTL = cfg.fleet_detection.timing.bucket_ttl (default 180s).
 -- All writes go through a single Redis pipeline → 1 RTT per request.
 
-local BUCKET_TTL = (cfg.fleet_detection
+-- 5-minute sliding bucket: rotation attacks spread requests thin per /24
+-- (43.172/15 field test: 2-6 hits/min/24, 4-20 hits/min/16). A 1-minute
+-- window left fp_poverty / path_convergence / cookie_vacuum noise-bound
+-- — analyzer ran but every bucket skipped min_hits. 5-min accumulation
+-- gives reliable statistics even under aggressive IP rotation.
+local BUCKET_SECS = 300
+local BUCKET_TTL  = (cfg.fleet_detection
     and cfg.fleet_detection.timing
-    and cfg.fleet_detection.timing.bucket_ttl) or 180
+    and cfg.fleet_detection.timing.bucket_ttl) or 900
 
 local PATH_ZSET_CAP = 64  -- avoid unbounded path zset growth per /24
 
@@ -87,7 +93,7 @@ function _M.write(ctx)
     if not cidr_24 then return end
     local cidr_16 = ip_to_cidr_16(ip)
 
-    local minute = math.floor(ngx.time() / 60)
+    local bucket = math.floor(ngx.time() / BUCKET_SECS)
     local fp     = fp_hash(ctx.ua, ngx.var.http_accept_language, ngx.var.http_accept_encoding)
     local uri    = (ctx.req and ctx.req.uri) or ngx.var.uri or ""
     local ph     = path_hash(uri)

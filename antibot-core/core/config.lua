@@ -258,12 +258,14 @@ _M.fleet_detection = {
     thresholds = {
         suspect  = 0.5,
         confirm  = 0.7,
-        -- Per-window sample-size floors. Rotation attacks spread thin per
-        -- /24 (43.172/15 case: ~5 hits/24/min), so /24 floor must stay low
-        -- enough to evaluate at all. /16 floor is independent — it catches
-        -- spread-thin attacks that defeat /24 thresholds.
-        min_hits     = 30,    -- /24 evaluator floor (was 100; missed rotation)
-        min_hits_16  = 50,    -- /16 evaluator floor
+        -- Per-window (5 min) sample-size floors. Rotation attacks spread
+        -- thin per /24 (43.172/15 field test: 2-6 hits/min/24, 12-20
+        -- hits/min/16). Over 5 minutes that becomes ~10-30 hits/24 and
+        -- 60-100 hits/16, comfortably above these floors. CGNAT NAT pools
+        -- still naturally exceed both but score ~0 (high fp diversity,
+        -- verified cookies, path spread).
+        min_hits     = 20,    -- /24 evaluator floor over 5-min bucket
+        min_hits_16  = 30,    -- /16 evaluator floor over 5-min bucket
     },
 
     rollup = {
@@ -271,10 +273,10 @@ _M.fleet_detection = {
     },
 
     timing = {
-        bucket_ttl       = 180,   -- Redis bucket retention (3 minutes)
-        flag_ttl         = 300,   -- /24 + /16 flag TTL (5 minutes)
+        bucket_ttl       = 900,   -- Redis bucket retention (15 min = 3 buckets)
+        flag_ttl         = 600,   -- /24 + /16 flag TTL (10 min)
         dyn_block_ttl    = 3600,  -- dynamic block TTL when enforce mode (1h)
-        evaluator_period = 30,    -- analyzer timer interval (seconds)
+        evaluator_period = 30,    -- timer interval (analyzer dedups internally)
     },
 
     scoring = {
@@ -283,7 +285,11 @@ _M.fleet_detection = {
     },
 
     enforce = {
-        sustained_minutes = 5,
+        -- Semantics: consecutive closed 5-min buckets that stay "confirm".
+        -- 1 = fire dynamic block on FIRST confirmed bucket (lowest latency,
+        -- 5-6 minutes from attack start to block). Raise for more
+        -- conservative behaviour (each unit = +5 min latency).
+        sustained_minutes = 1,
     },
 
     -- Empty by default — every request from every ASN goes through the
