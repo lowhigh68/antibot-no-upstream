@@ -494,29 +494,22 @@ local function render_data()
     -- Unknown UA samples để debug
     local ua_unknown_samples = red:lrange("stat:ua_unknown_sample", 0, 19) or {}
 
-    pool.put(red)
-
-    local function arr(t)
-        if not t or #t == 0 then
-            return setmetatable({}, cjson.array_mt)
-        end
-        return t
-    end
-
     -- Subnet blocks: list configured CIDR rules with label, note, and
     -- per-day hit telemetry from `subnet_hit:<cidr>:<YYYYMMDD>` keys.
+    -- MUST run before pool.put(red) — connection used below.
     local subnet_blocks = {}
     do
         local ok, sb = pcall(require, "antibot.core.access.subnet_block")
         if ok and sb and sb.list_rules then
             local rules = sb.list_rules()
             for _, r in ipairs(rules) do
-                local hits_today = tonumber(red:get("subnet_hit:" .. r.cidr .. ":" .. today_key)) or 0
-                -- Sum last 7 days
+                local v_today = red:get("subnet_hit:" .. r.cidr .. ":" .. today_key)
+                local hits_today = tonumber(v_today) or 0
                 local hits_7d = 0
                 for i = 0, 6 do
                     local d = os.date("%Y%m%d", ngx.time() - i * 86400)
-                    hits_7d = hits_7d + (tonumber(red:get("subnet_hit:" .. r.cidr .. ":" .. d)) or 0)
+                    local v = red:get("subnet_hit:" .. r.cidr .. ":" .. d)
+                    hits_7d = hits_7d + (tonumber(v) or 0)
                 end
                 table.insert(subnet_blocks, {
                     cidr       = r.cidr,
@@ -528,6 +521,15 @@ local function render_data()
                 })
             end
         end
+    end
+
+    pool.put(red)
+
+    local function arr(t)
+        if not t or #t == 0 then
+            return setmetatable({}, cjson.array_mt)
+        end
+        return t
     end
 
     ngx.say(cjson.encode({
@@ -749,33 +751,6 @@ tr:hover td{background:#1c2129}
       <table><thead><tr><th>URL Prefix</th><th>Action</th></tr></thead>
       <tbody id="t-wl-url"></tbody></table>
     </div>
-  </div>
-
-  <!-- -->
-  <div class="card" style="margin-top:16px">
-    <h2>🤖 Bad Bot UA Patterns</h2>
-    <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">
-      <div class="sc" style="padding:12px 20px;min-width:120px">
-        <div class="sv blue" id="ua-count">—</div>
-        <div class="sl">Total Patterns</div>
-      </div>
-      <div class="sc" style="padding:12px 20px;min-width:160px">
-        <div style="font-size:12px;color:#8b949e;margin-bottom:4px">Last Sync</div>
-        <div id="ua-sync-time" style="font-size:13px">—</div>
-      </div>
-      <div style="display:flex;align-items:center">
-        <button class="btn btn-blue" onclick="uaSync()">🔄 Sync Now</button>
-      </div>
-    </div>
-    <div class="wl-form">
-      <input class="inp" id="inp-ua-pat" placeholder="BadBotName" type="text">
-      <button class="btn btn-red" onclick="uaAction('ua_add')">+ Block UA</button>
-      <button class="btn btn-gray" onclick="uaAction('ua_del')">Remove</button>
-    </div>
-    <div class="msg" id="msg-ua"></div>
-    <div style="font-size:12px;color:#8b949e;margin:8px 0">Custom patterns (thêm thủ công):</div>
-    <table><thead><tr><th>Custom UA Pattern</th><th>Action</th></tr></thead>
-    <tbody id="t-ua-custom"></tbody></table>
   </div>
 
   <!-- -->
