@@ -503,6 +503,33 @@ local function render_data()
         return t
     end
 
+    -- Subnet blocks: list configured CIDR rules with label, note, and
+    -- per-day hit telemetry from `subnet_hit:<cidr>:<YYYYMMDD>` keys.
+    local subnet_blocks = {}
+    do
+        local ok, sb = pcall(require, "antibot.core.access.subnet_block")
+        if ok and sb and sb.list_rules then
+            local rules = sb.list_rules()
+            for _, r in ipairs(rules) do
+                local hits_today = tonumber(red:get("subnet_hit:" .. r.cidr .. ":" .. today_key)) or 0
+                -- Sum last 7 days
+                local hits_7d = 0
+                for i = 0, 6 do
+                    local d = os.date("%Y%m%d", ngx.time() - i * 86400)
+                    hits_7d = hits_7d + (tonumber(red:get("subnet_hit:" .. r.cidr .. ":" .. d)) or 0)
+                end
+                table.insert(subnet_blocks, {
+                    cidr       = r.cidr,
+                    label      = r.label,
+                    note       = r.note,
+                    prefix     = r.prefix,
+                    hits_today = hits_today,
+                    hits_7d    = hits_7d,
+                })
+            end
+        end
+    end
+
     ngx.say(cjson.encode({
         summary = {
             ban_total     = #ban_keys,
@@ -545,6 +572,7 @@ local function render_data()
             good_bot  = intent_map["good_bot"]  or {total=0,block=0,challenge=0},
             ambiguous = intent_map["ambiguous"] or {total=0,block=0,challenge=0},
         },
+        subnet_blocks = arr(subnet_blocks),
     }))
 end
 
@@ -631,6 +659,7 @@ tr:hover td{background:#1c2129}
     <div class="tab" onclick="showTab('domains')">🌐 Domains</div>
     <div class="tab" onclick="showTab('intelligence')">🧠 Intelligence</div>
     <div class="tab" onclick="showTab('devices')">📱 Devices</div>
+    <div class="tab" onclick="showTab('subnets')">🛡️ Subnet Blocks</div>
   </div>
 
   <!-- -->
@@ -904,6 +933,29 @@ tr:hover td{background:#1c2129}
     </div>
   </div>
 
+  <!-- Subnet Blocks pane -->
+  <div id="tab-subnets" class="pane">
+    <div class="card">
+      <h2>🛡️ Configured Subnet Block Rules</h2>
+      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
+        Operator-managed CIDR blocklist for empirically-confirmed pure-bot subnets.
+        Edit <code>cfg.subnet_block</code> in <code>core/config.lua</code> → reload nginx.
+        Hits counted from <code>action=block reason=banned_subnet:&lt;label&gt;</code> events.
+      </div>
+      <table>
+        <thead><tr>
+          <th>CIDR</th>
+          <th>Label</th>
+          <th>Prefix</th>
+          <th class="red">Hits Today</th>
+          <th class="orange">Hits 7d</th>
+          <th>Note</th>
+        </tr></thead>
+        <tbody id="t-subnet-blocks"></tbody>
+      </table>
+    </div>
+  </div>
+
 <script>
 // ── Helpers ───────────────────────────────────────────────────
 function tag(score){
@@ -1114,6 +1166,7 @@ function load(){
     setText('status','Updated: '+new Date().toLocaleTimeString('vi-VN'))
     renderDomains(d)
     renderDevices(d)
+    renderSubnetBlocks(d)
     // UA info
     if(d.ua_info){
       setText('ua-count', (d.ua_info.count||0).toLocaleString())
@@ -1380,6 +1433,25 @@ function renderDevices(d){
       + '</tr>'
   }
   setHTML('t-intent-stats', irows || nodata(6))
+}
+
+function renderSubnetBlocks(d){
+  var rows = ''
+  var list = d.subnet_blocks || []
+  for(var s of list){
+    var todayCls = s.hits_today > 0 ? 'red' : 'gray'
+    var weekCls  = s.hits_7d > 0 ? 'orange' : 'gray'
+    var note = trunc(s.note || '', 200)
+    rows += '<tr>'
+      + '<td class="mono"><b>' + s.cidr + '</b></td>'
+      + '<td><span class="tag tag-red">' + (s.label || 'default') + '</span></td>'
+      + '<td class="mono">/' + s.prefix + '</td>'
+      + '<td class="' + todayCls + '"><b>' + (s.hits_today || 0).toLocaleString() + '</b></td>'
+      + '<td class="' + weekCls  + '">' + (s.hits_7d   || 0).toLocaleString() + '</td>'
+      + '<td style="font-size:11px;color:var(--color-text-secondary);max-width:400px;word-break:break-word">' + note + '</td>'
+      + '</tr>'
+  }
+  setHTML('t-subnet-blocks', rows || nodata(6))
 }
 
 setInterval(load,10000)

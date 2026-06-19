@@ -225,17 +225,35 @@ _M.trust = {
 --   4. Add CIDR to this list, deploy antibot reload
 --   5. Remove firewall rule (antibot now handles it)
 --
--- Each entry must include comment with incident date + summary of
--- empirical evidence (distinct IPs, UA pattern, endpoint targeting).
+-- Entry format:
+--   { cidr = "X.Y.Z.W/N", label = "<category>", note = "<context>" }
+--
+--   cidr:  required, CIDR notation
+--   label: required, operator-defined category (used in action_reason +
+--          admin dashboard for grouping/audit). Snake_case suggested.
+--   note:  optional, free-form description of the incident/evidence
+--
+-- Bare string format `"X.Y.Z.W/N"` also accepted (label = "default") for
+-- backward compatibility.
+--
+-- Common label categories operators use:
+--   scraper_fleet_<region>   - distributed scraper bot from region X
+--   ddos_pool                - DDoS attack fleet
+--   credential_stuffing      - login bruteforce subnet
+--   ai_crawler_unauth        - AI crawler bypassing robots.txt
+--   vpn_abuse                - residential VPN provider abused for attacks
 _M.subnet_block = {
-    -- 2026-06-19: 44+ distinct IPs in 2-min window from /15, 16 Chrome
-    -- versions cycled (including 103/104/105 ancient), 100% Windows Chrome
-    -- platform, 20+ expensive VN logistics endpoints targeted, zero verified
-    -- cookie hits, PHP-FPM cascade saturation, HTTP 500/499 dominant.
-    -- Firewall block confirmed: site load returns to baseline immediately.
-    -- APNIC delegation: Chinese/HK carrier — no rationale for VN logistics
-    -- site traffic. Covers 43.172.0.0 - 43.173.255.255.
-    "43.172.0.0/15",
+    {
+        cidr  = "43.172.0.0/15",
+        label = "scraper_fleet_cn_hk",
+        note  = "2026-06-19 incident: 44+ distinct IPs in 2-min window, " ..
+                "16+ Chrome versions cycled (incl. ancient 103/104/105), " ..
+                "100% Windows Chrome (zero platform diversity), 20+ expensive " ..
+                "VN logistics endpoints targeted in parallel, zero verified " ..
+                "cookie hits, PHP-FPM saturation. Firewall test confirmed: " ..
+                "load returns to baseline. APNIC Chinese/HK delegation — " ..
+                "no rationale for VN logistics site traffic.",
+    },
 }
 
 _M.cluster = {

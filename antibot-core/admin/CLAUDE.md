@@ -48,4 +48,5 @@ respond JSON or HTML
 - Modifications via API mirror Redis writes — same TTL/key conventions as core code
 
 ## Update log
+- 2026-06-19 — **Subnet Blocks dashboard tab** (`init.lua`). New tab `🛡️ Subnet Blocks` shows operator-managed CIDR blocklist with label, prefix, hits today/7d, note. Data sourced from `subnet_block.list_rules()` + Redis `subnet_hit:<cidr>:<date>` counters. Lets operator monitor which blocked subnets still active and review for removal. See `antibot-core/CLAUDE.md` update log 2026-06-19 (followup) for full context.
 - `72f0415` (2026-05-03) — no changes
