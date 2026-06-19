@@ -72,6 +72,19 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-06-19 (subnet-level fix) — **Deterministic subnet blocklist** (`core/access/subnet_block.lua` NEW + `core/config.lua` + `init.lua`). Solves the 43.172/43.173 attack at the right layer — methodology shift away from threshold-based defense.
+  - **Why threshold defenses failed**: Earlier same-day commits added IP-tracking per (UA, /16) for cookie path (max=3) then device path (max=10). Methodology was thin extrapolation from limited 2-min log sample. Empirical evidence from operator (firewall block on 43.172.0.0/15 → load drops to baseline; firewall unblock → services die in minutes) proved these /16s contain ZERO legitimate users mixed in — they are 100% bot infrastructure. Threshold-based defense was conceptually wrong: it tried to balance "bot vs real user mixed in pool" when no real users exist.
+  - **Empirical evidence summary** (2-min window 08:26-08:28):
+    - 44+ distinct IPs from /15 (38 in 43.173 + 6 in 43.172)
+    - 16+ Chrome versions cycled (including ancient 103/104/105 — not used by real users on auto-update)
+    - 100% Windows Chrome — zero platform diversity (no Mobile/Mac/Firefox that real user pool would have)
+    - 20+ expensive endpoints targeted in parallel
+    - Zero verified cookie hits (no historical real-user activity)
+    - HTTP 500/499 cascade — PHP-FPM saturating
+  - **Mechanism**: `cfg.subnet_block` is a list of CIDR strings (operator-managed). `subnet_block.lua` parses at module load into pre-computed (base_masked, mask, prefix) tuples. Per request: ip_to_int + single `bit.band` per rule (sub-microsecond, zero Redis). Runs in STEPS_COMMON after ctx_layer.init (needs ctx.ip) and before session_richness/ip_ban_check (skip wasted Redis). Match → `action=block reason=banned_subnet`, exit 403.
+  - **Validation protocol** (in config.lua comment): firewall-block subnet at OS level → observe site load → if returns to baseline and stays normal ≥30 min → no legitimate users → add to `cfg.subnet_block` → reload → remove firewall rule.
+  - **Seed**: `43.172.0.0/15` from this incident. APNIC delegation = Chinese/HK carrier; no rationale for VN logistics site traffic.
+  - **Defense in depth retained**: cookie/device IP-tracking from earlier commits still active for /16s not on blocklist. Different bot attack from a /16 not yet enumerated → may still be caught by threshold defense. But for proven-bot subnets, deterministic block is correct.
 - 2026-06-19 (followup) — **Split anti-sharing threshold by scope** (`core/config.lua` + `init.lua` + `core/access/whitelist.lua`). Earlier same-day commit used single `max_ips_per_handle=3` for both cookie and device scopes — FP risk for device scope.
   - **Why split**: cookie is 1:1 with user (cookie unique per user), but device_id is N:1 (multiple Vietnamese carrier users in same /16+UA share device_id by design). Threshold 3 for device scope would trigger mass re-challenge on dense (UA, /16) pools (e.g., Viettel /16 + Chrome 131 may legitimately see 15-30 distinct user IPs/24h).
   - **New config fields**: `cfg.verified_share.max_ips_cookie = 3` + `cfg.verified_share.max_ips_device = 10`. Removed `max_ips_per_handle`.

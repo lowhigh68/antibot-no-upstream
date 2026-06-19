@@ -254,6 +254,34 @@ _M.verified_share = {
 -- Backward-compat alias (older code references cfg.cookie.*)
 _M.cookie = _M.verified_share
 
+-- Operator-managed subnet blocklist (CIDR format).
+--
+-- Deterministic block at antibot edge for subnets EMPIRICALLY confirmed
+-- as pure bot infrastructure (no legitimate users mixed in). Equivalent
+-- to iptables block but git-versioned, log-integrated, hot-reload via
+-- nginx -s reload.
+--
+-- Validation protocol before adding a subnet:
+--   1. Identify suspicious /16 or /15 in nginx access logs
+--   2. Temporarily firewall-block at OS level (iptables -I INPUT)
+--   3. Observe load: if drops to baseline within minutes AND stays
+--      normal for ≥30 min → subnet has no legitimate users
+--   4. Add CIDR to this list, deploy antibot reload
+--   5. Remove firewall rule (antibot now handles it)
+--
+-- Each entry must include comment with incident date + summary of
+-- empirical evidence (distinct IPs, UA pattern, endpoint targeting).
+_M.subnet_block = {
+    -- 2026-06-19: 44+ distinct IPs in 2-min window from /15, 16 Chrome
+    -- versions cycled (including 103/104/105 ancient), 100% Windows Chrome
+    -- platform, 20+ expensive VN logistics endpoints targeted, zero verified
+    -- cookie hits, PHP-FPM cascade saturation, HTTP 500/499 dominant.
+    -- Firewall block confirmed: site load returns to baseline immediately.
+    -- APNIC delegation: Chinese/HK carrier — no rationale for VN logistics
+    -- site traffic. Covers 43.172.0.0 - 43.173.255.255.
+    "43.172.0.0/15",
+}
+
 _M.cluster = {
     ua_baseline_threshold_mult = 10,
     subnet_diversity_nat_max   = 3,

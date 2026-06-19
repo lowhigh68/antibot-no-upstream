@@ -3,6 +3,7 @@ local _M = {}
 local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
+local subnet_block       = require "antibot.core.access.subnet_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
@@ -22,6 +23,11 @@ local cfg                = require "antibot.core.config"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
+    -- subnet_block: deterministic CIDR block list for empirically-confirmed
+    -- pure-bot subnets (cfg.subnet_block). Runs EARLY (after ctx populated,
+    -- before any Redis ops) to short-circuit bot traffic at minimum cost.
+    -- Pure bit ops on pre-parsed CIDR tuples — zero Redis, sub-microsecond.
+    { layer = subnet_block,      fn = "run"           },
     -- session_richness: compute ctx.session_richness ∈ [0,1] từ cookie
     -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
