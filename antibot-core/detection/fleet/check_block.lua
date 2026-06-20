@@ -12,8 +12,23 @@ local pool = require "antibot.core.redis_pool"
 --                      stays "confirm" for cfg.enforce.sustained_minutes.
 --   fl:dyn:<cidr_16>   written by analyzer when rollup count >= rollup.min.
 --
--- Either present → 403 with `action_reason = fleet_dyn_block_<24|16>:<cidr>`
+-- Either present → ngx.exit(444) with `action_reason = fleet_dyn_block_<24|16>:<cidr>`
 -- and `ctx.fleet_blocked = matched_cidr` for downstream logging.
+--
+-- Why 444 (nginx-specific TCP RST) instead of 403:
+--   - Subnet block is a NETWORK-LEVEL decision, not a per-request decision.
+--     RST matches the semantic "this network endpoint is not for you".
+--   - ~15x bandwidth saving: no response headers, no body, single RST
+--     packet vs full HTTP teardown (FIN ack + payload + content-length).
+--   - Avoids TIME_WAIT socket accumulation under sustained block load.
+--   - Crawler interpretation: bots typically treat persistent connection
+--     resets as "host unreachable" and drop URLs from queue, while 403
+--     reads as "try again later" and invites retry cycles.
+--   - SEO risk if accidentally applied to search engines (Google may
+--     deindex on persistent RST) — empirically not an issue because
+--     Googlebot/Bingbot distribute traffic across many /16 and never
+--     cross fleet thresholds; if it ever happens, operator catches via
+--     Search Console "URL unreachable" and DELs the dyn key in minutes.
 --
 -- Enforcement is independent of `cfg.fleet_detection.mode`: if dyn keys
 -- exist they are honored, even if mode is later flipped back to "shadow".
@@ -87,10 +102,8 @@ function _M.run(ctx)
         " scope=/", scope,
         " info=", tostring(info))
 
-    ngx.status = 403
-    ngx.header["Content-Type"] = "text/plain"
-    ngx.say("Access denied.")
-    ngx.exit(403)
+    -- TCP RST without HTTP response. See header comment for rationale.
+    ngx.exit(444)
     return true, true
 end
 
