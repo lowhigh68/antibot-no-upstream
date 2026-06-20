@@ -199,6 +199,85 @@ local function pick_bucket()
     return prev_bucket
 end
 
+-- ── Fast-path eval (current bucket, partial data) ──────────────────────
+-- Runs every analyzer cycle (30s) on the CURRENT still-filling bucket.
+-- Targets sub-2-minute detection for heavy attacks instead of waiting for
+-- the closed bucket + slow-path. Bypasses sustained counter — fires DYN
+-- BLOCK on first confirm because the use case IS rapid response.
+--
+-- Higher min_hits floors (fast > slow) so partial-bucket statistics stay
+-- meaningful. Low-rate attacks that don't accumulate enough in a partial
+-- bucket still get caught by the slow path on closed-bucket eval.
+local function fast_path_eval(red, mode, dyn_ttl, flag_ttl)
+    if mode ~= "enforce" then return 0, 0 end
+    if _CONN_DEAD then return 0, 0 end
+
+    local fdc = fdcfg()
+    local thr = fdc.thresholds or {}
+    local fast_24 = thr.min_hits_fast or 80
+    local fast_16 = thr.min_hits_16_fast or 50
+
+    local current = math.floor(ngx.time() / BUCKET_SECS)
+    local n_fast_24, n_fast_16 = 0, 0
+
+    -- /16 fast-path first — distributed attacks aggregate cleanest here
+    local active_16, err16 = red:smembers("fl:active:16:" .. current)
+    if err16 then note_pipeline_err(err16) end
+    if active_16 and active_16 ~= ngx.null then
+        for _, cidr in ipairs(active_16) do
+            if _CONN_DEAD then break end
+            local status, score, axes = evaluate_prefix(red, "16", cidr, current, fast_16)
+            if status == "confirm" then
+                n_fast_16 = n_fast_16 + 1
+                local ratio = (axes.distinct_fp > 0)
+                    and (axes.distinct_ips / axes.distinct_fp) or 0
+                local info = string.format(
+                    "auto:fast=16:hits=%d:ips=%d:fp=%d:ratio=%.1f:t=%d",
+                    axes.hits, axes.distinct_ips, axes.distinct_fp,
+                    ratio, ngx.time())
+                pool.safe_set("fl:dyn:" .. cidr, info, dyn_ttl)
+                write_flag(red, "16", cidr, "confirm", score, axes, flag_ttl, nil)
+                ngx.log(ngx.WARN, "[fleet.analyzer] FAST DYN BLOCK ", cidr,
+                        " hits=", axes.hits,
+                        " ips=", axes.distinct_ips,
+                        " fp=", axes.distinct_fp,
+                        " score=", string.format("%.3f", score))
+            end
+        end
+    end
+
+    if _CONN_DEAD then return n_fast_24, n_fast_16 end
+
+    -- /24 fast-path — catches concentrated attacks before they roll up
+    local active_24, err24 = red:smembers("fl:active:24:" .. current)
+    if err24 then note_pipeline_err(err24) end
+    if active_24 and active_24 ~= ngx.null then
+        for _, cidr in ipairs(active_24) do
+            if _CONN_DEAD then break end
+            local status, score, axes = evaluate_prefix(red, "24", cidr, current, fast_24)
+            if status == "confirm" then
+                n_fast_24 = n_fast_24 + 1
+                local ratio = (axes.distinct_fp > 0)
+                    and (axes.distinct_ips / axes.distinct_fp) or 0
+                local info = string.format(
+                    "auto:fast=24:hits=%d:ips=%d:fp=%d:ratio=%.1f:t=%d",
+                    axes.hits, axes.distinct_ips, axes.distinct_fp,
+                    ratio, ngx.time())
+                pool.safe_set("fl:dyn:" .. cidr, info, dyn_ttl)
+                write_flag(red, "24", cidr, "confirm", score, axes,
+                           flag_ttl, parent_16_of(cidr))
+                ngx.log(ngx.WARN, "[fleet.analyzer] FAST DYN BLOCK ", cidr,
+                        " hits=", axes.hits,
+                        " ips=", axes.distinct_ips,
+                        " fp=", axes.distinct_fp,
+                        " score=", string.format("%.3f", score))
+            end
+        end
+    end
+
+    return n_fast_24, n_fast_16
+end
+
 -- ── Main evaluator ─────────────────────────────────────────────────────
 function _M.evaluate()
     _CONN_DEAD = false
@@ -216,12 +295,26 @@ function _M.evaluate()
     local sustained_target = enforce_cfg.sustained_minutes or 1
     local mode = fdc.mode or "shadow"
 
-    local bucket = pick_bucket()
-    if bucket == nil then return end  -- already evaluated this bucket
-
     local red, err = pool.get()
     if not red then
         ngx.log(ngx.WARN, "[fleet.analyzer] redis err: ", tostring(err))
+        return
+    end
+
+    -- Fast path runs every cycle on the CURRENT bucket.
+    local n_fast_24, n_fast_16 = fast_path_eval(red, mode, dyn_ttl, flag_ttl)
+
+    -- Slow path: only when the previous closed bucket hasn't been done yet.
+    local bucket = pick_bucket()
+    if bucket == nil then
+        pool.put(red)
+        if n_fast_24 > 0 or n_fast_16 > 0 then
+            ngx.log(ngx.WARN,
+                "[fleet.analyzer] fast-only cycle fast24=", n_fast_24,
+                " fast16=", n_fast_16,
+                " mode=", mode,
+                _CONN_DEAD and " CONN_DEAD" or "")
+        end
         return
     end
 
@@ -331,6 +424,8 @@ function _M.evaluate()
         " skip=", n_skip_16,
         " confirm=", n_conf_16,
         " suspect=", n_susp_16,
+        " | fast24=", n_fast_24,
+        " fast16=", n_fast_16,
         " mode=", mode,
         _CONN_DEAD and " CONN_DEAD" or "")
 end

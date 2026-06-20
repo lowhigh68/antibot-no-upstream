@@ -258,14 +258,24 @@ _M.fleet_detection = {
     thresholds = {
         suspect  = 0.5,
         confirm  = 0.7,
-        -- Per-window (5 min) sample-size floors. Rotation attacks spread
-        -- thin per /24 (43.172/15 field test: 2-6 hits/min/24, 12-20
-        -- hits/min/16). Over 5 minutes that becomes ~10-30 hits/24 and
-        -- 60-100 hits/16, comfortably above these floors. CGNAT NAT pools
-        -- still naturally exceed both but score ~0 (high fp diversity,
-        -- verified cookies, path spread).
-        min_hits     = 20,    -- /24 evaluator floor over 5-min bucket
-        min_hits_16  = 30,    -- /16 evaluator floor over 5-min bucket
+
+        -- Slow path: previous CLOSED 5-min bucket. Statistically reliable
+        -- but ~5-6 min latency from attack start to first dyn block.
+        min_hits     = 20,    -- /24 floor over 5-min closed bucket
+        min_hits_16  = 30,    -- /16 floor over 5-min closed bucket
+
+        -- Fast path: CURRENT (still-filling) bucket. Higher floors so
+        -- partial-bucket data stays statistically meaningful, bypasses
+        -- sustained counter — fires dyn block on first confirm. Cuts
+        -- detection latency from ~5 min down to 30-90s for heavy attacks
+        -- (target: < 2 min for any attack pushing PHP-FPM into overload).
+        --
+        -- FP safety: fp_poverty axis (weight 0.6) is the actual
+        -- discriminator. Real CGNAT NAT pools with diverse devices keep
+        -- distinct_fp high → fp_poverty ~0 regardless of hit count.
+        -- min_hits is only a floor for compute, not a confidence trigger.
+        min_hits_fast    = 80,   -- /24 floor over current partial bucket
+        min_hits_16_fast = 50,   -- /16 floor over current partial bucket
     },
 
     rollup = {
