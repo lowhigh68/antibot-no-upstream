@@ -138,9 +138,10 @@ local AUTH_KEYWORDS = {
 -- user được bảo vệ bởi session_richness threshold lift.
 local AUTH_LEGACY_PATHS = {
     -- WordPress
-    "^/xmlrpc%.php$",        -- XML-RPC: xml body, bruteforce via system.multicall
-    "^/wp%-admin/",          -- admin panel: heartbeat/AJAX/autosave burst
-    "^/wp%-json/wp/v2/users",-- REST user endpoint: creation + enumeration target
+    "^/xmlrpc%.php$",           -- XML-RPC: xml body, bruteforce via system.multicall
+    "^/wp%-admin/",             -- admin panel: heartbeat/AJAX/autosave burst
+    "^/wp%-json/wp/v2/users",   -- REST user endpoint: creation + enumeration target
+    "^/wp%-comments%-post%.php$", -- comment submission: high-volume spam vector
 
     -- Joomla (global #2 CMS, VN government/enterprise sites)
     "^/administrator/",

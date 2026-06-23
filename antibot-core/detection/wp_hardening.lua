@@ -1,22 +1,28 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 
--- WP attack surface — POST tới wp-login.php và xmlrpc.php.
+-- WP attack surface — POST tới wp-login.php, xmlrpc.php, wp-comments-post.php.
 -- Thay vì rate limit hoặc challenge (lockout tools/CI/app), contribute
 -- signals vào score. Bruteforce bằng HTTP client thô (requests/curl/Go)
 -- thiếu nhiều marker protocol mà browser thật tự nhiên có.
+--
+-- Fast-path hard exits (trước scoring) cho 2 case near-zero FP:
+--   xmlrpc  — non-WP/Jetpack UA: Jetpack/WP Core/CLI luôn self-identify.
+--   wp-login — missing testcookie 2 lần / 30s: tool post thẳng không GET-first.
 --
 -- wp-admin không được cover ở đây vì /wp-admin/admin-ajax.php là endpoint
 -- public được plugin frontend dùng (contact form, comment, v.v.) — check
 -- logged_in cookie sẽ false positive diện rộng.
 
-local ZONE_LOGIN  = "login"
-local ZONE_XMLRPC = "xmlrpc"
+local ZONE_LOGIN   = "login"
+local ZONE_XMLRPC  = "xmlrpc"
+local ZONE_COMMENT = "comment"
 
 local function detect_zone(uri, method)
     if method ~= "POST" then return nil end
-    if uri == "/wp-login.php" then return ZONE_LOGIN end
-    if uri == "/xmlrpc.php"   then return ZONE_XMLRPC end
+    if uri == "/wp-login.php"         then return ZONE_LOGIN   end
+    if uri == "/xmlrpc.php"           then return ZONE_XMLRPC  end
+    if uri == "/wp-comments-post.php" then return ZONE_COMMENT end
     return nil
 end
 
@@ -134,6 +140,70 @@ local function score_xmlrpc(ctx)
     return score, reasons
 end
 
+-- POST /wp-comments-post.php — phân biệt legit comment submission vs spam bot.
+-- Real browser flow: GET post page → receive testcookie → submit form với
+-- Referer = post URL, Sec-Fetch-Mode = navigate, body có đủ fields.
+-- Spam bot POST thẳng → thiếu hầu hết marker này.
+local function score_comment(ctx)
+    local score   = 0
+    local reasons = {}
+
+    -- 1. Missing wordpress_test_cookie (near-zero FP)
+    --    Browser thật đã GET post page trước → nhận cookie → POST comment.
+    if not ngx.var.cookie_wordpress_test_cookie then
+        score = score + 0.25
+        reasons[#reasons+1] = "no_testcookie"
+    end
+
+    -- 2. No prior navigation: user phải đọc bài viết trước khi comment.
+    local fp = ctx.fp_light
+    if fp then
+        local nav = tonumber(pool.safe_get("sess_nav:" .. fp)) or 0
+        if nav < 2 then
+            score = score + 0.15
+            reasons[#reasons+1] = "no_prior_nav"
+        end
+    end
+
+    -- 3. Referer: form submit có Referer là URL bài viết (cùng host).
+    local referer = ngx.var.http_referer or ""
+    local host    = ngx.var.host or ""
+    if referer == "" then
+        score = score + 0.15
+        reasons[#reasons+1] = "no_referer"
+    elseif host ~= "" and not referer:find(host, 1, true) then
+        score = score + 0.15
+        reasons[#reasons+1] = "bad_referer"
+    end
+
+    -- 4. Sec-Fetch-Mode: browser form submit = "navigate".
+    local sfm = ngx.var.http_sec_fetch_mode or ""
+    if sfm == "" then
+        score = score + 0.15
+        reasons[#reasons+1] = "no_sec_fetch"
+    elseif sfm ~= "navigate" then
+        score = score + 0.10
+        reasons[#reasons+1] = "bad_sec_fetch"
+    end
+
+    -- 5. fp_quality thấp: bot không chạy JS beacon.
+    local fpq = ctx.fp_quality or 1.0
+    if fpq < 0.3 then
+        score = score + 0.10
+        reasons[#reasons+1] = "low_fpq"
+    end
+
+    -- 6. Body rất nhỏ: real comment form có comment text + author + email +
+    --    comment_post_ID + _wpnonce ≥ ~80 bytes. Spam bot gửi minimal fields.
+    local cl = tonumber(ngx.var.http_content_length) or 0
+    if cl > 0 and cl < 80 then
+        score = score + 0.30
+        reasons[#reasons+1] = "small_body"
+    end
+
+    return score, reasons
+end
+
 function _M.run(ctx)
     local uri    = ngx.var.uri or ""
     local method = ngx.var.request_method or "GET"
@@ -141,11 +211,41 @@ function _M.run(ctx)
     local zone = detect_zone(uri, method)
     if not zone then return true, false end
 
+    -- Fast-path hard exits — fire trước scoring, không cần history.
+
+    -- xmlrpc: legitimate callers (Jetpack, WP Core, WP-CLI) LUÔN include
+    -- "wordpress" hoặc "jetpack" trong UA. UA khác = near-certain attack.
+    if zone == ZONE_XMLRPC then
+        local ua_lower = (ctx.ua or ""):lower()
+        if not ua_lower:find("jetpack", 1, true) and
+           not ua_lower:find("wordpress", 1, true) then
+            ctx.action        = "block"
+            ctx.action_reason = "xmlrpc_ua_reject"
+            ngx.exit(444)
+        end
+    end
+
+    -- wp-login: missing testcookie = tool posting thẳng không qua GET-first flow.
+    -- 1 miss tolerated (browser privacy-clear / race condition).
+    -- 2 misses trong 30s → attack confirmed.
+    if zone == ZONE_LOGIN then
+        if not ngx.var.cookie_wordpress_test_cookie then
+            local cnt = pool.safe_incr("wp_login_notc:" .. (ctx.ip or ""), 30)
+            if (cnt or 0) >= 2 then
+                ctx.action        = "block"
+                ctx.action_reason = "wp_login_notc_repeat"
+                ngx.exit(444)
+            end
+        end
+    end
+
     local score, reasons
     if zone == ZONE_LOGIN then
         score, reasons = score_login(ctx)
-    else
+    elseif zone == ZONE_XMLRPC then
         score, reasons = score_xmlrpc(ctx)
+    else
+        score, reasons = score_comment(ctx)
     end
 
     if score > 1.0 then score = 1.0 end
