@@ -21,10 +21,19 @@
 --   2. Negative signal trong intelligence/scoring/compute (weight -30):
 --      richness 1.0 trừ 30 pts khỏi score → trust-based lowering
 --
+-- Cross-domain persistence (richness:max:<identity> TTL 3600s):
+--   Cookie là per-domain — admin có richness=0.80 ở domain A nhưng khi
+--   truy cập domain B lần đầu richness=0.10 (chưa có cookie domain B).
+--   cluster_score vẫn fire cross-domain → không đủ offset → ban oan.
+--   Fix: persist max richness per identity trong Redis → domain B đọc
+--   được giá trị domain A đã prove → negative signal đủ lớn → allow.
+--   Redis shared toàn server chính xác là cơ sở để implement điều này.
+--
 -- Generic: thêm CMS mới ZERO config change. Cookie tên gì cũng được —
 -- chỉ cần có payload thật là tính.
 
-local _M = {}
+local _M  = {}
+local pool = require "antibot.core.redis_pool"
 
 -- Calibration từ observation thực tế:
 --   - Anonymous first visit:                bytes 0,    n 0,    r=0.0
@@ -34,12 +43,19 @@ local _M = {}
 --   - Magento admin:                         bytes 600,  n 6,    r~0.9
 --   - SPA + JWT Bearer:                      bytes 100,  n 2,    r~0.5 (auth bonus)
 --   - WP admin + CSRF (POST):                bytes 400,  n 5,    r~1.0
-local SIZE_SATURATION   = 500    -- byte tại đó size_score = 1.0
-local COUNT_SATURATION  = 4      -- cookie count tại đó count_score = 1.0
-local SIZE_WEIGHT       = 0.5    -- 50% sức nặng dành cho payload bytes
-local COUNT_WEIGHT      = 0.3    -- 30% cho count (chống bot 1 cookie giả lớn)
-local AUTH_BONUS        = 0.3    -- Authorization header (Bearer/Basic)
-local CSRF_BONUS        = 0.2    -- X-CSRF-Token / X-XSRF-TOKEN
+local SIZE_SATURATION  = 500    -- byte tại đó size_score = 1.0
+local COUNT_SATURATION = 4      -- cookie count tại đó count_score = 1.0
+local SIZE_WEIGHT      = 0.5    -- 50% sức nặng dành cho payload bytes
+local COUNT_WEIGHT     = 0.3    -- 30% cho count (chống bot 1 cookie giả lớn)
+local AUTH_BONUS       = 0.3    -- Authorization header (Bearer/Basic)
+local CSRF_BONUS       = 0.2    -- X-CSRF-Token / X-XSRF-TOKEN
+
+-- Cross-domain persistence thresholds.
+-- PERSIST_MIN: chỉ lưu Redis khi richness đủ meaningful — tránh write
+-- storm từ casual visitor với 1 analytics cookie (r~0.1). 0.4 tương
+-- ứng returning user với vài cookie, đủ phân biệt với first-visit bot.
+local RICHNESS_PERSIST_MIN = 0.4
+local RICHNESS_TTL         = 3600  -- 1 giờ, cover 1 work session
 
 local function count_cookies(s)
     if not s or s == "" then return 0 end
@@ -68,10 +84,25 @@ function _M.compute(ctx)
             + (has_csrf and CSRF_BONUS or 0)
 
     if r > 1.0 then r = 1.0 end
+
+    -- Cross-domain richness persistence.
+    -- Admin prove richness=0.80 ở domain A → stored in Redis per identity.
+    -- Khi truy cập domain B (ít cookie hơn → r thấp hơn), đọc stored max
+    -- → dùng giá trị cao hơn → cluster_score được offset đúng mức.
+    -- Write chỉ khi r >= RICHNESS_PERSIST_MIN để tránh pollute bằng casual
+    -- visit. Write cũng refresh TTL khi dùng stored value (admin active).
+    local id = ctx.identity or ctx.ip or ""
+    if id ~= "" then
+        local key    = "richness:max:" .. id
+        local stored = tonumber(pool.safe_get(key)) or 0
+        if stored > r then r = stored end
+        if r >= RICHNESS_PERSIST_MIN then
+            pool.safe_set(key, string.format("%.2f", r), RICHNESS_TTL)
+        end
+    end
+
     ctx.session_richness = r
 
-    -- DEBUG: spam volume cao, dùng cho tuning local. Production dựa vào
-    -- logger.lua append richness vào antibot.log mỗi request.
     ngx.log(ngx.DEBUG,
         "[session_richness] r=", string.format("%.2f", r),
         " bytes=", bytes,
