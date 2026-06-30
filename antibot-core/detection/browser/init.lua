@@ -7,6 +7,7 @@ local store   = require "antibot.detection.browser.store"
 local canvas  = require "antibot.detection.browser.canvas"
 local webgl   = require "antibot.detection.browser.webgl"
 local entropy = require "antibot.detection.browser.entropy"
+local headless = require "antibot.detection.browser.headless"
 
 function _M.run(ctx)
     collect.run(ctx)
@@ -15,6 +16,7 @@ function _M.run(ctx)
         canvas.run(ctx)
         webgl.run(ctx)
         entropy.run(ctx)
+        headless.run(ctx)
         store.run(ctx)
     else
         trigger.run(ctx)

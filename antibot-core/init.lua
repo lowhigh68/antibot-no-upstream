@@ -6,6 +6,7 @@ local session_richness   = require "antibot.core.session_richness"
 local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
+local iprep              = require "antibot.core.iprep"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
 local fingerprint_layer  = require "antibot.core.fingerprint"
@@ -18,6 +19,7 @@ local intelligence_layer = require "antibot.intelligence"
 local enforcement_layer  = require "antibot.enforcement"
 local risk_update        = require "antibot.async.risk_update"
 local adaptive_weight    = require "antibot.async.adaptive_weight"
+local intel_reporter     = require "antibot.async.intel_reporter"
 local logger             = require "antibot.async.logger"
 local pool               = require "antibot.core.redis_pool"
 
@@ -45,6 +47,10 @@ local STEPS_COMMON = {
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
     { layer = session_richness,  fn = "run"           },
     { layer = ip_ban_check,      fn = "run"           },
+    -- iprep: cross-server IP reputation check (Central Redis, 1h local cache).
+    -- Runs after ip_ban_check so locally-banned IPs exit before reaching this.
+    -- Sets ctx.ext_rep ∈ [0,1]; fails open (ext_rep=0) if Central Redis down.
+    { layer = iprep,             fn = "check"         },
     { layer = device_classifier, fn = "run"           },
     { layer = access_layer,      fn = "run"           },
     { layer = transport_layer,   fn = "run"           },
@@ -153,6 +159,14 @@ function _M.log()
         end)
         ngx.timer.at(0, function()
             adaptive_weight.run(ctx)
+        end)
+    end
+
+    -- Intel reporter: propagate confirmed blocks to Central Redis.
+    -- qualifies() gates on action=block + reason not excluded + enabled config.
+    if ctx.action == "block" then
+        ngx.timer.at(0, function()
+            intel_reporter.report(ctx)
         end)
     end
 

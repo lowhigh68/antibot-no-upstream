@@ -52,6 +52,25 @@ local DEFAULT_WEIGHTS = {
     -- nhưng vẫn trừ vào total. Antibot.log có field richness riêng để debug.
     session_richness    = -30,
 
+    -- headless_score: JS beacon confirmed headless browser signals (webdriver,
+    -- domAutomation, chrome.runtime absent). Weight 70 = single strong signal
+    -- (wd=1 alone → 59.5 pts effective → CHALLENGE; wd+da → 70+ → near BLOCK).
+    -- Only fires when ctx.beacon_received=true (JS ran → bot must execute JS).
+    headless_score      = 70,
+
+    -- ext_rep: cross-server IP reputation from Central Redis intel network.
+    -- IPs confirmed blocked on ANY of the 15 servers (eff_score>=60, new detection)
+    -- propagate here with 7-day TTL. Weight 40 < ip_rep=45 (same-server EMA) to
+    -- account for possible cross-server FP (shared hosting IP, ISP NAT range).
+    ext_rep             = 40,
+
+    -- beh_void: desktop user with zero mouse movement AND zero scroll over 3s
+    -- time-on-page → strong bot signal. Only fires when beacon_received=true and
+    -- device_is_mobile==false (mouse events don't fire on touchscreens).
+    -- Weight 35 alone reaches MONITOR (25) but not CHALLENGE (55) — contributes
+    -- to aggregate score alongside other signals.
+    beh_void            = 35,
+
     wp_attack_score     = 80,
 
     swarm_attack        = 120,
@@ -112,6 +131,29 @@ local function get_signal(name, ctx)
 
     if name == "session_richness" then
         return ctx.session_richness or 0.0
+    end
+
+    if name == "headless_score" then
+        return safe_val(ctx.headless_score)
+    end
+
+    if name == "ext_rep" then
+        return safe_val(ctx.ext_rep)
+    end
+
+    if name == "beh_void" then
+        if not ctx.beacon_received then return 0.0 end
+        if ctx.device_is_mobile ~= false then return 0.0 end  -- only explicit desktop
+        local beh = ctx.browser and ctx.browser.beh
+        if not beh then return 0.0 end
+        -- No mouse AND no scroll over 3+ seconds on a desktop = bot pattern.
+        -- td=0 means page loaded less than 2s before beacon (2s delay in JS)
+        -- or navigationStart unavailable — skip to avoid FP on fast page loads.
+        if (beh.mm or 0) == 0 and (beh.sc or 0) == 0
+           and (beh.td or 0) > 3000 then
+            return 1.0
+        end
+        return 0.0
     end
 
     if name == "wp_attack_score" then

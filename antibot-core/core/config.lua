@@ -328,6 +328,37 @@ _M.pow = {
 
 _M.fp_quality_threshold = 0.55
 
+-- Cross-server IP intelligence network.
+-- enabled=false by default — requires explicit configuration of redis.host.
+-- When enabled: on confirmed block (action=block, eff_score>=60, new detection)
+-- intel_reporter writes iprep:known_bad:<ip> to Central Redis (TTL 7 days).
+-- iprep.check reads this on every non-banned IP (1h local cache).
+-- Fail open: Central Redis unreachable → ctx.ext_rep=0, pipeline continues.
+_M.intel = {
+    enabled         = false,
+    redis = {
+        host         = "",        -- Central Redis host (empty = skip even if enabled)
+        port         = 6379,
+        timeout      = 200,       -- ms, fail fast to avoid request latency impact
+        pool_size    = 5,         -- low frequency operations, small pool
+        pool_idle_s  = 30,
+        password     = "",        -- empty = no auth
+        db           = 1,         -- separate DB from local Redis (DB 0)
+    },
+    min_score       = 60,         -- safety guard (BLOCK already implies eff>=80)
+    report_ttl      = 86400,      -- 1 report/IP/24h rate limit
+    known_bad_ttl   = 604800,     -- 7-day persistence in Central Redis
+    local_cache_ttl = 3600,       -- 1h local cache of ext_rep per IP
+    server_id       = "server01", -- unique identifier per server for log attribution
+}
+
+-- Beacon JS injection endpoint.
+-- Must match the nginx location{} that routes to beacon_handler.handle().
+-- Change here + change nginx location name to obfuscate from scrapers.
+_M.beacon = {
+    endpoint = "/antibot/beacon",
+}
+
 _M.debug = false
 
 function _M.endpoint_sens(uri)

@@ -1,25 +1,26 @@
 local _M = {}
 
+-- Two %s placeholders: (1) endpoint path, (2) fingerprint token.
+-- Field names are obfuscated to raise the bar for scraper adaptation:
+--   p=fp, a=cv, b=wgl, c=nav, d=ent, e=hd, f=beh, t=timestamp(ms)
+-- Headless signals (hd) and behavioral biometrics (beh) collected before
+-- fetch fires after a 2s delay to capture interaction window.
 local BEACON_JS = [[
 <script>
 (function(){
-  var fp="%s";
+  var ep="%s",fp="%s";
   try{
-    // Canvas fingerprint
     var c=document.createElement('canvas');
     var g=c.getContext('2d');
-    g.textBaseline='top';
-    g.font='14px Arial';
+    g.textBaseline='top';g.font='14px Arial';
     g.fillText('antibot beacon \u{1F916}',2,2);
     var cv=c.toDataURL().slice(-50);
 
-    // WebGL renderer
     var gl=c.getContext('webgl')||c.getContext('experimental-webgl');
     var wgl='';
-    if(gl){var ext=gl.getExtension('WEBGL_debug_renderer_info');
-      if(ext)wgl=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)||'';}
+    if(gl){var ex=gl.getExtension('WEBGL_debug_renderer_info');
+      if(ex)wgl=gl.getParameter(ex.UNMASKED_RENDERER_WEBGL)||'';}
 
-    // Navigator entropy signals
     var nav={
       lang:navigator.language,
       tz:Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -30,7 +31,6 @@ local BEACON_JS = [[
       touch:'ontouchstart' in window
     };
 
-    // Audio fingerprint (async, best effort)
     var ent=0;
     try{var ac=new(window.AudioContext||window.webkitAudioContext)();
       var osc=ac.createOscillator();var an=ac.createAnalyser();
@@ -40,13 +40,31 @@ local BEACON_JS = [[
       ent=arr.reduce(function(s,v){return s+Math.abs(v);},0)/arr.length;
       osc.stop();ac.close();}catch(e){}
 
-    // POST beacon
-    fetch('/antibot/beacon',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({fp:fp,cv:cv,wgl:wgl,nav:nav,ent:ent}),
-      credentials:'same-origin'
-    });
+    var hd={
+      wd:navigator.webdriver?1:0,
+      da:(window.domAutomation||window.domAutomationController)?1:0,
+      cfl:(function(){if(typeof window.chrome==='undefined')return 2;
+        return window.chrome.runtime?0:1;})(),
+      langs:(navigator.languages||[]).length,
+      sw:screen.width,sh:screen.height,
+      nfn:(Function.prototype.toString.call(window.alert).indexOf('[native code]')>=0)?0:1
+    };
+
+    var beh={mm:0,sc:0,kp:0,td:0};
+    document.addEventListener('mousemove',function(){beh.mm++;},{passive:true});
+    document.addEventListener('scroll',function(){beh.sc++;},{passive:true});
+    document.addEventListener('keypress',function(){beh.kp++;},{passive:true});
+
+    setTimeout(function(){
+      var t0=performance.timeOrigin||(performance.timing&&performance.timing.navigationStart)||0;
+      beh.td=t0>0?Math.round(Date.now()-t0):0;
+      fetch(ep,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({p:fp,a:cv,b:wgl,c:nav,d:ent,e:hd,f:beh,t:Date.now()}),
+        credentials:'same-origin'
+      });
+    },2000);
   }catch(e){}
 })();
 </script>
@@ -68,8 +86,10 @@ function _M.filter()
     local eof   = ngx.arg[2]
 
     if eof and chunk then
-        local fp    = ctx.fp_light or ""
-        local script= BEACON_JS:format(fp)
+        local fp       = ctx.fp_light or ""
+        local endpoint = (require("antibot.core.config").beacon or {}).endpoint
+                         or "/antibot/beacon"
+        local script   = BEACON_JS:format(endpoint, fp)
         local inject_pos = chunk:find("</body>")
         if inject_pos then
             ngx.arg[1] = chunk:sub(1, inject_pos-1) .. script
