@@ -18,6 +18,13 @@ function _M.run(ctx)
         return
     end
 
+    -- AMP pages forbid custom <script> tags — injecting beacon would break AMP validation.
+    local uri = (ctx.req and ctx.req.uri) or ""
+    if uri:match("/amp/?$") then
+        ctx.inject_candidate = false
+        return
+    end
+
     local fp = ctx.fp_light
     if fp then
         local cached = pool.safe_get("beacon:" .. fp)
