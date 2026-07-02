@@ -73,6 +73,11 @@ local DEFAULT_WEIGHTS = {
 
     wp_attack_score     = 80,
 
+    -- ua_hostile_flag: UA contains SQL/XSS injection payload (set by ua_anomaly.lua).
+    -- Weight 80: injection UA + ua_flag + anomaly → raw≈98, eff≈59 (interaction mult=0.6)
+    -- → CHALLENGE. Session_richness (-24) cannot cancel it even at richness=1.0.
+    ua_hostile_flag     = 80,
+
     swarm_attack        = 120,
 
     fp_degraded_pen     = 0,
@@ -154,6 +159,10 @@ local function get_signal(name, ctx)
             return 1.0
         end
         return 0.0
+    end
+
+    if name == "ua_hostile_flag" then
+        return ctx.ua_hostile and 1.0 or 0.0
     end
 
     if name == "wp_attack_score" then
