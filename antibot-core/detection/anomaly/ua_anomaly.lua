@@ -111,22 +111,6 @@ function _M.run(ctx)
     local ua = ctx.ua or ""
     if ua == "" then ctx.ua_flag = 0.5; return end
 
-    -- Hard rule: SQL/XSS injection payload in UA = attack tool, never a real browser.
-    -- Catches bots that stuff SQLi payloads into the UA field (evades structural checks
-    -- because SQL parentheses match has_platform_token, confusing the structural path).
-    local ua_l = ua:lower()
-    if ua_l:find("select%s*%(")
-    or ua_l:find("union%s+select")
-    or ua_l:find("sleep%(")
-    or ua_l:find("waitfor%s+delay")
-    or ua_l:find("pg_sleep")
-    or ua_l:find("dbms_pipe")
-    or ua_l:find("<script") then
-        ctx.ua_flag    = 1.0
-        ctx.ua_hostile = true
-        return
-    end
-
     local score = 0.0
 
     -- Structural headless detection
