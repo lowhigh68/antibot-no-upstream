@@ -83,6 +83,7 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-07-04 — **ip_tour challenge-floor** (`engine.lua`). After action compute, BEFORE trust cap: `if ctx.ip_tour and action ∉ {block,challenge} then action="challenge", reason="ip_tour"`. Placed after the `good_bot_verified` short-circuit so verified crawlers touring every domain are exempt; placed before trust cap so a genuinely trusted session can still downgrade to monitor. Guarantees a single-UA multi-domain tour reaches challenge regardless of class dampening (interaction 0.6 / unknown 0.5 would otherwise leave the weight-25 signal at monitor). Repeat offenders escalate to direct ban inside `detection/ip_tour.lua` (strike counter), not here. See `detection/CLAUDE.md` 2026-07-04.
 - 2026-06-18 — **Generic verified-bot rate ceiling + adaptive class promotion** (`engine.lua` + `core/config.lua` + `async/logger.lua`). REPLACES old `throttle_meta_asn` (Meta-specific per-ASN limit 300/min).
   - **Why**: Meta-specific hardcode was anti-pattern (mai Bytespider/GPTBot tương tự lại phải add 1 function nữa). Industry pattern (Cloudflare Bot Categories, Akamai Crawler Profiles, DataDome) là per-bot-family rate ceiling — generic cho mọi verified bot.
   - **`cfg.rate.good_bot_rate`** (NEW): 3 classes với req/min ceiling:

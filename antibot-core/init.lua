@@ -6,7 +6,9 @@ local session_richness   = require "antibot.core.session_richness"
 local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
+local ip_tour            = require "antibot.detection.ip_tour"
 local iprep              = require "antibot.core.iprep"
+local asn_layer          = require "antibot.core.fingerprint.asn"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
 local access_layer       = require "antibot.core.access"
 local fingerprint_layer  = require "antibot.core.fingerprint"
@@ -25,6 +27,13 @@ local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
     { layer = ctx_layer,         fn = "init"          },
+    -- asn: resolve ctx.asn (mmdb lookup, local, cheap) BEFORE the fleet
+    -- aggregator so fleet's good-crawler exemption (trusted.is_good_crawler)
+    -- can read the ASN. Previously asn.run ran only in the fingerprint layer
+    -- (after class dispatch) → ctx.asn was nil at fleet time → fleet's ASN
+    -- bypass silently never fired and legit crawler /16s got dyn-blocked.
+    -- asn.run is idempotent, so the later fingerprint-layer call no-ops.
+    { layer = asn_layer,         fn = "run"           },
     -- fleet: aggregate FIRST, BEFORE check_block. The analyzer must keep
     -- seeing fleet traffic that's already dyn-blocked, otherwise as soon
     -- as a dyn key fires, the bucket goes empty and the 1h dyn TTL
@@ -53,6 +62,12 @@ local STEPS_COMMON = {
     { layer = iprep,             fn = "check"         },
     { layer = device_classifier, fn = "run"           },
     { layer = access_layer,      fn = "run"           },
+    -- ip_tour: cross-domain shared-hosting tour detector. Runs AFTER
+    -- access_layer so ctx.whitelisted is known (LAN/admin skip counting) and
+    -- AFTER session_richness (trust gate). Sets ctx.ip_tour; engine floors it
+    -- to challenge after the good_bot_verified short-circuit (verified crawlers
+    -- exempt). Strike counter here escalates repeat offenders to a direct ban.
+    { layer = ip_tour,           fn = "run"           },
     { layer = transport_layer,   fn = "run"           },
 }
 

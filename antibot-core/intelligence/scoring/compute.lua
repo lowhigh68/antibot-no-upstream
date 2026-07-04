@@ -12,6 +12,12 @@ local DEFAULT_WEIGHTS = {
     -- → combined score reaches block. A clean-fingerprint browser bursting
     -- briefly contributes ip_surge alone → stays at monitor → allowed.
     ip_surge            = 25,
+    -- ip_tour: single source touring many distinct tenant domains on shared
+    -- hosting (detection/ip_tour.lua). Weight 25 = MONITOR-level for aggregation
+    -- + explainability; the deterministic challenge comes from the ip_tour floor
+    -- in engine.lua (challenge-first). Combined with other bot signals it can
+    -- still reach BLOCK naturally for egregious cases.
+    ip_tour             = 25,
     behavior_score      = 20,
     session_flag        = 20,
     graph_flag          = 20,
@@ -96,6 +102,7 @@ local function get_signal(name, ctx)
     if name == "rate_flag"          then return safe_val(ctx.rate_flag) end
     if name == "burst_flag"         then return safe_val(ctx.burst_flag) end
     if name == "ip_surge"           then return ctx.ip_surge and 1.0 or 0.0 end
+    if name == "ip_tour"            then return ctx.ip_tour and 1.0 or 0.0 end
     if name == "behavior_score"     then return safe_val(ctx.behavior_score) end
     if name == "session_flag"       then return safe_val(ctx.session_flag) end
     if name == "graph_flag"         then return safe_val(ctx.graph_flag) end

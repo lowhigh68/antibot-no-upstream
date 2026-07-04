@@ -37,6 +37,11 @@ local function get_mmdb()
 end
 
 function _M.run(ctx)
+    -- Idempotent: ASN is now resolved early in STEPS_COMMON (before the fleet
+    -- aggregator, so fleet's ASN-based crawler exemption works). The later call
+    -- from fingerprint/init.lua then no-ops instead of re-looking-up.
+    if ctx.asn and ctx.asn.asn_number then return end
+
     local ip = ctx.ip
     if not ip or ip == "" then return end
 

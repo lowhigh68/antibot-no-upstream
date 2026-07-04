@@ -210,6 +210,34 @@ _M.trust = {
     action_cap         = "monitor",
 }
 
+-- IP-Tour detection (cross-domain shared-hosting bot tour).
+--
+-- Catches the ONE invariant a shared-hosting tour bot can't hide: a single
+-- source touching MANY distinct tenant domains in a short window. Every tenant
+-- domain funnels through the same OpenResty + Redis, so this is visible here in
+-- a way no per-site WAF can see. Per-IP rate stays under ip_surge and per
+-- (IP,domain) rate stays under burst → this is the only layer that catches it.
+-- See detection/ip_tour.lua for the full mechanism.
+--
+-- distinct_domains is a CARDINALITY (distinct hostnames), not a request count —
+-- a real user browsing ONE site for hours stays at 1 forever → zero FP on long
+-- sessions.
+_M.ip_tour = {
+    enabled          = true,
+    window           = 90,    -- HLL / strike TTL seconds (sliding)
+    distinct_domains = 5,     -- >= this distinct hosts from one IP → touring
+    -- NAT gate: an office/CGNAT hitting many domains ALSO carries many distinct
+    -- UAs; a single bot touring carries 1-2. Flag only when distinct UAs is LOW.
+    distinct_ua_max  = 3,     -- distinct UAs < this → single-source
+    -- A logged-in multi-site admin managing their own domains has rich cookies.
+    richness_max     = 0.5,   -- session_richness >= this → exempt
+    -- Ban-if-repeat: flagged requests that never obtain a verified cookie (i.e.
+    -- never solve the PoW challenge) accumulate strikes → direct ban:<ip>.
+    strike_ban       = 12,    -- strikes (unsolved flagged reqs) before ban
+    ban_ttl          = 300,   -- first ban 5 min
+    ban_ttl_repeat   = 3600,  -- repeat offender 1 h
+}
+
 -- Fleet Detection (Distributed Web Scraping with Rotating IP Fleet).
 --
 -- Active subnet-level detection. Three independent axes aggregated into a

@@ -105,6 +105,13 @@ function _M.write(ctx)
     -- Trusted ASN bypass (performance — see trusted.lua)
     if trusted.is_trusted(ctx) then return end
 
+    -- Good search-engine crawler bypass (CORRECTNESS — prevent fleet from
+    -- /16-dyn-blocking Googlebot/Bingbot/CocCoc/Applebot, which are
+    -- structurally fleet-like: many IPs, few fingerprints, no cookies).
+    -- Gated by ASN + self-declared crawler UA (see trusted.is_good_crawler).
+    -- Meta is deliberately NOT exempt here.
+    if trusted.is_good_crawler(ctx) then return end
+
     local ip = ctx.ip
     if not ip or ip == "" then return end
     if ip:find(":", 1, true) then return end  -- IPv6 skipped in v1

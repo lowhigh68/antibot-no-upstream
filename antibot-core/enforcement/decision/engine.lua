@@ -468,6 +468,19 @@ function _M.run(ctx)
         action = "allow"
     end
 
+    -- IP-tour: single source touring many distinct tenant domains on shared
+    -- hosting (detection/ip_tour.lua). good_bot_verified already returned above,
+    -- so verified crawlers that legitimately crawl every domain are exempt.
+    -- Floor to challenge (challenge-first) regardless of class dampening — a
+    -- single-UA multi-domain tour must not slip through interaction/unknown
+    -- multipliers. Trust cap below can still downgrade for a genuinely trusted
+    -- session; ip_tour.lua's strike counter escalates repeat offenders to a
+    -- direct ban that seals at the door on the next request.
+    if ctx.ip_tour and action ~= "block" and action ~= "challenge" then
+        action            = "challenge"
+        ctx.action_reason = "ip_tour"
+    end
+
     -- Trust cap
     if trust_reason and action == "challenge" then
         local cap = cfg.trust.action_cap or "monitor"
