@@ -239,6 +239,7 @@ local function render_data()
                 rep=tonumber(rep) or 0,
                 ip_risk=tonumber(ip_risk) or 0,
                 ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
+                ttl_sec=ttl,
                 status=status,
                 last_hit=last_hit > 0 and time_ago(last_hit) or "-",
             })
@@ -265,6 +266,7 @@ local function render_data()
             table.insert(ban_id_list, {
                 id=v, risk=tonumber(risk) or 0,
                 ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
+                ttl_sec=ttl,
                 device=dev, ua=ua_short, ip=ip_addr, bot_score=bs,
                 status=status,
                 last_hit=last_hit > 0 and time_ago(last_hit) or "-",
@@ -762,8 +764,9 @@ tr:hover td{background:#1c2129}
     <div class="card">
       <h2>🚫 Bans — nhóm theo IP <span id="ban-count" class="tag tag-red">0</span></h2>
       <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
-        Mỗi IP kèm các <b>identity</b> (md5(ip+ua)) bị ban trên nó, <b>TTL</b> còn lại và trạng thái.
-        Unban/Whitelist riêng cho từng cấp. Identity không rõ IP gom ở nhóm <i>(unknown)</i>.
+        Chỉ hiển thị <b>IP đang bị ban</b>, kèm các <b>identity</b> (md5(ip+ua)) bị ban trên IP đó.
+        <b>TTL</b> = thời gian ban còn lại (<i>vĩnh viễn</i> = permanent). Trỏ chuột vào identity để xem UA.
+        Unban/Whitelist riêng cho từng cấp.
       </div>
       <table>
         <thead><tr>
@@ -1148,7 +1151,7 @@ function load(){
     // IDLE với TTL còn lớn vẫn hiển thị với badge IDLE.
     var hiddenTotal = (s.ban_ip_hidden||0) + (s.ban_id_hidden||0)
     var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' expiring hidden)' : ''
-    setText('ban-count',   (s.ban_ip + s.ban_id) + hiddenSfx)
+    setText('ban-count',   s.ban_ip + ' IP' + hiddenSfx)
 
     // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
     // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)
@@ -1172,7 +1175,7 @@ function load(){
     }
     setHTML('t-ban-ip', bt||nodata(4))
 
-    // Bans tab: grouped IP -> identities (tidy, one table)
+    // Bans tab: ONLY banned IPs, each with its banned identities (tidy)
     var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
     var devMap={
       'mobile_chrome_android':'mobile','mobile_safari_ios':'mobile',
@@ -1187,49 +1190,54 @@ function load(){
       var di=devIcons[dg]||'❓'
       return dev&&dev!='?'?(di+' '+dev):'❓'
     }
+    // TTL còn lại: -1 = vĩnh viễn, else s/m/h/d
+    function fmtTTL(sec){
+      if(sec===undefined||sec===null) return '-'
+      if(sec<0) return 'vĩnh viễn'
+      if(sec<60) return sec+'s'
+      if(sec<3600) return Math.floor(sec/60)+'m '+(sec%60)+'s'
+      if(sec<86400) return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m'
+      return Math.floor(sec/86400)+'d '+Math.floor((sec%86400)/3600)+'h'
+    }
+    // Mọi dòng ở đây ĐỀU đang bị ban → badge BANNED; "đang hit" nếu còn traffic.
+    function banBadge(r){
+      var hit = r.status==='active'
+        ? ' <span class="gray" style="font-size:9px" title="Vẫn đang bị hit ('+(r.last_hit||'')+')">· đang hit</span>'
+        : ''
+      return '<span class="tag tag-red" style="font-size:9px">BANNED</span>'+hit
+    }
+    function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
+    // Group headers = chỉ IP đang bị ban. Identity chỉ hiện nếu IP của nó cũng bị ban.
     var groups={}
     for(var r of d.ban_ip_list||[]){
-      groups[r.ip]={ip:r.ip,ipBanned:true,risk:Math.max(r.rep||0,r.ip_risk||0),
-                    ttl:r.ttl,status:r.status,last_hit:r.last_hit,ids:[]}
+      groups[r.ip]={ip:r.ip,risk:Math.max(r.rep||0,r.ip_risk||0),
+                    ttl_sec:r.ttl_sec,status:r.status,last_hit:r.last_hit,ids:[]}
     }
     for(var r of d.ban_id_list||[]){
-      var key=(r.ip&&r.ip!=='')?r.ip:'(unknown)'
-      if(!groups[key]) groups[key]={ip:key,ipBanned:false,risk:0,ids:[]}
-      groups[key].ids.push(r)
+      if(r.ip && groups[r.ip]) groups[r.ip].ids.push(r)   // bỏ identity trên IP chưa bị ban
     }
-    var gkeys=Object.keys(groups).sort(function(a,b){
-      var ga=groups[a],gb=groups[b]
-      if(ga.ipBanned!==gb.ipBanned) return ga.ipBanned?-1:1
-      return (gb.risk||0)-(ga.risk||0)
-    })
+    var gkeys=Object.keys(groups).sort(function(a,b){return (groups[b].risk||0)-(groups[a].risk||0)})
     var gh=''
     for(var k of gkeys){
       var g=groups[k]
-      var isUnknown=(g.ip==='(unknown)')
-      // ── IP group-header row ──
-      var ipRisk = g.ipBanned ? (bar(g.risk)+(g.risk*100).toFixed(0)+'%')
-                              : '<span class="gray" style="font-size:11px">IP không bị ban</span>'
-      var ipActions = isUnknown ? '' :
-        (g.ipBanned
-          ? `<button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${g.ip}')">Unban IP</button>
-             <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button>`
-          : `<button class="btn btn-green" style="font-size:11px;padding:2px 7px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button>`)
+      // ── IP group-header row (IP này CHẮC CHẮN đang bị ban) ──
       gh+=`<tr style="background:rgba(248,81,73,.07)">
         <td class="mono"><b>${g.ip}</b></td>
         <td class="gray" style="font-size:11px">IP · ${g.ids.length} id</td>
-        <td>${ipRisk}</td>
-        <td class="gray" style="font-size:11px">${g.ipBanned?(g.ttl||'-'):'-'}</td>
-        <td>${g.ipBanned?statusTag(g):''}</td>
-        <td>${ipActions}</td>
+        <td>${bar(g.risk)}${(g.risk*100).toFixed(0)}%</td>
+        <td class="gray" style="font-size:11px">${fmtTTL(g.ttl_sec)}</td>
+        <td>${banBadge(g)}</td>
+        <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${g.ip}')">Unban IP</button>
+            <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button></td>
       </tr>`
-      // ── identity rows under this IP ──
+      // ── identity rows under this IP (UA ở tooltip để soi bot giả) ──
       for(var r of g.ids){
         gh+=`<tr>
-          <td class="mono" style="font-size:11px;padding-left:20px">↳ ${trunc(r.id,20)}</td>
-          <td style="font-size:11px">${devLabelOf(r.device)}</td>
+          <td class="mono" style="font-size:11px;padding-left:20px" title="UA: ${esc(r.ua)}">↳ ${trunc(r.id,20)}</td>
+          <td style="font-size:11px" title="UA: ${esc(r.ua)}">${devLabelOf(r.device)}</td>
           <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
-          <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
-          <td>${statusTag(r)}</td>
+          <td class="gray" style="font-size:11px">${fmtTTL(r.ttl_sec)}</td>
+          <td>${banBadge(r)}</td>
           <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button>
               <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="whitelistId('${r.id}')">Whitelist</button></td>
         </tr>`
