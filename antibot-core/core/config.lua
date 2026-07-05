@@ -243,6 +243,16 @@ _M.ip_tour = {
     -- dedicated IP looks "shared" (Tier 1) but has 0 real cookies → stays
     -- IP-bannable. Office/CGNAT/mobile-farm-with-real-victims clear it easily.
     ban_immune_real_min = 3,
+    -- Phase 2 — mobile-farm signature on a shared IP. A benign carrier/office IP
+    -- carries many RETURNING users (cookies) so its cookie-ratio stays up; a farm
+    -- is mostly ephemeral fresh devices → cookie-ratio ≈ 0. When distinct-UA is
+    -- high AND cookie-ratio is very low, fresh un-cookied identities on that IP are
+    -- floored to CHALLENGE (engine) — never IP-banned. Challenge is the human/farm
+    -- discriminator (humans solve once → cookie → exempt; farm devices don't).
+    -- ratio_max=0.15 (not 0.20) is the lower-FP choice: only VERY low-cookie IPs
+    -- trip it. Both tunable; action is challenge-only so mis-tune is low-cost.
+    farm_ua_min           = 15,
+    farm_cookie_ratio_max = 0.15,
     -- A logged-in multi-site admin managing their own domains has rich cookies.
     richness_max     = 0.5,   -- session_richness >= this → exempt
     -- Ban-if-repeat: flagged requests that never obtain a verified cookie (i.e.

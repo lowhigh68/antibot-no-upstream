@@ -145,6 +145,22 @@ function _M.run(ctx)
     ctx.ip_shared_verified = ctx.ip_shared
         and real_users >= (c.ban_immune_real_min or 3)
 
+    -- Phase 2 — mobile-farm signature: many distinct UAs but a very low cookie
+    -- ratio (benign carrier/office carries many returning cookied users; a farm
+    -- is mostly ephemeral fresh devices → ratio ≈ 0). Fresh un-cookied identities
+    -- on such an IP get floored to challenge in engine.lua (never IP-banned) —
+    -- the farm's devices are filtered ONE BY ONE, real cookied users are exempt.
+    local cookie_ratio = (uas > 0) and (real_users / uas) or 1.0
+    ctx.ip_farm_suspect = uas >= (c.farm_ua_min or 15)
+        and cookie_ratio < (c.farm_cookie_ratio_max or 0.15)
+    if ctx.ip_farm_suspect then
+        ngx.log(ngx.WARN,
+            "[ip_tour] FARM_SUSPECT ip=", ip,
+            " uas=", uas,
+            " real_users=", real_users,
+            " cookie_ratio=", string.format("%.2f", cookie_ratio))
+    end
+
     local d_min    = c.distinct_domains or 5
     local u_max    = c.distinct_ua_max  or 3
     local r_max    = c.richness_max     or 0.5

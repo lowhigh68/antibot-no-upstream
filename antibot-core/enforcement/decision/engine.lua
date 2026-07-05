@@ -486,6 +486,19 @@ function _M.run(ctx)
         ctx.action_reason = "ip_tour"
     end
 
+    -- Phase 2 — mobile-farm signature (detection/ip_tour.lua): a shared IP with
+    -- many UAs but near-zero cookie-ratio. Force FRESH un-cookied identities to
+    -- prove via challenge — the human/farm discriminator. Real cookied/verified
+    -- users on the same IP are exempt (richness>0), so this never touches
+    -- returning users and never IP-bans. Farm devices are filtered one by one.
+    if ctx.ip_farm_suspect
+       and (ctx.session_richness or 0) == 0
+       and not ctx.verified
+       and action ~= "block" and action ~= "challenge" then
+        action            = "challenge"
+        ctx.action_reason = "ip_farm_suspect"
+    end
+
     -- Trust cap
     if trust_reason and action == "challenge" then
         local cap = cfg.trust.action_cap or "monitor"
