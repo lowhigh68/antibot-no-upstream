@@ -86,6 +86,15 @@ local function handle_whitelist_api()
         red:del("verified:" .. id)
         result = {ok=true, msg="Identity "..id:sub(1,16).."... unbanned & cleared"}
 
+    elseif action == "wl_id" and req.id then
+        local id = req.id
+        red:set("wl:id:"   .. id, "1")   -- persistent identity whitelist (ban_store checks this)
+        red:del("ban:"     .. id)
+        red:del("risk:"    .. id)
+        red:del("viol:"    .. id)
+        red:del("ban:age:" .. id)
+        result = {ok=true, msg="Identity "..id:sub(1,16).."... whitelisted (persistent) & cleared"}
+
     elseif action == "wl_url_add" and req.prefix then
         local prefix = req.prefix
         red:sadd("wl:url_set", prefix)
@@ -751,14 +760,22 @@ tr:hover td{background:#1c2129}
   <!-- -->
   <div id="tab-bans" class="pane">
     <div class="card">
-      <h2>🚫 Banned IPs &amp; Identities <span id="ban-count" class="tag tag-red">0</span></h2>
-      <table><thead><tr><th>IP</th><th>Rep Score</th><th>Level</th><th>Action</th></tr></thead>
-      <tbody id="t-ban-ip-full"></tbody></table>
-    </div>
-    <div class="card">
-      <h2>🔒 Banned Identities <span id="banid-count" class="tag tag-red">0</span></h2>
-      <table><thead><tr><th>Identity</th><th>Device</th><th>IP</th><th>Risk</th><th>Level</th><th>Action</th></tr></thead>
-      <tbody id="t-ban-fp"></tbody></table>
+      <h2>🚫 Bans — nhóm theo IP <span id="ban-count" class="tag tag-red">0</span></h2>
+      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
+        Mỗi IP kèm các <b>identity</b> (md5(ip+ua)) bị ban trên nó, <b>TTL</b> còn lại và trạng thái.
+        Unban/Whitelist riêng cho từng cấp. Identity không rõ IP gom ở nhóm <i>(unknown)</i>.
+      </div>
+      <table>
+        <thead><tr>
+          <th>IP / Identity</th>
+          <th>Device</th>
+          <th>Risk</th>
+          <th>TTL</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody id="t-ban-grouped"></tbody>
+      </table>
     </div>
   </div>
 
@@ -1102,6 +1119,12 @@ function unbanId(id){
     body:JSON.stringify({action:'unban_id',id:id})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
+function whitelistId(id){
+  if(!confirm('Whitelist Identity: '+id.substring(0,16)+'...?\n(persistent allow + clear ban/risk/viol)'))return
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'wl_id',id:id})
+  }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
+}
 
 // ── Main data load ─────────────────────────────────────────────
 function load(){
@@ -1126,7 +1149,6 @@ function load(){
     var hiddenTotal = (s.ban_ip_hidden||0) + (s.ban_id_hidden||0)
     var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' expiring hidden)' : ''
     setText('ban-count',   (s.ban_ip + s.ban_id) + hiddenSfx)
-    setText('banid-count', s.ban_id + ((s.ban_id_hidden||0) > 0 ? ' (+'+s.ban_id_hidden+' expiring)' : ''))
 
     // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
     // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)
@@ -1150,45 +1172,70 @@ function load(){
     }
     setHTML('t-ban-ip', bt||nodata(4))
 
-    // Bans tab: full IP list
-    var btf=''
-    for(var r of d.ban_ip_list||[]){
-      var risk=Math.max(r.rep||0, r.ip_risk||0)
-      var src=(r.ip_risk||0)>=(r.rep||0)?'Behavior':'Feed'
-      btf+=`<tr><td class="mono">${r.ip} ${statusTag(r)}</td>
-      <td>${bar(risk)}${(risk*100).toFixed(0)}% <span class="gray" style="font-size:10px">(${src})</span></td>
-      <td>${tag(risk)}</td>
-      <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
-      <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${r.ip}')">Unban</button>
-          <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${r.ip}')">Whitelist</button></td></tr>`
-    }
-    setHTML('t-ban-ip-full', btf||nodata(4))
-
-    // Bans tab: Identity list
-    var bfp=''
-    var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','unknown':'❓'}
+    // Bans tab: grouped IP -> identities (tidy, one table)
+    var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
     var devMap={
       'mobile_chrome_android':'mobile','mobile_safari_ios':'mobile',
       'mobile_safari_ios_old':'mobile','custom_tab':'mobile','inapp':'mobile',
       'tablet_ipad':'tablet','tablet_android':'tablet',
       'desktop_chrome':'desktop','desktop_safari':'desktop',
       'desktop_firefox':'desktop','desktop_other':'desktop',
+      'crawler':'crawler','http_client':'tool',
+    }
+    function devLabelOf(dev){
+      var dg=devMap[dev||'']||'unknown'
+      var di=devIcons[dg]||'❓'
+      return dev&&dev!='?'?(di+' '+dev):'❓'
+    }
+    var groups={}
+    for(var r of d.ban_ip_list||[]){
+      groups[r.ip]={ip:r.ip,ipBanned:true,risk:Math.max(r.rep||0,r.ip_risk||0),
+                    ttl:r.ttl,status:r.status,last_hit:r.last_hit,ids:[]}
     }
     for(var r of d.ban_id_list||[]){
-      var dg = devMap[r.device||''] || 'unknown'
-      var di = devIcons[dg] || '❓'
-      var devLabel = r.device && r.device!='?' ? (di+' '+r.device) : '❓'
-      var ipLabel  = r.ip ? `<span class="mono gray" style="font-size:10px">${r.ip}</span>` : ''
-      bfp+=`<tr>
-        <td class="mono" style="font-size:11px">${trunc(r.id,22)} ${statusTag(r)}</td>
-        <td style="font-size:11px">${devLabel}</td>
-        <td>${ipLabel}</td>
-        <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
-        <td>${tag(r.risk)}</td>
-        <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button></td>
-      </tr>`
+      var key=(r.ip&&r.ip!=='')?r.ip:'(unknown)'
+      if(!groups[key]) groups[key]={ip:key,ipBanned:false,risk:0,ids:[]}
+      groups[key].ids.push(r)
     }
-    setHTML('t-ban-fp', bfp||nodata(6))
+    var gkeys=Object.keys(groups).sort(function(a,b){
+      var ga=groups[a],gb=groups[b]
+      if(ga.ipBanned!==gb.ipBanned) return ga.ipBanned?-1:1
+      return (gb.risk||0)-(ga.risk||0)
+    })
+    var gh=''
+    for(var k of gkeys){
+      var g=groups[k]
+      var isUnknown=(g.ip==='(unknown)')
+      // ── IP group-header row ──
+      var ipRisk = g.ipBanned ? (bar(g.risk)+(g.risk*100).toFixed(0)+'%')
+                              : '<span class="gray" style="font-size:11px">IP không bị ban</span>'
+      var ipActions = isUnknown ? '' :
+        (g.ipBanned
+          ? `<button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${g.ip}')">Unban IP</button>
+             <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button>`
+          : `<button class="btn btn-green" style="font-size:11px;padding:2px 7px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button>`)
+      gh+=`<tr style="background:rgba(248,81,73,.07)">
+        <td class="mono"><b>${g.ip}</b></td>
+        <td class="gray" style="font-size:11px">IP · ${g.ids.length} id</td>
+        <td>${ipRisk}</td>
+        <td class="gray" style="font-size:11px">${g.ipBanned?(g.ttl||'-'):'-'}</td>
+        <td>${g.ipBanned?statusTag(g):''}</td>
+        <td>${ipActions}</td>
+      </tr>`
+      // ── identity rows under this IP ──
+      for(var r of g.ids){
+        gh+=`<tr>
+          <td class="mono" style="font-size:11px;padding-left:20px">↳ ${trunc(r.id,20)}</td>
+          <td style="font-size:11px">${devLabelOf(r.device)}</td>
+          <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
+          <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
+          <td>${statusTag(r)}</td>
+          <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button>
+              <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="whitelistId('${r.id}')">Whitelist</button></td>
+        </tr>`
+      }
+    }
+    setHTML('t-ban-grouped', gh||nodata(6))
 
     // Threats: rep IPs
     var rt=''

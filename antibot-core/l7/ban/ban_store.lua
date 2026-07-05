@@ -40,8 +40,24 @@ function _M.run(ctx)
         return false, false
     end
 
-    local val, rerr = red:get("ban:" .. id)
+    -- One round-trip: operator identity-whitelist (admin UI "Whitelist identity")
+    -- + ban state. wl:id takes precedence and bypasses the pipeline.
+    red:init_pipeline()
+    red:get("wl:id:" .. id)
+    red:get("ban:" .. id)
+    local res = red:commit_pipeline()
     pool.put(red)
+
+    local wl_val = res and res[1]
+    local val    = res and res[2]
+
+    if wl_val == "1" then
+        ctx.whitelisted   = true
+        ctx.action_reason = "id_whitelist"
+        ctx.banned        = false
+        ngx.log(ngx.INFO, "[ban_store] id_whitelist bypass id=", id:sub(1, 8))
+        return false, false
+    end
 
     if val == "1" then
         -- Defer nếu UA claim good bot — để DNS verify ở detection/bot quyết định.
