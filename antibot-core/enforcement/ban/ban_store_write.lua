@@ -38,7 +38,14 @@ function _M.run(ctx)
     local ctx_ttl = (ttl and ttl > 0) and ttl or 86400
 
     local ip_risk_val   = ctx.ip_risk or 0.0
-    local swarm_active  = ctx.swarm == true
+    -- HAI cơ chế swarm KHÁC NHAU, phải check cả hai:
+    --   ctx.swarm       (cluster/swarm_detect) = uri_cluster>50 OR ip_cluster>30
+    --   ctx.swarm_attack (distributed_swarm)    = distinct /24 per domain+ua, =1.0 khi HARD
+    -- Attack "nhiều IP × 1 request" (residential-proxy botnet) fire ctx.swarm_attack=1.0
+    -- nhưng KHÔNG set ctx.swarm (ip_cluster thấp vì mỗi IP chỉ 1 hit). Chỉ đọc
+    -- ctx.swarm → trượt hoàn toàn loại swarm này. >=1.0 = ngưỡng "DISTRIBUTED ATTACK"
+    -- đã xác nhận (count>=hard, vd navigation 45 /24) → an toàn FP, không dính emerging/flash-crowd.
+    local swarm_active  = ctx.swarm == true or (ctx.swarm_attack or 0) >= 1.0
 
     -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
     -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
