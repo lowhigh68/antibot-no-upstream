@@ -15,7 +15,7 @@ Config, Redis pool, ctx lifecycle, request classification, fingerprint primitive
 | `ctx/init.lua` | `init(ctx)` — populate `ctx.ip`, `ctx.ua`, `ctx.req` from nginx vars; reset all flags. `finalize(ctx)` — fallback identity if missing |
 | `fingerprint/identity.lua` | `build_from(ip, ua)` → md5 — coarse identity (used by rate counter when no full fp yet) |
 | `fingerprint/asn.lua` | mmdb lookup → `ctx.asn = {asn_number, asn_org}` |
-| `fingerprint/ip_classify.lua` | `ctx.ip_type` (datacenter/vpn/residential), `ctx.ip_score` (0..1) |
+| `fingerprint/ip_classify.lua` | Coarse network-type LABEL only → `ctx.ip_net_type` (residential/datacenter/…) for logging/admin. **IP-type scoring DISABLED** (`ctx.ip_score=0` at source) — DC egress = real users (Private Relay/corp), caused FP. Shared-IP detection is behavioural (`ctx.ip_shared` via ip_tour), NOT ASN |
 | `fingerprint/device_classifier.lua` | UA → `ctx.device_type`, `ctx.device_is_mobile`, `device_sec_fetch_expected`, `device_ch_ua_mobile_expected` |
 | `fingerprint/collect_request.lua` | Aggregates fp_full from all fp parts |
 | `fingerprint/init.lua` | Orchestrate fp collection |

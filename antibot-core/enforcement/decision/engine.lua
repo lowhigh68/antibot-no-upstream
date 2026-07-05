@@ -445,7 +445,12 @@ function _M.run(ctx)
     -- Attack 1 — dynamic threshold dựa trên ip_risk
     local challenge_threshold = T.CHALLENGE
     local ip_risk = get_ip_risk(ctx)
-    if ip_risk >= IP_RISK_THRESHOLD_LOWER and class ~= "api_callback" then
+    -- Skip the ip_risk-based threshold drop on HIGH-USER shared IPs (mobile CGNAT
+    -- / mobile farm / office WAN — ctx.ip_shared). ip_risk there is collective
+    -- guilt: a bot on the shared IP would otherwise lower the challenge bar for
+    -- every real user behind it. Those clients are judged per-device instead.
+    if ip_risk >= IP_RISK_THRESHOLD_LOWER and class ~= "api_callback"
+       and not ctx.ip_shared then
         challenge_threshold = IP_RISK_CHALLENGE_CAP
         ctx.ip_risk_lowered = true
         ngx.log(ngx.DEBUG,

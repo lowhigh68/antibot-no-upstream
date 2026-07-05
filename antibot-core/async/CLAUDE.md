@@ -52,6 +52,7 @@ log_by_lua_block { antibot.log() }
 - New async task → register in `init.lua:_M.log()`, gate by class to avoid resource noise
 
 ## Update log
+- 2026-07-05 — **`risk_update.lua` Tier-2 shared-IP guard**: `should_raise_ip_risk` returns false when `ctx.ip_shared_verified` (proven high-user shared IP — mobile CGNAT/farm/office with real cookied users). Stops one bad device from poisoning `ip_risk:<ip>` for every real user behind the same IP. Identity risk (`risk:<id>`) still rises for the bad device. UA-rotation bots (Tier 1 only, no real cookies) are NOT exempt → their IP still accrues ip_risk. See `enforcement/CLAUDE.md` + `antibot-core/CLAUDE.md` 2026-07-05.
 - `72f0415` (2026-05-03) — no changes
 - 2026-05-04 — `risk_update.lua`: treat `action="throttled"` like `allow`/`monitor` for both identity_risk and ip_risk decay paths. Verified good bot bị rate-limit hợp pháp KHÔNG bị penalty rep — bot identity đã verify qua DNS/ASN, throttle chỉ là backend protection
 - 2026-05-04 — `logger.lua`: append ` trigger=<hard_qs_len|hard_param_count|soft_score> exp_score=<0..1.45>` ở cuối log line **CHỈ** khi `action=throttled`. Field empty cho mọi action khác → không bloat antibot.log cho normal traffic. Cho phép `grep good_bot_throttled antibot.log | grep -oP 'trigger=\w+' \| sort \| uniq -c` work direct (trước phải đọc nginx error log)

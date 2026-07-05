@@ -98,10 +98,22 @@ local function safe_val(v)
     return 0.0
 end
 
+-- On a HIGH-USER shared IP (mobile CGNAT / mobile farm / office WAN — flagged
+-- ctx.ip_shared by detection/ip_tour.lua), per-IP reputation signals are
+-- COLLECTIVE guilt: one bad actor raises ip_risk/ip_rep/ext_rep for every real
+-- user behind the same IP. Dampen them there so clients are judged PER-DEVICE
+-- (bot_score/headless/behaviour/anomaly still fire per identity). Not zeroed —
+-- an all-bad shared IP keeps a residual signal.
+local SHARED_REP_FACTOR = 0.25
+local function per_ip_rep(ctx, v)
+    if ctx.ip_shared then return v * SHARED_REP_FACTOR end
+    return v
+end
+
 local function get_signal(name, ctx)
     if name == "rate_flag"          then return safe_val(ctx.rate_flag) end
     if name == "burst_flag"         then return safe_val(ctx.burst_flag) end
-    if name == "ip_surge"           then return ctx.ip_surge and 1.0 or 0.0 end
+    if name == "ip_surge"           then return per_ip_rep(ctx, ctx.ip_surge and 1.0 or 0.0) end
     if name == "ip_tour"            then return ctx.ip_tour and 1.0 or 0.0 end
     if name == "behavior_score"     then return safe_val(ctx.behavior_score) end
     if name == "session_flag"       then return safe_val(ctx.session_flag) end
@@ -110,9 +122,9 @@ local function get_signal(name, ctx)
     if name == "ua_flag"            then return safe_val(ctx.ua_flag) end
     if name == "anomaly_score"      then return safe_val(ctx.anomaly_score) end
     if name == "ip_score"           then return safe_val(ctx.ip_score) end
-    if name == "ip_rep"             then return safe_val(ctx.ip_rep) end
+    if name == "ip_rep"             then return per_ip_rep(ctx, safe_val(ctx.ip_rep)) end
     if name == "asn_rep"            then return safe_val(ctx.asn_rep) end
-    if name == "ip_risk"            then return safe_val(ctx.ip_risk) end
+    if name == "ip_risk"            then return per_ip_rep(ctx, safe_val(ctx.ip_risk)) end
     if name == "mismatch"           then return safe_val(ctx.mismatch) end
     if name == "risk"               then return safe_val(ctx.risk) end
     if name == "h2_bot_confidence"  then return safe_val(ctx.h2_bot_confidence) end
@@ -145,7 +157,7 @@ local function get_signal(name, ctx)
     end
 
     if name == "ext_rep" then
-        return safe_val(ctx.ext_rep)
+        return per_ip_rep(ctx, safe_val(ctx.ext_rep))
     end
 
     if name == "beh_void" then

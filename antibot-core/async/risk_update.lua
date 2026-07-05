@@ -49,6 +49,14 @@ local function should_raise_ip_risk(ctx, action, class)
     if action ~= "challenge" and action ~= "block" then
         return false
     end
+    -- Tier-2 proven shared IP (mobile CGNAT / mobile farm / office WAN with real
+    -- cookied users): do NOT raise the IP's collective ip_risk from one bad
+    -- device — that would poison every real user behind the same IP. Identity
+    -- risk (risk:<id>) below still rises for the bad device. Only the strict
+    -- Tier-2 flag qualifies; a UA-rotation bot (Tier 1 only) still raises ip_risk.
+    if ctx.ip_shared_verified then
+        return false
+    end
     -- Already-verified sessions should not raise ip_risk (network issue FP)
     if ctx.verified then
         return false

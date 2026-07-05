@@ -91,14 +91,28 @@ function _M.run(ctx)
 
     local dom_key = "iptour:dom:" .. ip
     local ua_key  = "iptour:ua:" .. ip
+    local ver_key = "iptour:ver:" .. ip
+
+    -- Real-user evidence: distinct cookie-bearing identities on this IP. Feeds
+    -- the Tier-2 ban-immunity gate — a bot ROTATING UAs on a dedicated IP looks
+    -- "shared" by UA count but carries no real cookies, so it must NOT buy
+    -- IP-ban immunity. session_richness>0 means the client presents a cookie.
+    local has_cookie = (ctx.session_richness or 0) > 0
 
     red:init_pipeline()
     red:pfadd(dom_key, host)
     red:expire(dom_key, window)
     red:pfadd(ua_key, ngx.md5(ua))
     red:expire(ua_key, window)
+    if has_cookie then
+        red:pfadd(ver_key, ngx.md5(ngx.var.http_cookie or ""))
+        red:expire(ver_key, window)
+    end
+    -- 3 PFCOUNTs LAST so their indices are deterministic (#res-2/-1/0)
+    -- regardless of the conditional ver PFADD above.
     red:pfcount(dom_key)
     red:pfcount(ua_key)
+    red:pfcount(ver_key)
     local res, perr = red:commit_pipeline()
     pool.put(red)
 
@@ -107,11 +121,29 @@ function _M.run(ctx)
         return true, false
     end
 
-    local domains = tonumber(res[5]) or 0
-    local uas     = tonumber(res[6]) or 0
+    local n          = #res
+    local domains    = tonumber(res[n - 2]) or 0
+    local uas        = tonumber(res[n - 1]) or 0
+    local real_users = tonumber(res[n])     or 0
 
     ctx.ip_tour_domains = domains
     ctx.ip_tour_uas     = uas
+    ctx.ip_real_users   = real_users
+
+    -- Two-tier shared-IP judgment (mobile CGNAT / mobile farm / office WAN — many
+    -- real devices behind one IP; one bad device must not punish the rest).
+    --   Tier 1 (lenient, protective): many distinct UAs → dampen per-IP
+    --     reputation in compute + skip engine ip_risk threshold-drop. FP here is
+    --     harmless, so it is deliberately easy to trip.
+    --   Tier 2 (strict, ban-immunity): Tier 1 AND enough distinct cookie-bearing
+    --     real users. Grants IP-ban immunity (ban_store_write + risk_update),
+    --     which is a PRIVILEGE — so it demands proof of real users. A UA-rotation
+    --     bot (cookie=0) trips Tier 1 but NOT Tier 2 → stays IP-bannable.
+    -- Bad devices on a shared IP are still caught PER-DEVICE (bot_score/headless/
+    -- behaviour/anomaly + per-identity ban:<id>), never by IP guilt.
+    ctx.ip_shared = uas >= (c.shared_ua_min or 6)
+    ctx.ip_shared_verified = ctx.ip_shared
+        and real_users >= (c.ban_immune_real_min or 3)
 
     local d_min    = c.distinct_domains or 5
     local u_max    = c.distinct_ua_max  or 3

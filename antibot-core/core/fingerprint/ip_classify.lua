@@ -25,15 +25,6 @@ local pool = require "antibot.core.redis_pool"
 
 local ASN_CACHE_TTL = 300
 
-local TYPE_SCORE = {
-    tor         = 0.95,
-    vpn         = 0.80,
-    datacenter  = 0.60,
-    hosting     = 0.60,
-    business    = 0.30,
-    residential = 0.00,
-}
-
 -- Generic functional terms that describe the SERVICE TYPE of the network.
 -- These are industry-standard terms that appear across all providers.
 -- A cloud provider always describes itself with these terms regardless of brand.
@@ -104,58 +95,29 @@ local function classify_from_asn_org(asn_org)
 end
 
 function _M.run(ctx)
-    ctx.ip_type = {
-        is_datacenter  = false,
-        is_vpn         = false,
-        is_tor         = false,
-        is_residential = true,
-        source         = "default",
-    }
+    -- IP-TYPE SCORING INTENTIONALLY DISABLED — do NOT revive.
+    -- Operator decision: a large and growing share of REAL human traffic egresses
+    -- from datacenter/cloud ASNs — iCloud Private Relay (default-on), corporate
+    -- security proxies (Zscaler / Cloudflare Gateway / Netskope), cloud VPN.
+    -- Scoring "datacenter = suspicious" false-positived those users, so ctx.ip_score
+    -- is held at 0 AT SOURCE (previously it was computed then clobbered downstream
+    -- by an ordering accident — fragile; now it's explicitly 0 and can't be revived).
+    --
+    -- What antibot actually needs from IP context — separating HIGH-USER shared IPs
+    -- (mobile CGNAT / mobile farm / office WAN) to avoid per-IP collective-guilt FP —
+    -- is done BEHAVIOURALLY via distinct-UA per IP (ctx.ip_shared, set in
+    -- detection/ip_tour.lua), NOT from the ASN. ASN cannot tell mobile/office apart
+    -- (VN carriers mix mobile+fixed on one ASN; offices are invisible in ASN).
+    --
+    -- We still derive a coarse network-type LABEL for logging/admin visibility only.
     ctx.ip_score = 0.0
 
     local asn_number = ctx.asn and ctx.asn.asn_number
     local asn_org    = ctx.asn and ctx.asn.asn_org
 
-    -- Priority 1: Redis override (admin or threat feed)
-    local itype = classify_from_redis(asn_number)
-    if itype then
-        ctx.ip_type.source = "redis"
-    else
-        -- Priority 2: asn_org functional keyword analysis (GeoLite2-ASN data)
-        itype = classify_from_asn_org(asn_org)
-        if itype then
-            ctx.ip_type.source = "asn_org"
-        end
-    end
-
-    -- Default: residential (benefit of the doubt when unknown)
-    itype = itype or "residential"
-
-    ctx.ip_type.type  = itype
-    ctx.ip_score      = TYPE_SCORE[itype] or 0.0
-
-    if itype == "tor" then
-        ctx.ip_type.is_tor         = true
-        ctx.ip_type.is_residential = false
-    elseif itype == "vpn" then
-        ctx.ip_type.is_vpn         = true
-        ctx.ip_type.is_residential = false
-    elseif itype == "datacenter" or itype == "hosting" then
-        ctx.ip_type.is_datacenter  = true
-        ctx.ip_type.is_residential = false
-    elseif itype == "business" then
-        ctx.ip_type.is_residential = false
-    end
-
-    if ctx.ip_score > 0 then
-        ngx.log(ngx.DEBUG,
-            "[ip_classify] ip=", ctx.ip,
-            " asn=", tostring(asn_number),
-            " org=", tostring(asn_org),
-            " type=", itype,
-            " source=", ctx.ip_type.source,
-            " score=", ctx.ip_score)
-    end
+    ctx.ip_net_type = classify_from_redis(asn_number)
+        or classify_from_asn_org(asn_org)
+        or "residential"
 
     return true, false
 end

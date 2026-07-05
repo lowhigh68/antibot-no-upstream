@@ -229,6 +229,20 @@ _M.ip_tour = {
     -- NAT gate: an office/CGNAT hitting many domains ALSO carries many distinct
     -- UAs; a single bot touring carries 1-2. Flag only when distinct UAs is LOW.
     distinct_ua_max  = 3,     -- distinct UAs < this → single-source
+    -- shared_ua_min: distinct UAs per IP >= this → HIGH-USER shared IP (mobile
+    -- CGNAT / mobile farm / office WAN). Sets ctx.ip_shared → per-IP reputation
+    -- (ip_risk/ip_rep/ext_rep) is dampened and the engine ip_risk threshold-lower
+    -- is skipped, so one bad actor on the shared IP doesn't punish everyone else.
+    -- A single household rarely shows >5 distinct UAs in the window; offices /
+    -- carriers show many. Judge those clients PER-DEVICE, not per-IP.
+    shared_ua_min    = 6,
+    -- ban_immune_real_min: Tier-2 (STRICT) gate for IP-ban immunity. A shared IP
+    -- only becomes ban-immune (ctx.ip_shared_verified) when it ALSO carries this
+    -- many distinct cookie-bearing identities in the window — REAL returning
+    -- users. This blocks the UA-rotation game: a single bot spinning >=6 UAs on a
+    -- dedicated IP looks "shared" (Tier 1) but has 0 real cookies → stays
+    -- IP-bannable. Office/CGNAT/mobile-farm-with-real-victims clear it easily.
+    ban_immune_real_min = 3,
     -- A logged-in multi-site admin managing their own domains has rich cookies.
     richness_max     = 0.5,   -- session_richness >= this → exempt
     -- Ban-if-repeat: flagged requests that never obtain a verified cookie (i.e.

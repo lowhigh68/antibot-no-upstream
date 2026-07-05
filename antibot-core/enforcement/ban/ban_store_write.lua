@@ -50,6 +50,16 @@ function _M.run(ctx)
         or viol_count >= 3   -- repeat offender → ban IP kể cả risk thấp
     )
 
+    -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
+    -- (mobile CGNAT / mobile farm / office WAN with real cookied users). One bad
+    -- device must not nuke thousands of real users behind the same IP — it is
+    -- still banned PER-IDENTITY (ban:<id>) below. Only ctx.ip_shared_verified
+    -- (Tier 2, requires real-user evidence) grants this; a UA-rotation bot that
+    -- merely looks "shared" (Tier 1) is NOT immune and stays IP-bannable.
+    if ctx.ip_shared_verified then
+        should_ban_ip = false
+    end
+
     local ip_ban_ttl
     if viol_count >= 4 then
         ip_ban_ttl = 0           -- permanent: confirmed repeat bot
