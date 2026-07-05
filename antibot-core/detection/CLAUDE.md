@@ -22,7 +22,7 @@ Compute behavioral/structural anomaly scores into ctx flags consumed by `intelli
 | File | Role |
 |---|---|
 | `init.lua` | Orchestrator. Each sub-init.lua calls `should_run(ctx)` checking `ctx.skip_layers` |
-| `distributed_swarm.lua` | Cross-identity attack pattern detection → `ctx.swarm` (many /24 → ONE domain) |
+| `distributed_swarm.lua` | Cross-identity attack pattern detection → `ctx.swarm_attack` (0.3–1.0, =1.0 at HARD threshold; many /24 → ONE domain). NOTE: sets `ctx.swarm_attack`, NOT the boolean `ctx.swarm` (that's `cluster/swarm_detect.lua`, a different signal) |
 | `ip_tour.lua` | Cross-domain tour detection → `ctx.ip_tour` (ONE ip → many domains). Runs in `STEPS_COMMON` (after access_layer), NOT here. HLL `iptour:dom/ua:<ip>`, NAT-gated by distinct-UA, richness-exempt, strike→direct-ban |
 | `wp_hardening.lua` | WordPress-specific path/payload checks |
 
@@ -55,7 +55,7 @@ detection.run(ctx)
    ├─ browser.trigger → ctx.inject_candidate (decided by Accept header)
    ├─ cluster.run     → cluster_score
    ├─ graph.run       → graph_flag, graph_score
-   └─ distributed_swarm.run → ctx.swarm
+   └─ distributed_swarm.run → ctx.swarm_attack (NOT ctx.swarm — see top-level files note)
 ```
 
 For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_verify.lua` (called directly from init.lua).
