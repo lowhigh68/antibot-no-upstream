@@ -44,9 +44,18 @@ function _M.run(ctx)
     -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
     local viol_count = id and (tonumber(pool.safe_get("viol:" .. id)) or 0) or 0
 
+    -- swarm case: distributed swarm (nhiều IP × ít request/IP) khiến ip_risk
+    -- KHÔNG BAO GIỜ leo tới 0.5 (EMA cần ~4 hit/IP; swarm né đúng điều đó) nên
+    -- gate cũ `ip_risk>=0.5 and swarm` khóa chết nhánh ip_ban_ttl=180 bên dưới.
+    -- swarm_active + score-block đã là bằng chứng đủ → ban ngay hit đầu.
+    -- Guard richness==0: request MANG cookie session (user thật lỡ dính flash-
+    -- crowd trip swarm) KHÔNG bị ban:<ip> — vẫn score-block từng request nhưng
+    -- tự thông khi đám đông tan, tránh khóa cứng 180s. Bot swarm richness=0.
+    local swarm_ban = swarm_active and (ctx.session_richness or 0) == 0
+
     local should_ban_ip = ip and (
         ip_risk_val >= 0.7
-        or (ip_risk_val >= 0.5 and swarm_active)
+        or swarm_ban
         or viol_count >= 3   -- repeat offender → ban IP kể cả risk thấp
     )
 
