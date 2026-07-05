@@ -91,6 +91,34 @@ local function is_inapp(ua)
     return false
 end
 
+-- Self-declared crawler — bot/spider/crawler token or RFC contact URL.
+-- Structural (no brand list). Uses bot-SUFFIX patterns (bot/ ; ) space) so
+-- device brands like "CUBOT" (cubot_x) are not mislabelled as crawlers.
+local function is_crawler(ua)
+    local ul = ua:lower()
+    return ul:find("spider", 1, true) ~= nil
+        or ul:find("crawler", 1, true) ~= nil
+        or ul:find("bot/", 1, true) ~= nil
+        or ul:find("bot;", 1, true) ~= nil
+        or ul:find("bot)", 1, true) ~= nil
+        or ul:find("bot ", 1, true) ~= nil
+        or ua:find("%(%+https?://") ~= nil   -- (+http contact URL (meta-external)
+end
+
+-- Non-browser HTTP client — real browsers always send "Mozilla/" AND an engine
+-- token; libraries (curl, python-requests, Go-http, Java, okhttp, wget) send
+-- neither. Structural signal, zero maintenance.
+local function is_http_tool(ua)
+    if ua:find("Mozilla/", 1, true) then return false end
+    if ua:find("AppleWebKit", 1, true)
+       or ua:find("Gecko", 1, true)
+       or ua:find("Trident", 1, true)
+       or ua:find("Presto", 1, true) then
+        return false
+    end
+    return true
+end
+
 function _M.classify(ua, proto)
     if not ua or ua == "" then
         return {
@@ -103,6 +131,29 @@ function _M.classify(ua, proto)
     end
 
     local is_h2 = proto and proto:find("HTTP/2", 1, true) ~= nil
+
+    -- ── Non-browser agents (drain the old catch-all "unknown") ─
+    -- crawler: self-declared bot. http_client: HTTP library (no Mozilla+engine).
+    -- Enforcement-neutral (device_type isn't scored) — makes the admin Client
+    -- panel meaningful instead of dumping every bot/tool into "unknown".
+    if is_crawler(ua) then
+        return {
+            device_type                   = "crawler",
+            device_sec_fetch_expected     = false,
+            device_ch_ua_mobile_expected  = false,
+            device_is_mobile              = false,
+            device_ios_version            = nil,
+        }
+    end
+    if is_http_tool(ua) then
+        return {
+            device_type                   = "http_client",
+            device_sec_fetch_expected     = false,
+            device_ch_ua_mobile_expected  = false,
+            device_is_mobile              = false,
+            device_ios_version            = nil,
+        }
+    end
 
     -- ── inapp browser ─────────────────────────────────────────
     if is_inapp(ua) then

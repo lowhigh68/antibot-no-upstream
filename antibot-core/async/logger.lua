@@ -14,12 +14,14 @@ local DEVICE_GROUP = {
     desktop_safari        = "desktop",
     desktop_firefox       = "desktop",
     desktop_other         = "desktop",
+    crawler               = "crawler",
+    http_client           = "tool",
 }
 
 local function classify_intent(ctx)
     -- Good bot: đã DNS verify
     if ctx.good_bot_verified == true then
-        return "good_bot"
+        return "goodbot"
     end
 
     local action    = ctx.action    or "allow"
@@ -57,8 +59,8 @@ local function classify_intent(ctx)
         end
     end
 
-    -- Ambiguous: action=monitor, hoặc allow với signal nhẹ
-    return "ambiguous"
+    -- Watch: action=monitor, hoặc allow với signal nhẹ — đang theo dõi
+    return "watch"
 end
 
 local function write_stats(premature, host, class, action, date, device_type, intent, beacon_got)
@@ -91,8 +93,8 @@ local function write_stats(premature, host, class, action, date, device_type, in
         red:expire("stat:" .. host .. ":dev_" .. dg .. "_" .. action .. ":" .. date, ttl_7d)
     end
 
-    -- Intent stats: bot vs human vs ambiguous
-    local ig = intent or "ambiguous"
+    -- Intent stats: human vs goodbot vs bot vs watch
+    local ig = intent or "watch"
     red:incr("stat:" .. host .. ":intent_" .. ig .. ":" .. date)
     red:expire("stat:" .. host .. ":intent_" .. ig .. ":" .. date, ttl_7d)
 

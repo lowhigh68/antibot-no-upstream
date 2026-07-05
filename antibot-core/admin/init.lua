@@ -379,7 +379,7 @@ local function render_data()
             if dg_ibd and ig_ibd then
                 if not intent_by_device then intent_by_device = {} end
                 if not intent_by_device[dg_ibd] then
-                    intent_by_device[dg_ibd] = {bot=0,human=0,ambiguous=0,good_bot=0}
+                    intent_by_device[dg_ibd] = {bot=0,human=0,watch=0,goodbot=0}
                 end
                 intent_by_device[dg_ibd][ig_ibd] =
                     (intent_by_device[dg_ibd][ig_ibd] or 0) + val
@@ -414,7 +414,7 @@ local function render_data()
 
     -- Build device stats list
     local device_stats = {}
-    local GROUP_ORDER = {"mobile","tablet","desktop","unknown"}
+    local GROUP_ORDER = {"desktop","mobile","tablet","crawler","tool","unknown"}
     for _, g in ipairs(GROUP_ORDER) do
         local s = device_map[g] or {total=0, block=0, challenge=0}
         local active = math.max(0, s.total - s.block - s.challenge)
@@ -621,10 +621,10 @@ local function render_data()
         ua_unknown_samples   = arr(ua_unknown_samples),
         intent_by_device     = intent_by_device,
         intent_stats         = {
-            bot       = intent_map["bot"]       or {total=0,block=0,challenge=0},
             human     = intent_map["human"]     or {total=0,block=0,challenge=0},
-            good_bot  = intent_map["good_bot"]  or {total=0,block=0,challenge=0},
-            ambiguous = intent_map["ambiguous"] or {total=0,block=0,challenge=0},
+            goodbot   = intent_map["goodbot"]   or {total=0,block=0,challenge=0},
+            bot       = intent_map["bot"]       or {total=0,block=0,challenge=0},
+            watch     = intent_map["watch"]     or {total=0,block=0,challenge=0},
         },
         fleet_mode       = fleet_mode,
         fleet_candidates = arr(fleet_candidates),
@@ -897,27 +897,35 @@ tr:hover td{background:#1c2129}
 
   <!-- Devices pane -->
   <div id="tab-devices" class="pane">
-    <div class="g4" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px">
+    <div class="g4" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="sc">
+        <div class="sv blue" id="dev-desktop-total">—</div>
+        <div class="sl">🖥 Browser · Desktop</div>
+      </div>
       <div class="sc">
         <div class="sv blue" id="dev-mobile-total">—</div>
-        <div class="sl">📱 Mobile Requests</div>
+        <div class="sl">📱 Browser · Mobile</div>
       </div>
       <div class="sc">
         <div class="sv blue" id="dev-tablet-total">—</div>
-        <div class="sl">📟 Tablet Requests</div>
+        <div class="sl">📟 Browser · Tablet</div>
       </div>
       <div class="sc">
-        <div class="sv blue" id="dev-desktop-total">—</div>
-        <div class="sl">🖥 Desktop Requests</div>
+        <div class="sv orange" id="dev-crawler-total">—</div>
+        <div class="sl">🕷 Crawler</div>
+      </div>
+      <div class="sc">
+        <div class="sv orange" id="dev-tool-total">—</div>
+        <div class="sl">🔧 Tool (HTTP client)</div>
       </div>
       <div class="sc">
         <div class="sv gray" id="dev-unknown-total">—</div>
-        <div class="sl">❓ Unknown Requests</div>
+        <div class="sl">❓ Unknown</div>
       </div>
     </div>
     <div class="g2">
       <div class="card">
-        <h2>📱 Device Distribution — Hôm nay</h2>
+        <h2>🧭 Client Distribution — Hôm nay</h2>
         <table>
           <thead><tr>
             <th>Device</th><th>Total</th>
@@ -953,10 +961,10 @@ tr:hover td{background:#1c2129}
       </table>
     </div>
     <div class="card" style="margin-top:0">
-      <h2>❓ Unknown Device — UA Samples (24h gần nhất)</h2>
+      <h2>❓ Unknown Client — UA Samples (24h gần nhất)</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-        UA không nhận dạng được. Thường là bot tools (curl, python-requests, scrapy...) đã được ua_anomaly bắt.
-        Nếu thấy UA trông như browser thật → cần thêm rule vào device_classifier.lua.
+        UA có dáng browser nhưng KHÔNG khớp rule nào (crawler và HTTP tool giờ đã tách riêng).
+        Bucket này giờ rất nhỏ — nếu phình lên là dấu hiệu browser mới / UA lạ đáng soi, cần thêm rule vào device_classifier.lua.
       </div>
       <table><thead><tr><th>User-Agent</th></tr></thead>
       <tbody id="t-ua-unknown"></tbody></table>
@@ -1390,8 +1398,8 @@ function wlFromBan(ip){
 
 function renderDevices(d){
   var devs = d.device_stats || []
-  var icons = {mobile:'📱',tablet:'📟',desktop:'🖥',unknown:'❓'}
-  var labels = {mobile:'Mobile',tablet:'Tablet',desktop:'Desktop',unknown:'Unknown'}
+  var icons = {desktop:'🖥',mobile:'📱',tablet:'📟',crawler:'🕷',tool:'🔧',unknown:'❓'}
+  var labels = {desktop:'Browser · Desktop',mobile:'Browser · Mobile',tablet:'Browser · Tablet',crawler:'Crawler',tool:'Tool',unknown:'Unknown'}
 
   // Summary cards
   for(var dev of devs){
@@ -1409,11 +1417,11 @@ function renderDevices(d){
     var blk     = dev.block     || 0
     var pct     = total > 0 ? ((blk/total)*100).toFixed(1)+'%' : '0%'
     var cls     = blk > total*0.3 ? 'red' : blk > total*0.1 ? 'orange' : 'green'
-    // Bot% = bot confirmed; Human% = human + good_bot; ambiguous = phần còn lại
+    // Bot% = bad bot; Human% = human + goodbot; watch = phần còn lại
     var dg      = dev.group
     var nBot    = (ibd[dg] && ibd[dg].bot)      || 0
     var nHuman  = ((ibd[dg] && ibd[dg].human)   || 0)
-                + ((ibd[dg] && ibd[dg].good_bot) || 0)
+                + ((ibd[dg] && ibd[dg].goodbot) || 0)
     var hasIbd  = ibd[dg] && (nBot + nHuman) > 0
     var botPct  = hasIbd ? ((nBot/total)*100).toFixed(0)+'%'   : '-'
     var humPct  = hasIbd ? ((nHuman/total)*100).toFixed(0)+'%' : '-'
@@ -1477,10 +1485,10 @@ function renderDevices(d){
   var intents = d.intent_stats || {}
   var irows = ''
   var imap = [
-    {key:'bot',      label:'🤖 Bot',        cls:'red'},
-    {key:'ambiguous',label:'❓ Ambiguous',   cls:'orange'},
-    {key:'human',    label:'👤 Human',       cls:'green'},
-    {key:'good_bot', label:'✅ Good Bot',    cls:'blue'},
+    {key:'human',   label:'👤 Human',      cls:'green'},
+    {key:'goodbot', label:'✅ Good bot',   cls:'blue'},
+    {key:'bot',     label:'🤖 Bad bot',    cls:'red'},
+    {key:'watch',   label:'👁 Watch',      cls:'orange'},
   ]
   for(var im of imap){
     var s = intents[im.key] || {total:0,block:0,challenge:0}
