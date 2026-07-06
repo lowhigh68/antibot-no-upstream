@@ -208,11 +208,13 @@ local function has_auth_keyword_in_path(lower_uri)
     return false
 end
 
+-- Trả về pattern khớp (truthy) hoặc nil — dùng cho measurement provenance.
+-- Callers dùng như boolean (chuỗi non-nil là truthy) nên hành vi không đổi.
 local function matches_legacy_path(lower_uri)
     for i = 1, #AUTH_LEGACY_PATHS do
-        if lower_uri:find(AUTH_LEGACY_PATHS[i]) then return true end
+        if lower_uri:find(AUTH_LEGACY_PATHS[i]) then return AUTH_LEGACY_PATHS[i] end
     end
-    return false
+    return nil
 end
 
 -- Query string keyword detection — Joomla/OpenCart routing patterns
@@ -260,26 +262,37 @@ end
 -- Body fallback catches obfuscated paths (/portal/enter, /api/v9/handshake,
 -- Magento `loginpost` không có separator) khi body chứa credential field.
 -- Hai layer độc lập → defense-in-depth, attacker phải bypass cả hai.
+-- Returns (is_auth, provenance, legacy_pattern). provenance = MEASUREMENT
+-- (bước 1) để đánh giá có bỏ được AUTH_LEGACY_PATHS (enumeration brand-path):
+--   generic        = keyword-in-path HOẶC query-string bắt → path-list KHÔNG cần
+--   generic+legacy = cả generic lẫn legacy khớp → legacy REDUNDANT cho case này
+--   legacy_only    = CHỈ path-list bắt (keyword/args đều miss) → bỏ list sẽ MẤT case này
+--   body           = form-urlencoded body có credential marker (generic, no path)
+-- Cheap checks (kw/legacy/qs) đánh giá độc lập, không short-circuit, để đo
+-- provenance chính xác; body giữ nguyên chỉ chạy khi cheap-checks miss.
 local function is_auth_endpoint(method, uri, args, ct)
     if method ~= "POST" then return false end
 
     local lower_uri = uri:lower()
 
-    -- FAST PATH 1: URI path semantic keyword
-    if has_auth_keyword_in_path(lower_uri) then return true end
+    local kw       = has_auth_keyword_in_path(lower_uri)
+    local legacy_p = matches_legacy_path(lower_uri)                       -- pattern | nil
+    local qs       = (args and args ~= "")
+                     and has_auth_keyword_in_args(args:lower()) or false
 
-    -- FAST PATH 2: Legacy non-semantic paths (xmlrpc, wp-admin, /administrator, ...)
-    if matches_legacy_path(lower_uri) then return true end
-
-    -- FAST PATH 3: Query string semantic (Joomla, OpenCart, custom routing)
-    if args and args ~= "" then
-        if has_auth_keyword_in_args(args:lower()) then return true end
+    if kw or qs then
+        return true, (legacy_p and "generic+legacy" or "generic"), legacy_p
+    end
+    if legacy_p then
+        return true, "legacy_only", legacy_p
     end
 
-    -- SLOW PATH: form-urlencoded body credential scan.
+    -- SLOW PATH: form-urlencoded body credential scan (chỉ chạy khi cheap miss).
     -- REST/JSON/multipart → zero overhead (CT guard returns false immediately).
-    -- Only browser form POST without keyword in path reaches read_body.
-    return body_contains_auth_marker(ct)
+    if body_contains_auth_marker(ct) then
+        return true, "body", nil
+    end
+    return false
 end
 
 -- In-app browser detection — generic structural signals, KHÔNG app brand
@@ -442,7 +455,10 @@ local function classify(ctx)
     -- amplified mult 1.5. Đặt sớm để mọi auth POST đi đúng class
     -- bất kể content-type. Generic patterns cover WP/Joomla/Drupal/
     -- Magento/OAuth/2FA — xem AUTH_PATH_PATTERNS ở đầu file.
-    if is_auth_endpoint(method, uri, args, ct) then
+    local is_auth, auth_prov, auth_legacy = is_auth_endpoint(method, uri, args, ct)
+    if is_auth then
+        ctx.auth_prov   = auth_prov     -- measurement provenance (bước 1)
+        ctx.auth_legacy = auth_legacy    -- pattern nếu legacy khớp, nil nếu không
         return "auth_endpoint"
     end
 
