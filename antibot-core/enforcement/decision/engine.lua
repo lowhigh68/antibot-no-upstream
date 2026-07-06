@@ -246,6 +246,14 @@ local T = {
     BLOCK     = 80,
 }
 
+-- Authenticated-session trust tier. session_richness >= this = client proves an
+-- established server session (logged-in admin/editor). Same value as
+-- cfg.ip_tour.richness_max — the codebase's canonical "authenticated" line.
+-- Cookie-only richness ceilings at 0.80 (0.5 size + 0.3 count weights), so a
+-- logged-in session clears 0.5 with margin; anonymous/returning visitors stay
+-- <= ~0.4; credential-stuffing bots sit at 0 (no session) → never reach it.
+local AUTH_SESSION_RICHNESS = 0.5
+
 local RESOURCE_MAX_SCORE = 40
 local RESOURCE_BOOST_MAX = 15
 
@@ -527,6 +535,34 @@ function _M.run(ctx)
             " ip=", ctx.ip or "?")
         action = "monitor"
         ctx.action_reason = "s25_cap_monitor"
+        ctx.monitor_flag  = true
+    end
+
+    -- Authenticated-session cap (session_verified tier). A request whose
+    -- session_richness proves an established server session (logged-in
+    -- admin/editor) must not be hard-blocked/banned by identity-CORRELATION
+    -- signals (graph_flag/cluster_score/mismatch/session_flag). Those signals
+    -- presume an anonymous coordinated actor — authentication disproves that
+    -- premise. A busy admin (admin-ajax heartbeat + many admin pages on ONE
+    -- identity) structurally resembles a bot cluster and, amplified by
+    -- auth_endpoint ×1.5, crosses BLOCK → writes ban:<id> → cascade banned_id.
+    -- Worse, each block raises risk:<id> → next score higher → self-reinforcing
+    -- loop (the risk= signal in top is that loop already turning). Cap at
+    -- MONITOR — not challenge, because admin-ajax is XHR and can't render a PoW
+    -- page (challenge would break the heartbeat). Monitor also breaks the loop:
+    -- async/risk_update decays risk:<id> on monitor instead of raising it.
+    -- Credential-stuffing bots have richness=0 → never reach this tier → still
+    -- get full auth_endpoint ×1.5 + block. Per-request structural signals
+    -- (h2/ja3/ua/anomaly) still compute and log; only identity auto-ban is held.
+    if (ctx.session_richness or 0) >= AUTH_SESSION_RICHNESS
+       and (action == "block" or action == "challenge") then
+        ngx.log(ngx.INFO,
+            "[engine] auth_session cap action=", action, "->monitor",
+            " richness=", string.format("%.2f", ctx.session_richness or 0),
+            " eff=", math.floor(ctx.effective_score),
+            " ip=", ctx.ip or "?")
+        action            = "monitor"
+        ctx.action_reason = "auth_session_cap"
         ctx.monitor_flag  = true
     end
 
