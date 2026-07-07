@@ -228,6 +228,20 @@ function _M.run(ctx)
         end
     end
 
+    -- Expensive faceted-filter guard telemetry (l7/expensive_filter_guard.lua).
+    -- Chỉ append cho request bị coi là faceted-filter tốn kém. combos = distinct
+    -- tổ hợp/base/window (metric người-vs-crawler); over = đã vượt combos_threshold.
+    -- Shadow calibration: grep antibot.log — correlate với richness/class/ip sẵn có:
+    --   grep 'xf_base=' antibot.log | grep -oP 'xf_base=\S+ xf_combos=\d+' | sort | uniq -c
+    local xf_str = ""
+    if ctx.xf_expensive then
+        xf_str = string.format(" xf_base=%s xf_combos=%d xf_hits=%d xf_over=%s",
+            tostring(ctx.xf_base or "-"),
+            ctx.xf_combos or 0,
+            ctx.xf_hits or 0,
+            tostring(ctx.xf_over or false))
+    end
+
     -- Beacon coverage state (Step 0 telemetry).
     -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
     -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
@@ -246,7 +260,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " top=%s reason=%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -270,7 +284,8 @@ function _M.run(ctx)
         throttle_str,
         tier_str,
         gbrate_str,
-        auth_str
+        auth_str,
+        xf_str
     )
 
     write_log_line(line)

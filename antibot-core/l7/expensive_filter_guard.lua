@@ -131,17 +131,11 @@ function _M.run(ctx)
         return true, true
     end
 
-    -- SHADOW (hoặc under-budget): log để hiệu chỉnh ngưỡng. Grep:
-    --   grep '\[xf\]' error.log | grep -oP 'base=\S+ combos=\d+' | sort | uniq -c
-    --   → xem base nào có combos cao (crawler) vs thấp (người thật) để chốt threshold.
-    ngx.log(ngx.WARN,
-        "[xf] host=", host, " base=", base,
-        " combos=", combos, " hits=", hits, " card=", card,
-        " over=", tostring(over),
-        " verified=", tostring(ctx.verified or false),
-        " richness=", string.format("%.2f", ctx.session_richness or 0),
-        " ua=", (ctx.ua or "-"):sub(1, 40))
-
+    -- SHADOW / under-budget: KHÔNG spam error.log. Telemetry per-request đi vào
+    -- antibot.log qua async/logger.lua (fields xf_base/xf_combos/xf_hits/xf_over),
+    -- nơi có đủ context (ip/ua/class/richness/reason) để correlate + hiệu chỉnh.
+    -- ctx.xf_* mang dữ liệu sang log phase.
+    ctx.xf_over = over
     return true, false
 end
 
