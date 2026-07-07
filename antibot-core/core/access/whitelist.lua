@@ -68,8 +68,30 @@ local function get_ip16(ip)
     return ip:match("^(%d+%.%d+)%.")
 end
 
+-- Self-declared crawler check — Googlebot/Bingbot/meta-externalagent/… identify
+-- themselves in the UA. Such a UA must NEVER occupy the verified-HUMAN lane
+-- (cookie / device / early-id), even after solving the canvas beacon — rendering
+-- bots like meta-externalagent execute JS and pass the PoW. That lane
+-- short-circuits at STEPS_COMMON → bypasses good-bot rate limiting AND scoring;
+-- a bot-UA holding device_canvas_verified is how meta-externalagent leaked ~31k
+-- req/day past the 60/min ceiling. Route them to the good-bot lane (DNS/ASN
+-- verify + rate ceiling) instead. Same self-claim definition as l7/ban/ban_store.
+local function ua_claims_good_bot(ua)
+    if not ua or ua == "" then return false end
+    local ul = ua:lower()
+    return ul:find("bot", 1, true) ~= nil
+        or ul:find("spider", 1, true) ~= nil
+        or ul:find("crawler", 1, true) ~= nil
+        or ul:find("facebookexternal", 1, true) ~= nil
+        or ul:find("mediapartners", 1, true) ~= nil
+        or ul:find("bingpreview", 1, true) ~= nil
+        or ul:match("meta%-external") ~= nil
+end
+
 local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     if not ua or ua == "" then return nil end
+    -- Gate the device_canvas_verified path (the observed leak).
+    if ua_claims_good_bot(ua) then return nil end
     local ip16 = get_ip16(ip)
     if not ip16 then return nil end
 
@@ -121,6 +143,10 @@ function _M.check(ctx)
     local ip  = ctx.ip or ""
     local ua  = ngx.var.http_user_agent or ""
     local verified_ttl = cfg.ttl.verified or 7200
+    -- Self-declared crawlers never enter the verified-human lane. Gates the
+    -- cookie (5) and early-id (7) paths below; device (6) is gated inside
+    -- lookup_device_by_ua. Infra whitelists (1-4) and static bypass (8) still apply.
+    local ua_is_bot = ua_claims_good_bot(ua)
 
     -- 1. Internal antibot endpoints
     for _, p in ipairs(ANTIBOT_PATHS) do
@@ -149,7 +175,7 @@ function _M.check(ctx)
     -- 5. Cookie-based verified session — PRIMARY, IP-independent.
     -- Sliding window TTL renewal.
     local cookie = ngx.var.cookie_antibot_fp
-    if cookie and cookie ~= "" then
+    if not ua_is_bot and cookie and cookie ~= "" then
         local verified = pool.safe_get("verified:" .. cookie)
         if verified == "1" then
             ctx.verified = true
@@ -178,7 +204,7 @@ function _M.check(ctx)
 
     -- 7. IP+UA early identity — TERTIARY, IP-dependent.
     -- Safety net: first request ngay sau verify trên cùng IP.
-    if not cookie or cookie == "" then
+    if not ua_is_bot and (not cookie or cookie == "") then
         local early_id = identity_mod.build_from(ip, ua)
         local ev       = pool.safe_get("verified:" .. early_id)
         if ev == "1" then
