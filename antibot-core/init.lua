@@ -7,6 +7,7 @@ local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
 local ip_tour            = require "antibot.detection.ip_tour"
+local xfilter_guard      = require "antibot.l7.expensive_filter_guard"
 local iprep              = require "antibot.core.iprep"
 local asn_layer          = require "antibot.core.fingerprint.asn"
 local device_classifier  = require "antibot.core.fingerprint.device_classifier"
@@ -68,6 +69,13 @@ local STEPS_COMMON = {
     -- to challenge after the good_bot_verified short-circuit (verified crawlers
     -- exempt). Strike counter here escalates repeat offenders to a direct ban.
     { layer = ip_tour,           fn = "run"           },
+    -- expensive_filter_guard: RESOURCE-keyed combinatorial-crawl meter. Runs
+    -- here so it sees EVERY caller (before the good_bot/verified short-circuit
+    -- after COMMON) and after session_richness/access (richness+whitelist known).
+    -- mode=shadow by default (đo+log, chưa chặn) — tune combos_threshold rồi bật
+    -- enforce. Complements ip_tour (per-IP) + distributed_swarm (per-/24): the
+    -- first axis keyed purely on the target resource, immune to IP/UA rotation.
+    { layer = xfilter_guard,     fn = "run"           },
     { layer = transport_layer,   fn = "run"           },
 }
 

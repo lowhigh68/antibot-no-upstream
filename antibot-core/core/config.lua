@@ -262,6 +262,20 @@ _M.ip_tour = {
     ban_ttl_repeat   = 3600,  -- repeat offender 1 h
 }
 
+-- Expensive faceted-filter guard (l7/expensive_filter_guard.lua) — RESOURCE-keyed
+-- combinatorial-crawl protection. Catches BOTH verified-bot path-filter crawl
+-- (Meta `/loc-a,b,c.html`) and distributed-botnet query-filter crawl
+-- (`?filter_attr=a.b.c`) at one point, because it meters per base-listing-path
+-- across ALL callers (invariant to IP/UA/verified — the axes caller-keyed
+-- defenses leak through). See l7/expensive_filter_guard.lua header.
+_M.expensive_filter = {
+    mode             = "shadow",  -- shadow (đo+log) | enforce (429) | off
+    window           = 300,       -- HLL window giây (base tự phục hồi khi ngừng cào)
+    min_values       = 4,         -- >= số giá-trị-con trong 1 field → faceted filter tốn kém
+    combos_threshold = 60,        -- distinct combos / base / window → vượt budget (TUNE qua shadow)
+    retry_after      = 120,       -- 429 Retry-After khi enforce
+}
+
 -- Fleet Detection (Distributed Web Scraping with Rotating IP Fleet).
 --
 -- Active subnet-level detection. Three independent axes aggregated into a
