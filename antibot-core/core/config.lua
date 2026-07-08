@@ -276,7 +276,7 @@ _M.expensive_filter = {
     mode             = "enforce", -- shadow (đo+log) | enforce (429) | off
     window           = 300,       -- HLL window giây (base tự phục hồi khi ngừng cào)
     min_values       = 4,         -- >= số giá-trị-con trong 1 field → faceted filter tốn kém
-    combos_threshold = 60,        -- distinct combos / base / window → vượt budget
+    combos_threshold = 45,        -- distinct combos / base / window → vượt budget (60→45, hạ để bắt sớm hơn; 30 nếu tải dư còn cao)
     exempt_richness  = 0.5,       -- session_richness >= this → miễn 429 (vẫn được đếm)
     retry_after      = 120,       -- 429 Retry-After
 }
