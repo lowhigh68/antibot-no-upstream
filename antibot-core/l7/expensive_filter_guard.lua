@@ -35,14 +35,38 @@ local function sep_count(s)
     return n
 end
 
+-- Self-declared good bot (same def as core/access/whitelist + l7/ban/ban_store).
+local function ua_claims_good_bot(ua)
+    if not ua or ua == "" then return false end
+    local ul = ua:lower()
+    return ul:find("bot", 1, true) ~= nil
+        or ul:find("spider", 1, true) ~= nil
+        or ul:find("crawler", 1, true) ~= nil
+        or ul:find("facebookexternal", 1, true) ~= nil
+        or ul:find("mediapartners", 1, true) ~= nil
+        or ul:find("bingpreview", 1, true) ~= nil
+        or ul:match("meta%-external") ~= nil
+end
+
 function _M.run(ctx)
     local gc = cfg.expensive_filter
     if not gc or gc.mode == "off" then return true, false end
 
     -- Bỏ qua infra whitelist (LAN/admin/internal) — không phải traffic cần đo.
-    -- CỐ Ý không bỏ qua ctx.verified: verify có thể bị chiếm (Meta canvas) nên
-    -- vẫn phải đếm; metric distinct-combo mới là thứ tách người khỏi crawler.
     if ctx.whitelisted then return true, false end
+
+    -- Resource (css/js/img): không phải target faceted-filter. Skip để tránh
+    -- false-trigger trên versioned asset query (`js.cookie.min.js?ver=...`) +
+    -- giảm overhead. ctx.req_class đã set (classifier.run chạy trước STEPS_COMMON).
+    if ctx.req_class == "resource" then return true, false end
+
+    -- Self-declared good bot (Googlebot/Bing/Meta): loại khỏi CẢ meter lẫn enforce.
+    -- Chúng đi lane DNS/ASN registry (bằng chứng hạ tầng KHÔNG giả được — khác
+    -- IP/UA/canvas) và đã bị siết bởi good_bot rate ceiling (lane riêng). Loại
+    -- khỏi PHÉP ĐO để crawl hợp pháp của chúng (Googlebot ~109 combos) KHÔNG thổi
+    -- phồng base counter → tránh collateral 429 cho người thật đến sau. Bot giả
+    -- UA good-bot → fail DNS/ASN verify ở detection → bị scoring xử lý.
+    if ua_claims_good_bot(ctx.ua or "") then return true, false end
 
     local uri  = ngx.var.uri  or ""
     local args = ngx.var.args or ""
@@ -111,9 +135,14 @@ function _M.run(ctx)
 
     local over = combos > (gc.combos_threshold or 60)
 
-    -- 5. ENFORCE: chỉ chặn khi mode=enforce AND base vượt budget combinatorial.
-    --    Không miễn theo verified/richness (verify chiếm được). Metric đã lo FP.
-    if gc.mode == "enforce" and over then
+    -- Human power-user / phiên đã thiết lập (richness cao) làm multi-facet filter:
+    -- MIỄN 429 (FP protection) nhưng VẪN được đếm ở trên (để lộ nếu bot gaming
+    -- cookie đạt richness cao — sẽ thấy trong xf log). Chỉ traffic KHÔNG tin cậy
+    -- (richness thấp, không good-bot) mới bị chặn khi base vượt budget.
+    local human_exempt = (ctx.session_richness or 0) >= (gc.exempt_richness or 0.5)
+
+    -- 5. ENFORCE: chặn khi mode=enforce AND base vượt budget AND không được miễn.
+    if gc.mode == "enforce" and over and not human_exempt then
         ctx.action        = "throttled"
         ctx.action_reason = "expensive_filter"
         ngx.log(ngx.WARN,

@@ -268,12 +268,17 @@ _M.ip_tour = {
 -- (`?filter_attr=a.b.c`) at one point, because it meters per base-listing-path
 -- across ALL callers (invariant to IP/UA/verified — the axes caller-keyed
 -- defenses leak through). See l7/expensive_filter_guard.lua header.
+-- Ngưỡng chốt từ shadow 24h (2026-07-08): người thật 1-3 combos/base/window,
+-- good bot (đã loại khỏi meter) ~28-109, attack botnet 320-543. threshold=60 =
+-- 20× biên trên người thật, dưới đáy mọi combinatorial crawl. exempt_richness
+-- miễn 429 cho power-user đã đăng nhập. Revert nhanh: mode="shadow".
 _M.expensive_filter = {
-    mode             = "shadow",  -- shadow (đo+log) | enforce (429) | off
+    mode             = "enforce", -- shadow (đo+log) | enforce (429) | off
     window           = 300,       -- HLL window giây (base tự phục hồi khi ngừng cào)
     min_values       = 4,         -- >= số giá-trị-con trong 1 field → faceted filter tốn kém
-    combos_threshold = 60,        -- distinct combos / base / window → vượt budget (TUNE qua shadow)
-    retry_after      = 120,       -- 429 Retry-After khi enforce
+    combos_threshold = 60,        -- distinct combos / base / window → vượt budget
+    exempt_richness  = 0.5,       -- session_richness >= this → miễn 429 (vẫn được đếm)
+    retry_after      = 120,       -- 429 Retry-After
 }
 
 -- Fleet Detection (Distributed Web Scraping with Rotating IP Fleet).
