@@ -10,6 +10,10 @@ local ESCALATE_RATE_LIMIT = 60   -- 1 viol incr / 60s tối đa per identity
 -- quyết network rồi quay lại sau ban TTL.
 local BAN_ESCALATE_GRACE = 300
 
+-- Ngưỡng "phiên đã thiết lập" (đăng nhập) — GIỮ ĐỒNG BỘ với
+-- enforcement/decision/engine.lua AUTH_SESSION_RICHNESS + cfg.ip_tour.richness_max.
+local SHARED_ID_RICHNESS = 0.5
+
 local function ua_claims_good_bot(ua)
     if not ua or ua == "" then return false end
     local ul = ua:lower()
@@ -68,6 +72,46 @@ function _M.run(ctx)
                 " ua=", ua:sub(1, 60))
             ctx.banned = false
             return false, false
+        end
+
+        -- ── Shared-identity FP guard (Fix A + Fix B) ─────────────────────
+        -- identity = md5(ip+ua_norm), mà ua_norm gộp Chrome về "Chrome/<major>"
+        -- (bỏ minor/build/OS) → cả một văn phòng (chung IP NAT + cùng major
+        -- browser) COLLAPSE về MỘT identity. ban:<id> khi đó KHÔNG per-device mà
+        -- per-(IP, browser-major) → một ban khóa cả văn phòng, và mỗi F5 của mọi
+        -- người còn escalate ban tới permanent. Hai lối thoát cho NGƯỜI THẬT,
+        -- giữ nguyên seal cho bot (richness~0, không giải nổi PoW):
+        local richness = ctx.session_richness or 0
+
+        -- Fix A — phiên đã đăng nhập. session_richness tính PER-REQUEST từ
+        -- cookie/auth của CHÍNH request → phân biệt được từng người trong cùng
+        -- identity hash bị collapse. Bỏ seal + KHÔNG escalate, trả về pipeline
+        -- cho scoring phán LIVE (score~0 → allow). Nhất quán auth_session_cap
+        -- (engine) nhưng áp ở ĐÚNG tầng — ban read seal TRƯỚC khi engine chạy.
+        if richness >= SHARED_ID_RICHNESS then
+            ngx.log(ngx.INFO, "[ban_store] richness_bypass id=", id:sub(1, 8),
+                " r=", string.format("%.2f", richness))
+            ctx.banned = false
+            return false, false
+        end
+
+        -- Fix B — IP chia sẻ (văn phòng/CGNAT: distinct raw-UA ≥ 6). Nhân viên
+        -- DUYỆT ẨN DANH (richness thấp) vẫn dính collapse. Với request render
+        -- được HTML (Accept: text/html) → serve PoW thay vì seal 403: người thật
+        -- giải 1 lần → verified:<cookie> → bypass ở cookie fast-path (init.lua)
+        -- cho MỌI request sau; bot không giải nổi → vẫn chặn hiệu quả. KHÔNG
+        -- escalate (challenge không phải bằng chứng bot). Request không render
+        -- HTML (XHR/static) rơi xuống seal cứng bên dưới — nhưng navigation đầu
+        -- tiên đã verify nên các request sau được cookie fast-path tha.
+        local accept = (ctx.req and ctx.req.accept) or ngx.var.http_accept or ""
+        if ctx.ip_shared and accept:find("text/html", 1, true) then
+            pool.safe_set("ban:hit:" .. id, tostring(ngx.time()), 300)
+            ctx.action        = "challenge"
+            ctx.action_reason = "banned_id_shared_challenge"
+            ngx.log(ngx.INFO, "[ban_store] shared_challenge id=", id:sub(1, 8),
+                " ip=", ctx.ip or "?", " r=", string.format("%.2f", richness))
+            require("antibot.enforcement.challenge").run(ctx)  -- serve PoW + exit 200
+            return true, true
         end
 
         ctx.banned = true
