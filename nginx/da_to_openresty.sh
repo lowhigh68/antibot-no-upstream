@@ -161,9 +161,14 @@ get_subdomains() {
 #   - Dynamic .css/.js qua PHP hiếm; nếu có plugin đặc biệt cần, add
 #     exception riêng per-path với prefix `^~` ưu tiên hơn regex.
 #   - Broken reference (theme thiếu file) → 404 nhanh thay vì WP 4s.
+#   - TUYỆT ĐỐI KHÔNG thêm xml/txt/json vào regex: sitemap.xml, robots.txt (ảo),
+#     feed là PHP-ĐỘNG (không có file disk) → `=404` sẽ trả 404 chết người, phá
+#     SEO (Google không đọc được sitemap/robots). Chúng PHẢI rơi xuống `location /`
+#     để proxy về Apache/PHP. File .xml/.txt/.json tĩnh thật (manifest/ads.txt…)
+#     vẫn được Apache serve đúng, chỉ không nginx-cache — volume thấp, chấp nhận.
 static_fastpath() {
     cat << 'LEOF'
-    location ~* \.(js|css|png|jpg|jpeg|gif|svg|webp|woff2?|ttf|eot|otf|ico|map|mp4|webm|mp3|ogg|ogv|m4a|m4v|pdf|zip|7z|rar|tgz|gz|txt|xml|json|htc)$ {
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|webp|woff2?|ttf|eot|otf|ico|map|mp4|webm|mp3|ogg|ogv|m4a|m4v|pdf|zip|7z|rar|tgz|gz|htc)$ {
         try_files $uri =404;
         expires 7d;
         add_header Cache-Control "public, immutable";
