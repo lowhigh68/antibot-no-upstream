@@ -392,6 +392,27 @@ _M.cluster = {
     tls_count_normalize_max    = 300,
 }
 
+-- Shared-session-key guard. `sess:<fp_light>` là khoá của session+graph, mà
+-- fp_light = md5(ip + ua_thô + asn + ja3 + h2_sig) — TOÀN thuộc tính (mạng +
+-- trình duyệt). Văn phòng dùng image đồng nhất (cùng IP, cùng bản Chrome,
+-- ja3 luôn = NO_JA3 ở kiến trúc no-stream) → mọi máy COLLAPSE về một fp_light
+-- → session của nhiều người bị trộn làm một. `detect_loop` trong graph bắn 0.9
+-- khi 1 URI lặp >=4 lần trong 10 request cuối — phiên trộn LUÔN thoả điều kiện
+-- đó → graph_flag(20) + session_flag(20) sinh tới ~38 điểm GIẢ, không từ hành vi.
+--
+-- Bộ dò: đếm distinct cookie-set cùng dùng một sess:<fp> (HLL). Người thật mỗi
+-- người một session cookie → đếm cao. Bot fleet dùng chung fp thường không có
+-- cookie → md5("") giống nhau → đếm = 1 → signal VẪN chạy (không tạo FN).
+-- KHÔNG dùng ctx.ip_shared được: nó = distinct-UA >= 6, mà văn phòng đồng nhất
+-- chỉ có 1 UA → không bao giờ fire.
+-- clients_min=4 thận trọng: cookie của MỘT người cũng đổi vài lần trong window
+-- (đăng nhập, thêm giỏ hàng) → 2-3 trạng thái là bình thường.
+_M.session_shared = {
+    enabled     = true,   -- false = tắt, quay lại hành vi cũ
+    clients_min = 4,      -- distinct cookie-set / sess:<fp> / window → coi là khoá dùng chung
+    window      = 300,    -- giây
+}
+
 _M.pow = {
     difficulty       = "000",
     challenge_secret = "c516565b589841e4a540c309ed301f83",

@@ -51,14 +51,31 @@ function _M.run(ctx)
     red:ltrim(key, 0, limit - 1)
     red:expire(key, ttl)
     red:llen(key)
+    local n_ops = 4
 
     -- Attack 4: navigation / resource counters
     if class == "navigation" or class == "unknown" then
         red:incr(nav_key)
         red:expire(nav_key, RESOURCE_COUNT_WINDOW)
+        n_ops = n_ops + 2
     elseif class == "resource" then
         red:incr(res_key)
         red:expire(res_key, RESOURCE_COUNT_WINDOW)
+        n_ops = n_ops + 2
+    end
+
+    -- Shared-session-key detector: bao nhiêu cookie-set KHÁC NHAU cùng dùng
+    -- sess:<fp>. Append CUỐI pipeline để không dịch index res[4]/res[5] ở dưới.
+    -- Request không cookie → md5("") → mọi request cộng vào CÙNG một phần tử
+    -- → bot fleet không cookie giữ count=1 → signal không bị tắt oan.
+    local sc = cfg.session_shared
+    local ck_idx
+    if sc and sc.enabled then
+        local ck_key = "sess:ck:" .. fp
+        red:pfadd(ck_key, ngx.md5(ngx.var.http_cookie or ""))
+        red:expire(ck_key, sc.window or 300)
+        red:pfcount(ck_key)
+        ck_idx = n_ops + 3
     end
 
     local res, perr = red:commit_pipeline()
@@ -66,6 +83,21 @@ function _M.run(ctx)
 
     if res then
         ctx.sess_len = (type(res[4]) == "number") and res[4] or 0
+
+        if ck_idx then
+            local clients = (type(res[ck_idx]) == "number") and res[ck_idx] or 0
+            ctx.sess_clients = clients
+            -- Khoá đang bị nhiều client thật dùng chung → thứ tự URI trong
+            -- sess:<fp> là phiên TRỘN, mọi pattern rút ra từ nó vô nghĩa.
+            -- compute.lua bỏ qua session_flag + graph_flag khi cờ này bật.
+            if clients >= (sc.clients_min or 4) then
+                ctx.sess_shared = true
+                ngx.log(ngx.INFO,
+                    "[session_store] shared_session_key fp=", fp:sub(1, 8),
+                    " clients=", clients,
+                    " ip=", ctx.ip or "?")
+            end
+        end
 
         -- Compute resource ratio (Attack 4)
         local nav_count = 0

@@ -110,14 +110,28 @@ local function per_ip_rep(ctx, v)
     return v
 end
 
+-- session_flag + graph_flag đều rút ra từ THỨ TỰ URI trong sess:<fp_light>.
+-- Khi nhiều client thật dùng chung một fp_light (văn phòng image đồng nhất —
+-- xem cfg.session_shared), danh sách đó là phiên TRỘN của nhiều người: URI
+-- trang chủ lặp >=4 lần trong 10 request cuối là điều CHẮC CHẮN xảy ra, khiến
+-- graph/pattern_detect.detect_loop bắn 0.9 (=18 điểm) cộng session_flag (tới
+-- 20 điểm) — thuần FP, không phản ánh hành vi của bất kỳ ai.
+-- Zero (không giảm nhẹ) vì pattern từ phiên trộn là VÔ NGHĨA, không phải nhiễu.
+-- Signal per-request (anomaly/h2/mismatch/bot_score) + per-IP/subnet
+-- (cluster/swarm/fleet/ip_tour) KHÔNG bị ảnh hưởng → bot vẫn bị bắt.
+local function session_derived(ctx, v)
+    if ctx.sess_shared then return 0.0 end
+    return v
+end
+
 local function get_signal(name, ctx)
     if name == "rate_flag"          then return safe_val(ctx.rate_flag) end
     if name == "burst_flag"         then return safe_val(ctx.burst_flag) end
     if name == "ip_surge"           then return per_ip_rep(ctx, ctx.ip_surge and 1.0 or 0.0) end
     if name == "ip_tour"            then return ctx.ip_tour and 1.0 or 0.0 end
     if name == "behavior_score"     then return safe_val(ctx.behavior_score) end
-    if name == "session_flag"       then return safe_val(ctx.session_flag) end
-    if name == "graph_flag"         then return safe_val(ctx.graph_flag) end
+    if name == "session_flag"       then return session_derived(ctx, safe_val(ctx.session_flag)) end
+    if name == "graph_flag"         then return session_derived(ctx, safe_val(ctx.graph_flag)) end
     if name == "bot_score"          then return safe_val(ctx.bot_score) end
     if name == "ua_flag"            then return safe_val(ctx.ua_flag) end
     if name == "anomaly_score"      then return safe_val(ctx.anomaly_score) end

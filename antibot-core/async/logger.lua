@@ -228,6 +228,16 @@ function _M.run(ctx)
         end
     end
 
+    -- Shared-session-key telemetry. sclients = distinct cookie-set cùng dùng
+    -- sess:<fp_light>; sshared=true → session_flag+graph_flag đã bị bỏ qua.
+    -- Hiệu chỉnh cfg.session_shared.clients_min:
+    --   grep -oP 'sclients=\d+' antibot.log | sort | uniq -c
+    local sc_str = ""
+    if ctx.sess_clients then
+        sc_str = string.format(" sclients=%d sshared=%s",
+            ctx.sess_clients, tostring(ctx.sess_shared or false))
+    end
+
     -- Expensive faceted-filter guard telemetry (l7/expensive_filter_guard.lua).
     -- Chỉ append cho request bị coi là faceted-filter tốn kém. combos = distinct
     -- tổ hợp/base/window (metric người-vs-crawler); over = đã vượt combos_threshold.
@@ -260,7 +270,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " top=%s reason=%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -285,7 +295,8 @@ function _M.run(ctx)
         tier_str,
         gbrate_str,
         auth_str,
-        xf_str
+        xf_str,
+        sc_str
     )
 
     write_log_line(line)
