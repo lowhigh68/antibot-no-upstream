@@ -126,7 +126,20 @@ local function deserialize(val)
     }
 end
 
+-- PHÒNG VỆ BẮT BUỘC: mọi lỗi Lua trong phase ssl_client_hello đều HUỶ BẮT TAY
+-- → sập HTTPS diện rộng. Sự cố 2026-04-22: `ngx.var` bị vô hiệu ở phase này
+-- ("API disabled in the current context") giết handshake, âm thầm 3 tháng.
+-- capture_unsafe() có thể ném; wrapper NUỐT mọi lỗi — JA3 mất là chấp nhận được,
+-- HTTPS sập thì không.
 function _M.capture()
+    local ok, err = pcall(_M.capture_unsafe)
+    if not ok then
+        ngx.log(ngx.ERR, "[ja3] capture ERROR (đã nuốt, handshake tiếp tục): ",
+                tostring(err))
+    end
+end
+
+function _M.capture_unsafe()
     local ok, ssl_clt = pcall(require, "ngx.ssl.clienthello")
     if not ok then
         ngx.log(ngx.ERR, "[ja3] require ngx.ssl.clienthello failed: ",
@@ -200,9 +213,22 @@ function _M.capture()
         " #curves=", #curves)
 end
 
+-- Chẩn đoán vì sao run() không lấy được JA3.
+-- Ba đường thoát dẫn tới ja3=nil trước đây đều return IM LẶNG (hoặc log DEBUG,
+-- bị lọc) → một tính năng bảo mật chết 3 tháng mà error.log không một dấu vết.
+-- Rate-limit 1/200 để không bloat log ở traffic cao (per-worker counter).
+local _diag_n = 0
+local function diag_miss(reason, extra)
+    _diag_n = _diag_n + 1
+    if _diag_n % 200 ~= 1 then return end
+    ngx.log(ngx.WARN, "[ja3] run_miss reason=", reason,
+            " n=", _diag_n, " ", extra or "")
+end
+
 function _M.run(ctx)
     local shared = ngx.shared[SHARED_DICT_NAME]
     if not shared then
+        diag_miss("no_shared_dict")
         ctx.ja3 = nil; ctx.ja3_raw = nil; ctx.ja3_partial = nil
         ctx.tls_version = nil; ctx.tls13 = nil
         return
@@ -210,7 +236,11 @@ function _M.run(ctx)
 
     local bridge_key, err = get_bridge_key()
     if not bridge_key then
-        -- HTTP plain hoặc SSL chưa ready (err mô tả lý do)
+        -- HTTP plain hoặc SSL chưa ready (err mô tả lý do).
+        -- h2=true mà rơi vào đây ⇒ get_client_random() KHÔNG dùng được ở
+        -- access phase → phải đổi khoá cầu nối (vd remote_addr:remote_port).
+        diag_miss("no_bridge_key", "err=" .. tostring(err)
+                  .. " h2=" .. tostring(ctx.h2_is_h2))
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
@@ -224,7 +254,15 @@ function _M.run(ctx)
     local val = shared:get(key)
 
     if not val then
-        -- capture() không fire (session resumption, HTTP plain, …)
+        -- Khoá cầu nối tính được nhưng dict KHÔNG có entry. Ba nguyên nhân:
+        --   a) capture() chưa từng chạy cho kết nối này (kết nối mở trước reload)
+        --   b) entry HẾT HẠN — TLS_KEY_TTL=300s, mà kết nối H2 sống lâu hơn
+        --   c) dict 10m ĐẦY → LRU evict (eviction KHÔNG báo lỗi ở set → im lặng)
+        -- `free` phân biệt (c) với (a)/(b): free tụt gần 0 ⇒ dict quá nhỏ.
+        diag_miss("dict_miss", "key=" .. bridge_key:sub(1, 8)
+                  .. " h2=" .. tostring(ctx.h2_is_h2)
+                  .. " free=" .. tostring(shared:free_space())
+                  .. " cap=" .. tostring(shared:capacity()))
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil

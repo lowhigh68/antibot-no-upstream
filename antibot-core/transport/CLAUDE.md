@@ -41,4 +41,9 @@ Compute JA3/JA3S/H2 fingerprints from data captured during SSL handshake (stored
 - Modules MUST export both `_M.capture` and `_M.run` — replacing with no-op breaks transport pipeline (`attempt to call nil`)
 
 ## Update log
+- 2026-07-31 — **`tls/ja3.lua`: `pcall` phòng vệ + instrument 3 đường thoát im lặng**.
+  - **`capture()` → wrapper `pcall(_M.capture_unsafe)`**. Bắt buộc: mọi lỗi Lua trong phase `ssl_client_hello` **huỷ bắt tay TLS** ⇒ sập HTTPS diện rộng. Đã xảy ra 2026-04-22: `ngx.var` bị vô hiệu ở phase này (`API disabled in the current context`, traceback qua `resty/core/var.lua:__index`) giết handshake và **âm thầm 3 tháng**. Nay lỗi bị nuốt + log `ngx.ERR` → mất JA3 chấp nhận được, sập HTTPS thì không.
+  - **`diag_miss()` (rate-limit 1/200)** cho 3 đường trong `run()` trước đây return im lặng: `no_shared_dict`, `no_bridge_key` (kèm `err`, `h2`), `dict_miss` (kèm `key`, `h2`, `free_space`, `capacity`).
+  - **Bài toán đang đo:** sau khi bật JA3 (xem `antibot-core/CLAUDE.md` 2026-07-31), bảng chéo cho thấy chỉ **58/269 = 21.6%** request HTTP/2 lấy được JA3 — `capture()` chạy đúng (có hash thật) nhưng `run()` **tra dict trượt 78%**. Ba nghi phạm phân biệt bằng log trên: (a) `get_client_random()` không dùng được ở access phase → phải đổi khoá cầu nối sang `remote_addr:remote_port`; (b) `TLS_KEY_TTL=300s` < đời kết nối H2 → nâng TTL; (c) dict 10m đầy → LRU evict (eviction **không** báo lỗi ở `set`) → nâng `lua_shared_dict antibot_tls`.
+  - **Quy trình bắt buộc khi sửa file này:** máy dev không có Lua → syntax-check trên server bằng `/usr/local/openresty/luajit/bin/luajit -b <file> /dev/null` **TRƯỚC** `nginx -t`/reload. Lỗi cú pháp ⇒ `require` fail ⇒ sập HTTPS toàn bộ.
 - `72f0415` (2026-05-03) — no changes
