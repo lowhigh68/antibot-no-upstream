@@ -245,11 +245,29 @@ function _M.run(ctx)
     --   grep 'xf_base=' antibot.log | grep -oP 'xf_base=\S+ xf_combos=\d+' | sort | uniq -c
     local xf_str = ""
     if ctx.xf_expensive then
-        xf_str = string.format(" xf_base=%s xf_combos=%d xf_hits=%d xf_over=%s",
+        xf_str = string.format(" xf_base=%s xf_combos=%d xf_ipcombos=%d xf_hits=%d xf_over=%s",
             tostring(ctx.xf_base or "-"),
             ctx.xf_combos or 0,
+            ctx.xf_ipcombos or 0,
             ctx.xf_hits or 0,
             tostring(ctx.xf_over or false))
+    end
+
+    -- mismatch telemetry (intelligence/correlation/consistency_check.lua).
+    -- mm     = danh sách NHÁNH đã bắn; mm_raw = tổng TRƯỚC khi chặn trần 1.0
+    -- (mm_raw > 1.0 = bão hoà, mismatch phẳng 55 điểm, mất khả năng phân biệt);
+    -- h2bc   = h2_bot_confidence, ghi kèm để đo DOUBLE-COUNT: hai signal cùng
+    --          weight 55 và cùng bắn trên h2_bot_pattern / h2_tls_mismatch.
+    -- Hiệu chỉnh:
+    --   grep -oP 'mm=\K\S+' antibot.log | tr ',' '\n' | sort | uniq -c | sort -rn
+    --   grep -oP 'mm=\S*tls12\S*' antibot.log | wc -l     # nhánh mới sống
+    --   grep 'mm=' antibot.log | grep -oP 'h2bc=\K\S+' | sort | uniq -c
+    local mm_str = ""
+    if ctx.mm_rules and ctx.mm_rules ~= "" then
+        mm_str = string.format(" mm=%s mm_raw=%.2f h2bc=%.2f",
+            ctx.mm_rules,
+            ctx.mm_raw or 0,
+            ctx.h2_bot_confidence or 0)
     end
 
     -- Beacon coverage state (Step 0 telemetry).
@@ -270,7 +288,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " top=%s reason=%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -296,7 +314,8 @@ function _M.run(ctx)
         gbrate_str,
         auth_str,
         xf_str,
-        sc_str
+        sc_str,
+        mm_str
     )
 
     write_log_line(line)
