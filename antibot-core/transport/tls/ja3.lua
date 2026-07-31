@@ -37,11 +37,16 @@ local SHARED_DICT_NAME = "antibot_tls"
 local TLS_KEY_PREFIX   = "tls:"
 local TLS_KEY_TTL      = 300
 local TMP_KEY_PREFIX   = "tlsq:"
-local TMP_KEY_TTL      = 15
+-- 5s, KHÔNG dài hơn: đây là cửa sổ duy nhất mà hai client sau cùng một NAT có
+-- thể nhầm fingerprint của nhau (xem promote ở run()). Cả hai đường tiêu thụ
+-- entry tạm đều xảy ra trong vài mili giây sau ClientHello nên 5s đã rất dư.
+local TMP_KEY_TTL      = 5
 
 -- Bộ đếm rate-limit cho log chẩn đoán (per-worker, 1/200).
 local _cap_n   = 0
 local _relay_n = 0
+local _relok_n = 0
+local _prom_n  = 0
 local _diag_n  = 0
 
 -- Khoá THẬT: md5(client_random) — unique per handshake.
@@ -296,7 +301,17 @@ function _M.relay()
     end
 
     shared:set(TLS_KEY_PREFIX .. rand_key, val, TLS_KEY_TTL)
+    -- Xoá luôn để thu hẹp cửa sổ va chạm NAT của đường promote ở run().
     shared:delete(tmp_key)
+
+    -- So `relay_ok n` với `capture_ok n` trong cùng một cửa sổ, cùng worker:
+    --   xấp xỉ nhau  ⇒ certificate callback chạy cho mọi handshake
+    --   thấp hơn hẳn ⇒ handshake nối lại phiên bỏ qua certificate callback
+    --                  ⇒ phần chênh lệch đó phải nhờ đường promote ở run()
+    _relok_n = _relok_n + 1
+    if _relok_n % 200 == 1 then
+        ngx.log(ngx.ERR, "[ja3] relay_ok n=", _relok_n)
+    end
 end
 
 -- Chẩn đoán vì sao run() không lấy được JA3.
@@ -349,16 +364,38 @@ function _M.run(ctx)
     local val = shared:get(key)
 
     if not val then
-        -- Khoá cầu nối tính được nhưng dict KHÔNG có entry. Ba nguyên nhân:
-        --   a) capture() chưa từng chạy cho kết nối này (kết nối mở trước reload)
-        --   b) entry HẾT HẠN — TLS_KEY_TTL=300s, mà kết nối H2 sống lâu hơn
-        --   c) dict 10m ĐẦY → LRU evict (eviction KHÔNG báo lỗi ở set → im lặng)
-        -- `free` phân biệt (c) với (a)/(b): free tụt gần 0 ⇒ dict quá nhỏ.
-        -- Chỉ lấy mẫu khi thật sự sắp log (get_keys khoá dict — đắt). limit=4
-        -- để vòng lặp dừng sớm. So khoá của ta với khoá đang có trong dict:
-        --   dict rỗng            ⇒ capture() không ghi được
-        --   toàn khoá lạ, đa dạng ⇒ hai phase thấy client_random khác nhau
-        --   chỉ 1-2 khoá lặp lại  ⇒ client_random hằng ở phase ClientHello
+        -- ĐƯỜNG CỨU: handshake NỐI LẠI PHIÊN không gửi certificate → certificate
+        -- callback không chạy → nhịp 2 không chạy → không có entry dưới khoá thật.
+        -- Nhưng callback ClientHello VẪN chạy, nên entry tạm (theo IP) vẫn có.
+        -- Với keepalive_timeout 65s + ssl_session_cache 10m, nối lại phiên là
+        -- đường phổ biến NHẤT — đo 2026-07-31: dict_miss chiếm 143/173 mẫu miss.
+        --
+        -- Thăng cấp entry tạm sang khoá thật rồi dùng luôn. Request đầu tiên của
+        -- kết nối trả giá tra 2 lần; mọi request sau trúng thẳng khoá thật.
+        --
+        -- ĐÁNH ĐỔI: entry tạm khoá theo IP, nên hai client sau cùng một NAT cùng
+        -- nối lại phiên trong TMP_KEY_TTL=5s có thể nhận fingerprint của nhau.
+        -- Cửa sổ 5s + nhịp 2 đã xoá entry tạm cho mọi handshake mới ⇒ phần dư
+        -- rất nhỏ. Chấp nhận: thà lệch trong 5s còn hơn mất JA3 ở 83% request.
+        local addr = ngx.var.binary_remote_addr
+        if addr and #addr > 0 then
+            local tmp_key = TMP_KEY_PREFIX .. ngx.md5(addr)
+            local tmp_val = shared:get(tmp_key)
+            if tmp_val then
+                shared:set(key, tmp_val, TLS_KEY_TTL)
+                val = tmp_val
+                _prom_n = _prom_n + 1
+                if _prom_n % 200 == 1 then
+                    ngx.log(ngx.ERR, "[ja3] promote n=", _prom_n)
+                end
+            end
+        end
+    end
+
+    if not val then
+        -- Không cứu được. Còn lại: kết nối mở trước reload, entry hết TTL 300s,
+        -- hoặc dict đầy → LRU evict (eviction KHÔNG báo lỗi ở set → im lặng).
+        -- `free` phân biệt trường hợp cuối: tụt gần 0 ⇒ dict quá nhỏ.
         local sample = ""
         if (_diag_n + 1) % 200 == 1 then
             local ok_k, keys = pcall(shared.get_keys, shared, 4)
@@ -388,7 +425,7 @@ function _M.run(ctx)
 
     local data = deserialize(val)
     if not data then
-        ngx.log(ngx.WARN, "[ja3] deserialize failed val=", tostring(val))
+        ngx.log(ngx.ERR, "[ja3] deserialize failed val=", tostring(val))
         ctx.ja3 = nil; ctx.tls13 = nil; ctx.ja3_partial = nil
         return
     end
