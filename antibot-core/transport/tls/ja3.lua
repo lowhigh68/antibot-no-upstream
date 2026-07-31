@@ -217,11 +217,18 @@ end
 -- Ba đường thoát dẫn tới ja3=nil trước đây đều return IM LẶNG (hoặc log DEBUG,
 -- bị lọc) → một tính năng bảo mật chết 3 tháng mà error.log không một dấu vết.
 -- Rate-limit 1/200 để không bloat log ở traffic cao (per-worker counter).
+--
+-- PHẢI là ngx.ERR, KHÔNG phải ngx.WARN: run() chạy ở access phase, tức trong
+-- per-domain server block, mà da_to_openresty.sh ghi đè
+-- `error_log /var/log/nginx/domains/<fqdn>.error.log;` KHÔNG kèm level →
+-- mặc định `error` → mọi dòng WARN bị lọc sạch, không ghi ở đâu cả
+-- (global error_log `warn` chỉ áp cho server không override — gần như không có).
+-- Đã kiểm chứng 2026-07-31: WARN cho ra 0 dòng ở cả global/per-domain/antibot.log.
 local _diag_n = 0
 local function diag_miss(reason, extra)
     _diag_n = _diag_n + 1
     if _diag_n % 200 ~= 1 then return end
-    ngx.log(ngx.WARN, "[ja3] run_miss reason=", reason,
+    ngx.log(ngx.ERR, "[ja3] run_miss reason=", reason,
             " n=", _diag_n, " ", extra or "")
 end
 
