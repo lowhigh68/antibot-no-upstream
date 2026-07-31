@@ -407,8 +407,25 @@ _M.cluster = {
 -- chỉ có 1 UA → không bao giờ fire.
 -- clients_min=4 thận trọng: cookie của MỘT người cũng đổi vài lần trong window
 -- (đăng nhập, thêm giỏ hàng) → 2-3 trạng thái là bình thường.
+--
+-- ĐO THỰC TẾ 2026-07-31 (55k request) — GIẢ THUYẾT KHÔNG ĐƯỢC XÁC NHẬN:
+--   54040 sclients=1 | 1305 =2 | 44 =3 | chỉ 19 request có >=4 (0.034%)
+--   Bảng top-signal: graph_flag KHÔNG xuất hiện lần nào, session_flag chỉ 0.8%.
+--   → Tiền đề "phiên trộn sinh ~38 điểm FP" SAI trên traffic này.
+--
+-- Và bộ dò có CHẾ ĐỘ HỎNG: site set cookie mới mỗi response → Cookie header đổi
+-- giá trị → sclients tăng 1/request cho CÙNG một client (quan sát: 1 id, 1 IP,
+-- 17 giây, sclients 4→8, richness bò 0.40→0.50 cùng lúc). Hậu quả là FN: một bot
+-- Chrome/60 Android (richness=0, score 125.8) đạt sclients=7 → session_flag +
+-- graph_flag bị zero cho chính con bot đó.
+--
+-- → enforce=false: GIỮ phép đo (rẻ, 3 op trong pipeline sẵn có, dùng để hiệu
+--   chỉnh sau) nhưng KHÔNG còn tác động lên scoring. Bật lại chỉ khi có bằng
+--   chứng phiên bị trộn thật VÀ bộ dò đã miễn nhiễm cookie-churn (ví dụ hash
+--   TÊN cookie thay vì giá trị, hoặc đếm distinct identity thay vì cookie-set).
 _M.session_shared = {
-    enabled     = true,   -- false = tắt, quay lại hành vi cũ
+    enabled     = true,   -- đo + log sclients/sshared (không ảnh hưởng điểm)
+    enforce     = false,  -- true = zero session_flag+graph_flag khi sshared
     clients_min = 4,      -- distinct cookie-set / sess:<fp> / window → coi là khoá dùng chung
     window      = 300,    -- giây
 }

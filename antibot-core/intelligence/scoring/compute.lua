@@ -1,5 +1,6 @@
 local _M = {}
 local pool = require "antibot.core.redis_pool"
+local cfg  = require "antibot.core.config"
 
 local DEFAULT_WEIGHTS = {
 
@@ -119,8 +120,14 @@ end
 -- Zero (không giảm nhẹ) vì pattern từ phiên trộn là VÔ NGHĨA, không phải nhiễu.
 -- Signal per-request (anomaly/h2/mismatch/bot_score) + per-IP/subnet
 -- (cluster/swarm/fleet/ip_tour) KHÔNG bị ảnh hưởng → bot vẫn bị bắt.
+--
+-- MẶC ĐỊNH TẮT (cfg.session_shared.enforce=false) từ 2026-07-31: đo 55k request
+-- cho thấy chỉ 0.034% chạm ngưỡng, graph_flag không hề xuất hiện trong top-signal,
+-- và bộ dò bị cookie-churn thổi phồng → gây FN trên bot thật. Phép đo vẫn chạy
+-- (ctx.sess_clients vào antibot.log) để hiệu chỉnh. Xem core/config.lua.
 local function session_derived(ctx, v)
-    if ctx.sess_shared then return 0.0 end
+    local sc = cfg.session_shared
+    if ctx.sess_shared and sc and sc.enforce then return 0.0 end
     return v
 end
 
