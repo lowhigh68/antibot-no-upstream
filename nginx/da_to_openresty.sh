@@ -357,9 +357,19 @@ server {
     root  "${webroot}";
     index index.php index.html index.htm;
 
-    ssl_client_hello_by_lua_block {
-        require("antibot.transport.tls.ja3").capture()
-    }
+    # KHÔNG đặt ssl_client_hello_by_lua_block ở đây — nó là CONFIG CHẾT.
+    # Handler đó cài qua SSL_CTX_set_client_hello_cb và chạy tại thời điểm
+    # ClientHello, tức TRƯỚC khi nginx phân giải SNI để chọn virtual server →
+    # nginx luôn dùng callback của SSL_CTX thuộc DEFAULT SERVER. Bản trong
+    # per-domain block không bao giờ được gọi.
+    # Hậu quả khi đặt sai (đo 2026-07-31): ja3=nil + tls13=nil trên 100%
+    # request, fp_quality tụt còn 0.40-0.60 → fp_degraded_pen +15đ oan, và
+    # error.log KHÔNG có dấu vết nào (3 đường thoát đều log DEBUG hoặc không log).
+    # → ja3.capture() phải nằm trong default.conf (block listen 443 default_server).
+    # Xem antibot-core/CLAUDE.md "Cross-cutting rules" + memory/feedback_default_server.md
+    #
+    # ssl_certificate_by_lua_block thì NGƯỢC LẠI: chạy SAU khi SNI đã phân giải
+    # (đó là mục đích của nó — chọn cert theo SNI) nên đặt per-domain là ĐÚNG.
     ssl_certificate_by_lua_block {
         require("antibot.transport.tls.ja3s").capture()
     }
