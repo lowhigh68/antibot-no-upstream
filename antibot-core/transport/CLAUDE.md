@@ -35,7 +35,7 @@ Compute JA3/JA3S/H2 fingerprints from data captured during SSL handshake (stored
 - Downstream consumers: `intelligence/scoring/compute.lua` (signals `ja3_*`, `h2_*`), `detection/cluster/`, `detection/anomaly/`
 
 ## Important rules
-- `ssl_client_hello_by_lua_block` MUST be in default_server (hostname.conf) — non-default placement causes SNI cert selection bug (see `memory/feedback_default_server.md`)
+- **`ssl_client_hello_by_lua_block` phải có ở MỌI server 443 — hoặc không server nào.** Callback vũ trang qua SSL_CTX của **default server**; nhưng khi chạy, OpenResty phân giải SNI TRƯỚC rồi tìm directive trong **chính server khớp SNI** → thiếu = `[alert] no ssl_client_hello_by_lua* defined in server <name>` = **huỷ bắt tay TLS**. Nửa vời ⇒ sập HTTPS đúng những domain thiếu. **KHÔNG đặt được ở `http{}`** (kế thừa xuống server port-80 → `[emerg] no ssl configured for the server`). Pre-flight bắt buộc: `nginx -T | grep -c '^[[:space:]]*ssl_certificate_key'` phải BẰNG `nginx -T | grep -c '^[[:space:]]*ssl_client_hello_by_lua_block'` (tiền tố `^[[:space:]]*` để không đếm nhầm dòng comment). Xem `memory/feedback_default_server.md`
 - `ssl_certificate_by_lua_block` for `ja3s.capture()` is OK in non-default per-domain confs
 - `JA3_PARTIAL_PENALTY = 0` in engine.lua — no-stream arch never captures cipher list, ja3_partial is architectural constant not a bot signal
 - Modules MUST export both `_M.capture` and `_M.run` — replacing with no-op breaks transport pipeline (`attempt to call nil`)

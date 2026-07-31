@@ -73,6 +73,12 @@ Hardcoded ASNs: `AS15169` Google, `AS8075` Bing, `AS32934` Meta, `AS714/6185/270
 See [`memory/feedback_default_server.md`](../memory/feedback_default_server.md). Symptom "wrong cert per-domain" → check `default_server` flag FIRST. Antibot/Lua are NOT the cause in 100% of cases observed so far. Fix: add `default.conf` with `default_server` on both 80 + 443.
 
 ## Update log
+- 2026-07-31 (✅ ĐÃ GIẢI QUYẾT) — **JA3 hoạt động trở lại sau ~3 tháng chết âm thầm**. Canary 5 domain đều `200`, `error.log` sạch dấu `[ja3`.
+  - **Bằng chứng:** `ja3=a28e27c7… ja3p=true`, `tls13=true` (trước đó `ja3=-` / `tls13=nil` trên 100% request). `ja3p=true` là ĐÚNG thiết kế — thiếu cipher list vì no-upstream không có `stream{}` preread.
+  - **Cách khắc phục:** thêm `ssl_client_hello_by_lua_block { require("antibot.transport.tls.ja3").capture() }` vào **`default.conf`** (vũ trang callback) **VÀ** `hostname.conf`; per-domain conf đã có sẵn từ generator; xoá 48 `mail.*.conf` (webmail bị loại bỏ) vốn thiếu directive.
+  - **Pre-flight bắt buộc trước mọi reload đụng vùng này:** `K = nginx -T | grep -c '^[[:space:]]*ssl_certificate_key'` phải **BẰNG** `D = nginx -T | grep -c '^[[:space:]]*ssl_client_hello_by_lua_block'`. Tiền tố `^[[:space:]]*` là bắt buộc — thiếu nó `grep -c` đếm cả dòng comment.
+  - **Bình thường sau khi bật:** `class=resource` vẫn `ja3=-` (STEPS_RESOURCE bỏ qua tầng fingerprint) và kết nối keepalive/H2 mở trước reload cũng chưa có → đo tỷ lệ phải `grep -v 'class=resource'`.
+  - **Mở khoá bước tiếp:** giờ mới có dữ liệu TLS thật để hiệu chỉnh cặp `h2_bot_confidence` + `mismatch` (~50% top-signal, cùng trọng số 55, cộng dồn tương quan trên cùng một quan sát). Nguyên tắc đã thống nhất: **sửa TLS trước, đo lại, rồi mới chỉnh trọng số**.
 - 2026-07-31 (SỰ CỐ + ĐÍNH CHÍNH) — **`ssl_client_hello_by_lua_block`: ngữ nghĩa thật, và vì sao commit `fcee9fc` sai**.
   - **Sự cố:** thêm directive vào `default.conf` → **toàn bộ HTTPS trả `ERR_SSL_PROTOCOL_ERROR` ngay lập tức**. Log: `[alert] no ssl_client_hello_by_lua* defined in server aramex.vn while loading SSL client hello by lua`.
   - **Ngữ nghĩa ĐÚNG (bác bỏ giả thuyết trước đó):** callback được **vũ trang ở tầng listen socket** khi *bất kỳ* server nào khai báo directive. Nhưng khi ClientHello đến, OpenResty **phân giải SNI TRƯỚC**, rồi tìm directive trong **chính server block khớp SNI**. Server đó không khai báo → alert → **huỷ bắt tay**. Vậy per-domain **KHÔNG phải "config chết"** như tôi kết luận — nó là nơi **bắt buộc** phải có.
