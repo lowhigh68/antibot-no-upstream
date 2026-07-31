@@ -232,8 +232,19 @@ function _M.capture_unsafe()
     -- ra nhiều nhưng KHÔNG giao với khoá của run_miss ⇒ hai phase thấy random khác nhau
     _cap_n = _cap_n + 1
     if _cap_n % 200 == 1 then
+        -- addr= : ứng viên khoá tạm cho relay 2 nhịp (client_random ở phase này
+        -- LUÔN zero — đo 2026-07-31). Cần biết raw_client_addr có dùng được không.
+        local ssl_lib = require "ngx.ssl"
+        local ok_a, addr = pcall(ssl_lib.raw_client_addr)
+        local addr_sig
+        if ok_a and addr then
+            addr_sig = "len=" .. #addr .. " md5=" .. ngx.md5(addr):sub(1, 8)
+        else
+            addr_sig = "UNAVAILABLE err=" .. tostring(addr)
+        end
         ngx.log(ngx.ERR, "[ja3] capture_ok key=", bridge_key:sub(1, 8),
                 " n=", _cap_n, " ", rand_sig(random),
+                " addr=", addr_sig,
                 " tls13=", tostring(is_tls13), " #exts=", #extensions)
     end
 end

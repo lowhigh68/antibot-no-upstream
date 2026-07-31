@@ -93,11 +93,43 @@ local function build_ja3s_str(info)
     )
 end
 
+-- PHÒNG VỆ BẮT BUỘC (cùng bài học 2026-04-22 với ja3.capture): mọi lỗi Lua
+-- trong ssl_certificate_by_lua đều HUỶ BẮT TAY → sập HTTPS. Nuốt lỗi + log ERR.
 function _M.capture()
+    local ok, err = pcall(_M.capture_unsafe)
+    if not ok then
+        ngx.log(ngx.ERR, "[ja3s] capture ERROR (đã nuốt, handshake tiếp tục): ",
+                tostring(err))
+    end
+end
+
+-- Chẩn đoán tạm thời: client_random ở phase ClientHello LUÔN zero (đo
+-- 2026-07-31) làm hỏng cầu nối JA3. Câu hỏi quyết định thiết kế relay 2 nhịp:
+-- ở phase CERTIFICATE này nó đã được nạp chưa?
+local _cap_n = 0
+
+function _M.capture_unsafe()
     local info, err = get_negotiated_info()
     if not info then
-        ngx.log(ngx.DEBUG, "[ja3s.capture] failed: ", tostring(err))
+        ngx.log(ngx.ERR, "[ja3s] capture_miss err=", tostring(err))
         return
+    end
+
+    _cap_n = _cap_n + 1
+    if _cap_n % 200 == 1 then
+        local ok_s, ssl_lib = pcall(require, "ngx.ssl")
+        local sig = "ngx.ssl unavailable"
+        if ok_s then
+            local ok_r, random = pcall(ssl_lib.get_client_random, 32)
+            if ok_r and random and #random > 0 then
+                sig = string.format("len=%d zero=%s md5=%s", #random,
+                    tostring(random:find("[^%z]") == nil),
+                    ngx.md5(random):sub(1, 8))
+            else
+                sig = "get_client_random FAILED err=" .. tostring(random)
+            end
+        end
+        ngx.log(ngx.ERR, "[ja3s] cert_phase_random n=", _cap_n, " ", sig)
     end
 
     local ja3s_str  = build_ja3s_str(info)
