@@ -16,8 +16,20 @@ Compute JA3/JA3S/H2 fingerprints from data captured during SSL handshake (stored
 | `tls/ja3_stream.lua` | Stream preread cipher capture — only works if `stream{}` block configured (this project does NOT use stream → always returns nil → ja3_partial = true) |
 | `http2/init.lua` | Inspects HTTP/2 settings/headers → `ctx.h2_sig`, `ctx.h2_order`, `ctx.h2_bot_confidence` |
 
-## Cross-phase bridge
-`ssl_client_hello_by_lua` → `ssl_certificate_by_lua` → `access_by_lua` are SEPARATE Lua VMs in nginx. `ngx.ctx` does NOT persist. Bridge via `lua_shared_dict antibot_tls` keyed by `md5(ngx.ssl.get_client_random(32))` — accessible from all 3 phases. TTL 300s covers HTTP/2 multi-stream + HTTP/1.1 keepalive.
+## Cross-phase bridge — RELAY 2 NHỊP
+`ssl_client_hello_by_lua` → `ssl_certificate_by_lua` → `access_by_lua` are SEPARATE Lua VMs. `ngx.ctx` does NOT persist. Bridge = `lua_shared_dict antibot_tls`.
+
+**`get_client_random()` trả 32 byte 0 ở phase ClientHello** (đo 2026-07-31) — OpenSSL chưa nạp. Không dùng nó làm khoá ở phase đó được. `ngx.var` cũng bị disable ở phase đó. Nên:
+
+| Nhịp | Phase | Khoá | Việc |
+|---|---|---|---|
+| 1 | `ssl_client_hello` | `tlsq:<md5(raw_client_addr())>` TTL 15s | parse ClientHello (chỉ phase này có `ngx.ssl.clienthello.*`), ghi tạm |
+| 2 | `ssl_certificate` | → `tls:<md5(client_random)>` TTL 300s | `ja3.relay()` gọi từ `ja3s.capture_unsafe()`; `client_random` đã nạp (`zero=false`) → re-key + xoá entry tạm |
+| đọc | `access` | `tls:<md5(client_random)>` | `ja3.run()` |
+
+Khoá tạm theo IP chỉ sống giữa hai callback của **cùng một handshake** (micro giây) → NAT chung IP không nhầm fingerprint. `get_random_key()` **từ chối** chuỗi toàn 0: thà mất JA3 còn hơn để mọi client zero-random đọc chung một ô.
+
+`relay()` đặt trong `ja3s.capture_unsafe()` để **không phải sửa 99 per-domain conf** — đổi lại: `ja3s.lua` giờ là dependency của đường JA3.
 
 ## ctx fields written
 `ja3`, `ja3_raw`, `ja3_partial`, `ja3_cipher_src`, `tls_version`, `tls13`, `ja3s`, `ja3s_raw`, `tls_cipher`, `h2_sig`, `h2_order`, `h2_bot_confidence`
@@ -41,6 +53,12 @@ Compute JA3/JA3S/H2 fingerprints from data captured during SSL handshake (stored
 - Modules MUST export both `_M.capture` and `_M.run` — replacing with no-op breaks transport pipeline (`attempt to call nil`)
 
 ## Update log
+- 2026-07-31 (3) — **RELAY 2 NHỊP: JA3 lần đầu thực sự per-client.**
+  - **Bug gốc, đo được:** `capture_ok len=32 zero=true hex=00000000` trên **mọi** handshake ⇒ `md5(32 byte 0)` = hằng số `70bc8f4b` ⇒ cả dict 10MB chỉ có **1 entry** (`dict=[tls:70bc8f4b]`, `sort -u | wc -l` = 1). Access phase tính ra random THẬT nên không bao giờ khớp.
+  - **Điều nguy hiểm hơn con số miss:** ~20% request "có ja3" là những request mà access phase **cũng** trả zero → chúng đọc trúng ô hằng đó và nhận fingerprint của **một handshake bất kỳ**. Dấu hiệu nhận ra: mọi log đều cùng một hash `a28e27c779593eee5cfe3f9001e50945`. **Một hash JA3 giống hệt nhau trên nhiều client khác nhau = khoá cầu nối hỏng, không phải "JA3 đã chạy".**
+  - **Tác hại lan xuống:** `detection/cluster/tls_cluster.lua` đếm `cluster:tls:<ja3>` → ja3 hằng làm counter chạm trần `tls_count_normalize_max` → `cluster_score` bị cộng thuế cố định cho đúng nhóm ~20% đó.
+  - **Fix:** relay 2 nhịp (xem bảng ở mục Cross-phase bridge). `ja3s.capture()` được bọc `pcall` — trước giờ **chưa có**, dù chạy trong `ssl_certificate_by_lua` của mọi per-domain conf: cùng loại mìn đã nổ 2026-04-22.
+  - **Còn phải đo:** handshake **nối lại phiên** (session resumption) có thể không gọi certificate callback → không có nhịp 2 → mất JA3. Theo dõi `relay_miss reason=no_tmp`. Nếu tỷ lệ cao, phương án dự phòng là promote khoá tạm ngay ở access phase (`ngx.var.binary_remote_addr`), đánh đổi bằng rủi ro va chạm NAT.
 - 2026-07-31 — **`tls/ja3.lua`: `pcall` phòng vệ + instrument 3 đường thoát im lặng**.
   - **`capture()` → wrapper `pcall(_M.capture_unsafe)`**. Bắt buộc: mọi lỗi Lua trong phase `ssl_client_hello` **huỷ bắt tay TLS** ⇒ sập HTTPS diện rộng. Đã xảy ra 2026-04-22: `ngx.var` bị vô hiệu ở phase này (`API disabled in the current context`, traceback qua `resty/core/var.lua:__index`) giết handshake và **âm thầm 3 tháng**. Nay lỗi bị nuốt + log `ngx.ERR` → mất JA3 chấp nhận được, sập HTTPS thì không.
   - **`diag_miss()` (rate-limit 1/200)** cho 3 đường trong `run()` trước đây return im lặng: `no_shared_dict`, `no_bridge_key` (kèm `err`, `h2`), `dict_miss` (kèm `key`, `h2`, `free_space`, `capacity`).

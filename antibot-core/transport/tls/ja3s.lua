@@ -103,33 +103,24 @@ function _M.capture()
     end
 end
 
--- Chẩn đoán tạm thời: client_random ở phase ClientHello LUÔN zero (đo
--- 2026-07-31) làm hỏng cầu nối JA3. Câu hỏi quyết định thiết kế relay 2 nhịp:
--- ở phase CERTIFICATE này nó đã được nạp chưa?
-local _cap_n = 0
-
 function _M.capture_unsafe()
+    -- Nhịp 2 của relay JA3: phase này là nơi ĐẦU TIÊN client_random được nạp
+    -- (phase ClientHello trả toàn byte 0 — đo 2026-07-31), nên đây là nơi duy
+    -- nhất đổi được khoá tạm (theo IP) sang khoá thật. Đặt ở đây thay vì thêm
+    -- lệnh vào ssl_certificate_by_lua_block để khỏi phải sửa 99 per-domain conf.
+    -- pcall riêng: hai fingerprint độc lập nhau, hỏng cái này không được kéo
+    -- cái kia theo (cùng lý do phải bọc pcall toàn hàm — xem trên).
+    local ok_r, err_r = pcall(function()
+        require("antibot.transport.tls.ja3").relay()
+    end)
+    if not ok_r then
+        ngx.log(ngx.ERR, "[ja3s] relay ERROR (đã nuốt): ", tostring(err_r))
+    end
+
     local info, err = get_negotiated_info()
     if not info then
         ngx.log(ngx.ERR, "[ja3s] capture_miss err=", tostring(err))
         return
-    end
-
-    _cap_n = _cap_n + 1
-    if _cap_n % 200 == 1 then
-        local ok_s, ssl_lib = pcall(require, "ngx.ssl")
-        local sig = "ngx.ssl unavailable"
-        if ok_s then
-            local ok_r, random = pcall(ssl_lib.get_client_random, 32)
-            if ok_r and random and #random > 0 then
-                sig = string.format("len=%d zero=%s md5=%s", #random,
-                    tostring(random:find("[^%z]") == nil),
-                    ngx.md5(random):sub(1, 8))
-            else
-                sig = "get_client_random FAILED err=" .. tostring(random)
-            end
-        end
-        ngx.log(ngx.ERR, "[ja3s] cert_phase_random n=", _cap_n, " ", sig)
     end
 
     local ja3s_str  = build_ja3s_str(info)

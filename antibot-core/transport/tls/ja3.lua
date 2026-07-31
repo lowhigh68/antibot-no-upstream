@@ -6,12 +6,28 @@ local _M = {}
 -- ngx.ctx KHÔNG persist giữa hai phase trên OpenResty 1.21+.
 -- Dùng lua_shared_dict antibot_tls làm bridge.
 --
--- Bridge key: md5(TLS client_random) — 32 bytes ngẫu nhiên trong ClientHello,
--- unique per handshake, truy cập được cả 2 phase qua ngx.ssl.get_client_random().
--- ngx.var.connection (cũ) không dùng được vì ngx.var bị disable trong
--- ssl_client_hello_by_lua* từ OpenResty 1.21+.
+-- RELAY 2 NHỊP (từ 2026-07-31). Vì sao không ghi thẳng md5(client_random) ở
+-- phase ClientHello như trước: ĐO ĐƯỢC rằng OpenSSL chưa nạp client_random khi
+-- callback ClientHello chạy — get_client_random(32) trả về 32 byte 0 trên MỌI
+-- handshake ⇒ md5 = hằng số 70bc8f4b ⇒ cả dict chỉ có 1 entry, còn access phase
+-- lại tính ra random THẬT nên không bao giờ khớp. Triệu chứng đánh lừa: ~20%
+-- request "có ja3" (những request mà access phase cũng trả zero) đều mang CÙNG
+-- một hash — không phải fingerprint của chúng, mà của handshake ghi sau cùng.
 --
--- Key format : "tls:<md5_of_client_random>"
+--   Nhịp 1 — ssl_client_hello_by_lua: parse được ClientHello (chỉ phase này có
+--            ngx.ssl.clienthello.*) nhưng chưa có client_random → ghi tạm dưới
+--            md5(raw_client_addr()), TTL ngắn.
+--   Nhịp 2 — ssl_certificate_by_lua: client_random ĐÃ nạp (đo: zero=false) →
+--            đọc entry tạm, ghi lại dưới md5(client_random), xoá entry tạm.
+--            Gọi từ ja3s.capture() — không phải sửa 99 per-domain conf.
+--   Đọc   — access_by_lua: md5(client_random), không đổi.
+--
+-- Cửa sổ va chạm của khoá tạm chỉ là khoảng cách giữa hai callback của CÙNG một
+-- handshake (micro giây) → NAT chung IP không gây nhầm fingerprint.
+-- ngx.var KHÔNG dùng được ở phase ClientHello (OpenResty 1.21+) nên
+-- remote_addr:remote_port không phải lựa chọn.
+--
+-- Key format : "tls:<md5_of_client_random>"  /  tạm: "tlsq:<md5_of_client_addr>"
 -- Value      : "tls13_flag|ext1-ext2|curve1-curve2|pt1-pt2"
 -- TTL        : 300s (cover HTTP/2 long-lived + HTTP/1.1 keepalive)
 -- HTTP/2     : nhiều request cùng handshake → cùng client_random → cùng key
@@ -20,16 +36,20 @@ local _M = {}
 local SHARED_DICT_NAME = "antibot_tls"
 local TLS_KEY_PREFIX   = "tls:"
 local TLS_KEY_TTL      = 300
+local TMP_KEY_PREFIX   = "tlsq:"
+local TMP_KEY_TTL      = 15
 
 -- Bộ đếm rate-limit cho log chẩn đoán (per-worker, 1/200).
-local _cap_n  = 0
-local _diag_n = 0
+local _cap_n   = 0
+local _relay_n = 0
+local _diag_n  = 0
 
--- Lấy bridge key từ TLS client_random.
--- ngx.ssl.get_client_random() available trong ssl_client_hello_by_lua*,
--- ssl_certificate_by_lua*, access_by_lua*, log_by_lua*.
--- HTTP plain (không TLS): trả nil, caller xử lý graceful.
-local function get_bridge_key()
+-- Khoá THẬT: md5(client_random) — unique per handshake.
+-- Dùng ở ssl_certificate_by_lua* (nhịp 2) và access_by_lua* (đọc).
+-- KHÔNG dùng được ở ssl_client_hello_by_lua*: ở đó random toàn byte 0.
+-- Chuỗi toàn 0 bị TỪ CHỐI làm khoá — nếu chấp nhận, mọi client rơi vào tình
+-- trạng đó sẽ dùng chung một ô và nhận fingerprint của nhau.
+local function get_random_key()
     local ok, ssl_lib = pcall(require, "ngx.ssl")
     if not ok then
         return nil, "ngx.ssl module unavailable"
@@ -38,20 +58,27 @@ local function get_bridge_key()
     if not random or #random == 0 then
         return nil, err or "no client_random (plain HTTP?)"
     end
-    -- Trả thêm `random` thô để chẩn đoán: nếu OpenSSL chưa nạp client_random ở
-    -- phase ClientHello thì nó là chuỗi toàn byte 0 → MỌI handshake ghi vào
-    -- CÙNG một khoá hằng, còn access phase lại tính ra khoá thật → miss 100%.
-    return ngx.md5(random), nil, random
+    if random:find("[^%z]") == nil then
+        return nil, "zero client_random"
+    end
+    return ngx.md5(random)
 end
 
--- "z8" = độ dài + có phải toàn byte 0 không + 8 hex đầu. Đủ để đối chiếu hai phase.
-local function rand_sig(random)
-    if not random then return "nil" end
-    return string.format("len=%d zero=%s hex=%s", #random,
-        tostring(random:find("[^%z]") == nil),
-        (random:sub(1, 4):gsub(".", function(c)
-            return string.format("%02x", c:byte())
-        end)))
+-- Khoá TẠM: md5(raw_client_addr) — 4 byte (IPv4) / 16 byte (IPv6) nhị phân.
+-- Là thứ duy nhất định danh được kết nối ở phase ClientHello (ngx.var bị disable).
+local function get_addr_key()
+    local ok, ssl_lib = pcall(require, "ngx.ssl")
+    if not ok then
+        return nil, "ngx.ssl module unavailable"
+    end
+    local ok2, addr, _, err = pcall(ssl_lib.raw_client_addr)
+    if not ok2 then
+        return nil, "raw_client_addr threw: " .. tostring(addr)
+    end
+    if not addr or #addr == 0 then
+        return nil, err or "no client addr"
+    end
+    return ngx.md5(addr)
 end
 
 local function is_grease(val)
@@ -170,9 +197,9 @@ function _M.capture_unsafe()
         return
     end
 
-    local bridge_key, err, random = get_bridge_key()
-    if not bridge_key then
-        ngx.log(ngx.ERR, "[ja3] capture_miss reason=no_bridge_key err=",
+    local addr_key, err = get_addr_key()
+    if not addr_key then
+        ngx.log(ngx.ERR, "[ja3] capture_miss reason=no_addr_key err=",
                 tostring(err))
         return
     end
@@ -216,37 +243,60 @@ function _M.capture_unsafe()
     local pf_data = ssl_clt.get_client_hello_ext(0x000b)
     if pf_data then pt_fmts = parse_ec_point_formats(pf_data) end
 
-    local key = TLS_KEY_PREFIX .. bridge_key
     local val = serialize(is_tls13, extensions, curves, pt_fmts)
-    local set_ok, set_err = shared:set(key, val, TLS_KEY_TTL)
+    local set_ok, set_err = shared:set(TMP_KEY_PREFIX .. addr_key, val,
+                                       TMP_KEY_TTL)
     if not set_ok then
         ngx.log(ngx.ERR, "[ja3] capture_miss reason=set_failed err=",
                 tostring(set_err))
         return
     end
 
-    -- Chẩn đoán (tạm thời, ERR vì WARN bị per-domain error_log lọc — xem
-    -- diag_miss). Đối chiếu khoá capture ghi với khoá run() tra:
-    --   grep 'capture_ok' ... | grep -oP 'key=\K\w+' | sort -u | wc -l
-    -- ra 1  ⇒ client_random hằng ở phase ClientHello (xem zero=)  ⇒ đổi khoá cầu nối
-    -- ra nhiều nhưng KHÔNG giao với khoá của run_miss ⇒ hai phase thấy random khác nhau
     _cap_n = _cap_n + 1
     if _cap_n % 200 == 1 then
-        -- addr= : ứng viên khoá tạm cho relay 2 nhịp (client_random ở phase này
-        -- LUÔN zero — đo 2026-07-31). Cần biết raw_client_addr có dùng được không.
-        local ssl_lib = require "ngx.ssl"
-        local ok_a, addr = pcall(ssl_lib.raw_client_addr)
-        local addr_sig
-        if ok_a and addr then
-            addr_sig = "len=" .. #addr .. " md5=" .. ngx.md5(addr):sub(1, 8)
-        else
-            addr_sig = "UNAVAILABLE err=" .. tostring(addr)
-        end
-        ngx.log(ngx.ERR, "[ja3] capture_ok key=", bridge_key:sub(1, 8),
-                " n=", _cap_n, " ", rand_sig(random),
-                " addr=", addr_sig,
-                " tls13=", tostring(is_tls13), " #exts=", #extensions)
+        ngx.log(ngx.ERR, "[ja3] capture_ok tmp=", addr_key:sub(1, 8),
+                " n=", _cap_n, " tls13=", tostring(is_tls13),
+                " #exts=", #extensions)
     end
+end
+
+-- ============================================================
+-- Nhịp 2 — gọi từ ssl_certificate_by_lua* (qua ja3s.capture()).
+-- Đổi khoá tạm (theo IP) sang khoá thật (theo client_random).
+-- Caller ĐÃ bọc pcall; hàm này vẫn tự phòng vệ để lỗi không lan sang ja3s.
+-- ============================================================
+function _M.relay()
+    local shared = ngx.shared[SHARED_DICT_NAME]
+    if not shared then return end
+
+    local addr_key = get_addr_key()
+    if not addr_key then return end
+
+    local tmp_key = TMP_KEY_PREFIX .. addr_key
+    local val = shared:get(tmp_key)
+    if not val then
+        -- Không có entry tạm: handshake nối lại phiên (ClientHello callback vẫn
+        -- chạy nhưng entry đã hết TTL), hoặc capture() thoát sớm.
+        _relay_n = _relay_n + 1
+        if _relay_n % 200 == 1 then
+            ngx.log(ngx.ERR, "[ja3] relay_miss reason=no_tmp tmp=",
+                    addr_key:sub(1, 8), " n=", _relay_n)
+        end
+        return
+    end
+
+    local rand_key, err = get_random_key()
+    if not rand_key then
+        _relay_n = _relay_n + 1
+        if _relay_n % 200 == 1 then
+            ngx.log(ngx.ERR, "[ja3] relay_miss reason=no_random err=",
+                    tostring(err), " n=", _relay_n)
+        end
+        return
+    end
+
+    shared:set(TLS_KEY_PREFIX .. rand_key, val, TLS_KEY_TTL)
+    shared:delete(tmp_key)
 end
 
 -- Chẩn đoán vì sao run() không lấy được JA3.
@@ -276,13 +326,14 @@ function _M.run(ctx)
         return
     end
 
-    local bridge_key, err = get_bridge_key()
+    local bridge_key, err = get_random_key()
     if not bridge_key then
-        -- HTTP plain hoặc SSL chưa ready (err mô tả lý do).
-        -- scheme=https mà rơi vào đây ⇒ get_client_random() KHÔNG dùng được ở
-        -- access phase → phải đổi khoá cầu nối (vd remote_addr:remote_port).
+        -- HTTP plain (err="no client_random"), hoặc access phase trả 32 byte 0
+        -- (err="zero client_random"). Trường hợp sau THÀ MẤT JA3 còn hơn dùng:
+        -- khoá zero là hằng số nên mọi client rơi vào đó sẽ đọc chung một ô và
+        -- nhận fingerprint của nhau — chính là bug đã đo 2026-07-31.
         -- (KHÔNG dùng ctx.h2_is_h2: transport/init.lua chạy tls.run TRƯỚC
-        --  http2.run nên trường đó luôn nil ở đây — đo 2026-07-31.)
+        --  http2.run nên trường đó luôn nil ở đây.)
         diag_miss("no_bridge_key", "err=" .. tostring(err)
                   .. " scheme=" .. tostring(ngx.var.scheme))
         ctx.ja3            = nil
