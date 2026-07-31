@@ -1,0 +1,9 @@
+# Shell script + config deploy lên Linux: BẮT BUỘC LF.
+# Repo từng commit CRLF (edit trên Windows, không có .gitattributes) → server
+# `git pull` nhận file có \r → bash vỡ ngay: syntax error near unexpected
+# token `$'in\r'`. `eol=lf` đảm bảo checkout ra LF trên MỌI nền tảng.
+*.sh        text eol=lf
+*.lua       text eol=lf
+*.conf      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
