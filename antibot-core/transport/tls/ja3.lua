@@ -21,6 +21,10 @@ local SHARED_DICT_NAME = "antibot_tls"
 local TLS_KEY_PREFIX   = "tls:"
 local TLS_KEY_TTL      = 300
 
+-- Bộ đếm rate-limit cho log chẩn đoán (per-worker, 1/200).
+local _cap_n  = 0
+local _diag_n = 0
+
 -- Lấy bridge key từ TLS client_random.
 -- ngx.ssl.get_client_random() available trong ssl_client_hello_by_lua*,
 -- ssl_certificate_by_lua*, access_by_lua*, log_by_lua*.
@@ -34,7 +38,20 @@ local function get_bridge_key()
     if not random or #random == 0 then
         return nil, err or "no client_random (plain HTTP?)"
     end
-    return ngx.md5(random)
+    -- Trả thêm `random` thô để chẩn đoán: nếu OpenSSL chưa nạp client_random ở
+    -- phase ClientHello thì nó là chuỗi toàn byte 0 → MỌI handshake ghi vào
+    -- CÙNG một khoá hằng, còn access phase lại tính ra khoá thật → miss 100%.
+    return ngx.md5(random), nil, random
+end
+
+-- "z8" = độ dài + có phải toàn byte 0 không + 8 hex đầu. Đủ để đối chiếu hai phase.
+local function rand_sig(random)
+    if not random then return "nil" end
+    return string.format("len=%d zero=%s hex=%s", #random,
+        tostring(random:find("[^%z]") == nil),
+        (random:sub(1, 4):gsub(".", function(c)
+            return string.format("%02x", c:byte())
+        end)))
 end
 
 local function is_grease(val)
@@ -153,9 +170,10 @@ function _M.capture_unsafe()
         return
     end
 
-    local bridge_key, err = get_bridge_key()
+    local bridge_key, err, random = get_bridge_key()
     if not bridge_key then
-        ngx.log(ngx.DEBUG, "[ja3.capture] bridge key unavailable: ", err)
+        ngx.log(ngx.ERR, "[ja3] capture_miss reason=no_bridge_key err=",
+                tostring(err))
         return
     end
 
@@ -202,15 +220,22 @@ function _M.capture_unsafe()
     local val = serialize(is_tls13, extensions, curves, pt_fmts)
     local set_ok, set_err = shared:set(key, val, TLS_KEY_TTL)
     if not set_ok then
-        ngx.log(ngx.WARN, "[ja3] shared dict set failed: ", tostring(set_err))
+        ngx.log(ngx.ERR, "[ja3] capture_miss reason=set_failed err=",
+                tostring(set_err))
         return
     end
 
-    ngx.log(ngx.DEBUG,
-        "[ja3] capture: key=", bridge_key:sub(1, 8),
-        " tls13=", tostring(is_tls13),
-        " #exts=", #extensions,
-        " #curves=", #curves)
+    -- Chẩn đoán (tạm thời, ERR vì WARN bị per-domain error_log lọc — xem
+    -- diag_miss). Đối chiếu khoá capture ghi với khoá run() tra:
+    --   grep 'capture_ok' ... | grep -oP 'key=\K\w+' | sort -u | wc -l
+    -- ra 1  ⇒ client_random hằng ở phase ClientHello (xem zero=)  ⇒ đổi khoá cầu nối
+    -- ra nhiều nhưng KHÔNG giao với khoá của run_miss ⇒ hai phase thấy random khác nhau
+    _cap_n = _cap_n + 1
+    if _cap_n % 200 == 1 then
+        ngx.log(ngx.ERR, "[ja3] capture_ok key=", bridge_key:sub(1, 8),
+                " n=", _cap_n, " ", rand_sig(random),
+                " tls13=", tostring(is_tls13), " #exts=", #extensions)
+    end
 end
 
 -- Chẩn đoán vì sao run() không lấy được JA3.
@@ -224,7 +249,6 @@ end
 -- mặc định `error` → mọi dòng WARN bị lọc sạch, không ghi ở đâu cả
 -- (global error_log `warn` chỉ áp cho server không override — gần như không có).
 -- Đã kiểm chứng 2026-07-31: WARN cho ra 0 dòng ở cả global/per-domain/antibot.log.
-local _diag_n = 0
 local function diag_miss(reason, extra)
     _diag_n = _diag_n + 1
     if _diag_n % 200 ~= 1 then return end
@@ -244,10 +268,12 @@ function _M.run(ctx)
     local bridge_key, err = get_bridge_key()
     if not bridge_key then
         -- HTTP plain hoặc SSL chưa ready (err mô tả lý do).
-        -- h2=true mà rơi vào đây ⇒ get_client_random() KHÔNG dùng được ở
+        -- scheme=https mà rơi vào đây ⇒ get_client_random() KHÔNG dùng được ở
         -- access phase → phải đổi khoá cầu nối (vd remote_addr:remote_port).
+        -- (KHÔNG dùng ctx.h2_is_h2: transport/init.lua chạy tls.run TRƯỚC
+        --  http2.run nên trường đó luôn nil ở đây — đo 2026-07-31.)
         diag_miss("no_bridge_key", "err=" .. tostring(err)
-                  .. " h2=" .. tostring(ctx.h2_is_h2))
+                  .. " scheme=" .. tostring(ngx.var.scheme))
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
@@ -266,10 +292,26 @@ function _M.run(ctx)
         --   b) entry HẾT HẠN — TLS_KEY_TTL=300s, mà kết nối H2 sống lâu hơn
         --   c) dict 10m ĐẦY → LRU evict (eviction KHÔNG báo lỗi ở set → im lặng)
         -- `free` phân biệt (c) với (a)/(b): free tụt gần 0 ⇒ dict quá nhỏ.
+        -- Chỉ lấy mẫu khi thật sự sắp log (get_keys khoá dict — đắt). limit=4
+        -- để vòng lặp dừng sớm. So khoá của ta với khoá đang có trong dict:
+        --   dict rỗng            ⇒ capture() không ghi được
+        --   toàn khoá lạ, đa dạng ⇒ hai phase thấy client_random khác nhau
+        --   chỉ 1-2 khoá lặp lại  ⇒ client_random hằng ở phase ClientHello
+        local sample = ""
+        if (_diag_n + 1) % 200 == 1 then
+            local ok_k, keys = pcall(shared.get_keys, shared, 4)
+            if ok_k and type(keys) == "table" then
+                local out = {}
+                for i, k in ipairs(keys) do out[i] = k:sub(1, 12) end
+                sample = " dict=[" .. table.concat(out, ",") .. "]"
+            else
+                sample = " dict=<get_keys failed>"
+            end
+        end
         diag_miss("dict_miss", "key=" .. bridge_key:sub(1, 8)
-                  .. " h2=" .. tostring(ctx.h2_is_h2)
                   .. " free=" .. tostring(shared:free_space())
-                  .. " cap=" .. tostring(shared:capacity()))
+                  .. " cap=" .. tostring(shared:capacity())
+                  .. sample)
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
