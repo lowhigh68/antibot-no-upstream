@@ -170,6 +170,15 @@ local function get_signal(name, ctx)
     end
 
     if name == "session_richness" then
+        -- Thu hồi tín nhiệm khi client TỰ NHẬN là trình duyệt nhưng thiếu cả H2
+        -- lẫn Sec-Fetch (cờ từ correlation/consistency_check.lua). richness chỉ
+        -- đo COOKIE: trần cookie-only 0.80 → −24 điểm miễn phí, mà một scraper
+        -- giữ cookie jar (4 cookie / 500 byte — mọi CMS phát ở lần ghé đầu) đạt
+        -- được nó mà chưa từng đăng nhập. Đo 2026-08-01: ~1450 request
+        -- richness=0.80 + không Sec-Fetch + không H2, TẤT CẢ đang `allow`.
+        -- Phải chặn CẢ ở auth_session_cap (engine.lua), nếu không điểm vừa lên
+        -- tới ngưỡng lại bị cap xuống monitor → thay đổi này thành vô nghĩa.
+        if ctx.browser_claim_broken then return 0.0 end
         return ctx.session_richness or 0.0
     end
 

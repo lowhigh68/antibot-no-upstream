@@ -44,14 +44,15 @@ ALL signal fields from upstream layers. Plus `req_class` for class-based dampeni
 ```
 [detection.run + l7.run + transport.run all complete]
             ↓
-intelligence.run(ctx)
-   compute.run            → walk weights, get_signal(), sum → ctx.score
-   signal_merge.run       → normalize signal table
-   context_vector.run     → resource class dampening
-   threat/correlate.run   → ctx.corr_score, ctx.mismatch, ctx.corr_rules
+intelligence.run(ctx)            -- init.lua:20-22, THỨ TỰ NÀY QUAN TRỌNG
+   threat.run                    → ctx.asn_rep, corr_score, corr_rules
+   correlation.run               → ctx.mismatch, ctx.mm_rules,
+                                    ctx.browser_claim_broken
+   scoring.run  (compute.lua)    → walk weights, get_signal(), sum → ctx.score
             ↓
-enforcement.engine.run    → compute effective_score, decide action
+enforcement.engine.run           → effective_score, decide action
 ```
+**correlation chạy TRƯỚC scoring** — nên cờ do `consistency_check` đặt (`mismatch`, `browser_claim_broken`) đã sẵn sàng khi `get_signal()` đọc. Đảo thứ tự này sẽ làm mọi signal phái sinh im lặng về 0.
 
 ## Related
 - Reads from: every other layer (it's the aggregator)
@@ -65,6 +66,11 @@ enforcement.engine.run    → compute effective_score, decide action
 - `top_signals` array: keep at 3 entries, used by explain.lua + antibot.log
 
 ## Update log
+- 2026-08-01 (2) — **`browser_claim_broken`: thu hồi tín nhiệm richness của client không phải trình duyệt.**
+  - **Lọt lưới đo được:** ~1450 request `richness=0.80` + không Sec-Fetch + không H2, **tất cả đang `allow`**. Ban đầu tôi quy cho `auth_session_cap` — **sai**: nhóm đó ở `eff < 25` nên cái trần chưa từng kích hoạt. Thủ phạm là **signal âm** `session_richness = -30` → `0.80 × -30 = -24 điểm` miễn phí.
+  - **Vì sao 0.80 rẻ:** `core/session_richness.lua` tính `0.5·(bytes/500) + 0.3·(n_ck/4)` — trần cookie-only **đúng bằng 0.80**, không cần `Authorization`, không cần CSRF. Một scraper chỉ cần **giữ cookie jar** (4 cookie / 500 byte, thứ mọi CMS phát ở lần ghé đầu) là đạt, chưa từng đăng nhập. `richness:max:<identity>` còn giữ giá trị đó **1 giờ, xuyên domain**.
+  - **Fix:** `consistency_check` đặt `ctx.browser_claim_broken` khi luật `no_h2_no_secfetch` bắn (tự nhận trình duyệt mà thiếu **cả** H2 lẫn Sec-Fetch — không trình duyệt hiện đại nào như vậy). Cờ này zero signal âm ở `get_signal("session_richness")` **và** vô hiệu `auth_session_cap` ở `enforcement/decision/engine.lua`. **Phải làm CẢ HAI** — bỏ signal âm mà giữ cap thì điểm vừa lên tới ngưỡng lại bị cap xuống `monitor`, thay đổi thành vô nghĩa.
+  - **Bề mặt FP:** trình duyệt thật luôn gửi Sec-Fetch (Chrome ≥76) và dùng H2 trên HTTPS; request cổng 80 của trình duyệt thật vẫn có Sec-Fetch nên không dính. Mất tín nhiệm chỉ xảy ra với trình duyệt tiền-2019 sau proxy bóc Sec-Fetch — hiếm, và vẫn được chấm điểm bình thường chứ không bị chặn thẳng.
 - 2026-08-01 — **`mismatch`: hai luật H2 chuyển từ CỘNG DỒN sang PHÂN BẬC** (`correlation/consistency_check.lua`).
   - **Vấn đề:** `chrome_no_h2` (+0.25) và `no_h2_no_secfetch` (+0.35) đứng trên **cùng tiền đề "không có H2"**; luật mạnh chỉ thêm bằng chứng phụ. Khi cả hai cùng bắn, "không có H2" bị tính tiền **hai lần** → 0.60 (33 điểm) so với 0.35 (19,25 điểm) của nhóm chỉ có luật mạnh — cùng bằng chứng, chênh 13,75 điểm không tương ứng thông tin nào.
   - **Đo (`mm=`, 27k request):** chồng lấn **12603/15358 = 82%**. `no_h2_no_secfetch` chạy một mình 3655. `chrome_no_h2` chạy một mình **2755 (18%)** — Chrome, không H2, **có** Sec-Fetch (bot sao chép header nhưng không làm được H2) ⇒ **không xoá được luật yếu**, chỉ chuyển thành `elseif`.
