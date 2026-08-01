@@ -86,6 +86,18 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-08-01 — **Ground truth từ kết quả PoW (`label:<id>` → `[fp_sample]` + `fp_cand:<signal>`).** Chỉ đo, không đổi hành vi chặn.
+  - **Vì sao:** hệ thống KHÔNG có nguồn ground-truth nào. `async/adaptive_weight.lua` viết ra để nhận feedback nhưng **không ai gọi nó với feedback** → code chết. Mọi lần hiệu chỉnh trọng số tới nay đều là bới log thủ công + suy đoán (2026-08-01: bốn giả thuyết liên tiếp bị dữ liệu bác bỏ).
+  - **Cơ chế:** `challenge/nonce_store.lua` ghi `label:<id>` cùng lúc với `nonce:<id>` (cùng TTL) — ảnh chụp `score|eff|class|reason|top_signals|mm_rules|ua_claims_bot`. `challenge/verify_token.lua:consume_label()` đọc lại khi PoW được giải THẬT (nhánh `del nonce` trả 1, không phải replay) → log `[fp_sample]` + `INCR fp_cand:<signal>` TTL 7 ngày.
+  - **Đọc kết quả:**
+    ```
+    redis-cli --scan --pattern 'fp_cand:*' | while read k; do echo "$(redis-cli GET $k) $k"; done | sort -rn
+    grep -F '[fp_sample]' /var/log/nginx/domains/*.error.log
+    ```
+    Signal nào đứng đầu bảng `fp_cand` = signal đó hay có mặt trong top-3 của request mà client **chứng minh được là trình duyệt**.
+  - **KHÔNG nối tự động vào trọng số.** Đó chính là thiết kế của `adaptive_weight` và nó chết. Vòng lặp tự động không có người kiểm tra sẽ để nhãn nhiễu ăn mòn mô hình. Giai đoạn này chỉ để người đọc.
+  - **Thiên lệch phải nhớ khi đọc số:** (a) chỉ dán nhãn được dải `challenge` — request bị `block` không có cơ hội giải, nên đây KHÔNG phải tỷ lệ FP toàn hệ thống; (b) bot render JS cũng giải được PoW (đã xảy ra 2026-07-07 với crawler Meta) → UA tự khai bot bị loại khỏi mẫu và log riêng `[fp_sample] SKIP bot-claim`; (c) `challenge` chỉ ~1,6% lưu lượng → cần vài NGÀY mới đủ mẫu.
+  - **Prefix `fp_cand:` chứ không phải `fp:`** — trong `verify_token.lua`, `fp:` đã mang nghĩa *fingerprint* (`fp:canvas:`, `fp:fast_solve:`).
 - 2026-07-06 — **`session_verified` trust tier — `auth_session_cap`** (`engine.lua`). Thêm tier thứ 3 song song `good_bot_verified` + `ip_shared_verified`: `session_richness ≥ AUTH_SESSION_RICHNESS(0.5)` → cap block/challenge → **monitor** (đặt sau S2.5 cap, trước `ctx.action=action`).
   - **Chữ ký nhận dạng (recognition signature):** user ĐĂNG NHẬP thật (richness=0.80, UA browser thật, IP dân cư) bị chặn lặp ở `/wp-admin`, màn "Access denied.", log `reason=score` một lần rồi `reason=banned_id` cascade. `top=` toàn signal TƯƠNG QUAN identity (`session_flag/graph_flag/mismatch/cluster_score/risk`), KHÔNG có signal cấu trúc per-request (h2/ja3/ua). Xảy ra trên 1 IP/1 identity, thường trong lúc site bị bot tấn công.
   - **Gốc rễ (không phải multiplier):** admin bận rộn trên 1 identity (admin-ajax heartbeat ~15s + nhiều trang admin) trông giống bot cluster về cấu trúc → correlation signals fire → raw ~53.6 × auth_endpoint 1.5 = 80.3 ≥ BLOCK → `ban:<id>` → cascade. Mỗi block nâng `risk:<id>` → điểm sau cao hơn → **vòng lặp tự củng cố** (chính signal `risk=` là vòng lặp đang quay). Trust cũ bất lực: bị `session_flag>=max` veto (chính hành vi bận rộn set flag đó — tự phản) và chỉ cap challenge, không cap block.

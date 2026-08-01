@@ -62,6 +62,51 @@ local function flag_fast_solve(red, id, solve_ms_str)
     end
 end
 
+-- Ground truth: client vừa GIẢI ĐƯỢC PoW ⇒ gần như chắc chắn là trình duyệt
+-- thật ⇒ mọi signal đứng trong top-3 của request đã bị thách đố là ỨNG VIÊN FP.
+-- Nhãn do `challenge/nonce_store.lua` ghi lúc phát thách đố.
+--
+-- CHỈ ĐO, KHÔNG NỐI NGƯỢC VÀO TRỌNG SỐ. `async/adaptive_weight.lua` được thiết
+-- kế đúng kiểu vòng lặp tự động đó và giờ là code chết; một vòng lặp không có
+-- người kiểm tra sẽ để nhãn nhiễu ăn mòn cả mô hình. Giai đoạn này chỉ để đọc:
+--   redis-cli --scan --pattern 'fp_cand:*' | while read k; do
+--       echo "$(redis-cli GET $k) $k"; done | sort -rn
+--   grep -F '[fp_sample]' /var/log/nginx/domains/*.error.log
+--
+-- Prefix `fp_cand:` (FP candidate) — KHÔNG dùng `fp:` vì trong file này `fp:` đã
+-- mang nghĩa fingerprint (`fp:canvas:`, `fp:fast_solve:`).
+local FP_CAND_TTL = 604800   -- 7 ngày: đủ tích luỹ qua nhiều đợt hiệu chỉnh
+
+local function consume_label(red, id, ctx)
+    local raw = red:get("label:" .. id)
+    if not raw or raw == ngx.null then return end
+    red:del("label:" .. id)
+
+    local f = {}
+    for seg in (raw .. "|"):gmatch("([^|]*)|") do f[#f + 1] = seg end
+    if #f < 7 then return end
+
+    -- Bot render JS cũng giải được PoW — đã xảy ra 2026-07-07 với crawler của
+    -- Meta (giải canvas PoW rồi vào lane người-dùng, né trần rate good-bot).
+    -- Ghi lại để thấy, nhưng KHÔNG tính vào mẫu "người thật".
+    if f[7] == "1" then
+        ngx.log(ngx.ERR, "[fp_sample] SKIP bot-claim id=", id:sub(1, 8),
+                " top=", f[5])
+        return
+    end
+
+    ngx.log(ngx.ERR, "[fp_sample] solved id=", id:sub(1, 8),
+            " score=", f[1], " eff=", f[2], " class=", f[3],
+            " reason=", f[4], " top=", f[5], " mm=", f[6],
+            " ip=", tostring(ctx.ip or "-"))
+
+    for name in f[5]:gmatch("[^,]+") do
+        local k = "fp_cand:" .. name
+        red:incr(k)
+        red:expire(k, FP_CAND_TTL)
+    end
+end
+
 -- Build device_id từ UA + canvas hash — IP-independent và JA3-independent.
 --
 -- Tại sao canvas thay JA3:
@@ -243,6 +288,7 @@ function _M.run(ctx)
 
     check_canvas_consistency(red, id, ctx.ip or "", canvas_hash)
     flag_fast_solve(red, id, solve_ms)
+    consume_label(red, id, ctx)
     pool.put(red)
 
     grant_verified(ctx, id, verified_ttl, canvas_hash)
