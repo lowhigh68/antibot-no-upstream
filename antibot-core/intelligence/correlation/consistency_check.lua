@@ -88,11 +88,15 @@ function _M.run(ctx)
         hit[#hit + 1] = "headless_ent"
     end
 
-    if ctx.h2_tls_mismatch then
-        score = score + 0.25
-        hit[#hit + 1] = "h2_tls_mm"
-    end
-
+    -- `h2_tls_mismatch` và `h2_bot_pattern` ĐÃ BỊ GỠ khỏi đây (2026-08-01).
+    -- Chúng là QUAN SÁT THÔ của tầng H2, không phải mâu thuẫn giữa các tầng —
+    -- `transport/http2/signature.lua` đã tính chúng vào `h2_bot_confidence`
+    -- (+0.40 và +0.25). Hai signal cùng weight 55 nên trước đây một sự kiện
+    -- `h2_bot_pattern` ăn 22 + 16,5 = 38,5 điểm.
+    --
+    -- RANH GIỚI SỞ HỮU, giữ đúng khi thêm luật mới:
+    --   h2_bot_confidence = những gì tầng H2 QUAN SÁT được
+    --   mismatch          = MÂU THUẪN giữa điều UA tự nhận và điều các tầng thấy
     if ctx.h2_header_profile then
         local ch = ctx.h2_header_profile.client_hints
         if ch and ch.has_ch_ua and not ua_is_chrome(ua) then
@@ -101,12 +105,8 @@ function _M.run(ctx)
         end
     end
 
-    if ctx.h2_bot_pattern then
-        score = score + 0.3
-        hit[#hit + 1] = "h2_bot_pat"
-    end
-
-    -- CHẶN TRẦN Ở 1.0: tổng 7 nhánh = 2.25, nên chỉ cần ~3 nhánh là BÃO HOÀ.
+    -- CHẶN TRẦN Ở 1.0: sau khi gỡ 2 nhánh H2 (2026-08-01) tổng tối đa còn 1.45
+    -- (hai nhánh đầu loại trừ nhau), nên bão hoà khó xảy ra hơn trước.
     -- Bão hoà = mismatch luôn 55 điểm phẳng, mất hết khả năng phân biệt "hơi
     -- nghi" với "chắc chắn bot". mm_raw giữ giá trị TRƯỚC khi chặn trần để đo
     -- mức bão hoà thật (>1.0 bao nhiêu) — không dùng để chấm điểm.

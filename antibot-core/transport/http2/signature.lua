@@ -29,12 +29,13 @@ end
 local function h2_bot_confidence(ctx)
     local score = 0.0
 
+    -- Không có H2 thì tầng H2 KHÔNG quan sát được gì → confidence = 0.
+    -- Mâu thuẫn "UA khai trình duyệt mà không có H2" là mâu thuẫn giữa các tầng,
+    -- thuộc về `mismatch` (intelligence/correlation/consistency_check.lua) và đã
+    -- được tính ở đó. Trước 2026-08-01 nhánh này cộng 0.15 → cùng một sự kiện bị
+    -- tính tiền ở CẢ HAI signal, mà hai signal cùng weight 55.
     if not ctx.h2_is_h2 then
-        local ua = ctx.ua or ""
-        if ua:find("Chrome/", 1, true) or ua:find("Firefox/", 1, true) then
-            score = score + 0.15
-        end
-        return score
+        return 0.0
     end
 
     if ctx.h2_bot_pattern then score = score + 0.4 end
