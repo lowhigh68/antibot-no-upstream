@@ -40,22 +40,37 @@ function _M.run(ctx)
     -- (payment IPN, webhook, server callback hợp lệ không dùng H2)
     local skip_h2_check = (class == "api_callback")
 
-    -- Chrome UA + không có H2 (nguyên bản: +0.25)
-    if not skip_h2_check and ua_is_chrome(ua)
-       and ctx.h2_is_h2 == false and ctx.ja3 ~= nil then
-        score = score + 0.25
-        hit[#hit + 1] = "chrome_no_h2"   -- nhánh MỚI SỐNG sau khi sửa ja3
-    end
+    -- PHÂN BẬC, KHÔNG CỘNG DỒN. Hai luật dưới đây đứng trên CÙNG một tiền đề
+    -- "không có H2"; luật mạnh chỉ thêm bằng chứng phụ (thiếu Sec-Fetch). Trước
+    -- đây cả hai cùng cộng → "không có H2" bị tính tiền HAI LẦN (0.25+0.35=0.60).
+    -- Đo 2026-08-01: 12603/15358 (82%) lần `chrome_no_h2` bắn là bắn KÈM
+    -- `no_h2_no_secfetch`. Nhóm chồng lấn nhận 0.60 trong khi nhóm chỉ có luật
+    -- mạnh nhận 0.35 — cùng bằng chứng, chênh 13,75 điểm không tương ứng với
+    -- thông tin nào. Nay luật mạnh THAY THẾ luật yếu.
+    --
+    -- KHÔNG xoá luật yếu: 2755 request (18%) chỉ dính mình nó — Chrome, không
+    -- H2, nhưng CÓ Sec-Fetch (bot sao chép được header nhưng không làm được H2).
+    --
+    -- Ảnh hưởng đo trước khi sửa: 12644 request mất 13,75 điểm; trong 113 ca
+    -- đang bị block chỉ 27 tụt xuống challenge, và 175/179 ca biên ở
+    -- richness=0.00 với bot_score chiếm 34% điểm — chứng cứ độc lập với H2 vẫn
+    -- còn, nên chúng rơi vào PoW chứ không thoát.
+    local no_h2 = (not skip_h2_check) and ctx.h2_is_h2 == false
+    local no_secfetch =
+            (req.sec_fetch_mode == nil or req.sec_fetch_mode == "")
+        and (req.sec_fetch_site == nil or req.sec_fetch_site == "")
 
-    -- Attack 2 — compound rule: Chrome/Firefox UA + no H2 + no Sec-Fetch
-    -- Real browser trên HTTPS luôn có cả H2 lẫn Sec-Fetch.
-    -- Thiếu cả hai = HTTP library giả mạo UA.
-    if not skip_h2_check and ua_is_modern_browser(ua)
-       and ctx.h2_is_h2 == false
-       and (req.sec_fetch_mode == nil or req.sec_fetch_mode == "")
-       and (req.sec_fetch_site == nil or req.sec_fetch_site == "") then
+    -- Mạnh: trình duyệt thật trên HTTPS luôn có CẢ H2 lẫn Sec-Fetch.
+    -- Thiếu cả hai = thư viện HTTP giả mạo UA.
+    if no_h2 and ua_is_modern_browser(ua) and no_secfetch then
         score = score + 0.35
         hit[#hit + 1] = "no_h2_no_secfetch"
+
+    -- Yếu: chỉ thiếu H2. Gác bởi ja3 ~= nil nên nhánh này CHẾT suốt 3 tháng,
+    -- sống lại từ 2026-07-31 khi JA3 được sửa.
+    elseif no_h2 and ua_is_chrome(ua) and ctx.ja3 ~= nil then
+        score = score + 0.25
+        hit[#hit + 1] = "chrome_no_h2"
     end
 
     -- Chrome UA + TLS 1.2 (Chrome 100+ luôn dùng TLS 1.3)
