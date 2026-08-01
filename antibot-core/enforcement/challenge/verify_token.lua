@@ -78,8 +78,17 @@ end
 local FP_CAND_TTL = 604800   -- 7 ngày: đủ tích luỹ qua nhiều đợt hiệu chỉnh
 
 local function consume_label(red, id, ctx)
-    local raw = red:get("label:" .. id)
-    if not raw or raw == ngx.null then return end
+    local raw, gerr = red:get("label:" .. id)
+    if not raw or raw == ngx.null then
+        -- KHÔNG được im lặng: đây là đường thoát duy nhất khiến toàn bộ nguồn
+        -- ground-truth không sinh dữ liệu, và im lặng thì không phân biệt được
+        -- "chưa ai giải" với "hook không chạy". `label:` dùng chung TTL 60s với
+        -- `nonce:`, mà nonce vừa được xoá thành công ở trên ⇒ label PHẢI còn.
+        -- Nếu dòng này xuất hiện đều đặn thì khoá lệch hoặc kết nối Redis lỗi.
+        ngx.log(ngx.ERR, "[fp_sample] no_label id=", id:sub(1, 8),
+                " err=", tostring(gerr))
+        return
+    end
     red:del("label:" .. id)
 
     local f = {}
@@ -174,7 +183,7 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash)
                     " canvas=", canvas_hash:sub(1,8),
                     " ip16=", ip16)
         else
-            ngx.log(ngx.WARN, "[verify] cannot bind device — invalid IP format")
+            ngx.log(ngx.ERR, "[verify] cannot bind device — invalid IP format")
         end
     else
         ngx.log(ngx.DEBUG, "[verify] no device_id: canvas missing")
@@ -228,7 +237,7 @@ function _M.run(ctx)
 
     if not token or not n_str then
         ctx.verified = false
-        ngx.log(ngx.WARN, "[verify] missing token/n ip=", ctx.ip)
+        ngx.log(ngx.ERR, "[verify] missing token/n ip=", ctx.ip)
         ngx.exit(400)
         return false
     end
@@ -236,7 +245,7 @@ function _M.run(ctx)
     local id = fp_arg or ngx.var.cookie_antibot_fp or nil
     if not id or id == "" then
         ctx.verified = false
-        ngx.log(ngx.WARN, "[verify] missing identity ip=", ctx.ip)
+        ngx.log(ngx.ERR, "[verify] missing identity ip=", ctx.ip)
         ngx.exit(400)
         return false
     end
@@ -248,7 +257,7 @@ function _M.run(ctx)
     local pow_hash   = sha256_hex(token .. n_str)
 
     if not pow_hash or pow_hash:sub(1, #difficulty) ~= difficulty then
-        ngx.log(ngx.WARN, "[verify] PoW failed id=", id:sub(1,8))
+        ngx.log(ngx.ERR, "[verify] PoW failed id=", id:sub(1,8))
         ctx.verified = false
         pool.safe_incr("viol:" .. id, cfg.ttl.violation)
         ngx.exit(403)
@@ -272,13 +281,16 @@ function _M.run(ctx)
             local canvas_raw = red:get("fp:canvas:" .. id)
             if canvas_raw == ngx.null then canvas_raw = nil end
             pool.put(red)
-            ngx.log(ngx.INFO, "[verify] retry_already_verified id=", id:sub(1,8))
+            -- ERR chứ không INFO: đây là nhánh return SỚM, KHÔNG chạm
+            -- consume_label → mọi verify đi lối này đều không sinh nhãn
+            -- ground-truth. Cần thấy được tỷ lệ của nó.
+            ngx.log(ngx.ERR, "[verify] retry_already_verified id=", id:sub(1,8))
             grant_verified(ctx, id, cfg.ttl.verified or 7200, canvas_raw or "")
             return true
         end
 
         pool.put(red)
-        ngx.log(ngx.WARN, "[verify] nonce not found (replay?) id=", id:sub(1,8))
+        ngx.log(ngx.ERR, "[verify] nonce not found (replay?) id=", id:sub(1,8))
         ctx.verified = false; ngx.exit(403); return false
     end
 
