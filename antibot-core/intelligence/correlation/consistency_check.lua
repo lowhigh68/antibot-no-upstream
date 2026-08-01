@@ -65,14 +65,6 @@ function _M.run(ctx)
     if no_h2 and ua_is_modern_browser(ua) and no_secfetch then
         score = score + 0.35
         hit[#hit + 1] = "no_h2_no_secfetch"
-        -- Tự nhận là trình duyệt mà thiếu CẢ H2 lẫn Sec-Fetch — không trình
-        -- duyệt hiện đại nào như vậy. Cờ này thu hồi mọi ưu đãi rút từ
-        -- session_richness (signal âm -30 ở scoring/compute.lua + auth_session_cap
-        -- ở enforcement/decision/engine.lua), vì richness chỉ đo COOKIE: trần
-        -- cookie-only là 0.80 và một scraper giữ cookie jar đạt được nó mà chưa
-        -- từng đăng nhập. Cookie của một client không phải trình duyệt không
-        -- phải bằng chứng về phiên người dùng.
-        ctx.browser_claim_broken = true
 
     -- Yếu: chỉ thiếu H2. Gác bởi ja3 ~= nil nên nhánh này CHẾT suốt 3 tháng,
     -- sống lại từ 2026-07-31 khi JA3 được sửa.

@@ -554,14 +554,7 @@ function _M.run(ctx)
     -- Credential-stuffing bots have richness=0 → never reach this tier → still
     -- get full auth_endpoint ×1.5 + block. Per-request structural signals
     -- (h2/ja3/ua/anomaly) still compute and log; only identity auto-ban is held.
-    -- ctx.browser_claim_broken (correlation/consistency_check.lua): client tự
-    -- nhận là trình duyệt mà thiếu CẢ H2 lẫn Sec-Fetch. richness chỉ đo cookie,
-    -- trần cookie-only 0.80 → một scraper giữ cookie jar chạm tier này mà chưa
-    -- từng đăng nhập. Tier "phiên đã xác thực" đòi bằng chứng là NGƯỜI, không
-    -- phải bằng chứng có cookie. Cặp với việc zero signal âm ở compute.lua —
-    -- thiếu một trong hai thì thay đổi kia vô nghĩa.
     if (ctx.session_richness or 0) >= AUTH_SESSION_RICHNESS
-       and not ctx.browser_claim_broken
        and (action == "block" or action == "challenge") then
         ngx.log(ngx.INFO,
             "[engine] auth_session cap action=", action, "->monitor",
