@@ -277,8 +277,24 @@ _M.expensive_filter = {
     window           = 300,       -- HLL window giây (base tự phục hồi khi ngừng cào)
     min_values       = 4,         -- >= số giá-trị-con trong 1 field → faceted filter tốn kém
     combos_threshold = 45,        -- distinct combos / base / window → vượt budget (60→45, hạ để bắt sớm hơn; 30 nếu tải dư còn cao)
-    exempt_richness  = 0.5,       -- session_richness >= this → miễn 429 (vẫn được đếm)
+    exempt_richness  = 0.5,       -- session_richness >= this → miễn 429/ban (vẫn được đếm)
     retry_after      = 120,       -- 429 Retry-After
+    -- Ban 24h — CHỈ theo bằng chứng PER-IP, KHÔNG theo trip resource-aggregate.
+    -- 429 fire khi base vượt budget (gộp mọi caller) → user thật lỡ ghé listing
+    -- đang bị cào cũng dính 429, TUYỆT ĐỐI không được ban họ. Ban chỉ khi MỘT IP
+    -- tự nó đóng góp >= ban_ip_combos distinct combo trong 1 window (crawler tập
+    -- trung bất khả chối; người thật 1-3). Distributed 1-req/IP swarm ~1 combo/IP
+    -- → không chạm ngưỡng → KHÔNG ban được (đúng thiết kế), giữ nguyên 429.
+    -- MẶC ĐỊNH FALSE — chế độ CHỈ ĐO. Counter per-IP vẫn chạy và `xf_ipcombos`
+    -- vẫn vào antibot.log, nhưng không ban ai. Lý do: ngưỡng 20 dưới đây suy ra
+    -- từ số liệu AGGREGATE của đợt shadow, chưa từng có phân bố PER-IP thật; mà
+    -- công cụ để đo phân bố đó nằm chung trong chính gói này. Bật một cơ chế
+    -- trừng phạt 24h ở ngưỡng chưa ai nhìn thấy dữ liệu là sai thứ tự.
+    -- Hiệu chỉnh rồi mới bật:
+    --   grep -oP 'xf_ipcombos=\K\d+' /var/log/antibot/antibot.log | sort -n | uniq -c
+    ban_enabled      = false,     -- true = ban 24h; false = chỉ 429 + đo
+    ban_ip_combos    = 20,        -- distinct combo / IP / base / window → IP tự tố là crawler
+    ban_ttl          = 86400,     -- 24h
 }
 
 -- Fleet Detection (Distributed Web Scraping with Rotating IP Fleet).

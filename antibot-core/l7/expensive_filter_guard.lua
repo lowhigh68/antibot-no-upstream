@@ -35,6 +35,52 @@ local function sep_count(s)
     return n
 end
 
+-- Ghi ban:<ip> 24h theo bằng chứng per-IP. Mirror enforcement/ban/ban_store_write
+-- (ban:<ip> + ban:hit:<ip> + ban_ctx:<ip>) để IP hiện đúng trong admin BAN table
+-- và bị seal ở cửa bởi l7/ban/ip_ban_check ở request kế. Guard exit 403 ngay tại
+-- STEPS_COMMON nên enforcement/ban_store_write KHÔNG chạy — phải tự viết ở đây.
+local function write_ip_ban(ctx, ip, host, base, ip_combos, hits, ttl)
+    local red = pool.get()
+    if not red then
+        ngx.log(ngx.ERR, "[xf] ban redis unavailable ip=", ip)
+        return
+    end
+    local ctx_json = ""
+    local ok, cjson = pcall(require, "cjson")
+    if ok then
+        -- score = ip_combos: số đo trung thực + sortable trong admin (guard không
+        -- chạy scoring engine). Field khớp shape ban_store_write để admin render.
+        local ok2, json = pcall(cjson.encode, {
+            domain      = host,
+            score       = ip_combos,
+            eff_score   = ip_combos,
+            action      = "block",
+            req_class   = ctx.req_class or "unknown",
+            ts          = ngx.time(),
+            identity    = ctx.identity or "",
+            reason      = "expensive_filter_ban",
+            xf_base     = base,
+            xf_ipcombos = ip_combos,
+            xf_hits     = hits,
+            fp_deg      = false,
+            device_type = ctx.device_type or "unknown",
+            ua          = (ctx.ua or ""):sub(1, 120),
+            ip          = ip,
+            bot_score   = 0,
+        })
+        if ok2 then ctx_json = json end
+    end
+    local now_ts = tostring(ngx.time())
+    red:init_pipeline()
+    red:setex("ban:" .. ip, ttl, "1")
+    red:setex("ban:hit:" .. ip, 300, now_ts)   -- ACTIVE ngay trong admin
+    if ctx_json ~= "" then
+        red:setex("ban_ctx:" .. ip, ttl, ctx_json)
+    end
+    red:commit_pipeline()
+    pool.put(red)
+end
+
 -- Self-declared good bot (same def as core/access/whitelist + l7/ban/ban_store).
 local function ua_claims_good_bot(ua)
     if not ua or ua == "" then return false end
@@ -110,8 +156,13 @@ function _M.run(ctx)
     local bucket = math.floor(ngx.time() / window)
     local ckey   = "xf:combos:" .. host .. ":" .. base .. ":" .. bucket
     local hkey   = "xf:hits:"   .. host .. ":" .. base .. ":" .. bucket
+    -- Per-IP distinct-combo (bằng chứng crawler TẬP TRUNG — tách khỏi counter
+    -- aggregate). Chỉ IP tự mình cào nhiều tổ hợp mới chạm ngưỡng ban; user thật
+    -- lỡ dính 429 lúc base bị cào chỉ đóng góp 1-2 combo → không bao giờ bị ban.
+    local ip     = ctx.ip or ""
+    local ipckey = "xf:ipc:" .. host .. ":" .. base .. ":" .. ip .. ":" .. bucket
 
-    local combos, hits = 0, 0
+    local combos, hits, ip_combos = 0, 0, 0
     local red = pool.get()
     if red then
         red:init_pipeline()
@@ -120,11 +171,15 @@ function _M.run(ctx)
         red:expire(ckey, window + 10)
         red:incr(hkey)
         red:expire(hkey, window + 10)
+        red:pfadd(ipckey, sig)
+        red:pfcount(ipckey)
+        red:expire(ipckey, window + 10)
         local res = red:commit_pipeline()
         pool.put(red)
         if res then
-            combos = tonumber(res[2]) or 0
-            hits   = tonumber(res[4]) or 0
+            combos    = tonumber(res[2]) or 0
+            hits      = tonumber(res[4]) or 0
+            ip_combos = tonumber(res[7]) or 0
         end
     end
 
@@ -132,6 +187,7 @@ function _M.run(ctx)
     ctx.xf_base      = base
     ctx.xf_combos    = combos
     ctx.xf_hits      = hits
+    ctx.xf_ipcombos  = ip_combos
 
     local over = combos > (gc.combos_threshold or 60)
 
@@ -141,7 +197,43 @@ function _M.run(ctx)
     -- (richness thấp, không good-bot) mới bị chặn khi base vượt budget.
     local human_exempt = (ctx.session_richness or 0) >= (gc.exempt_richness or 0.5)
 
-    -- 5. ENFORCE: chặn khi mode=enforce AND base vượt budget AND không được miễn.
+    -- 5a. BAN 24h — CHỈ theo bằng chứng PER-IP (ip_combos), TÁCH RỜI khỏi `over`.
+    --     Một IP tự nó cào >= ban_ip_combos tổ hợp filter nặng trong 1 window =
+    --     crawler tập trung bất khả chối (người thật 1-3). Vì không phụ thuộc
+    --     `over` (resource-aggregate), user thật lỡ dính 429 lúc botnet cào KHÔNG
+    --     bao giờ bị ban. Exempt: good bot + whitelist (đã return sớm ở trên),
+    --     Tier-2 shared IP (office/CGNAT nhiều user cookie thật — 1 IP không được
+    --     ban nuke cả nhà), phiên đã login (human_exempt). Distributed 1-req/IP
+    --     swarm ~1 combo/IP → không chạm ngưỡng → giữ nguyên nhánh 429 bên dưới.
+    local ip_bannable = gc.ban_enabled
+        and ip ~= "" and ip ~= "127.0.0.1" and ip ~= "::1"
+        and not ctx.ip_shared_verified
+        and not human_exempt
+        and ip_combos >= (gc.ban_ip_combos or 20)
+
+    if gc.mode == "enforce" and ip_bannable then
+        ctx.action        = "block"
+        ctx.action_reason = "expensive_filter_ban"
+        ctx.xf_over       = over
+        write_ip_ban(ctx, ip, host, base, ip_combos, hits, gc.ban_ttl or 86400)
+        -- ngx.ERR chứ KHÔNG phải ngx.WARN: chạy ở access phase, mà per-domain
+        -- conf ghi đè `error_log .../<fqdn>.error.log` không kèm level → mặc
+        -- định `error` → WARN bị lọc sạch. Sự kiện nặng nhất của module này mà
+        -- vô hình thì không chấp nhận được.
+        ngx.log(ngx.ERR,
+            "[xf] BAN host=", host, " base=", base,
+            " ip=", ip, " ip_combos=", ip_combos,
+            " combos=", combos, " hits=", hits, " card=", card,
+            " ttl=", gc.ban_ttl or 86400,
+            " ua=", (ctx.ua or "-"):sub(1, 40))
+        ngx.status = 403
+        ngx.header["Content-Type"] = "text/plain"
+        ngx.say("Access denied.")
+        ngx.exit(403)
+        return true, true
+    end
+
+    -- 5b. ENFORCE 429: chặn khi mode=enforce AND base vượt budget AND không miễn.
     if gc.mode == "enforce" and over and not human_exempt then
         ctx.action        = "throttled"
         ctx.action_reason = "expensive_filter"
