@@ -16,6 +16,15 @@ local cfg  = require "antibot.core.config"
 -- `verify_token` loại khỏi mẫu.
 --
 -- Định dạng: score|eff|class|reason|top_signals|mm_rules|ua_claims_bot
+--
+-- BẮT BUỘC làm sạch `|` khỏi mọi trường: `ctx.action_reason` do
+-- `enforcement/explain.lua` dựng ra **đã chứa sẵn `|`** (dạng
+-- "score=66.6 class=navigation | top:[...] | rules:[]") → không làm sạch thì nó
+-- tự tách thành nhiều trường và đẩy lệch toàn bộ chỉ số phía sau.
+local function clean(s)
+    return (tostring(s or "-"):gsub("[|\r\n]", "/"))
+end
+
 local function build_label(ctx)
     local names = {}
     if type(ctx.top_signals) == "table" then
@@ -30,10 +39,10 @@ local function build_label(ctx)
     return string.format("%.1f|%.1f|%s|%s|%s|%s|%s",
         ctx.score or 0,
         ctx.effective_score or 0,
-        tostring(ctx.req_class or "-"),
-        tostring(ctx.action_reason or "-"),
-        table.concat(names, ","),
-        tostring(ctx.mm_rules or "-"),
+        clean(ctx.req_class),
+        clean(ctx.action_reason):sub(1, 48),
+        clean(table.concat(names, ",")),
+        clean(ctx.mm_rules),
         bot_claim)
 end
 

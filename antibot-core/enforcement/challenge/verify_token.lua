@@ -109,7 +109,11 @@ local function consume_label(red, id, ctx)
             " reason=", f[4], " top=", f[5], " mm=", f[6],
             " ip=", tostring(ctx.ip or "-"))
 
-    for name in f[5]:gmatch("[^,]+") do
+    -- `[%w_]+` chứ KHÔNG phải `[^,]+`: tên signal luôn là định danh thuần, còn
+    -- `[^,]+` từng nuốt cả đoạn văn bản lọt vào do lỗi phân cách và tạo ra khoá
+    -- rác kiểu `fp_cand: top:[bot_score=57%`. Lọc chặt ở phía đọc để một lỗi
+    -- định dạng phía ghi không bao giờ làm bẩn được Redis.
+    for name in f[5]:gmatch("[%w_]+") do
         local k = "fp_cand:" .. name
         red:incr(k)
         red:expire(k, FP_CAND_TTL)
