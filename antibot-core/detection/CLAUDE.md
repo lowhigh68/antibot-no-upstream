@@ -72,6 +72,15 @@ For `resource` class: `STEPS_RESOURCE` skips this entire layer except `bot/lite_
 - Beacon injection NEVER short-circuits — CSS/JS/image responses must NEVER have Content-Length cleared (header_filter checks Content-Type)
 
 ## Update log
+- 2026-08-02 — **`wp_hardening.lua`: đường thoát cứng giờ có TRÍ NHỚ (`escalate()` → `ban:<ip>`).**
+  - **Triệu chứng:** `xmlrpc_ua_reject` **23.007 lượt/ngày**. Hai ngày liên tiếp, mỗi ngày một nguồn khác (2026-08-01 `203.2.114.122` → 2350 lượt/giờ; 2026-08-02 `43.139.153.132` + `1.12.55.42` → 93,7% của 1818 lượt/2h). Ban tay mỗi ngày là chạy theo đuôi.
+  - **KHÔNG phải bỏ sót — code chặn 100% số request đó.** Thiếu là trí nhớ giữa các request. Ba cơ chế sẵn có đều không khép được vòng:
+    1. `ngx.exit(444)` ở tầng **detection** ⇒ `enforcement/ban/ban_store_write` (nơi DUY NHẤT ghi ban từ đường chấm điểm) **không bao giờ chạy** ⇒ không ban, không tăng `viol:`, không có thang leo TTL.
+    2. `async/risk_update` có thể nâng `ip_risk:<ip>`, nhưng nơi ĐỌC nó là `engine.lua` — cũng không chạy vì đã exit. Attacker chỉ đánh `xmlrpc.php` nên **mọi** request đều thoát sớm ⇒ vòng phản hồi không bao giờ khép.
+    3. Rate limit không chạm: đo được **7,2 lượt/phút** mỗi IP — cố tình chậm, dưới mọi ngưỡng.
+  - **Bất đối xứng trong chính file:** `ZONE_LOGIN` đã có bộ đếm `wp_login_notc:<ip>` (2 lần/30s), `ZONE_XMLRPC` thoát ngay lần đầu **không đếm gì**.
+  - **Fix:** `escalate(ctx, reason)` dùng chung cho cả hai zone — `hardexit:<reason>:<ip>` cửa sổ **3600s**, **20 strike** → `ban:<ip>` 24h. Ngưỡng chọn theo tốc độ THẬT: cửa sổ 300s chỉ tích ~36 lượt nên không đủ tin cậy; 1 giờ + 20 strike ⇒ khoá sau **<3 phút**. Sau ban, request kế thoát ở `l7/ban/ip_ban_check` (module thứ 6) thay vì đi hết ~15 module.
+  - **Mở rộng phạm vi chặn:** 444 chỉ chặn riêng endpoint, ban khoá IP trên MỌI domain. Chấp nhận vì luật xmlrpc đã là near-zero FP (client hợp lệ luôn có `wordpress`/`jetpack` trong UA nên không vào tới đây) và còn phải lặp 20 lần. Giữ miễn trừ `ip_shared_verified`.
 - 2026-08-01 — **Hai nghi vấn FP được KIỂM TRA rồi BÁC BỎ. Không sửa gì. Đừng đào lại.**
   - **`ip_tour.lua:216` ghi `ban:<ip>` mà thiếu miễn trừ `ip_shared_verified`** — nghe như lỗ hổng FP, thực ra **không thể xảy ra**: cổng NAT ở dòng 173 `return` khi `uas >= distinct_ua_max (3)`, còn `ctx.ip_shared` (điều kiện cần của `ip_shared_verified`) đòi `uas >= shared_ua_min (6)` ở dòng 144. Luồng tới được nhánh ban thì `ip_shared_verified` **luôn false**. Thêm guard = code chết. Cổng NAT đã chặt hơn chính lá chắn định thêm.
   - **`browser/entropy.lua:11` gán `ctx.entropy = 0.1` khi beacon về mà thiếu trường `ent`** → đủ kích `headless_ent` (+0.45 = 24,75đ qua `mismatch`). Bẫy có thật về mặt code, nhưng **đo được: `headless_ent` bắn 1 lần/10 phút, 4 lần/2 giờ**. Không đáng sửa. Đường thứ hai tới `0.1` là `collect_request.calc_header_entropy()` khi request có **< 3 header** — UA khai trình duyệt đầy đủ mà chỉ gửi 2 header thì phạt là đúng.

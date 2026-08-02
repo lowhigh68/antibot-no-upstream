@@ -18,6 +18,54 @@ local ZONE_LOGIN   = "login"
 local ZONE_XMLRPC  = "xmlrpc"
 local ZONE_COMMENT = "comment"
 
+-- Leo thang cho các ĐƯỜNG THOÁT CỨNG.
+--
+-- Vấn đề đã đo (2026-08-01 và 08-02, hai ngày liên tiếp, mỗi ngày IP khác):
+-- một nguồn bắn 800-2400 POST /xmlrpc.php. Mọi lượt ĐỀU bị chặn 444 — code
+-- không hề bỏ sót — nhưng nó không có TRÍ NHỚ, nên kẻ tấn công lặp vô hạn và
+-- mỗi lượt vẫn ngốn ~15 module trước khi bị chặn (23.007 lượt/ngày).
+--
+-- Vì sao ba cơ chế sẵn có đều không khép được vòng:
+--   * `ngx.exit(444)` ở tầng detection ⇒ `enforcement/ban/ban_store_write`
+--     KHÔNG BAO GIỜ chạy ⇒ không ghi ban, không tăng `viol:`.
+--   * `risk_update` (log phase) có thể nâng `ip_risk:<ip>`, nhưng nơi ĐỌC nó là
+--     `engine.lua` — cũng không chạy vì đã exit. Attacker chỉ đánh xmlrpc nên
+--     mọi request đều thoát sớm, vòng phản hồi không bao giờ khép.
+--   * Rate limit không chạm: đo được 7,2 lượt/phút mỗi IP — cố tình chậm.
+--
+-- Ngưỡng chọn theo tốc độ THẬT đó: cửa sổ 300s chỉ tích được ~36 lượt nên
+-- không đủ tin cậy; cửa sổ 1 giờ + 20 strike ⇒ khoá sau chưa tới 3 phút.
+-- Sau khi ban, request kế tiếp thoát ở `l7/ban/ip_ban_check` (module thứ 6)
+-- thay vì đi hết pipeline.
+--
+-- MỞ RỘNG PHẠM VI CHẶN, phải ý thức: 444 chỉ chặn riêng endpoint, còn ban khoá
+-- IP trên MỌI domain. Chấp nhận được vì luật xmlrpc đã là "near-zero FP" (client
+-- hợp lệ luôn có `wordpress`/`jetpack` trong UA nên không bao giờ vào tới đây),
+-- và còn phải lặp 20 lần. Giữ miễn trừ IP dùng chung đã chứng minh (Tier-2).
+local HARD_EXIT_WINDOW  = 3600
+local HARD_EXIT_STRIKES = 20
+local HARD_EXIT_BAN_TTL = 86400
+
+local function escalate(ctx, reason)
+    local ip = ctx.ip or ""
+    if ip == "" or ip == "127.0.0.1" or ip == "::1" then return end
+    -- Tier-2: IP dùng chung đã chứng minh có nhiều user cookie thật
+    -- (CGNAT/văn phòng) — một thiết bị hỏng không được khoá cả nhà.
+    if ctx.ip_shared_verified then return end
+
+    local n = pool.safe_incr("hardexit:" .. reason .. ":" .. ip,
+                             HARD_EXIT_WINDOW) or 0
+    if n < HARD_EXIT_STRIKES then return end
+
+    pool.safe_set("ban:" .. ip, "1", HARD_EXIT_BAN_TTL)
+    pool.safe_set("ban:hit:" .. ip, tostring(ngx.time()), 300)
+    -- ngx.ERR: access phase, per-domain error_log ép mức `error` nên WARN bị lọc.
+    ngx.log(ngx.ERR, "[wp_hardening] BAN ip=", ip,
+            " reason=", reason, " strikes=", n,
+            " ttl=", HARD_EXIT_BAN_TTL,
+            " ua=", (ctx.ua or "-"):sub(1, 40))
+end
+
 local function detect_zone(uri, method)
     if method ~= "POST" then return nil end
     if uri == "/wp-login.php"         then return ZONE_LOGIN   end
@@ -221,6 +269,7 @@ function _M.run(ctx)
            not ua_lower:find("wordpress", 1, true) then
             ctx.action        = "block"
             ctx.action_reason = "xmlrpc_ua_reject"
+            escalate(ctx, "xmlrpc")
             ngx.exit(444)
         end
     end
@@ -234,6 +283,7 @@ function _M.run(ctx)
             if (cnt or 0) >= 2 then
                 ctx.action        = "block"
                 ctx.action_reason = "wp_login_notc_repeat"
+                escalate(ctx, "wp_login")
                 ngx.exit(444)
             end
         end
