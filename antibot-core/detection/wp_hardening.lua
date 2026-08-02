@@ -18,7 +18,10 @@ local ZONE_LOGIN   = "login"
 local ZONE_XMLRPC  = "xmlrpc"
 local ZONE_COMMENT = "comment"
 
--- Leo thang cho các ĐƯỜNG THOÁT CỨNG.
+-- Leo thang CHỈ CHO ZONE XMLRPC. Cố tình KHÔNG dùng chung với zone login:
+-- ngưỡng dưới đây suy ra từ tốc độ tấn công xmlrpc đo được, và `wp-login.php`
+-- có bề mặt FP rộng hơn hẳn (người dùng thật xoá cookie, trình duyệt chặn
+-- cookie bên thứ ba). Muốn áp cho login thì phải đo riêng trước.
 --
 -- Vấn đề đã đo (2026-08-01 và 08-02, hai ngày liên tiếp, mỗi ngày IP khác):
 -- một nguồn bắn 800-2400 POST /xmlrpc.php. Mọi lượt ĐỀU bị chặn 444 — code
@@ -46,22 +49,21 @@ local HARD_EXIT_WINDOW  = 3600
 local HARD_EXIT_STRIKES = 20
 local HARD_EXIT_BAN_TTL = 86400
 
-local function escalate(ctx, reason)
+local function escalate_xmlrpc(ctx)
     local ip = ctx.ip or ""
     if ip == "" or ip == "127.0.0.1" or ip == "::1" then return end
     -- Tier-2: IP dùng chung đã chứng minh có nhiều user cookie thật
     -- (CGNAT/văn phòng) — một thiết bị hỏng không được khoá cả nhà.
     if ctx.ip_shared_verified then return end
 
-    local n = pool.safe_incr("hardexit:" .. reason .. ":" .. ip,
-                             HARD_EXIT_WINDOW) or 0
+    local n = pool.safe_incr("hardexit:xmlrpc:" .. ip, HARD_EXIT_WINDOW) or 0
     if n < HARD_EXIT_STRIKES then return end
 
     pool.safe_set("ban:" .. ip, "1", HARD_EXIT_BAN_TTL)
     pool.safe_set("ban:hit:" .. ip, tostring(ngx.time()), 300)
     -- ngx.ERR: access phase, per-domain error_log ép mức `error` nên WARN bị lọc.
     ngx.log(ngx.ERR, "[wp_hardening] BAN ip=", ip,
-            " reason=", reason, " strikes=", n,
+            " reason=xmlrpc strikes=", n,
             " ttl=", HARD_EXIT_BAN_TTL,
             " ua=", (ctx.ua or "-"):sub(1, 40))
 end
@@ -269,7 +271,7 @@ function _M.run(ctx)
            not ua_lower:find("wordpress", 1, true) then
             ctx.action        = "block"
             ctx.action_reason = "xmlrpc_ua_reject"
-            escalate(ctx, "xmlrpc")
+            escalate_xmlrpc(ctx)
             ngx.exit(444)
         end
     end
@@ -283,7 +285,6 @@ function _M.run(ctx)
             if (cnt or 0) >= 2 then
                 ctx.action        = "block"
                 ctx.action_reason = "wp_login_notc_repeat"
-                escalate(ctx, "wp_login")
                 ngx.exit(444)
             end
         end
