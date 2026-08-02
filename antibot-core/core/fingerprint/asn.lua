@@ -15,9 +15,15 @@ local function get_mmdb()
     local ok, maxminddb = pcall(require, "resty.maxminddb")
     if not ok then
         _mmdb_err = "lua-resty-maxminddb not installed"
-        ngx.log(ngx.WARN,
+        -- ERR không phải WARN: per-domain error_log mặc định mức `error` nên WARN
+        -- bị lọc sạch. Sự cố 2026-08-02: module thiếu ⇒ ctx.asn=nil 100% request
+        -- ⇒ CHẾT ÂM THẦM 4 cơ chế (S3 asn_fallback_verify, S3 lite_verify,
+        -- fleet.is_good_crawler, fleet.is_trusted) suốt nhiều ngày không ai biết.
+        ngx.log(ngx.ERR,
             "[asn] ", _mmdb_err,
-            " — install: /usr/local/openresty/bin/opm install leafo/lua-resty-maxminddb")
+            " — ctx.asn=nil on ALL requests: S3 bot verify + fleet crawler",
+            " exemption are DEAD. install:",
+            " /usr/local/openresty/bin/opm install leafo/lua-resty-maxminddb")
         return nil, _mmdb_err
     end
 
@@ -25,9 +31,10 @@ local function get_mmdb()
         local init_ok, init_err = maxminddb.init(MMDB_PATH)
         if not init_ok then
             _mmdb_err = "mmdb init failed: " .. tostring(init_err)
-            ngx.log(ngx.WARN,
+            ngx.log(ngx.ERR,
                 "[asn] ", _mmdb_err,
-                " — download GeoLite2-ASN.mmdb from maxmind.com")
+                " — ctx.asn=nil on ALL requests.",
+                " download GeoLite2-ASN.mmdb from maxmind.com")
             return nil, _mmdb_err
         end
     end
