@@ -614,6 +614,20 @@ install_hooks() {
     local hook_dir="/usr/local/directadmin/scripts/custom"
     mkdir -p "$hook_dir"
 
+    # LƯU Ý: nhánh `*)` trong thân hook đã xử lý đúng mọi sự kiện "tạo/sửa"
+    # (truyền --user/--domain rồi regenerate + nginx -t + reload), nên thêm một
+    # hook chỉ là thêm tên vào mảng này.
+    #
+    # Nhóm SSL BẮT BUỘC phải có. Thiếu chúng thì:
+    #   - Cài SSL mới trong DA  → conf không được sinh lại → KHÔNG có block 443
+    #     → domain vừa bật SSL vẫn không vào được HTTPS.
+    #   - Let's Encrypt gia hạn → file cert bị ghi đè tại CÙNG đường dẫn nhưng
+    #     nginx vẫn giữ cert CŨ trong bộ nhớ → phục vụ chứng chỉ HẾT HẠN cho tới
+    #     khi có ai đó reload. Đây là chế độ hỏng âm thầm, 90 ngày một lần.
+    #   - Xoá SSL → conf vẫn còn block 443 trỏ vào file cert không còn tồn tại.
+    #
+    # `ssl_save_post` là tên sự kiện ĐÚNG của bản DA này (trang SSL Certificates);
+    # `ssl_install_post` là tên cũ, giữ làm dự phòng — thừa thì vô hại.
     local hooks=(
         "user_create_post.sh"
         "user_destroy_pre.sh"
@@ -621,6 +635,24 @@ install_hooks() {
         "domain_destroy_pre.sh"
         "subdomain_create_post.sh"
         "subdomain_destroy_pre.sh"
+        "ssl_save_post.sh"
+        "ssl_delete_post.sh"
+        "letsencrypt_save_post.sh"
+        "ssl_install_post.sh"
+        # Pointer nằm trong server_name → thêm/xoá pointer phải sinh lại conf.
+        #
+        # Vì sao cài CẢ HAI biến thể destroy: hook `_pre` chạy TRƯỚC khi DA gỡ
+        # pointer khỏi danh sách, nên conf sinh ra ở thời điểm đó VẪN CÒN pointer
+        # vừa xoá — đúng kiểu lỗi thời điểm đã gặp với domain_create_post. Chưa
+        # xác minh được bản DA này phát sự kiện tên nào, nên cài cả hai:
+        #   - DA chỉ có `_pre`  → chạy như bản -running.sh trước đây.
+        #   - DA chỉ có `_post` → sinh lại ĐÚNG (pointer đã bị gỡ).
+        #   - DA có cả hai      → `_post` chạy SAU nên ghi đè kết quả của `_pre`
+        #                         ⇒ trạng thái cuối vẫn đúng. Tự sửa sai.
+        # File hook không được DA gọi chỉ nằm im, không tốn gì.
+        "domain_pointer_create_post.sh"
+        "domain_pointer_destroy_pre.sh"
+        "domain_pointer_destroy_post.sh"
     )
 
     for hook in "${hooks[@]}"; do
