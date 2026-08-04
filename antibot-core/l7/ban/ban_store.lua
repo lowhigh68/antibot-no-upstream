@@ -14,6 +14,10 @@ local BAN_ESCALATE_GRACE = 300
 -- enforcement/decision/engine.lua AUTH_SESSION_RICHNESS + cfg.ip_tour.richness_max.
 local SHARED_ID_RICHNESS = 0.5
 
+-- Phán quyết "UA khai good bot nhưng xác minh DNS/attest TRƯỢT".
+-- GHI bởi detection/bot/init.lua, ĐỌC ở đây. Giữ đồng bộ tên tiền tố hai file.
+local FAKE_VERDICT_PREFIX = "botverdict:fake:"
+
 local function ua_claims_good_bot(ua)
     if not ua or ua == "" then return false end
     local ul = ua:lower()
@@ -65,12 +69,29 @@ function _M.run(ctx)
 
     if val == "1" then
         -- Defer nếu UA claim good bot — để DNS verify ở detection/bot quyết định.
+        --
+        -- NHƯNG chỉ defer khi CHƯA có phán quyết "xác minh trượt" còn hiệu lực.
+        -- Defer vô điều kiện khiến `ban:<id>` VÔ NGHĨA với mọi UA chứa "bot":
+        -- mỗi request lại chạy trọn pipeline + một truy vấn DNS ngược, rồi lại
+        -- bị chặn bằng chấm điểm, rồi viol++ — mãi mãi. Đo trên production
+        -- 2026-08-04: Amazonbot/GPTBot có ban_ttl=-1 (vĩnh viễn) mà viol vẫn
+        -- leo tới 199 và 163, tức lệnh cấm chưa từng được thi hành lần nào.
+        --
+        -- Phán quyết TTL 1800s ⇒ cứ ~30 phút bot được xác minh lại một lần
+        -- (khoá seal ở đây nên detection/bot không chạy → phán quyết không được
+        -- làm mới → tự hết hạn). Bot dựng đúng PTR/A là tự thoát, không cần
+        -- thao tác tay. Chi phí giảm từ "mỗi request một DNS" xuống "30 phút một DNS".
         local ua = ctx.ua or ngx.var.http_user_agent or ""
-        if ua_claims_good_bot(ua) then
+        if ua_claims_good_bot(ua)
+           and pool.safe_get(FAKE_VERDICT_PREFIX .. id) ~= "1" then
             ngx.log(ngx.INFO,
                 "[ban_store] defer good_bot_claim id=", id:sub(1, 8),
                 " ua=", ua:sub(1, 60))
-            ctx.banned = false
+            ctx.banned          = false
+            -- Cờ cho detection/bot/init.lua: CHỈ identity đang bị cấm mới cần
+            -- ghi phán quyết. Không có cờ này thì mọi bot giả danh (kể cả chưa
+            -- bị cấm) đều tốn một SETEX mỗi request mà không ai đọc.
+            ctx.ban_deferred_gb = true
             return false, false
         end
 

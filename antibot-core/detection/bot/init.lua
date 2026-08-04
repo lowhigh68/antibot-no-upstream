@@ -4,8 +4,17 @@ local dns_rev   = require "antibot.detection.bot.dns_reverse"
 local dns_fwd   = require "antibot.detection.bot.dns_forward"
 local bot_score = require "antibot.detection.bot.bot_score"
 local cloud_sx  = require "antibot.detection.bot.cloud_suffixes"
+local pool      = require "antibot.core.redis_pool"
 
 local CLOUD_PTR_SUFFIXES = cloud_sx.CLOUD_PTR_SUFFIXES
+
+-- Phán quyết "UA khai good bot nhưng xác minh TRƯỢT" — đọc bởi
+-- l7/ban/ban_store.lua để thôi defer lệnh cấm. GIỮ ĐỒNG BỘ tiền tố hai file.
+-- TTL ngắn có chủ đích: khoá ban seal ở l7 nên module này không chạy nữa →
+-- phán quyết không được làm mới → sau 30 phút tự hết hạn và bot được xác minh
+-- lại. Bot dựng đúng PTR/A tự thoát, không cần thao tác tay.
+local FAKE_VERDICT_PREFIX = "botverdict:fake:"
+local FAKE_VERDICT_TTL    = 1800
 
 -- Suffix-match helper: ptr ends with "." .. host, or equals host (case-insensitive).
 -- Used by Path 1 (contact attest) and Path 2 (analyzer attest).
@@ -199,6 +208,25 @@ function _M.run(ctx)
     end
 
     bot_score.run(ctx)
+
+    -- Ghi phán quyết xác minh cho tầng ban, CHỈ khi ban_store vừa defer một
+    -- lệnh cấm đang tồn tại (ctx.ban_deferred_gb). Không có bước này thì
+    -- `ban:<id>` của bot giả danh chưa từng được thi hành — xem chú thích dài
+    -- ở l7/ban/ban_store.lua nhánh defer.
+    -- Verified hoặc S2.5 attest ⇒ KHÔNG ghi, để lượt sau vẫn được defer.
+    if ctx.ban_deferred_gb
+       and ctx.good_bot_verified ~= true
+       and ctx.bot_identity_tier ~= "S2.5" then
+        local id = ctx.identity or ctx.fp_light
+        if id and id ~= "" then
+            pool.safe_set(FAKE_VERDICT_PREFIX .. id, "1", FAKE_VERDICT_TTL)
+            ngx.log(ngx.ERR,
+                "[bot] verify FAILED with ban present → seal id=", id:sub(1, 8),
+                " bot=", ctx.good_bot_name or "?",
+                " ip=", ctx.ip or "?",
+                " ttl=", FAKE_VERDICT_TTL, "s")
+        end
+    end
 
     return true, false
 end

@@ -191,6 +191,10 @@ _M.rate = {
             semrushbot  = "aggressive",
             ahrefsbot   = "aggressive",
             mj12bot     = "aggressive",
+            -- amazonbot: xác minh DNS được (PTR crawl.amazonbot.amazon) nhưng
+            -- gần như không sinh truy cập giới thiệu cho site tiếng Việt →
+            -- đón nhưng siết 30/phút.
+            amazonbot   = "aggressive",
         },
 
         -- Adaptive promotion tunables
