@@ -146,7 +146,11 @@ function _M.run(ctx)
         local suffixes = ctx.good_bot_suffixes or {}
         ctx.dns_rev_valid = ua_mod.is_valid_suffix(ptr, suffixes)
         if not ctx.dns_rev_valid then
-            ngx.log(ngx.INFO,
+            -- ERR không phải INFO: cặp đôi với `[dns_fwd] FAKE`, đây là chẩn
+            -- đoán chính của đường xác minh bot. per-domain error_log mặc định
+            -- mức `error` nên INFO/WARN bị lọc sạch — xem chú thích ở
+            -- dns_forward.lua nhánh FAKE.
+            ngx.log(ngx.ERR,
                 "[dns_rev] bad suffix ip=", ip,
                 " ptr=", ptr,
                 " bot=", ctx.good_bot_name or "?")

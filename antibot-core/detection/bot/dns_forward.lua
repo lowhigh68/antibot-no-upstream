@@ -104,7 +104,12 @@ function _M.run(ctx)
         ctx.good_bot_verified = false
         ctx.bot_ua            = "fake_good_bot"
         ctx.bot_score         = 0.9
-        ngx.log(ngx.WARN,
+        -- ERR không phải WARN: đây là một trong hai dòng chẩn đoán quan trọng
+        -- nhất của cả đường xác minh bot ("bot khai là X nhưng DNS bảo không
+        -- phải"), mà per-domain error_log mặc định mức `error` lọc sạch WARN.
+        -- 2026-08-06: mất 5 tiếng mới tìm ra Ahrefs trượt ở đúng nhánh này,
+        -- chỉ vì dòng log tồn tại nhưng không ai đọc được.
+        ngx.log(ngx.ERR,
             "[dns_fwd] FAKE bot=", ctx.good_bot_name or "?",
             " ip=", ctx.ip, " ptr=", ptr)
     end

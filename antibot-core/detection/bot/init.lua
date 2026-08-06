@@ -26,6 +26,44 @@ local function ptr_suffix_matches(ptr, host)
     return p:sub(-(#h + 1)) == "." .. h
 end
 
+-- ── Path 1c helper: cùng tổ chức, KHÁC TLD ───────────────────────────────
+-- Nhãn đăng ký "chung" KHÔNG được dùng làm căn cứ khớp. Nếu bot_contact_host
+-- là eTLD+1 nhiều thành phần (`example.com.vn`) thì nhãn trích ra sẽ là `com`,
+-- và khớp theo nó sẽ trúng gần như mọi PTR trên đời.
+local GENERIC_LABELS = {
+    ["com"] = true, ["net"] = true, ["org"] = true, ["edu"] = true,
+    ["gov"] = true, ["mil"] = true, ["int"] = true, ["co"]  = true,
+    ["ne"]  = true, ["or"]  = true, ["ac"]  = true, ["go"]  = true,
+    ["web"] = true, ["info"] = true, ["biz"] = true,
+}
+local MIN_LABEL_LEN = 4   -- thương hiệu 3 ký tự (ovh, bbc) không đi đường này
+
+local function split_labels(host)
+    local h = host:lower():gsub("%.+$", "")
+    local t = {}
+    for part in h:gmatch("[^%.]+") do t[#t + 1] = part end
+    return t
+end
+
+local function org_label(host)
+    local p = split_labels(host)
+    if #p < 2 then return nil end
+    local label = p[#p - 1]
+    if #label < MIN_LABEL_LEN or GENERIC_LABELS[label] then return nil end
+    return label
+end
+
+-- Nhãn đăng ký của PTR trùng nhãn của contact host, HOẶC TLD của PTR chính là
+-- nhãn đó (brand gTLD — `.amazon` do chính Amazon sở hữu).
+local function ptr_matches_org(ptr, contact_host)
+    if not ptr or not contact_host then return false end
+    local label = org_label(contact_host)
+    if not label then return false end
+    local p = split_labels(ptr)
+    if #p < 2 then return false end
+    return p[#p - 1] == label or p[#p] == label
+end
+
 -- Cloud-provider PTR check (Path 2): ptr ends in one of the hardcoded
 -- CLOUD_PTR_SUFFIXES. PTR is set by IP block owner — not spoofable.
 local function ptr_matches_cloud(ptr)
@@ -46,6 +84,20 @@ end
 --      Example: UA `(Pinterestbot/1.0; +http://www.pinterest.com/bot.html)`
 --               + PTR `crawl-54-236-1-11.pinterest.com` → match → S2.5
 --               reason="contact_ptr_match".
+--
+--   1c (cùng tổ chức, khác TLD) — nhãn đăng ký của PTR trùng nhãn của contact
+--      URL, hoặc TLD của PTR chính là nhãn đó.
+--      Ví dụ: UA `(AhrefsBot/7.0; +http://ahrefs.com/robot/)` (nhãn `ahrefs`)
+--             + PTR `proxy-ca017-san100.ahrefs.NET` → khớp → S2.5
+--             reason="contact_org_match".
+--      Mẫu hình "website .com, hạ tầng crawl .net" rất phổ biến; Amazon thì
+--      dùng brand gTLD `.amazon` cho PTR còn `amazon.com` cho website.
+--      **Không dùng xác nhận xuôi làm điều kiện** — đo 2026-08-06: PTR của
+--      Ahrefs KHÔNG có bản ghi A nào, nên forward-confirm sẽ chặn đúng ca cần
+--      cứu. Bù lại, việc này không làm S2.5 yếu đi so với 1a: hôm nay kẻ sở
+--      hữu `evil.com` đã có thể đặt PTR `foo.evil.com` + UA `+http://evil.com`
+--      là qua rồi; 1c chỉ mở thêm trường hợp cùng tổ chức khác đuôi. Nhãn
+--      chung (`com`/`co`/`ne`…) và nhãn dưới 4 ký tự bị loại — xem GENERIC_LABELS.
 --
 --   1b (cloud fallback) — compliant UA + PTR ends in a known cloud provider
 --      suffix. Operator runs from major cloud but does NOT setup their
@@ -72,6 +124,8 @@ local function contact_attest(ctx)
     local reason
     if ptr_suffix_matches(ctx.dns_rev, ctx.bot_contact_host) then
         reason = "contact_ptr_match"
+    elseif ptr_matches_org(ctx.dns_rev, ctx.bot_contact_host) then
+        reason = "contact_org_match"
     elseif ptr_matches_cloud(ctx.dns_rev) then
         reason = "contact_cloud_attested"
     else
