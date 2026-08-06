@@ -76,9 +76,15 @@ function _M.run(ctx)
         should_ban_ip = false
     end
 
+    -- Bậc cuối của thang leo — lấy từ cfg.ttl.ban_steps để KHÔNG lệch với thang
+    -- identity ở l7/ban/ban_store.lua. 2026-08-06: đổi từ 0 (vĩnh viễn) sang
+    -- hữu hạn (30 ngày) — xem chú thích tại config.lua ban_steps.
+    local steps       = cfg.ttl.ban_steps
+    local persist_ttl = steps[#steps]
+
     local ip_ban_ttl
     if viol_count >= 4 then
-        ip_ban_ttl = 0           -- permanent: confirmed repeat bot
+        ip_ban_ttl = persist_ttl -- bậc cuối: confirmed repeat bot
     elseif viol_count >= 3 then
         ip_ban_ttl = 86400       -- 24h: cảnh báo nặng
     elseif ip_risk_val >= 0.95 then
@@ -124,7 +130,13 @@ function _M.run(ctx)
             red:setex("ban_ctx:" .. id, ctx_ttl, ctx_json)
         end
         if should_ban_ip then
-            red:setex("ban_ctx:" .. ip, ip_ban_ttl, ctx_json)
+            -- Guard TTL: `SETEX key 0 val` là LỖI trong Redis, và lỗi trong
+            -- pipeline bị nuốt im lặng ⇒ đúng những lệnh cấm nặng nhất lại mất
+            -- hồ sơ bằng chứng. Hồ sơ phải sống ÍT NHẤT bằng bản án, nếu không
+            -- mọi lần rà soát về sau đều mù (đo 2026-08-06: 8.261 lệnh cấm vĩnh
+            -- viễn, chỉ 33 còn ban_ctx).
+            local ip_ctx_ttl = (ip_ban_ttl > 0) and ip_ban_ttl or ctx_ttl
+            red:setex("ban_ctx:" .. ip, ip_ctx_ttl, ctx_json)
         end
     end
 

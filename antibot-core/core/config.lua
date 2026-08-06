@@ -66,7 +66,14 @@ _M.ttl = {
     sequence_use_len = 10,
     rate             = 60,
     burst            = 1,
-    ban_steps        = {300, 3600, 86400, 0},
+    -- Bậc cuối là 30 NGÀY, KHÔNG phải vĩnh viễn (0). Đo 2026-08-06 trên
+    -- cloud28-246: 8.261 lệnh cấm IP vĩnh viễn đã tích luỹ, trong đó chỉ 33
+    -- (0,4%) còn `ban_ctx` để giải thích lý do — và 13 trong số 33 đó là
+    -- AhrefsBot THẬT (PTR `proxy-*.ahrefs.net`). Cấm vĩnh viễn không có cơ chế
+    -- rà soát nào, nên sai lầm nằm lại mãi và IP đổi chủ thành mìn.
+    -- 30 ngày giữ gần như nguyên hiệu quả (bot lì leo lại thang trong vài phút)
+    -- nhưng danh sách TỰ DỌN — 69,5% số IP kia đã ngừng hoạt động.
+    ban_steps        = {300, 3600, 86400, 2592000},
     violation        = 172800,  -- 48h: đủ dài để xuyên qua ban step 3 (24h), đủ ngắn để user thật không mang violation cũ
     risk             = 86400,
     dns              = 600,

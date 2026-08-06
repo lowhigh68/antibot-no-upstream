@@ -47,6 +47,7 @@
     "coccocbot-web":          ["coccoc.com"],
     "coccocbot-image":        ["coccoc.com"],
 
-    "amazonbot":              ["crawl.amazonbot.amazon"]
+    "amazonbot":              ["crawl.amazonbot.amazon"],
+    "ahrefsbot":              ["ahrefs.net"]
   }
 }
