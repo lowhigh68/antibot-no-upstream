@@ -218,14 +218,25 @@ function _M.run(ctx)
     if ctx.good_bot_claimed then
         dns_rev.run(ctx)
 
+        -- ── THANG BẰNG CHỨNG ĐƠN ĐIỆU ────────────────────────────────────
+        -- Bất biến: thêm bằng chứng chỉ được phép NÂNG mức tin cậy, không bao
+        -- giờ hạ. Cấu trúc cũ vi phạm điều đó — nó rẽ nhánh LOẠI TRỪ theo
+        -- `dns_rev_valid`, nên PTR khớp registry mà forward trượt thì kết luận
+        -- `fake_good_bot` NGAY, không bao giờ thử tới contact_attest.
+        --
+        -- Hệ quả phản trực giác đã trả giá thật (2026-08-06): thêm `ahrefsbot`
+        -- vào registry làm Ahrefs bị đánh giá XẤU ĐI (0.9 thay vì S2.5), vì mục
+        -- registry đẩy nó sang nhánh trên rồi chết ở đó — PTR của Ahrefs không
+        -- có bản ghi A nào. Cung cấp thêm thông tin đúng lại cho kết quả tệ hơn.
+        --
+        -- Nay: mỗi bậc chỉ chạy khi bậc mạnh hơn CHƯA cho ra kết quả.
+        -- Bậc 1 (mạnh nhất) — rDNS xác nhận hai chiều.
         if ctx.dns_rev_valid == true then
             dns_fwd.run(ctx)
-        elseif ctx.dns_rev_valid == false then
-            -- PTR resolved nhưng không match suffix HOẶC NXDOMAIN.
-            -- Try Path 1 (contact attest) BEFORE asn_fallback — generic
-            -- mechanism that grants S2.5 to compliant-UA bots whose PTR
-            -- matches the contact URL in their UA, without needing a
-            -- hardcoded registry entry.
+        end
+
+        -- Bậc 2/3 — chỉ khi bậc 1 chưa xác minh được.
+        if ctx.good_bot_verified ~= true then
             if contact_attest(ctx) then
                 -- bot_score=0 set inside; fall through to bot_score.run
                 -- which honors tier S2.5 and keeps it at 0.
@@ -236,19 +247,16 @@ function _M.run(ctx)
                 ctx.good_bot_verified = true
                 ctx.bot_score         = 0.0
                 ctx.bot_ua            = "good_bot_asn_verified"
+            elseif ctx.dns_rev_timeout or ctx.dns_fwd_timeout then
+                -- Resolver không phản hồi = sự cố TẠM THỜI, không phải bằng
+                -- chứng giả mạo. Không kết luận gì; bot_score.lua bảo toàn 0.
+                ctx.bot_ua = "dns_timeout"
             else
                 ctx.bot_ua            = "fake_good_bot"
-                ctx.bot_score         = 0.85
+                -- math.max: giữ 0.9 mà dns_fwd đã đặt (PTR khớp registry nhưng
+                -- forward phản đối — đáng ngờ hơn 0.85 = "không có bằng chứng").
+                ctx.bot_score         = math.max(ctx.bot_score or 0, 0.85)
                 ctx.good_bot_verified = false
-            end
-        elseif ctx.dns_rev_valid == nil and ctx.dns_rev_timeout then
-            -- DNS timeout (resolver không response). Cho ptr_only bot có ASN
-            -- list, fallback ASN. Không thì giữ behavior cũ (bot_score.lua sẽ
-            -- bảo toàn score=0 để không penalize timeout transient).
-            if asn_fallback_verify(ctx) then
-                ctx.good_bot_verified = true
-                ctx.bot_score         = 0.0
-                ctx.bot_ua            = "good_bot_asn_verified"
             end
         end
     else
