@@ -145,11 +145,19 @@ function _M.run(ctx)
         local ua_mod = require "antibot.detection.bot.ua_check"
         local suffixes = ctx.good_bot_suffixes or {}
         ctx.dns_rev_valid = ua_mod.is_valid_suffix(ptr, suffixes)
-        if not ctx.dns_rev_valid then
-            -- ERR không phải INFO: cặp đôi với `[dns_fwd] FAKE`, đây là chẩn
-            -- đoán chính của đường xác minh bot. per-domain error_log mặc định
-            -- mức `error` nên INFO/WARN bị lọc sạch — xem chú thích ở
-            -- dns_forward.lua nhánh FAKE.
+        if not ctx.dns_rev_valid and #suffixes > 0 then
+            -- CHỈ log khi bot CÓ trong registry mà PTR vẫn lệch — đó mới là
+            -- bất thường đáng chú ý (giả danh Googlebot/Bingbot…).
+            --
+            -- Bot KHÔNG có trong registry luôn có `suffixes = {}` nên luôn
+            -- "bad suffix" — đó là bước BÌNH THƯỜNG trên đường đi tới S2.5
+            -- (contact_attest), không phải lỗi. Log ở đây sẽ bắn mỗi request
+            -- của mọi crawler S2.5: riêng `contact_ptr_match` đã ~23.000
+            -- lượt/ngày ⇒ hàng chục nghìn dòng rác. Đã mắc đúng lỗi này khi
+            -- nâng mức log ngày 2026-08-06, sửa lại ngay hôm sau.
+            --
+            -- Mức ERR là cố ý: per-domain error_log mặc định `error` nên
+            -- INFO/WARN bị lọc sạch — xem chú thích ở dns_forward.lua nhánh FAKE.
             ngx.log(ngx.ERR,
                 "[dns_rev] bad suffix ip=", ip,
                 " ptr=", ptr,
