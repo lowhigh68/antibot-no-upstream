@@ -202,6 +202,14 @@ _M.rate = {
             -- gần như không sinh truy cập giới thiệu cho site tiếng Việt →
             -- đón nhưng siết 30/phút.
             amazonbot   = "aggressive",
+            -- baiduspider: DNS hai chiều sạch (PTR baiduspider-*.crawl.baidu.com
+            -- → A trỏ ngược đúng IP) nhưng site tiếng Việt gần như không nhận
+            -- lượt giới thiệu nào từ Baidu. Trước 2026-08-08 nó bị fleet RST
+            -- 20.042 lượt/ngày — tức KHÔNG có trần nào, chỉ có bức tường. Nay đón
+            -- vào cửa chính và siết 30/phút. Mọi biến thể (Baiduspider-image/
+            -- -video/-news/-render) đều rút về cùng tên `baiduspider` ở ua_check
+            -- nên chia CHUNG một hạn mức — rotation IP không nhân được nó lên.
+            baiduspider = "aggressive",
         },
 
         -- Adaptive promotion tunables

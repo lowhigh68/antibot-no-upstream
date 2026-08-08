@@ -15,6 +15,19 @@ local pool = require "antibot.core.redis_pool"
 -- Either present → ngx.exit(444) with `action_reason = fleet_dyn_block_<24|16>:<cidr>`
 -- and `ctx.fleet_blocked = matched_cidr` for downstream logging.
 --
+-- MIỄN TRỪ crawler đã xác minh (`ctx.is_known_crawler`, do fleet/aggregator đặt):
+--   Fleet chạy TRƯỚC toàn bộ tầng xác minh, nên crawler hợp lệ phân tán trên
+--   nhiều IP (cấu trúc giống hệt một đội cào) bị chặn ở cửa và KHÔNG BAO GIỜ có
+--   cơ hội chứng minh mình là ai. Đo 2026-08-08: 20.042 lượt Baiduspider thật bị
+--   RST mỗi ngày trên cloud168-101 = 25% tổng số lệnh chặn.
+--   Xem chú thích CRAWLER_PREFIX trong detection/bot/init.lua để biết dấu được
+--   cấp cho những bằng chứng nào (và vì sao KHÔNG cấp cho cloud attest).
+--
+-- KHÔNG log ở nhánh miễn trừ: request được thả sẽ tự hiện trong antibot.log với
+-- reason=good_bot_verified/contact_* — đó đã là dấu vết kiểm toán. Log thêm ở đây
+-- là hàng chục nghìn dòng/ngày cho đúng nhóm đông nhất (đã mắc lỗi này ngày
+-- 2026-08-06 với `[dns_rev] bad suffix`).
+--
 -- Why 444 (nginx-specific TCP RST) instead of 403:
 --   - Subnet block is a NETWORK-LEVEL decision, not a per-request decision.
 --     RST matches the semantic "this network endpoint is not for you".
@@ -86,6 +99,12 @@ function _M.run(ctx)
     local v24 = val(res[1])
     local v16 = cidr_16 and val(res[2]) or nil
     if not v24 and not v16 then return true, false end
+
+    -- Crawler đã chứng minh danh tính ở lượt trước → thả xuống pipeline như
+    -- thường. Nó vẫn bị chấm điểm, vẫn chịu trần good_bot_rate; chỉ không bị
+    -- fleet RST oan. Cờ do fleet/aggregator đặt — nó chạy TRƯỚC module này
+    -- (xem thứ tự STEPS_COMMON trong init.lua) nên ở đây không tốn Redis.
+    if ctx.is_known_crawler then return true, false end
 
     local matched, scope, info
     if v24 then matched, scope, info = cidr_24, "24", v24

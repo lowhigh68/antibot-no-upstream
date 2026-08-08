@@ -35,6 +35,9 @@ local BUCKET_TTL  = (cfg.fleet_detection
 
 local PATH_ZSET_CAP = 64  -- avoid unbounded path zset growth per /24
 
+-- GIỮ ĐỒNG BỘ với CRAWLER_PREFIX trong detection/bot/init.lua.
+local CRAWLER_PREFIX = "crawler:"
+
 local function ip_to_cidr_24(ip)
     local a, b, c = ip:match("^(%d+)%.(%d+)%.(%d+)%.")
     if not a then return nil end
@@ -116,6 +119,33 @@ function _M.write(ctx)
     if not ip or ip == "" then return end
     if ip:find(":", 1, true) then return end  -- IPv6 skipped in v1
     if ip == "127.0.0.1" then return end
+
+    -- Crawler đã CHỨNG MINH danh tính bằng DNS/PTR gắn tên miền chính chủ.
+    -- Dấu `crawler:<ip>` do detection/bot/init.lua ghi ở lượt TRƯỚC (TTL 1h).
+    --
+    -- Bổ khuyết cho is_good_crawler phía trên: cổng đó xét ASN, chỉ dùng được
+    -- với crawler chạy trên ASN RIÊNG của chính họ (Google/Bing/Meta/Apple/
+    -- CocCoc). Baidu đi trung chuyển qua AS4837 China Unicom — ASN dùng chung
+    -- cỡ hàng trăm triệu thuê bao — nên không có cửa nào theo đường ASN. Bằng
+    -- chứng dùng được của họ là DNS hai chiều, và nó nằm ở đây.
+    --
+    -- HAI tác dụng, và cái thứ hai mới là mấu chốt:
+    --   1. Không tính IP đã xác minh vào bucket ⇒ cờ /24 thôi được gia hạn ⇒
+    --      `fl:dyn` hết hạn tự nhiên thay vì tự nuôi mình mãi.
+    --   2. Cờ hạ xuống thì IP crawler MỚI (chưa kịp có dấu) không còn bị
+    --      check_block bắn RST ⇒ nó sống tới tầng xác minh và tự lấy được dấu.
+    --      Thiếu bước 1 thì bước 2 không bao giờ xảy ra: IP mới bị chặn trước
+    --      khi kịp chứng minh, mà không chứng minh được thì mãi không có dấu —
+    --      vòng luẩn quẩn khoá chết cả dải.
+    --
+    -- Đặt SAU hai cổng cục bộ (không tốn Redis) và TRƯỚC pipeline 27 lệnh: với
+    -- crawler đã xác minh, một lệnh GET này THAY THẾ cả pipeline ⇒ rẻ hơn hiện
+    -- tại. Với lưu lượng thường thì đắt thêm 1 RTT Redis nội bộ.
+    --
+    -- `ctx.is_known_crawler` được fleet/check_block (chạy NGAY SAU) đọc lại ⇒
+    -- bên đó miễn phí.
+    ctx.is_known_crawler = pool.safe_get(CRAWLER_PREFIX .. ip) ~= nil
+    if ctx.is_known_crawler then return end
 
     local cidr_24 = ip_to_cidr_24(ip)
     if not cidr_24 then return end

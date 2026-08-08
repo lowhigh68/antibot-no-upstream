@@ -16,6 +16,31 @@ local CLOUD_PTR_SUFFIXES = cloud_sx.CLOUD_PTR_SUFFIXES
 local FAKE_VERDICT_PREFIX = "botverdict:fake:"
 local FAKE_VERDICT_TTL    = 1800
 
+-- Dấu "IP này là crawler đã chứng minh danh tính" — đọc bởi
+-- detection/fleet/check_block.lua và fleet/aggregator.lua. GIỮ ĐỒNG BỘ tiền tố
+-- với check_block.lua.
+--
+-- Vì sao cần: fleet chạy ở STEPS_COMMON, TRƯỚC toàn bộ tầng xác minh, và chặn
+-- bằng ngx.exit(444) (RST ở tầng TCP). Crawler hợp lệ phân tán trên nhiều IP
+-- trông giống hệt một đội cào về mặt cấu trúc nên bị gắn cờ /24, rồi chết ở cửa
+-- trước khi kịp chứng minh mình là ai. Đo 2026-08-08 trên cloud168-101:
+-- 20.042 lượt Baiduspider THẬT bị RST mỗi ngày (PTR baiduspider-*.crawl.baidu.com,
+-- xác nhận xuôi khớp) = 25% tổng số lệnh chặn của máy.
+--
+-- ASN KHÔNG dùng được cho lớp bài toán này: dải 116.179.0.0/16 của Baidu thuộc
+-- AS4837 (China Unicom Backbone) — ASN dùng chung lớn nhất nhì thế giới. Mở cổng
+-- theo ASN đó tương đương miễn trừ fleet cho mọi máy thuê ở Trung Quốc chỉ cần
+-- gắn chữ "spider" vào UA. Bằng chứng dùng được của Baidu nằm ở DNS hai chiều,
+-- không nằm ở quyền sở hữu IP.
+--
+-- CHỈ cấp cho bằng chứng GẮN VỚI TÊN MIỀN của chính chủ:
+--   good_bot_verified (S4/S3 registry) | contact_ptr_match | contact_org_match
+-- KHÔNG cấp cho contact_cloud_attested / analyzer_attested — hai đường đó chỉ
+-- chứng minh "có thuê máy ở cloud", mà "nhiều IP thuê ở cloud" đúng là thứ fleet
+-- sinh ra để bắt. Cấp dấu cho chúng là tự tháo chốt.
+local CRAWLER_PREFIX = "crawler:"
+local CRAWLER_TTL    = 3600
+
 -- Suffix-match helper: ptr ends with "." .. host, or equals host (case-insensitive).
 -- Used by Path 1 (contact attest) and Path 2 (analyzer attest).
 local function ptr_suffix_matches(ptr, host)
@@ -270,6 +295,24 @@ function _M.run(ctx)
     end
 
     bot_score.run(ctx)
+
+    -- Ghi dấu crawler cho tầng fleet (xem chú thích CRAWLER_PREFIX ở đầu file).
+    -- Đặt SAU bot_score.run để action_reason của contact_attest đã ổn định.
+    --
+    -- `ctx.is_known_crawler ~= true` là chốt chặn ghi thừa: fleet/aggregator đã
+    -- GET khoá này ở đầu request rồi, nên dấu còn hạn thì bỏ qua hẳn lệnh ghi.
+    -- Không có chốt đó thì mỗi request crawler đã xác minh tốn một lệnh SET —
+    -- đo 2026-08-08: ~68.000 lượt/ngày trên cloud168-101. Dấu hết hạn thì lượt
+    -- kế tiếp tự ghi lại; lỡ một nhịp không hại gì vì lúc dấu lapse thì /24 gần
+    -- như chắc chắn cũng đã hết cờ (chính nhờ việc thôi tính vào bucket).
+    local r = ctx.action_reason
+    if ctx.ip and ctx.ip ~= ""
+       and ctx.is_known_crawler ~= true
+       and (ctx.good_bot_verified == true
+            or r == "contact_ptr_match"
+            or r == "contact_org_match") then
+        pool.safe_set(CRAWLER_PREFIX .. ctx.ip, "1", CRAWLER_TTL)
+    end
 
     -- Ghi phán quyết xác minh cho tầng ban, CHỈ khi ban_store vừa defer một
     -- lệnh cấm đang tồn tại (ctx.ban_deferred_gb). Không có bước này thì
