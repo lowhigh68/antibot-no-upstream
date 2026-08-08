@@ -533,8 +533,39 @@ function _M.run(ctx)
     ctx.req_class        = class
     ctx.score_multiplier = config.score_multiplier
     ctx.rate_weight      = config.rate_weight
-    ctx.skip_layers      = config.skip_layers
     ctx.is_static        = config.is_static
+
+    -- SAO CHÉP NÔNG, KHÔNG gán tham chiếu.
+    --
+    -- `config.skip_layers` là bảng cấp module, dùng chung cho MỌI request cùng
+    -- class. Gán thẳng tham chiếu thì bất kỳ ai ghi vào `ctx.skip_layers` đều
+    -- sửa vĩnh viễn cấu hình của cả class đó trong worker — hết sạch vòng đời
+    -- worker, không có gì khôi phục lại.
+    --
+    -- Đã xảy ra thật, im lặng suốt 2,5 tháng kể từ 2026-05-19:
+    -- `detection/bot/init.lua` (contact_attest + analyzer_attest) đặt
+    -- `skip_layers.cluster/graph = true` cho tier S2.5 ⇒ cú attest ĐẦU TIÊN sau
+    -- mỗi lần reload tắt cluster+graph cho TOÀN BỘ class đó.
+    --
+    -- Bằng chứng đo 2026-08-08 trên cloud168-101 (file 2,29 triệu dòng):
+    --   class          dòng      attest    cluster trong top=
+    --   auth_endpoint  186.464        5      5.007   (2,69%  — gần như sạch)
+    --   navigation     743.459  200.686         62   (0,008% — đã tắt)
+    --   unknown        665.553   32.080         74   (0,011% — đã tắt)
+    -- 62 lượt của navigation dồn vào ĐÚNG 12 phút phân biệt trên tổng ~11.000
+    -- phút, thành 3 cụm ngay sau 3 lần worker khởi động lại, rồi im lặng tuyệt
+    -- đối 5 ngày. Một tín hiệu bắn 22 lần trong một phút rồi bằng 0 suốt 7.000
+    -- phút kế tiếp là một CÔNG TẮC BỊ GẠT, không phải một phân bố.
+    --
+    -- Ảnh hưởng: cluster + graph chết trên 1.409.012 dòng = 62% tổng lưu lượng,
+    -- 78% lưu lượng ngoài resource.
+    --
+    -- Vá tại ĐÂY chứ không ở hai chỗ ghi: đây là nơi sinh ra bí danh, nên mọi
+    -- đoạn code sau này lỡ ghi vào `ctx.skip_layers` đều an toàn. Vá ở chỗ ghi
+    -- thì quả mìn vẫn nằm nguyên cho người tới sau.
+    local sl = {}
+    for k, v in pairs(config.skip_layers) do sl[k] = v end
+    ctx.skip_layers = sl
 
     ngx.log(ngx.DEBUG,
         "[classifier] class=", class,
