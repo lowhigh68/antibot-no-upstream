@@ -108,6 +108,10 @@ function _M.run(ctx)
     -- đường thoát để detection/bot/init.lua biết khỏi ghi lại dấu còn hạn.
     ctx.crawler_subnet_marked = val(res[cidr_16 and 3 or 2]) ~= nil
 
+    -- Dải này có đang bị chặn không. detection/bot/init.lua CHỈ ghi dấu /24 khi
+    -- cờ này bật — xem chú thích CRAWLER24_PREFIX bên đó để biết vì sao.
+    ctx.fleet_dyn_present = (v24 ~= nil) or (v16 ~= nil)
+
     if not v24 and not v16 then return true, false end
 
     -- Crawler đã chứng minh danh tính ở lượt trước → thả xuống pipeline như

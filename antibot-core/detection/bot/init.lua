@@ -66,6 +66,29 @@ local CRAWLER_TTL    = 3600
 -- Cố ý KHÔNG cho aggregator đọc dấu này: bucket vẫn ghi nhận đúng thực tế, cờ
 -- fl:dyn vẫn hiện trên dashboard, chỉ mất hiệu lực RST. Crawler ngừng xác minh
 -- thì dấu hết hạn sau 6h và tường dựng lại.
+--
+-- ĐIỀU KIỆN `ctx.fleet_dyn_present` — BẮT BUỘC, và đây là bài học đắt nhất của
+-- bản vá này. Lập luận an toàn ban đầu là: "muốn lợi dụng phải có IP nằm chung
+-- /24 với crawler đã xác minh, tức nằm trong không gian địa chỉ của chính
+-- Baidu/Google/Bing." Tiền đề đó GIẢ ĐỊNH crawler chạy trên hạ tầng riêng.
+--
+-- Amazonbot phá vỡ nó: PTR `*.crawl.amazonbot.amazon`, xác nhận xuôi sạch, S4
+-- hợp lệ — nhưng chạy trên **EC2**, đám mây công cộng ai cũng thuê được. Đo
+-- 2026-08-09, 90 phút sau deploy: cloud28-246 sinh **341** dấu /24, tuyệt đại
+-- đa số là dải EC2 (52/54/3/44/18/23/34/100/98/107/35), tức ~87.000 địa chỉ AWS
+-- ra khỏi tầm fleet — trong khi KHÔNG một dải AWS nào đang bị fleet chặn. Toàn
+-- bộ số dấu đó là dư thừa: không chữa bệnh gì, chỉ mở cửa. Máy cào thuê EC2 rơi
+-- trúng một trong các /24 đó là vô hình với fleet.
+-- (`dns_rev_valid` không bịt được: Amazonbot có reverse DNS THẬT, chỉ là nằm
+-- trong không gian địa chỉ DÙNG CHUNG. Cùng rủi ro với Bingbot ở 40.77.x/Azure.
+-- Ngược lại 66.249.x, 17.x, 116.179.x, 95.108.x là không gian riêng — an toàn.)
+--
+-- Vì sao gác bằng "đang có lệnh chặn" là đúng chứ không phải vá tạm: dấu per-IP
+-- có HAI chức năng — phòng ngừa (thôi nuôi xô) và khắc phục (miễn RST). Dấu /24
+-- chỉ có chức năng THỨ HAI, vì aggregator cố ý không đọc nó. Nó thuần tuý là
+-- thuốc chữa, nên gác bằng điều kiện "đang có bệnh" KHÔNG mất một chút lợi ích
+-- nào. Đường lan vẫn nguyên: trong một dải bị chặn, IP nào có dấu per-IP sẽ sống
+-- sót → ghi dấu cho /24 của nó → cả /24 mở ra trong vài giây.
 local CRAWLER24_PREFIX = "crawler24:"
 local CRAWLER24_TTL    = 21600
 
@@ -347,6 +370,7 @@ function _M.run(ctx)
     -- đã ghép sẵn vào pipeline — dấu còn hạn thì bỏ hẳn lệnh ghi, cùng lý do
     -- tiết chế như dấu per-IP.
     if ctx.ip and ctx.ip ~= ""
+       and ctx.fleet_dyn_present == true
        and ctx.crawler_subnet_marked ~= true
        and ctx.good_bot_verified == true
        and ctx.dns_rev_valid == true then
