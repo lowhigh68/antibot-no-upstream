@@ -20,17 +20,47 @@ local function auth()
     return true
 end
 
+-- `limit` chỉ chặn số KẾT QUẢ, KHÔNG chặn số vòng quét — đó là lỗ hổng chi phí.
+-- Một mẫu ít khoá (`fl:dyn:*` 1 khoá / trần 500, `nonce:*`, `ban_ctx:*`) không
+-- bao giờ chạm trần kết quả nên vòng `until cursor == "0"` quét TRỌN keyspace
+-- rồi trả về vài khoá. Mười tám mẫu như vậy trong một lần dựng trang, mà trang
+-- tự nạp lại theo `setInterval` ở cuối file.
+--
+-- Đo 2026-08-09 (`INFO commandstats`): **57.470.696 lệnh SCAN** = 46,5% tổng số
+-- lệnh Redis và **94,5% tổng thời gian xử lý lệnh** (2.000 trên 2.117 giây).
+-- SCAN đắt gấp 27 lần GET (34,81 µs so với 2,13 µs).
+--
+-- Đặt lại tỷ lệ cho đúng: 2.000 giây CPU trên `uptime` 141.704 giây = **1,5%
+-- một core**, nên đây KHÔNG phải nguồn của load average (thủ phạm là php-fpm).
+-- Vẫn sửa vì chi phí thật nằm ở phía OpenResty: mỗi vòng SCAN là một lượt
+-- round-trip cosocket kèm cấp phát bảng Lua, và nó tăng tuyến tính theo độ
+-- phình của keyspace.
+--
+-- COUNT 100 → 1000: giảm 10 lần số round-trip cho cùng phạm vi quét.
+-- SCAN_MAX_ITER: trần CỨNG, chặn chi phí bất kể keyspace lớn cỡ nào.
+local SCAN_COUNT    = 1000
+local SCAN_MAX_ITER = 100   -- ≤ 100.000 khoá được soi mỗi mẫu
+
 local function scan_keys(red, pattern, limit)
     local cursor, results, scanned = "0", {}, 0
     limit = limit or 500
+    local iter = 0
     repeat
-        local res = red:scan(cursor, "MATCH", pattern, "COUNT", 100)
+        local res = red:scan(cursor, "MATCH", pattern, "COUNT", SCAN_COUNT)
         if not res then break end
         cursor = res[1]
         for _, k in ipairs(res[2]) do
             table.insert(results, k)
             scanned = scanned + 1
             if scanned >= limit then return results end
+        end
+        iter = iter + 1
+        if iter >= SCAN_MAX_ITER then
+            -- Bảng hiển thị bị cắt. Log để người vận hành biết đang nhìn dữ
+            -- liệu thiếu chứ không tưởng là keyspace đã hết.
+            ngx.log(ngx.WARN, "[admin] scan_keys cham tran vong lap pattern=",
+                    pattern, " iter=", iter, " ket_qua=", scanned)
+            break
         end
     until cursor == "0"
     return results
@@ -1625,7 +1655,10 @@ function renderFleet(d){
   setHTML('t-fleet-dyn', rowsd || nodata(3))
 }
 
-setInterval(load,10000)
+// 10s -> 60s. Moi lan nap chay ~18 lenh scan_keys, moi lenh la mot loat
+// round-trip SCAN sang Redis. Mot tab de mo o 10s = ~18 vong quet keyspace
+// moi 10 giay, chay lien tuc ca ngay. Xem chu thich scan_keys dau file.
+setInterval(load,60000)
 load()
 </script>
 </body>

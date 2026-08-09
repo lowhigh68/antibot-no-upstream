@@ -175,11 +175,31 @@ _M.rate = {
     -- stable list, paired with bot verification registry (data/goodbot.json).
     -- This is metadata for tuning, NOT a detection pattern list.
     good_bot_rate = {
+        -- 2026-08-09: hạ toàn thang còn 2/3 (180/60/30/60 → 120/40/20/40).
+        --
+        -- Bối cảnh đo trên cloud28-246: `nproc`=6, load average **7.62** =
+        -- 127% quá tải, `%Cpu 0.0 id / 0.0 wa`, `sy` 51,7% > `us` 47,5% (32
+        -- tiến trình php-fpm tranh 6 core). Bot chiếm **37–59% số request** của
+        -- ba domain ngốn CPU nhất (vietship.net 37%, inachau.net 38%,
+        -- xaydungachau.net 59%), và toàn bộ là `action=allow` ⇒ chạy PHP đầy đủ.
+        --
+        -- Chọn 2/3 chứ không phải 1/2: đủ để đo được tác động mà chưa cắt sâu,
+        -- còn dư địa siết tiếp nếu số liệu ngày mai cho thấy cần.
+        --
+        -- KHÔNG có rủi ro SEO: 429 kèm `Retry-After` là tín hiệu CHUẨN mà
+        -- Google/Bing hiểu và tự giảm nhịp cào — không phải lỗi, không ảnh
+        -- hưởng chỉ mục. 120 lượt/phút vẫn là 2 req/giây dành riêng cho
+        -- Googlebot trên một máy dùng chung.
+        --
+        -- ĐỪNG KỲ VỌNG QUÁ: ước lượng phần cắt được ~10.000 lượt/ngày trên nền
+        -- ~400.000 ≈ 2,5%. Gốc của 127% KHÔNG nằm ở antibot mà ở cache trang và
+        -- `pm.max_children` (32 tiến trình trên 6 core là tự bóp cổ). Siết bot
+        -- là việc đúng nhưng không thay thế được hai thứ đó.
         classes = {
-            polite     = 180,  -- 3 req/sec — search engine ổn định
-            moderate   = 60,   -- 1 req/sec — verified nhưng từng có history aggressive
-            aggressive = 30,   -- 0.5 req/sec — known low-quality crawl
-            default    = 60,   -- unknown verified bot fallback
+            polite     = 120,  -- 2 req/sec — search engine ổn định
+            moderate   = 40,   -- verified nhưng từng có history aggressive
+            aggressive = 20,   -- known low-quality crawl
+            default    = 40,   -- unknown verified bot fallback
         },
         map = {
             -- Polite: established search engines, stable crawl patterns
@@ -225,6 +245,23 @@ _M.rate = {
             -- ngộ: bytespider, semrushbot, mj12bot, duckduckbot — chúng vẫn
             -- chết cho tới khi được đưa vào goodbot.json.
             yandex      = "aggressive",
+            -- seranking / petalbot: đo 2026-08-09 phát hiện CẢ HAI đều không có
+            -- trong bảng ⇒ rơi về `default`, tức tầng RỘNG GẤP ĐÔI `aggressive`
+            -- — đúng chiều ngược lại với giá trị chúng mang lại.
+            --
+            -- SE Ranking là công cụ phân tích backlink: nó cào site của khách
+            -- hàng để bán dữ liệu cho người khác, chủ site không nhận lại gì.
+            -- Một IP duy nhất `95.217.114.145` (PTR
+            -- `discovery-crawler30.blex.seranking.com`) gửi **2.173 request chỉ
+            -- riêng vietship.net**. Khoá `seranking` khớp tiền tố nên phủ cả
+            -- `serankingbacklinksbot` lẫn các biến thể khác.
+            --
+            -- Cả hai đi đường S2.5 (`contact_ptr_match`) chứ không vào registry
+            -- — đúng nguyên tắc: registry dành cho bot có giá trị SEO/truyền
+            -- thông, bảng này chỉ là cái trần đặt sẵn cho ai tự chứng minh được
+            -- tới S2.5.
+            seranking   = "aggressive",
+            petalbot    = "aggressive",
         },
 
         -- Adaptive promotion tunables
