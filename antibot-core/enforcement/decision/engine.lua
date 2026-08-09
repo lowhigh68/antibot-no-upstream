@@ -107,9 +107,39 @@ end
 -- effective_class: resolve base class -> effective class via adaptive promotion.
 -- Reads `gb_aggression:<bot>` (Redis counter, TTL self-decay).
 -- Returns (effective_class_label, aggression_score).
+-- Tra lớp theo HỌ: khớp khoá chính xác trước, trượt thì lấy khoá dài nhất là
+-- TIỀN TỐ của tên bot.
+--
+-- Vì sao cần: ua_check bóc tên bằng `([%w%-]+[Bb]ot[%w%-]*)` — đuôi `[%w%-]*`
+-- tham lam nên tên thật ra là `coccocbot-web`, `duckduckbot-https`,
+-- `meta-externalagent`, `yandexrenderresourcesbot`. Tra khoá chính xác vào bảng
+-- `map` (khoá `coccocbot`, `duckduckbot`, `meta`, `yandex`) TRƯỢT HẾT, tất cả
+-- rơi về `default`. Kiểm 2026-08-09: trong 13 mục của map chỉ 5 mục từng chạy
+-- được (googlebot/bingbot/applebot/amazonbot/baiduspider) — `meta` và
+-- `coccocbot` lệch khoá (may là `default`=60 tình cờ bằng `moderate`=60 nên
+-- chưa lộ), số còn lại chết vì lý do khác (xem chú thích trong config.lua).
+--
+-- Liệt kê từng biến thể là kiểu chống-mẫu mà repo đã bỏ một lần rồi
+-- (auth_endpoint v1→v2). Một khoá `yandex` phủ cả họ.
+--
+-- Chỉ ảnh hưởng TRẦN TỐC ĐỘ, không ảnh hưởng việc kết nạp: muốn vào nhánh này
+-- vẫn phải qua DNS. Khớp rộng quá thì hậu quả tối đa là siết nhầm lớp, không
+-- phải cho qua nhầm.
+local function class_for_bot(bot, map)
+    local exact = map[bot]
+    if exact then return exact end
+    local best, best_len = nil, 0
+    for k, v in pairs(map) do
+        if #k > best_len and bot:sub(1, #k) == k then
+            best, best_len = v, #k
+        end
+    end
+    return best
+end
+
 local function effective_class(bot)
     local conf       = cfg.rate.good_bot_rate
-    local base_class = conf.map[bot] or "default"
+    local base_class = class_for_bot(bot, conf.map) or "default"
     local agg        = tonumber(pool.safe_get("gb_aggression:" .. bot)) or 0
 
     if agg < conf.promotion_threshold_1 then
@@ -391,6 +421,29 @@ function _M.run(ctx)
         -- lite_verify) để antibot.log distinguish path verification.
         ctx.action_reason = ctx.action_reason or "good_bot_verified"
         return "allow"
+    end
+
+    -- Trần tốc độ cho bot đã attest S2.5 (contact_ptr_match / contact_org_match
+    -- / contact_cloud_attested / analyzer_attested).
+    --
+    -- Trước đây trần CHỈ nằm trong nhánh good_bot_verified phía trên, nên nhóm
+    -- S2.5 hoàn toàn KHÔNG có trần nào. Đo 2026-08-09 trên cloud28-246:
+    -- 15.053 lượt/ngày thuộc nhóm này, tổng số lượt bị siết là 1.690 và khớp
+    -- gần đúng `good_bot_rate_aggressive`=1.697 — tức không một lượt S2.5 nào
+    -- từng bị siết.
+    --
+    -- Đặt SAU nhánh verified và TRƯỚC chấm điểm. An toàn vì S2.5 vốn đã được
+    -- `s25_cap_monitor` chặn không cho lên block/challenge — thêm trần ở đây
+    -- chỉ SIẾT chặt hơn, không hạ cấp bất kỳ lệnh chặn nào.
+    --
+    -- Bắt buộc có `good_bot_name`: analyzer_attested đi từ UA dạng trình duyệt
+    -- nên có thể không có tên, mà thiếu tên thì khoá đếm rơi về
+    -- `gb_rate:unknown:<phút>` — một xô dùng chung cho mọi bot vô danh, vừa sai
+    -- ngữ nghĩa vừa siết oan lẫn nhau.
+    if ctx.bot_identity_tier == "S2.5" and ctx.good_bot_name then
+        if throttle_good_bot_rate(ctx) then
+            return "throttled"
+        end
     end
 
     local raw_score  = ctx.score or 0

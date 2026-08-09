@@ -189,9 +189,12 @@ _M.rate = {
             duckduckbot = "polite",
 
             -- Moderate: verified but observed aggressive on this stack
+            -- Khoá ở đây là tên HỌ. engine.lua:class_for_bot khớp chính xác
+            -- trước, trượt thì lấy khoá dài nhất là tiền tố — nên `meta` bắt
+            -- được `meta-externalagent` và `coccocbot` bắt được `coccocbot-web`.
+            -- Trước 2026-08-09 cả hai lệch khoá và âm thầm rơi về `default`.
             meta             = "moderate",
             coccocbot        = "moderate",
-            yandexbot        = "moderate",
 
             -- Aggressive: known low-value or aggressive crawlers
             bytespider  = "aggressive",
@@ -210,6 +213,18 @@ _M.rate = {
             -- -video/-news/-render) đều rút về cùng tên `baiduspider` ở ua_check
             -- nên chia CHUNG một hạn mức — rotation IP không nhân được nó lên.
             baiduspider = "aggressive",
+            -- yandex: khoá HỌ, phủ yandexbot / yandexrenderresourcesbot /
+            -- yandexmobilebot / … nhờ khớp tiền tố. Yandex tự sở hữu AS13238 và
+            -- tài liệu chính thức yêu cầu xác minh PTR + xác nhận xuôi, nên nó
+            -- đủ tiêu chuẩn S4 bằng DNS hai chiều — KHÔNG cần mở cổng ASN nào,
+            -- khác hẳn ca Baidu (đi nhờ AS4837) và PetalBot (cloud bán lẻ).
+            --
+            -- Trước 2026-08-09 mục này là `yandexbot = "moderate"` và là CẤU
+            -- HÌNH CHẾT: trần nằm trong nhánh good_bot_verified mà Yandex không
+            -- có trong registry nên không bao giờ vào được nhánh đó. Cùng cảnh
+            -- ngộ: bytespider, semrushbot, mj12bot, duckduckbot — chúng vẫn
+            -- chết cho tới khi được đưa vào goodbot.json.
+            yandex      = "aggressive",
         },
 
         -- Adaptive promotion tunables

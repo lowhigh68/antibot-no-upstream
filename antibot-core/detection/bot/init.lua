@@ -41,6 +41,34 @@ local FAKE_VERDICT_TTL    = 1800
 local CRAWLER_PREFIX = "crawler:"
 local CRAWLER_TTL    = 3600
 
+-- Dấu mức /24. Dấu per-IP ở trên KHÔNG đủ, và lý do nằm ở thứ tự thật của
+-- STEPS_COMMON (init.lua:50 rồi :54): aggregator chạy TRƯỚC check_block, cố ý,
+-- để lưu lượng đã bị chặn vẫn nuôi bucket. Hệ quả: IP crawler CHƯA có dấu chạy
+-- hết pipeline 27 lệnh của aggregator rồi mới ăn RST — tức chính request vừa bị
+-- bắn lại gia hạn đúng cái cờ đã bắn nó. Baidu xoay IP trong một /24 nhanh hơn
+-- TTL 1h của dấu nên luôn còn IP chưa dấu để nuôi cờ ⇒ điểm cân bằng ỔN ĐỊNH,
+-- không phải dao động rồi tự khỏi như ghi chú 2026-08-08 giả định.
+--
+-- Đo 2026-08-09, ba máy cùng patch, tương quan tuyệt đối:
+--   28-246   không còn fl:dyn dải 116.179 → Baidu 584 xác minh /     3 bị chặn
+--   168-101  còn cờ                       → Baidu 699 xác minh / 6.889 bị chặn
+--   168-118  còn cờ                       → Baidu 1.781 xác minh / 2.278 bị chặn
+-- 28-246 thoát KHÔNG phải vì cơ chế tự lành mà vì lượng Baidu ở đó quá thấp để
+-- /24 vượt ngưỡng confirm.
+--
+-- CHỈ cấp cho DNS HAI CHIỀU (`good_bot_verified` AND `dns_rev_valid`), hẹp hơn
+-- hẳn dấu per-IP. Điều kiện `dns_rev_valid` loại đường ASN fallback (S3) ra:
+-- AS8075 vừa là Bing vừa là Azure (hiểm hoạ đã ghi ở fleet/trusted.lua:30-34),
+-- cấp dấu /24 theo S3 sẽ kéo cả dải hàng xóm Azure ra khỏi tầm fleet. Với DNS
+-- hai chiều, muốn lợi dụng phải có IP nằm chung /24 với crawler đã xác minh —
+-- tức nằm trong không gian địa chỉ của chính Baidu/Google/Bing.
+--
+-- Cố ý KHÔNG cho aggregator đọc dấu này: bucket vẫn ghi nhận đúng thực tế, cờ
+-- fl:dyn vẫn hiện trên dashboard, chỉ mất hiệu lực RST. Crawler ngừng xác minh
+-- thì dấu hết hạn sau 6h và tường dựng lại.
+local CRAWLER24_PREFIX = "crawler24:"
+local CRAWLER24_TTL    = 21600
+
 -- Suffix-match helper: ptr ends with "." .. host, or equals host (case-insensitive).
 -- Used by Path 1 (contact attest) and Path 2 (analyzer attest).
 local function ptr_suffix_matches(ptr, host)
@@ -312,6 +340,21 @@ function _M.run(ctx)
             or r == "contact_ptr_match"
             or r == "contact_org_match") then
         pool.safe_set(CRAWLER_PREFIX .. ctx.ip, "1", CRAWLER_TTL)
+    end
+
+    -- Dấu mức /24 (xem chú thích CRAWLER24_PREFIX ở đầu file).
+    -- `ctx.crawler_subnet_marked` do fleet/check_block đặt ở đầu request từ GET
+    -- đã ghép sẵn vào pipeline — dấu còn hạn thì bỏ hẳn lệnh ghi, cùng lý do
+    -- tiết chế như dấu per-IP.
+    if ctx.ip and ctx.ip ~= ""
+       and ctx.crawler_subnet_marked ~= true
+       and ctx.good_bot_verified == true
+       and ctx.dns_rev_valid == true then
+        local a, b, c = ctx.ip:match("^(%d+)%.(%d+)%.(%d+)%.")
+        if a then
+            pool.safe_set(CRAWLER24_PREFIX .. a .. "." .. b .. "." .. c .. ".0/24",
+                          "1", CRAWLER24_TTL)
+        end
     end
 
     -- Ghi phán quyết xác minh cho tầng ban, CHỈ khi ban_store vừa defer một

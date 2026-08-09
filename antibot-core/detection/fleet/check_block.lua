@@ -1,11 +1,15 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 
+-- GIỮ ĐỒNG BỘ với CRAWLER24_PREFIX trong detection/bot/init.lua.
+local CRAWLER24_PREFIX = "crawler24:"
+
 -- Fleet dynamic-block enforcement check.
 --
--- Runs as the FIRST step inside STEPS_COMMON (right after ctx_layer.init,
--- before the fleet aggregator) so blocked requests cost only 1 Redis RTT
--- and never touch session/ban/transport/score pipelines.
+-- Runs inside STEPS_COMMON right AFTER the fleet aggregator (init.lua:50 then
+-- :54) — deliberately, so traffic that is already dyn-blocked keeps feeding the
+-- bucket and the analyzer has something to re-detect from. Blocked requests
+-- still short-circuit here, before session/ban/transport/score.
 --
 -- Reads two keys per request via a single Redis pipeline (GET x2):
 --   fl:dyn:<cidr_24>   written by analyzer.update_sustained() after a /24
@@ -84,6 +88,7 @@ function _M.run(ctx)
     red:init_pipeline()
     red:get("fl:dyn:" .. cidr_24)
     if cidr_16 then red:get("fl:dyn:" .. cidr_16) end
+    red:get(CRAWLER24_PREFIX .. cidr_24)
     local res, perr = red:commit_pipeline()
     pool.put(red)
     if not res then
@@ -98,6 +103,11 @@ function _M.run(ctx)
 
     local v24 = val(res[1])
     local v16 = cidr_16 and val(res[2]) or nil
+
+    -- Dấu /24 đọc kèm trong CÙNG pipeline (không thêm RTT). Đặt cờ TRƯỚC mọi
+    -- đường thoát để detection/bot/init.lua biết khỏi ghi lại dấu còn hạn.
+    ctx.crawler_subnet_marked = val(res[cidr_16 and 3 or 2]) ~= nil
+
     if not v24 and not v16 then return true, false end
 
     -- Crawler đã chứng minh danh tính ở lượt trước → thả xuống pipeline như
@@ -105,6 +115,13 @@ function _M.run(ctx)
     -- fleet RST oan. Cờ do fleet/aggregator đặt — nó chạy TRƯỚC module này
     -- (xem thứ tự STEPS_COMMON trong init.lua) nên ở đây không tốn Redis.
     if ctx.is_known_crawler then return true, false end
+
+    -- Miễn trừ cả /24 khi dải đó đã có crawler chứng minh bằng DNS hai chiều.
+    -- Đây là mảnh khép vòng: dấu per-IP không cứu nổi IP MỚI trong một /24 đang
+    -- bị chặn (nó chết trước khi kịp xác minh), nên cờ được nuôi vô hạn.
+    -- Xem chú thích CRAWLER24_PREFIX ở detection/bot/init.lua để biết vì sao
+    -- ranh giới cấp dấu hẹp hơn hẳn dấu per-IP.
+    if ctx.crawler_subnet_marked then return true, false end
 
     local matched, scope, info
     if v24 then matched, scope, info = cidr_24, "24", v24

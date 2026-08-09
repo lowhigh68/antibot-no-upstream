@@ -49,6 +49,12 @@
 
     "amazonbot":              ["crawl.amazonbot.amazon"],
 
-    "baiduspider":            ["crawl.baidu.com"]
+    "baiduspider":            ["crawl.baidu.com"],
+
+    "yandexbot":                  ["yandex.ru", "yandex.net", "yandex.com"],
+    "yandexrenderresourcesbot":   ["yandex.ru", "yandex.net", "yandex.com"],
+    "yandexmobilebot":            ["yandex.ru", "yandex.net", "yandex.com"],
+    "yandexaccessibilitybot":     ["yandex.ru", "yandex.net", "yandex.com"],
+    "yandexscreenshotbot":        ["yandex.ru", "yandex.net", "yandex.com"]
   }
 }
