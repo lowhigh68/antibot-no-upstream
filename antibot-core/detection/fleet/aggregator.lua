@@ -5,22 +5,29 @@ local trusted = require "antibot.detection.fleet.trusted"
 
 -- Aggregator — per-request Redis writes for fleet detection.
 --
--- For each non-trusted, non-IPv6 request, write 6 entries into a 1-minute
--- bucket scoped by the request's /24 (and the same for the parent /16):
+-- For each non-trusted, non-IPv6 request, write 8 entries into a 5-MINUTE
+-- bucket (BUCKET_SECS = 300 below; <bkt> = floor(now/300), NOT a minute index)
+-- scoped by the request's /24 — and a full mirror for the parent /16:
 --
---   fl:24:hit:<cidr_24>:<min>   INCR              total hits
---   fl:24:ips:<cidr_24>:<min>   PFADD <ip>        HLL distinct IPs
---   fl:24:fp:<cidr_24>:<min>    PFADD <fp_hash>   HLL distinct fingerprints
---   fl:24:path:<cidr_24>:<min>  ZINCRBY 1 <path>  for top-3 path share
---   fl:24:ver:<cidr_24>:<min>   INCR (verified only)
---   fl:24:ck:<cidr_24>:<min>    INCR (any cookie present)
---   fl:active:24:<min>          SADD <cidr_24>    analyzer scan-set
+--   fl:24:hit:<cidr_24>:<bkt>   INCR              total hits
+--   fl:24:ips:<cidr_24>:<bkt>   PFADD <ip>        HLL distinct IPs
+--   fl:24:fp:<cidr_24>:<bkt>    PFADD <fp_hash>   HLL distinct fingerprints
+--   fl:24:path:<cidr_24>:<bkt>  ZINCRBY 1 <path>  for top-3 path share
+--   fl:24:ver:<cidr_24>:<bkt>   INCR (verified only)
+--   fl:24:ck:<cidr_24>:<bkt>    INCR (any cookie present)
+--   fl:24:uab:<cidr_24>:<bkt>   INCR (browser-token UA) — WRITTEN, NO READER
+--   fl:active:24:<bkt>          SADD <cidr_24>    analyzer scan-set
 --
--- /16 mirror keys with prefix fl:16:* for roll-up evaluation (NO fingerprint
--- HLL at /16 because aggregating across multiple /24s in HLL is meaningless
--- — analyzer derives /16 confirm from /24 roll-up logic instead).
+-- The fl:16:* mirror is a FULL parallel set, fingerprint HLL INCLUDED
+-- (fl:16:fp, PFADD below alongside the /24 write). The analyzer evaluates the
+-- /16 DIRECTLY off these keys via fast_path_eval → evaluate_prefix("16", …);
+-- field evidence 2026-08-09 on cloud28-246:
+--     [fleet.analyzer] FAST DYN BLOCK 54.39.0.0/16 hits=55 ips=55 fp=1
+-- `fp=1` is read straight from fl:16:fp. The /24 roll-up (fl:rollup:*) is a
+-- SECOND, independent route to a /16 confirm — not a substitute for this one.
 --
--- Bucket TTL = cfg.fleet_detection.timing.bucket_ttl (default 180s).
+-- Bucket TTL = cfg.fleet_detection.timing.bucket_ttl (default 900s — see the
+-- BUCKET_TTL fallback below and core/config.lua timing.bucket_ttl).
 -- All writes go through a single Redis pipeline → 1 RTT per request.
 
 -- 5-minute sliding bucket: rotation attacks spread requests thin per /24
