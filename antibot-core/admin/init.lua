@@ -58,6 +58,12 @@ local function scan_keys(red, pattern, limit)
                 -- phần bị bỏ lại KHÔNG phải "phần đuôi" mà là một tập tuỳ ý —
                 -- một domain có thể còn khoá `req` nhưng mất khoá `allow`, cho
                 -- ra Total=21.297 / Clean=0 trong khi domain bên cạnh vẫn đủ.
+                --
+                -- `truncated` để nơi gọi biết con số mình có chỉ là CẬN DƯỚI.
+                -- Không có cờ này thì `#results` trông y hệt một tổng thật, và
+                -- dashboard đi hiển thị đúng hằng số `limit` như thể nó là số
+                -- liệu (đã xảy ra: "Threat Feed IPs" đứng yên ở 5000).
+                results.truncated = true
                 ngx.log(ngx.WARN, "[admin] scan_keys cham tran ket qua pattern=",
                         pattern, " limit=", limit, " — BANG HIEN THI BI CAT")
                 return results
@@ -67,6 +73,7 @@ local function scan_keys(red, pattern, limit)
         if iter >= SCAN_MAX_ITER then
             -- Bảng hiển thị bị cắt. Log để người vận hành biết đang nhìn dữ
             -- liệu thiếu chứ không tưởng là keyspace đã hết.
+            results.truncated = true
             ngx.log(ngx.WARN, "[admin] scan_keys cham tran vong lap pattern=",
                     pattern, " iter=", iter, " ket_qua=", scanned)
             break
@@ -214,11 +221,17 @@ local function render_data()
     end
 
     local ban_keys  = scan_keys(red, "ban:*",      5000)
-    local rep_keys  = scan_keys(red, "rep:*",      5000)
+    local rep_keys  = scan_keys(red, "rep:*",       500)
     local risk_keys = scan_keys(red, "risk:*",     5000)
-    local rate_keys = scan_keys(red, "rl:*",       2000)
+    -- `rep:*` chỉ dùng để lấy 20 dòng mẫu cho tab Threats (vòng lặp dưới break
+    -- ở 20). Quét 5000 khoá để lấy 20 là lãng phí thuần tuý — feed nạp hàng
+    -- trăm nghìn khoá `rep:` nên mọi giới hạn đều là mẫu, không phải "top".
+    -- 500 giữ nguyên tính chất mẫu với 1/10 chi phí.
+    -- (`rl:*` từng được quét ở đây cho thẻ "Rate Abusers" — đã gỡ, xem HTML.)
     local wl_ip_keys = scan_keys(red, "wl:*",      1000)
-    local nonce_keys    = scan_keys(red, "nonce:*",    500)
+    -- (`nonce:*` từng được quét cho thẻ "Pending Challenge" — đã gỡ. Số nonce
+    --  chưa giải tại một thời điểm không nói lên điều gì mà "Challenge hôm nay"
+    --  cộng "Phiên đã xác minh" chưa nói rõ hơn.)
     local verified_keys = scan_keys(red, "verified:*", 500)
     -- Filter stat keys theo HÔM NAY ngay ở SCAN. Toàn bộ stat:* qua 7 ngày
     -- × nhiều domain × nhiều sub-keys (allow/monitor/challenge/block/dev_*/
@@ -256,6 +269,20 @@ local function render_data()
     --   IDLE + TTL < 60s      → sắp expire + không enforce → ẩn khỏi bảng
     --   PERMANENT (TTL = -1)  → show (không bao giờ hết hạn)
     -- Redis entry không bị xoá, tự expire theo TTL.
+    -- Đếm THẬT bằng một lượt duyệt chuỗi thuần, KHÔNG chạm Redis.
+    -- Vòng lặp chi tiết bên dưới `break` ở 50 vì mỗi mục tốn 3 lệnh Redis
+    -- (ttl + rep + ip_risk), nên `#ban_ip_list` là CỠ TRANG chứ không phải
+    -- tổng. Thẻ Overview trước đây hiển thị chính cỡ trang đó ⇒ đứng yên ở
+    -- đúng 50 trong khi bảng ngay dưới chỉ vẽ 10 dòng đầu (`slice(0,10)`) —
+    -- hai con số, không con số nào là thật.
+    -- `ban:hit:*` và `ban:age:*` tự bị loại vì không khớp is_ipv4/is_identity.
+    local ban_ip_count, ban_id_count = 0, 0
+    for _, k in ipairs(ban_keys) do
+        local v = k:gsub("^ban:", "")
+        if     is_ipv4(v)     then ban_ip_count = ban_ip_count + 1
+        elseif is_identity(v) then ban_id_count = ban_id_count + 1 end
+    end
+
     local ban_ip_list, ban_id_list = {}, {}
     local ban_ip_hidden_count, ban_id_hidden_count = 0, 0
     for _, k in ipairs(ban_keys) do
@@ -341,21 +368,14 @@ local function render_data()
     end
     table.sort(rep_ips, function(a,b) return a.score > b.score end)
 
-    local rate_abusers = {}
-    for _, k in ipairs(rate_keys) do
-        local key = k:gsub("^rl:", "")
-        local val = tonumber(red:get(k)) or 0
-        if val >= 100 then
-            if is_ipv4(key) then
-                table.insert(rate_abusers, {key=key, kind="ip",       rate=val})
-            elseif is_identity(key) then
-                table.insert(rate_abusers, {key=key, kind="identity", rate=val})
-            end
-        end
-        if #rate_abusers >= 30 then break end
-    end
-    table.sort(rate_abusers, function(a,b) return a.rate > b.rate end)
-
+    -- "Rate Abusers" ĐÃ GỠ. Ba lý do, theo thứ tự quan trọng:
+    --   1. Nó gần như luôn rỗng, và rỗng vì lý do CẤU TRÚC chứ không phải vì
+    --      hệ thống sạch: `rl:<ip>` chỉ sống 60 giây, còn kẻ lạm dụng nặng
+    --      nhất đã bị `l7/ban/ip_ban_check` chặn ở cửa TRƯỚC khi tầng l7 kịp
+    --      đếm ⇒ đúng nhóm cần thấy thì không bao giờ xuất hiện ở đây.
+    --   2. Mẫu lấy từ SCAN 2000 khoá theo thứ tự bucket, nên kể cả khi có kẻ
+    --      vượt 100 req/phút thì cũng dễ nằm ngoài mẫu.
+    --   3. Nội dung trùng tab Bans/Threats — nơi đã có bằng chứng đầy đủ hơn.
     local wl_ips = {}
     for _, k in ipairs(wl_ip_keys) do
         if k:match("^wl:%d+%.%d+%.%d+%.%d+$") then
@@ -501,6 +521,16 @@ local function render_data()
                     end
                 end
             end
+        end
+    end
+
+    -- Tổng hôm nay, cộng từ domain_map (đã chính xác từ khi bỏ SCAN cho bảng
+    -- Domain). Đây là con số DUY NHẤT ở Overview không lặp lại tab nào: tab
+    -- Domains chỉ liệt kê từng dòng, không có hàng tổng.
+    local today_tot = {req=0, allow=0, monitor=0, throttled=0, challenge=0, block=0}
+    for _, s in pairs(domain_map) do
+        for _, f in ipairs(DOMAIN_FIELDS) do
+            today_tot[f] = today_tot[f] + (s[f] or 0)
         end
     end
 
@@ -679,23 +709,29 @@ local function render_data()
     ngx.say(cjson.encode({
         summary = {
             ban_total     = #ban_keys,
-            ban_ip        = #ban_ip_list,
-            ban_id        = #ban_id_list,
+            -- Tổng THẬT (đếm chuỗi), khác `ban_ip_shown` là số dòng vẽ được.
+            ban_ip        = ban_ip_count,
+            ban_id        = ban_id_count,
+            ban_ip_shown  = #ban_ip_list,
+            ban_id_shown  = #ban_id_list,
+            -- SCAN `ban:*` chạm trần ⇒ hai con số trên chỉ là CẬN DƯỚI. UI thêm
+            -- dấu "≥" thay vì im lặng trình bày chúng như tổng.
+            ban_capped    = ban_keys.truncated and true or false,
             ban_ip_hidden = ban_ip_hidden_count,
             ban_id_hidden = ban_id_hidden_count,
-            rep_total     = #rep_keys,
-            risk_total    = #risk_keys,
-            rate_total    = #rate_abusers,
-            wl_ip_total   = #wl_ips,
-            wl_url_total  = #wl_urls,
-            pending       = #nonce_keys,
+            -- (`risk_total`/`wl_ip_total`/`wl_url_total` đã gỡ cùng các thẻ
+            --  Overview tương ứng — số liệu đó thuộc về tab Threats/Whitelist,
+            --  nơi đã có danh sách đầy đủ.)
             verified      = #verified_keys,
+            -- Cùng bệnh với ban: `verified:*` quét tối đa 500 nên khi vượt
+            -- ngưỡng, thẻ sẽ đứng yên ở đúng 500. Đánh dấu để UI thêm "≥".
+            verified_capped = verified_keys.truncated and true or false,
         },
+        today = today_tot,
         ban_ip_list  = arr(ban_ip_list),
         ban_id_list  = arr(ban_id_list),
         high_risk    = arr(high_risk),
         rep_ips      = arr(rep_ips),
-        rate_abusers = arr(rate_abusers),
         wl_ips       = arr(wl_ips),
         wl_urls      = arr(wl_urls),
         threat_sync  = tsync,
@@ -813,29 +849,43 @@ tr:hover td{background:#1c2129}
 
   <!-- -->
   <div id="tab-overview" class="pane active">
+    <div class="card" style="padding:10px 14px">
+      <h2 style="margin:0">📊 Kết cục lưu lượng — hôm nay</h2>
+      <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+        Tổng của mọi domain. Đây là số liệu <b>duy nhất</b> ở đây không có ở tab khác —
+        tab Domains chỉ liệt kê từng dòng, không có hàng tổng. Năm ô cộng lại bằng Total.
+      </div>
+    </div>
     <div class="g4" style="grid-template-columns:repeat(5,1fr)">
-      <div class="sc"><div class="sv red" id="s-ban">—</div><div class="sl">Banned IPs</div></div>
-      <div class="sc"><div class="sv red" id="s-banid">—</div><div class="sl">Banned Identities</div></div>
-      <div class="sc"><div class="sv orange" id="s-rep">—</div><div class="sl">Threat Feed IPs</div></div>
-      <div class="sc"><div class="sv blue" id="s-risk">—</div><div class="sl">High Risk IDs</div></div>
-      <div class="sc"><div class="sv gray" id="s-chal">—</div><div class="sl">Pending Challenge</div></div>
+      <div class="sc"><div class="sv" id="s-t-req">—</div><div class="sl">Tổng request</div></div>
+      <div class="sc"><div class="sv green" id="s-t-allow">—</div><div class="sl">Clean</div></div>
+      <div class="sc"><div class="sv gray" id="s-t-mon">—</div><div class="sl">Monitor</div></div>
+      <div class="sc"><div class="sv orange" id="s-t-thr">—</div><div class="sl">Throttled</div></div>
+      <div class="sc"><div class="sv red" id="s-t-block">—</div><div class="sl">Block</div></div>
+    </div>
+
+    <div class="card" style="padding:10px 14px">
+      <h2 style="margin:0">🔒 Đang thực thi — ngay lúc này</h2>
+      <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+        Dấu <b>≥</b> nghĩa là SCAN đã chạm trần nên con số là <b>cận dưới</b>, không phải tổng.
+      </div>
     </div>
     <div class="g4">
-      <div class="sc"><div class="sv" id="s-rate">—</div><div class="sl">Rate Abusers</div></div>
-      <div class="sc"><div class="sv green" id="s-wlip">—</div><div class="sl">Whitelisted IPs</div></div>
-      <div class="sc"><div class="sv green" id="s-wlurl">—</div><div class="sl">Whitelisted URLs</div></div>
-      <div class="sc"><div class="sv" id="s-verif">—</div><div class="sl">Verified Sessions</div></div>
+      <div class="sc"><div class="sv red" id="s-ban">—</div><div class="sl">IP đang cấm</div></div>
+      <div class="sc"><div class="sv red" id="s-banid">—</div><div class="sl">Identity đang cấm</div></div>
+      <div class="sc"><div class="sv orange" id="s-t-chal">—</div><div class="sl">Challenge hôm nay</div></div>
+      <div class="sc"><div class="sv" id="s-verif">—</div><div class="sl">Phiên đã xác minh</div></div>
     </div>
-    <div class="g2">
-      <div class="card">
-        <h2><span class="dot"></span>Top Banned IPs</h2>
-        <table><thead><tr><th>IP</th><th>Rep</th><th>Level</th><th>Action</th></tr></thead>
-        <tbody id="t-ban-ip"></tbody></table>
-      </div>
-      <div class="card">
-        <h2>⚡ Rate Abusers</h2>
-        <table><thead><tr><th>Key</th><th>Kind</th><th>Requests</th><th>Level</th></tr></thead>
-        <tbody id="t-rate"></tbody></table>
+
+    <div class="card">
+      <div style="font-size:12px;color:var(--color-text-secondary);line-height:1.7">
+        <b>Overview chỉ giữ số tổng.</b> Mọi danh sách chi tiết nằm ở đúng tab của nó, không lặp lại ở đây:<br>
+        🚫 <b>Bans</b> — danh sách IP/identity kèm nút gỡ cấm &nbsp;·&nbsp;
+        🔴 <b>Threats</b> — IP rủi ro cao từ feed &nbsp;·&nbsp;
+        ✅ <b>Whitelist</b> — IP/URL đã tha<br>
+        📡 <b>Feed Sync</b> — số IP/ASN đã nạp và lần đồng bộ gần nhất &nbsp;·&nbsp;
+        🌐 <b>Domains</b> — từng domain &nbsp;·&nbsp;
+        🎯 <b>Fleet Detection</b> — dải đang bị chặn
       </div>
     </div>
   </div>
@@ -1136,11 +1186,6 @@ function tag(score){
   if(score>=0.4) return '<span class="tag tag-blue">MEDIUM</span>'
   return '<span class="tag tag-gray">LOW</span>'
 }
-function rateTag(r){
-  if(r>=100) return '<span class="tag tag-red">FLOOD</span>'
-  if(r>=50)  return '<span class="tag tag-orange">HIGH</span>'
-  return '<span class="tag tag-blue">ELEVATED</span>'
-}
 function bar(v,w){
   w=w||70
   var c=v>=0.8?'#f85149':v>=0.5?'#f0883e':'#3fb950'
@@ -1219,20 +1264,36 @@ function load(){
   })
   .then(d=>{
     var s=d.summary
-    setText('s-ban',   s.ban_ip)
-    setText('s-banid', s.ban_id)
-    setText('s-rep',  s.rep_total)
-    setText('s-risk', s.risk_total)
-    setText('s-chal', s.pending)
-    setText('s-rate', s.rate_total)
-    setText('s-wlip', s.wl_ip_total)
-    setText('s-wlurl',s.wl_url_total)
-    setText('s-verif',s.verified)
+    // ── Overview: kết cục lưu lượng hôm nay ──
+    var t=d.today||{}
+    var tr=t.req||0
+    function withPct(v){
+      v=v||0
+      return tr>0 ? v.toLocaleString()+' ('+((v/tr)*100).toFixed(1)+'%)'
+                  : v.toLocaleString()
+    }
+    setText('s-t-req',   tr.toLocaleString())
+    setText('s-t-allow', withPct(t.allow))
+    setText('s-t-mon',   withPct(t.monitor))
+    setText('s-t-thr',   withPct(t.throttled))
+    setText('s-t-block', withPct(t.block))
+    setText('s-t-chal',  (t.challenge||0).toLocaleString())
+
+    // ── Overview: trạng thái thực thi ──
+    // "≥" khi SCAN chạm trần: con số là cận dưới, không phải tổng.
+    var ge = s.ban_capped ? '≥' : ''
+    setText('s-ban',   ge+s.ban_ip)
+    setText('s-banid', ge+s.ban_id)
+    setText('s-verif', (s.verified_capped ? '≥' : '')+s.verified)
+
     // Ẩn khỏi bảng: IDLE + TTL < 60s (sắp expire, không enforce).
     // IDLE với TTL còn lớn vẫn hiển thị với badge IDLE.
     var hiddenTotal = (s.ban_ip_hidden||0) + (s.ban_id_hidden||0)
-    var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' expiring hidden)' : ''
-    setText('ban-count',   s.ban_ip + ' IP' + hiddenSfx)
+    var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' sắp hết hạn, đã ẩn)' : ''
+    // Bảng chỉ vẽ tối đa 50 dòng (mỗi dòng tốn 3 lệnh Redis). Nói rõ ra thay vì
+    // để người đọc tưởng tổng bằng số dòng đang thấy.
+    var shownSfx = (s.ban_ip_shown < s.ban_ip) ? ' — hiển thị '+s.ban_ip_shown : ''
+    setText('ban-count', ge+s.ban_ip + ' IP' + shownSfx + hiddenSfx)
 
     // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
     // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)
@@ -1243,18 +1304,10 @@ function load(){
       return `<span class="tag tag-gray" style="font-size:9px" title="No L7 hit in 5m — L3 or traffic stopped">IDLE</span>`
     }
 
-    // Overview: top banned IPs
-    var bt=''
-    for(var r of (d.ban_ip_list||[]).slice(0,10)){
-      var risk=Math.max(r.rep||0, r.ip_risk||0)
-      var src=(r.ip_risk||0)>=(r.rep||0)?'Behavior':'Feed'
-      bt+=`<tr><td class="mono">${r.ip} ${statusTag(r)}</td>
-      <td>${bar(risk)}${(risk*100).toFixed(0)}% <span class="gray" style="font-size:10px">(${src})</span></td>
-      <td>${tag(risk)}</td>
-      <td class="gray" style="font-size:11px">${r.ttl||'-'}</td>
-      <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${r.ip}')">Unban</button></td></tr>`
-    }
-    setHTML('t-ban-ip', bt||nodata(4))
+    // Bảng "Top Banned IPs" của Overview ĐÃ GỠ: nó cắt 10 dòng đầu của cùng
+    // `ban_ip_list` mà tab Bans vẽ đầy đủ kèm identity con và nút gỡ cấm —
+    // trùng lặp thuần tuý, lại còn khiến thẻ "50" và bảng "10 dòng" mâu thuẫn
+    // nhau ngay trên một màn hình.
 
     // Bans tab: ONLY banned IPs, each with its banned identities (tidy)
     var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
@@ -1339,14 +1392,6 @@ function load(){
       rk+=`<tr><td class="mono">${trunc(r.id,20)}</td><td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td><td>${tag(r.risk)}</td></tr>`
     }
     setHTML('t-risk', rk||nodata(3))
-
-    // Rate abusers (IP + Identity)
-    var ra=''
-    for(var r of d.rate_abusers||[]){
-      var kb=r.kind==='identity'?'<span class="tag tag-blue" style="font-size:9px">ID</span>':'<span class="tag tag-gray" style="font-size:9px">IP</span>'
-      ra+=`<tr><td class="mono">${trunc(r.key,24)}</td><td>${kb}</td><td><b>${r.rate}</b> req</td><td>${rateTag(r.rate)}</td></tr>`
-    }
-    setHTML('t-rate', ra||nodata(4))
 
     // Whitelist IPs
     var wi=''
