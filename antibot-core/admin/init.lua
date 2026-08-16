@@ -230,7 +230,12 @@ local function render_data()
     -- tổng phải thật, không được là cỡ trang trá hình. Mỗi IP bị cấm sinh tới 2
     -- khoá (`ban:<ip>` + `ban:hit:<ip>`), identity thêm `ban:age:<id>` — nên
     -- 1.884 IP đang cấm đã ngốn quá 5.000 khoá cũ.
-    local ban_keys  = scan_keys(red, "ban:*",     40000, 400)
+    -- 800 vòng × COUNT 1000 ≈ 800.000 khoá soi được, trên `DBSIZE` đo được
+    -- 331.906 (2026-08-10) ⇒ biên gấp 2,4 lần. Đừng hạ sát nút: `COUNT` chỉ là
+    -- GỢI Ý, Redis có quyền trả ít hơn mỗi vòng, nên "vòng × COUNT" là cận
+    -- trên lạc quan chứ không phải bảo đảm. Chạm trần thì `truncated` bật và
+    -- error.log có dòng WARN — đó là lúc nới tiếp.
+    local ban_keys  = scan_keys(red, "ban:*",     40000, 800)
     local rep_keys  = scan_keys(red, "rep:*",       500)
     local risk_keys = scan_keys(red, "risk:*",     5000)
     -- `rep:*` chỉ dùng để lấy 20 dòng mẫu cho tab Threats (vòng lặp dưới break
@@ -277,7 +282,13 @@ local function render_data()
     --   PERMANENT (TTL = -1)  → show (không bao giờ hết hạn)
     --
     -- `ban:hit:*` và `ban:age:*` tự bị loại vì không khớp is_ipv4/is_identity.
-    local BAN_DETAIL_MAX = 5000
+    -- Đo thật 2026-08-10 trên cloud28-246: 6.623 IP + 10.630 identity đang bị
+    -- cấm. Con số 5.000 đặt trước đó là sizing theo một mẫu chưa đo (1.884) —
+    -- đúng loại "hằng số cỡ trang trá hình" mà chính đợt sửa này đi dọn.
+    -- 20.000 để dôi cho tăng trưởng; chạm trần thì `ban_detail_capped` bật.
+    -- Vì sao tích tụ tới cỡ đó: `cfg.ttl.ban_steps` bậc cuối là 2.592.000s =
+    -- 30 NGÀY, nên tổng luôn xấp xỉ "dòng vào mỗi ngày × 30".
+    local BAN_DETAIL_MAX = 20000
 
     local ip_cands, id_cands = {}, {}
     for _, k in ipairs(ban_keys) do
@@ -336,6 +347,14 @@ local function render_data()
         end
     end
 
+    -- Bảng Bans CHỈ vẽ identity nào có IP cũng đang bị cấm (nó lồng identity
+    -- dưới dòng IP). Trước đây cả 10.630 bản ghi vẫn được gửi xuống rồi bị
+    -- trình duyệt vứt — vài MB mỗi 60 giây cho thứ không bao giờ hiện.
+    -- Lọc ngay tại đây. Số bị loại vẫn được đếm và báo ra, không im lặng.
+    local ip_banned = {}
+    for _, r in ipairs(ban_ip_list) do ip_banned[r.ip] = true end
+    local ban_id_orphan = 0
+
     if #id_cands > 0 then
         red:init_pipeline()
         for _, v in ipairs(id_cands) do
@@ -366,6 +385,10 @@ local function render_data()
                             ua_short = (obj.ua or ""):sub(1, 60)
                         end
                     end
+                    if not ip_banned[ip_addr] then
+                        ban_id_orphan = ban_id_orphan + 1
+                        goto next_id
+                    end
                     table.insert(ban_id_list, {
                         id      = v,
                         risk    = tonumber(val_of(res[b + 3])) or 0,
@@ -376,6 +399,7 @@ local function render_data()
                         last_hit = last_hit > 0 and time_ago(last_hit) or "-",
                     })
                 end
+                ::next_id::
             end
         end
     end
@@ -758,6 +782,11 @@ local function render_data()
             ban_capped    = ban_keys.truncated and true or false,
             ban_ip_hidden = ban_ip_hidden_count,
             ban_id_hidden = ban_id_hidden_count,
+            -- Identity bị cấm nhưng IP của nó KHÔNG bị cấm ⇒ bảng không có chỗ
+            -- lồng nó vào. Lọc ở server để khỏi gửi thừa, nhưng đếm và báo ra.
+            ban_id_orphan = ban_id_orphan,
+            ban_detail_capped = (ban_ip_count > BAN_DETAIL_MAX
+                                 or ban_id_count > BAN_DETAIL_MAX),
             -- (`risk_total`/`wl_ip_total`/`wl_url_total` đã gỡ cùng các thẻ
             --  Overview tương ứng — số liệu đó thuộc về tab Threats/Whitelist,
             --  nơi đã có danh sách đầy đủ.)
@@ -939,6 +968,7 @@ tr:hover td{background:#1c2129}
         Unban/Whitelist riêng cho từng cấp. Sắp xếp theo risk giảm dần, <b>100 IP mỗi trang</b>.
         Trang đang xem được giữ nguyên qua mỗi lần tự nạp lại (60 giây).
       </div>
+      <div id="ban-filter" style="margin-bottom:8px"></div>
       <div id="ban-pager" style="margin-bottom:10px"></div>
       <table>
         <thead><tr>
@@ -1333,8 +1363,13 @@ function load(){
     var hiddenSfx = hiddenTotal > 0 ? ' (+'+hiddenTotal+' sắp hết hạn, đã ẩn)' : ''
     // Bảng chỉ vẽ tối đa 50 dòng (mỗi dòng tốn 3 lệnh Redis). Nói rõ ra thay vì
     // để người đọc tưởng tổng bằng số dòng đang thấy.
-    var shownSfx = (s.ban_ip_shown < s.ban_ip) ? ' — hiển thị '+s.ban_ip_shown : ''
-    setText('ban-count', ge+s.ban_ip + ' IP' + shownSfx + hiddenSfx)
+    var shownSfx = (s.ban_ip_shown < s.ban_ip) ? ' — nạp được '+s.ban_ip_shown : ''
+    var orphanSfx = (s.ban_id_orphan||0) > 0
+      ? ' · '+s.ban_id_orphan.toLocaleString()+' identity không thuộc IP nào đang cấm (không hiện)'
+      : ''
+    setText('ban-count',
+      ge+s.ban_ip.toLocaleString()+' IP · '+s.ban_id.toLocaleString()+' identity'
+      + shownSfx + hiddenSfx + orphanSfx)
 
     // Status tag: active = L7 có hit trong 5 phút; idle = entry vẫn còn TTL
     // nhưng không có hit → traffic đã ngừng tới L7 (L3 lọc upstream hoặc bot dừng)
@@ -1450,7 +1485,30 @@ function load(){
 // Dữ liệu về một lần rồi giữ trong BANS; nút chuyển trang chỉ vẽ lại, không
 // gọi lại API. `page` được giữ qua mỗi lần tự nạp 60s — nhảy về trang 1 mỗi
 // phút thì không ai đọc hết được 19 trang.
-var BANS={keys:[],groups:{},page:1,per:100}
+// `filter` mặc định 'active' — chỉ những IP CÒN ĐANG đâm vào tường.
+// Lý do: đo 2026-08-10 trên cloud28-246 có 6.623 IP + 10.630 identity đang bị
+// cấm, nhưng chỉ 44 khoá `ban:hit:*` (TTL 300s) tồn tại ⇒ **99,7% lệnh cấm
+// đang ngủ**. Chúng là hồ sơ, không phải sự việc. Mặc định mở ra 67 trang hồ
+// sơ ngủ thì không ai lật hết; mặc định 'active' cho thẳng thứ đang xảy ra.
+var BANS={keys:[],groups:{},page:1,per:100,filter:'active'}
+
+// Một IP tính là "đang hit" nếu chính nó, hoặc một identity dưới nó, có
+// `ban:hit:` còn hạn (nghĩa là L7 vừa thi hành lệnh cấm trong 5 phút qua).
+function banGroupActive(g){
+  if(g.status==='active') return true
+  for(var r of g.ids){ if(r.status==='active') return true }
+  return false
+}
+function banVisibleKeys(){
+  if(BANS.filter!=='active') return BANS.keys
+  var groups=BANS.groups
+  return BANS.keys.filter(function(k){ return banGroupActive(groups[k]) })
+}
+function setBanFilter(f){
+  BANS.filter=f
+  BANS.page=1
+  renderBansPage(1)
+}
 
 var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
 var devMap={
@@ -1485,7 +1543,21 @@ function banBadge(r){
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 
 function renderBansPage(page){
-  var gkeys=BANS.keys, groups=BANS.groups, per=BANS.per
+  var groups=BANS.groups, per=BANS.per
+  var gkeys=banVisibleKeys()
+
+  // Thanh lọc — luôn hiện cả hai con số để không ai nhầm "44 dòng" là tổng.
+  var nActive=0
+  for(var k of BANS.keys){ if(banGroupActive(groups[k])) nActive++ }
+  var fbtn=function(f,label,n){
+    var on=BANS.filter===f
+    if(on) return `<span class="tag tag-red" style="padding:4px 10px;margin-right:6px">${label} (${n.toLocaleString()})</span>`
+    return `<button class="btn btn-gray" style="font-size:11px;padding:4px 10px;margin-right:6px" onclick="setBanFilter('${f}')">${label} (${n.toLocaleString()})</button>`
+  }
+  setHTML('ban-filter',
+    fbtn('active','⚡ Đang hit',nActive)+fbtn('all','📋 Tất cả',BANS.keys.length)+
+    `<span class="gray" style="font-size:11px">— "đang hit" = L7 vừa thi hành lệnh cấm trong 5 phút qua. Phần còn lại là hồ sơ còn hạn nhưng không có lưu lượng.</span>`)
+
   var pages=Math.max(1, Math.ceil(gkeys.length/per))
   if(page<1) page=1
   if(page>pages) page=pages
