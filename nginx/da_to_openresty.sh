@@ -43,6 +43,7 @@
 #   sudo bash da_to_openresty.sh --dry-run
 #   sudo bash da_to_openresty.sh --install-hooks
 #   sudo bash da_to_openresty.sh --user U --domain D --remove
+#   sudo bash da_to_openresty.sh --reconcile        (cron 1 phut, xem duoi)
 # ============================================================
 
 set -uo pipefail
@@ -52,6 +53,11 @@ OR_CONF_DIR="/usr/local/openresty/nginx/conf"
 OR_USER_DIR="${OR_CONF_DIR}/user"
 OR_BIN="/usr/local/openresty/nginx/sbin/nginx"
 SCRIPT_PATH="$(readlink -f "$0")"
+
+# Moc thoi gian cua lan reload thanh cong gan nhat — `--reconcile` so mtime cua
+# conf voi file nay. Dat trong /var/run (tmpfs, mat sau reboot): moc mat thi
+# reconcile reload MOT lan roi tao lai — vo hai, va dung huong an toan.
+STAMP_FILE="/var/run/antibot_reload.stamp"
 
 APACHE_HTTP="127.0.0.1:8080"
 APACHE_HTTPS="127.0.0.1:8081"
@@ -63,6 +69,7 @@ QUIET=false
 INSTALL_HOOKS=false
 DO_REMOVE=false
 IMPORT_GOODBOTS=false
+DO_RECONCILE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -73,6 +80,7 @@ while [[ $# -gt 0 ]]; do
         --install-hooks) INSTALL_HOOKS=true; shift   ;;
         --import-goodbots) IMPORT_GOODBOTS=true; shift ;;
         --remove)        DO_REMOVE=true;     shift   ;;
+        --reconcile)     DO_RECONCILE=true;  shift   ;;
         *) shift ;;
     esac
 done
@@ -618,40 +626,58 @@ install_hooks() {
     # (truyền --user/--domain rồi regenerate + nginx -t + reload), nên thêm một
     # hook chỉ là thêm tên vào mảng này.
     #
-    # Nhóm SSL BẮT BUỘC phải có. Thiếu chúng thì:
-    #   - Cài SSL mới trong DA  → conf không được sinh lại → KHÔNG có block 443
-    #     → domain vừa bật SSL vẫn không vào được HTTPS.
-    #   - Let's Encrypt gia hạn → file cert bị ghi đè tại CÙNG đường dẫn nhưng
-    #     nginx vẫn giữ cert CŨ trong bộ nhớ → phục vụ chứng chỉ HẾT HẠN cho tới
-    #     khi có ai đó reload. Đây là chế độ hỏng âm thầm, 90 ngày một lần.
-    #   - Xoá SSL → conf vẫn còn block 443 trỏ vào file cert không còn tồn tại.
+    # DANH SÁCH NÀY ĐÃ ĐỐI CHIẾU VỚI SỰ KIỆN THẬT của bản DA đang chạy, lấy từ
+    # chính binary chứ không phải từ tài liệu hay trí nhớ:
+    #     strings /usr/local/directadmin/directadmin \
+    #       | grep -oE '\b[a-z][a-z_]+_(pre|post)\b' | sort -u
     #
-    # `ssl_save_post` là tên sự kiện ĐÚNG của bản DA này (trang SSL Certificates);
-    # `ssl_install_post` là tên cũ, giữ làm dự phòng — thừa thì vô hại.
+    # Đo 2026-08-10 cho thấy BỐN hook đang cài KHÔNG tồn tại trong bản DA này —
+    # `ssl_install_post`, `ssl_delete_post`, `letsencrypt_save_post`,
+    # `acme_save_post`. Chúng đã nằm trên đĩa nhiều ngày và CHƯA TỪNG chạy một
+    # lần nào. Đây chính là chế độ hỏng nguy hiểm nhất của kiểu liệt kê tên:
+    # hook sai tên không báo lỗi, nó chỉ im lặng. Nhóm SSL thêm ngày 2026-08-04
+    # để chữa lỗi "cert hết hạn âm thầm 90 ngày một lần" vì thế phần lớn là ảo —
+    # chỉ `ssl_save_post` là thật. Xoá bốn file đó bằng tay trên server.
     local hooks=(
+        # ── Trục chính ────────────────────────────────────────────────────
+        # Config nginx của ta sinh ra từ CÙNG nguồn dữ liệu mà DA dùng để ghi
+        # vhost Apache, nên thời điểm DA ghi lại httpd của một user chính là
+        # thời điểm nginx cần sinh lại. Một hook này phủ tạo/sửa domain,
+        # cài/gỡ SSL, thêm/xoá pointer, khoá/mở user.
+        # KHÔNG dùng `all_post` (bản DA này CÓ sự kiện đó): nó bắn cả khi tạo
+        # email, đổi mật khẩu FTP, sửa cron, tạo database, đăng nhập — mỗi lần
+        # một lượt fork kèm sinh lại toàn bộ config, hoàn toàn vô ích.
+        "user_httpd_write_post.sh"
+
+        # ── Tạo ───────────────────────────────────────────────────────────
         "user_create_post.sh"
-        "user_destroy_pre.sh"
         "domain_create_post.sh"
-        "domain_destroy_pre.sh"
         "subdomain_create_post.sh"
-        "subdomain_destroy_pre.sh"
-        "ssl_save_post.sh"
-        "ssl_delete_post.sh"
-        "letsencrypt_save_post.sh"
-        "ssl_install_post.sh"
-        # Pointer nằm trong server_name → thêm/xoá pointer phải sinh lại conf.
-        #
-        # Vì sao cài CẢ HAI biến thể destroy: hook `_pre` chạy TRƯỚC khi DA gỡ
-        # pointer khỏi danh sách, nên conf sinh ra ở thời điểm đó VẪN CÒN pointer
-        # vừa xoá — đúng kiểu lỗi thời điểm đã gặp với domain_create_post. Chưa
-        # xác minh được bản DA này phát sự kiện tên nào, nên cài cả hai:
-        #   - DA chỉ có `_pre`  → chạy như bản -running.sh trước đây.
-        #   - DA chỉ có `_post` → sinh lại ĐÚNG (pointer đã bị gỡ).
-        #   - DA có cả hai      → `_post` chạy SAU nên ghi đè kết quả của `_pre`
-        #                         ⇒ trạng thái cuối vẫn đúng. Tự sửa sai.
-        # File hook không được DA gọi chỉ nằm im, không tốn gì.
         "domain_pointer_create_post.sh"
-        "domain_pointer_destroy_pre.sh"
+
+        # ── Sửa ───────────────────────────────────────────────────────────
+        # Nhóm này trước đây KHÔNG có hook nào: sửa user/domain trong DA không
+        # hề sinh lại conf. `ip_change_post` là quan trọng nhất — đổi IP làm
+        # sai cả `listen` lẫn `server_name`.
+        "domain_change_post.sh"
+        "domain_modify_post.sh"
+        "user_modify_post.sh"
+        "user_suspend_post.sh"
+        "user_restore_post.sh"
+        "ip_change_post.sh"
+
+        # ── SSL ───────────────────────────────────────────────────────────
+        "ssl_save_post.sh"
+        "save_cert_post.sh"
+
+        # ── Xoá: dùng `_post`, KHÔNG dùng `_pre` ──────────────────────────
+        # `_pre` chạy TRƯỚC khi DA cập nhật danh sách nên conf sinh ra ở thời
+        # điểm đó VẪN CÒN thứ vừa xoá — đúng lỗi thời điểm đã gặp với
+        # domain_create_post. Cả bốn biến thể `_post` đều có trong danh sách
+        # sự kiện thật, nên không còn lý do gì để dùng `_pre`.
+        "user_destroy_post.sh"
+        "domain_destroy_post.sh"
+        "subdomain_destroy_post.sh"
         "domain_pointer_destroy_post.sh"
     )
 
@@ -674,14 +700,14 @@ _ts() { date '+%Y-%m-%d %H:%M:%S'; }
 {
   echo "[\$(_ts)] Hook: ${hook} user=\${username:-} domain=\${domain:-}"
   case "${hook}" in
-    user_destroy_pre.sh)
+    user_destroy_pre.sh|user_destroy_post.sh)
       bash "\$_ANTIBOT_SCRIPT" --user "\${username}" --remove --quiet
       ;;
-    domain_destroy_pre.sh)
+    domain_destroy_pre.sh|domain_destroy_post.sh)
       bash "\$_ANTIBOT_SCRIPT" --user "\${username}" \
            --domain "\${domain}" --remove --quiet
       ;;
-    subdomain_destroy_pre.sh)
+    subdomain_destroy_pre.sh|subdomain_destroy_post.sh)
       bash "\$_ANTIBOT_SCRIPT" --user "\${username}" \
            --domain "\${subdomain}.\${domain}" --remove --quiet
       ;;
@@ -699,13 +725,82 @@ HOOKEOF
         chmod +x "$hook_file"
         ok "Hook installed: $hook_file"
     done
+
+    # ── Lưới đỡ định kỳ ──────────────────────────────────────────────────
+    # Cài KÈM hook, không để người vận hành thêm tay, vì file cron nằm NGOÀI
+    # git — `git pull` không mang nó sang server. Đã dính đúng cái bẫy đó với
+    # deploy.sh: sửa trên máy dev rồi tưởng ba máy đều có.
+    #
+    # Vì sao vẫn cần nó dù danh sách hook đã đầy: bản DA này không có hook tổng
+    # trong custom/, nên liệt kê tên là bắt buộc — mà liệt kê thì LUÔN thiếu
+    # (bằng chứng: 4 tên chết + nhóm "sửa" trống trơn, phát hiện cùng một lượt
+    # đối chiếu). Quan trọng hơn, nó vá cái lỗi mà không hook nào vá được:
+    # conf ĐÃ ghi ra đĩa nhưng `nginx -t` trượt tạm thời (cert chưa kịp có mặt,
+    # hoặc một domain khác đang hỏng) ⇒ không reload, và KHÔNG có gì thử lại.
+    # Đó chính là triệu chứng "file config sinh ra rồi mà domain vẫn không chạy".
+    #
+    # Tên file KHÔNG được chứa dấu chấm — cron bỏ qua im lặng. Và /etc/cron.d
+    # bắt buộc có trường user, khác với `crontab -e`.
+    local cron_file="/etc/cron.d/antibot-reconcile"
+    cat > "$cron_file" << CRONEOF
+# AntiBot — luoi do reload. Sinh boi: da_to_openresty.sh --install-hooks
+# Moi phut chi ton MOT lenh \`find\` tren conf/user; chi test+reload khi that su
+# co conf moi hon moc /var/run/antibot_reload.stamp.
+# --quiet nen log chi co dong khi CO LOI.
+* * * * * root ${SCRIPT_PATH} --reconcile --quiet >> /var/log/antibot_sync.log 2>&1
+CRONEOF
+    chmod 644 "$cron_file"
+    ok "Cron installed: $cron_file"
+}
+
+# ── Test cú pháp + reload ────────────────────────────────────
+# Tách thành hàm vì nhánh `--remove` trước đây `exit 0` NGAY sau khi xoá file,
+# không bao giờ chạm tới khối reload ở cuối MAIN. Hệ quả: xoá user/domain thì
+# conf biến mất khỏi đĩa nhưng nginx VẪN phục vụ cấu hình cũ trong bộ nhớ cho
+# tới khi có người reload tay — domain đã xoá vẫn chạy, vẫn proxy về webroot cũ,
+# mà webroot đó có thể đã được cấp lại cho user khác.
+test_and_reload() {
+    local out
+    if ! out=$("$OR_BIN" -t 2>&1); then
+        fail "Syntax FAILED — KHONG reload:"
+        echo "$out" >&2
+        return 1
+    fi
+    $QUIET || { echo "$out"; ok "Syntax OK"; }
+
+    if "$OR_BIN" -s reload 2>/dev/null; then
+        ok "OpenResty reloaded"
+        # Chỉ đóng mốc khi reload THÀNH CÔNG. Trượt thì mốc giữ nguyên ⇒ phút
+        # sau reconcile thử lại, cho tới khi được.
+        touch "$STAMP_FILE" 2>/dev/null || true
+        return 0
+    fi
+    warn "Reload failed — OpenResty co the chua chay"
+    return 1
+}
+
+# ── Reconcile: đối chiếu đĩa với tiến trình đang chạy ────────
+reconcile() {
+    # `-o -type d` là BẮT BUỘC, không phải cho chắc. Chỉ soi `*.conf` thì XOÁ một
+    # conf sẽ lọt lưới: file đã biến mất nên không còn gì để "mới hơn mốc". Xoá
+    # file làm đổi mtime của THƯ MỤC chứa nó, nên bắt thư mục mới phủ được cả ba
+    # ca thêm / sửa / xoá. Đã kiểm bằng thực nghiệm 2026-08-10.
+    if [ -f "$STAMP_FILE" ] && \
+       [ -z "$(find "$OR_USER_DIR" \( -name '*.conf' -o -type d \) -newer "$STAMP_FILE" -print -quit 2>/dev/null)" ]; then
+        return 0
+    fi
+    info "Reconcile: co conf moi hon moc — test + reload"
+    test_and_reload
 }
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
-$DO_REMOVE && { remove_conf "${FILTER_USER}" "${FILTER_DOMAIN:-}"; exit 0; }
+$DO_RECONCILE && { reconcile; exit $?; }
+# XOÁ PHẢI RELOAD. Trước đây dòng này `exit 0` ngay, bỏ qua hoàn toàn khối
+# reload ở cuối file — xem chú thích test_and_reload.
+$DO_REMOVE && { remove_conf "${FILTER_USER}" "${FILTER_DOMAIN:-}"; test_and_reload; exit $?; }
 $INSTALL_HOOKS && { install_hooks; exit 0; }
 $IMPORT_GOODBOTS && { import_goodbots; exit 0; }
 
@@ -749,25 +844,11 @@ $DRY_RUN && { $QUIET || ok "Dry run complete"; exit 0; }
 
 $QUIET || { echo ""; info "Testing OpenResty config syntax..."; echo ""; }
 
-if "$OR_BIN" -t 2>&1; then
-    $QUIET || {
-        echo ""
-        echo -e "${G}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-        echo -e "${G}  ✓  Syntax OK${N}"
-        echo -e "${G}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-        echo ""
-    }
-    "$OR_BIN" -s reload 2>/dev/null && \
-        { $QUIET || ok "OpenResty reloaded"; } || \
-        warn "Reload failed — may not be running yet"
+if test_and_reload; then
     exit 0
 else
-    echo ""
-    echo -e "${R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-    echo -e "${R}  ✗  Syntax FAILED — NOT reloading${N}"
-    echo -e "${R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-    echo ""
-    echo "  Check: /usr/local/openresty/nginx/logs/error.log"
-    echo ""
+    $QUIET || echo "  Check: /usr/local/openresty/nginx/logs/error.log"
+    # Conf ĐÃ nằm trên đĩa dù reload trượt. Cron `--reconcile` sẽ thử lại mỗi
+    # phút cho tới khi `nginx -t` sạch, nên không cần thao tác tay.
     exit 1
 fi
