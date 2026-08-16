@@ -78,6 +78,16 @@ local function write_stats(premature, host, class, action, date, device_type, in
     red:incr("stat:" .. host .. ":req:" .. date)
     red:expire("stat:" .. host .. ":req:" .. date, ttl_7d)
 
+    -- Chỉ mục domain của ngày. Có nó thì dashboard đọc bảng Domain bằng MGET
+    -- ĐÚNG các khoá cần, thay vì SCAN `stat:*:<ngày>` rồi bị cắt ở `limit`.
+    -- SCAN cắt theo thứ tự bucket nên phần mất là tuỳ ý: một domain còn `req`
+    -- mà mất `allow` ⇒ dashboard hiện Total=21.297 / Clean=0. Mỗi domain sinh
+    -- ~50-60 khoá stat mỗi ngày (req + action + class_action + dev_* +
+    -- intent_* + ibd_*), nên vài chục domain là đã vượt trần.
+    -- SADD idempotent, tập chỉ vài chục phần tử — rẻ hơn hẳn cái nó thay thế.
+    red:sadd("stat:hosts:" .. date, host)
+    red:expire("stat:hosts:" .. date, ttl_7d)
+
     red:incr("stat:" .. host .. ":" .. action .. ":" .. date)
     red:expire("stat:" .. host .. ":" .. action .. ":" .. date, ttl_7d)
 

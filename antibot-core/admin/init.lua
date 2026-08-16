@@ -52,7 +52,16 @@ local function scan_keys(red, pattern, limit)
         for _, k in ipairs(res[2]) do
             table.insert(results, k)
             scanned = scanned + 1
-            if scanned >= limit then return results end
+            if scanned >= limit then
+                -- Cắt vì đủ `limit`. Đây là đường CẮT ÂM THẦM nguy hiểm nhất:
+                -- SCAN duyệt theo thứ tự bucket (ngẫu nhiên với người đọc), nên
+                -- phần bị bỏ lại KHÔNG phải "phần đuôi" mà là một tập tuỳ ý —
+                -- một domain có thể còn khoá `req` nhưng mất khoá `allow`, cho
+                -- ra Total=21.297 / Clean=0 trong khi domain bên cạnh vẫn đủ.
+                ngx.log(ngx.WARN, "[admin] scan_keys cham tran ket qua pattern=",
+                        pattern, " limit=", limit, " — BANG HIEN THI BI CAT")
+                return results
+            end
         end
         iter = iter + 1
         if iter >= SCAN_MAX_ITER then
@@ -383,16 +392,7 @@ local function render_data()
         local host, action, date = k:match("^stat:([^:]+):([^:]+):(%d+)$")
         if host and action and date == today
            and action ~= "req" and not action:match("^score_") then
-            if not domain_map[host] then
-                domain_map[host] = {req=0,allow=0,monitor=0,challenge=0,block=0}
-            end
             local val = tonumber(red:get(k)) or 0
-            local d = domain_map[host]
-            if     action == "allow"     then d.allow     = val
-            elseif action == "monitor"   then d.monitor   = val
-            elseif action == "challenge" then d.challenge = val
-            elseif action == "block"     then d.block     = val
-            end
 
             -- Device group stats
             local dg = action:match("^dev_(%w+)$")
@@ -444,11 +444,62 @@ local function render_data()
             end
         end
     end
-    for _, k in ipairs(stat_keys) do
-        local host, action, date = k:match("^stat:([^:]+):([^:]+):(%d+)$")
-        if host and action == "req" and date == today then
-            if domain_map[host] then
-                domain_map[host].req = tonumber(red:get(k)) or 0
+    -- ── Bảng Domain: đọc chỉ đích danh, KHÔNG qua SCAN ───────────────────
+    -- Nguồn là tập `stat:hosts:<ngày>` do async/logger.lua dựng. Xem chú thích
+    -- bên đó để biết vì sao SCAN không dùng được cho bảng này.
+    local host_set = red:smembers("stat:hosts:" .. today)
+    if not host_set or host_set == ngx.null then host_set = {} end
+    if #host_set == 0 then
+        -- Ngày deploy đầu tiên tập còn rỗng. Suy tạm từ stat_keys để bảng không
+        -- trống — vẫn có thể thiếu như cũ, nhưng tự khỏi sau một ngày.
+        -- Mẫu khớp ĐỦ BA phần để `stat:hosts:<ngày>` (chỉ hai phần) không bị
+        -- đọc nhầm thành một domain tên "hosts".
+        local seen = {}
+        for _, k in ipairs(stat_keys) do
+            local h = k:match("^stat:([^:]+):[^:]+:%d+$")
+            if h and not seen[h] then
+                seen[h] = true
+                table.insert(host_set, h)
+            end
+        end
+    end
+
+    -- `throttled` PHẢI có mặt: logger đếm nó vào `req` như mọi action khác,
+    -- nhưng trước đây bảng không có cột nào cho nó ⇒ Total luôn lớn hơn tổng
+    -- bốn cột còn lại mà không giải thích được. Trên cloud28-246 ngày
+    -- 2026-08-10 nó là 14.674/187.647 = 7,8% lưu lượng — không phải sai số làm
+    -- tròn, mà là một cột bị thiếu.
+    local DOMAIN_FIELDS = {"req", "allow", "monitor", "throttled", "challenge", "block"}
+    if #host_set > 0 then
+        red:init_pipeline()
+        for _, h in ipairs(host_set) do
+            for _, f in ipairs(DOMAIN_FIELDS) do
+                red:get("stat:" .. h .. ":" .. f .. ":" .. today)
+            end
+        end
+        local res = red:commit_pipeline()
+        if res then
+            local i = 0
+            for _, h in ipairs(host_set) do
+                -- Gộp `www.example.com` vào `example.com`: cùng một site, cùng
+                -- một server block (server_name khai cả hai). Tách đôi chỉ bắt
+                -- người đọc tự cộng nhẩm.
+                local key = (h:gsub("^www%.", ""))
+                local d = domain_map[key]
+                if not d then
+                    d = {req=0, allow=0, monitor=0, throttled=0,
+                         challenge=0, block=0}
+                    domain_map[key] = d
+                end
+                for _, f in ipairs(DOMAIN_FIELDS) do
+                    i = i + 1
+                    local v = res[i]
+                    if v ~= nil and v ~= ngx.null then
+                        -- CỘNG DỒN, không gán: sau khi gộp www thì mỗi ô nhận
+                        -- số liệu từ hai host.
+                        d[f] = d[f] + (tonumber(v) or 0)
+                    end
+                end
             end
         end
     end
@@ -471,8 +522,8 @@ local function render_data()
     local domain_list = {}
     for host, s in pairs(domain_map) do
         table.insert(domain_list, {
-            host=host, req=s.req, allow=s.allow,
-            monitor=s.monitor, challenge=s.challenge, block=s.block,
+            host=host, req=s.req, allow=s.allow, monitor=s.monitor,
+            throttled=s.throttled, challenge=s.challenge, block=s.block,
         })
     end
     table.sort(domain_list, function(a,b) return a.req > b.req end)
@@ -874,7 +925,7 @@ tr:hover td{background:#1c2129}
       <table>
         <thead><tr>
           <th>Domain</th><th>Total</th><th>Clean</th>
-          <th>Monitor</th><th>Challenge</th><th>Block</th><th>Block%</th>
+          <th>Monitor</th><th>Throttled</th><th>Challenge</th><th>Block</th><th>Block%</th>
         </tr></thead>
         <tbody id="t-domain-stats"></tbody>
       </table>
@@ -1376,12 +1427,13 @@ function renderDomains(d){
       <td>${total.toLocaleString()}</td>
       <td class="green">${(r.allow||0).toLocaleString()}</td>
       <td class="gray">${(r.monitor||0).toLocaleString()}</td>
+      <td class="orange">${(r.throttled||0).toLocaleString()}</td>
       <td class="orange">${(r.challenge||0).toLocaleString()}</td>
       <td class="red">${blk.toLocaleString()}</td>
       <td class="${cls}"><b>${pct}</b></td>
     </tr>`
   }
-  setHTML('t-domain-stats', ds||nodata(7))
+  setHTML('t-domain-stats', ds||nodata(8))
 
   // Ban context table
   var bc=''
