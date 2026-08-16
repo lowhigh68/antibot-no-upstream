@@ -41,9 +41,15 @@ end
 local SCAN_COUNT    = 1000
 local SCAN_MAX_ITER = 100   -- ≤ 100.000 khoá được soi mỗi mẫu
 
-local function scan_keys(red, pattern, limit)
+-- `max_iter` cho phép nới trần vòng lặp cho vài mẫu mà con số PHẢI đúng
+-- (`ban:*` — bảng Bans có phân trang, cần đủ khoá thì tổng mới thật). Mặc định
+-- vẫn là SCAN_MAX_ITER cho mọi mẫu chỉ cần lấy mẫu.
+-- Lưu ý: MATCH lọc SAU khi quét, nên chi phí tỉ lệ với TỔNG keyspace chứ không
+-- phải số khoá khớp — nới trần là nới chi phí thật, đừng nới đại trà.
+local function scan_keys(red, pattern, limit, max_iter)
     local cursor, results, scanned = "0", {}, 0
     limit = limit or 500
+    max_iter = max_iter or SCAN_MAX_ITER
     local iter = 0
     repeat
         local res = red:scan(cursor, "MATCH", pattern, "COUNT", SCAN_COUNT)
@@ -70,7 +76,7 @@ local function scan_keys(red, pattern, limit)
             end
         end
         iter = iter + 1
-        if iter >= SCAN_MAX_ITER then
+        if iter >= max_iter then
             -- Bảng hiển thị bị cắt. Log để người vận hành biết đang nhìn dữ
             -- liệu thiếu chứ không tưởng là keyspace đã hết.
             results.truncated = true
@@ -220,7 +226,11 @@ local function render_data()
         return
     end
 
-    local ban_keys  = scan_keys(red, "ban:*",      5000)
+    -- `ban:*` là mẫu DUY NHẤT được nới trần: bảng Bans có phân trang nên con số
+    -- tổng phải thật, không được là cỡ trang trá hình. Mỗi IP bị cấm sinh tới 2
+    -- khoá (`ban:<ip>` + `ban:hit:<ip>`), identity thêm `ban:age:<id>` — nên
+    -- 1.884 IP đang cấm đã ngốn quá 5.000 khoá cũ.
+    local ban_keys  = scan_keys(red, "ban:*",     40000, 400)
     local rep_keys  = scan_keys(red, "rep:*",       500)
     local risk_keys = scan_keys(red, "risk:*",     5000)
     -- `rep:*` chỉ dùng để lấy 20 dòng mẫu cho tab Threats (vòng lặp dưới break
@@ -251,96 +261,125 @@ local function render_data()
         return s ~= "" and #s == 32 and s:match("^[0-9a-f]+$") ~= nil
     end
 
-    -- status = "active" nếu L7 có hit trong 5 phút gần đây (ban:hit:<k> tồn tại)
-    -- status = "idle"   nếu entry còn TTL nhưng không có hit —
-    --                   traffic đã ngừng tới L7 (L3 chặn upstream, hoặc bot dừng).
-    -- L7 không biết lý do, chỉ báo chính xác mình có đang enforce hay không.
-    local function ban_status(key_suffix)
-        local hit = red:get("ban:hit:" .. key_suffix)
-        if hit and hit ~= ngx.null and hit ~= "" then
-            return "active", tonumber(hit) or 0
-        end
-        return "idle", 0
-    end
-
+    -- ── Danh sách ban ────────────────────────────────────────────────────
+    -- Bản cũ đọc TUẦN TỰ: mỗi mục 3-4 lệnh `red:get`/`red:ttl` riêng lẻ, mỗi
+    -- lệnh một round-trip. Với 1.884 IP đang cấm thì là ~7.500 round-trip cho
+    -- một lần tải trang — không dùng được, và đó chính là lý do có cái `break`
+    -- ở 50. Cái trần đó rồi lại bị đem hiển thị như thể là tổng.
+    --
+    -- Nay đọc theo LÔ: một pipeline cho IP, một cho identity ⇒ 2 round-trip
+    -- bất kể bao nhiêu mục. Nhờ vậy mới đủ dữ liệu cho phân trang thật.
+    --
     -- Show entry nếu còn ý nghĩa:
     --   ACTIVE (đang enforce) → luôn show
     --   IDLE + TTL >= 60s     → vẫn trong thời gian ban → show với badge IDLE
     --   IDLE + TTL < 60s      → sắp expire + không enforce → ẩn khỏi bảng
     --   PERMANENT (TTL = -1)  → show (không bao giờ hết hạn)
-    -- Redis entry không bị xoá, tự expire theo TTL.
-    -- Đếm THẬT bằng một lượt duyệt chuỗi thuần, KHÔNG chạm Redis.
-    -- Vòng lặp chi tiết bên dưới `break` ở 50 vì mỗi mục tốn 3 lệnh Redis
-    -- (ttl + rep + ip_risk), nên `#ban_ip_list` là CỠ TRANG chứ không phải
-    -- tổng. Thẻ Overview trước đây hiển thị chính cỡ trang đó ⇒ đứng yên ở
-    -- đúng 50 trong khi bảng ngay dưới chỉ vẽ 10 dòng đầu (`slice(0,10)`) —
-    -- hai con số, không con số nào là thật.
+    --
     -- `ban:hit:*` và `ban:age:*` tự bị loại vì không khớp is_ipv4/is_identity.
-    local ban_ip_count, ban_id_count = 0, 0
+    local BAN_DETAIL_MAX = 5000
+
+    local ip_cands, id_cands = {}, {}
     for _, k in ipairs(ban_keys) do
         local v = k:gsub("^ban:", "")
-        if     is_ipv4(v)     then ban_ip_count = ban_ip_count + 1
-        elseif is_identity(v) then ban_id_count = ban_id_count + 1 end
+        if     is_ipv4(v)     then table.insert(ip_cands, v)
+        elseif is_identity(v) then table.insert(id_cands, v) end
+    end
+    -- Tổng THẬT (đếm chuỗi thuần, không chạm Redis) — độc lập với việc lấy
+    -- chi tiết bên dưới có bị cắt hay không.
+    local ban_ip_count, ban_id_count = #ip_cands, #id_cands
+
+    local function trim(t, n)
+        while #t > n do table.remove(t) end
+    end
+    trim(ip_cands, BAN_DETAIL_MAX)
+    trim(id_cands, BAN_DETAIL_MAX)
+
+    local function val_of(x)
+        if x == nil or x == ngx.null then return nil end
+        return x
     end
 
     local ban_ip_list, ban_id_list = {}, {}
     local ban_ip_hidden_count, ban_id_hidden_count = 0, 0
-    for _, k in ipairs(ban_keys) do
-        local v = k:gsub("^ban:", "")
-        -- ban:hit:* là marker của chính dashboard, không phải ban entry
-        if v:sub(1, 4) == "hit:" then
-            goto continue
+
+    if #ip_cands > 0 then
+        red:init_pipeline()
+        for _, v in ipairs(ip_cands) do
+            red:ttl("ban:" .. v)
+            red:get("ban:hit:" .. v)
+            red:get("rep:" .. v)
+            red:get("ip_risk:" .. v)
         end
-        if is_ipv4(v) then
-            local status, last_hit = ban_status(v)
-            local ttl = red:ttl(k)
-            if status ~= "active" and ttl > 0 and ttl < 60 then
-                ban_ip_hidden_count = ban_ip_hidden_count + 1
-                goto continue
-            end
-            local rep     = red:get("rep:"..v)     or "0"
-            local ip_risk = red:get("ip_risk:"..v) or "0"
-            table.insert(ban_ip_list, {
-                ip=v,
-                rep=tonumber(rep) or 0,
-                ip_risk=tonumber(ip_risk) or 0,
-                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
-                ttl_sec=ttl,
-                status=status,
-                last_hit=last_hit > 0 and time_ago(last_hit) or "-",
-            })
-        elseif is_identity(v) then
-            local status, last_hit = ban_status(v)
-            local ttl = red:ttl(k)
-            if status ~= "active" and ttl > 0 and ttl < 60 then
-                ban_id_hidden_count = ban_id_hidden_count + 1
-                goto continue
-            end
-            local risk    = red:get("risk:"..v) or "0"
-            local ctx_raw = red:get("ban_ctx:"..v)
-            local dev, ua_short, ip_addr, bs = "?", "", "", 0
-            if ctx_raw then
-                local ok3, obj = pcall(cjson.decode, ctx_raw)
-                if ok3 and obj then
-                    dev      = obj.device_type or "?"
-                    ip_addr  = obj.ip          or ""
-                    bs       = obj.bot_score   or 0
-                    local ua = obj.ua or ""
-                    ua_short = ua:sub(1, 60)
+        local res = red:commit_pipeline()
+        if res then
+            for i, v in ipairs(ip_cands) do
+                local b        = (i - 1) * 4
+                local ttl      = tonumber(res[b + 1]) or -1
+                local hit      = val_of(res[b + 2])
+                local status   = (hit and hit ~= "") and "active" or "idle"
+                local last_hit = tonumber(hit) or 0
+                if status ~= "active" and ttl > 0 and ttl < 60 then
+                    ban_ip_hidden_count = ban_ip_hidden_count + 1
+                else
+                    table.insert(ban_ip_list, {
+                        ip      = v,
+                        rep     = tonumber(val_of(res[b + 3])) or 0,
+                        ip_risk = tonumber(val_of(res[b + 4])) or 0,
+                        ttl     = ttl > 0 and (math.floor(ttl / 60) .. "m") or "perm",
+                        ttl_sec = ttl,
+                        status  = status,
+                        last_hit = last_hit > 0 and time_ago(last_hit) or "-",
+                    })
                 end
             end
-            table.insert(ban_id_list, {
-                id=v, risk=tonumber(risk) or 0,
-                ttl=ttl > 0 and (math.floor(ttl/60).."m") or "perm",
-                ttl_sec=ttl,
-                device=dev, ua=ua_short, ip=ip_addr, bot_score=bs,
-                status=status,
-                last_hit=last_hit > 0 and time_ago(last_hit) or "-",
-            })
         end
-        if #ban_ip_list >= 50 and #ban_id_list >= 50 then break end
-        ::continue::
     end
+
+    if #id_cands > 0 then
+        red:init_pipeline()
+        for _, v in ipairs(id_cands) do
+            red:ttl("ban:" .. v)
+            red:get("ban:hit:" .. v)
+            red:get("risk:" .. v)
+            red:get("ban_ctx:" .. v)
+        end
+        local res = red:commit_pipeline()
+        if res then
+            for i, v in ipairs(id_cands) do
+                local b        = (i - 1) * 4
+                local ttl      = tonumber(res[b + 1]) or -1
+                local hit      = val_of(res[b + 2])
+                local status   = (hit and hit ~= "") and "active" or "idle"
+                local last_hit = tonumber(hit) or 0
+                if status ~= "active" and ttl > 0 and ttl < 60 then
+                    ban_id_hidden_count = ban_id_hidden_count + 1
+                else
+                    local dev, ua_short, ip_addr, bs = "?", "", "", 0
+                    local ctx_raw = val_of(res[b + 4])
+                    if ctx_raw then
+                        local ok3, obj = pcall(cjson.decode, ctx_raw)
+                        if ok3 and obj then
+                            dev     = obj.device_type or "?"
+                            ip_addr = obj.ip          or ""
+                            bs      = obj.bot_score   or 0
+                            ua_short = (obj.ua or ""):sub(1, 60)
+                        end
+                    end
+                    table.insert(ban_id_list, {
+                        id      = v,
+                        risk    = tonumber(val_of(res[b + 3])) or 0,
+                        ttl     = ttl > 0 and (math.floor(ttl / 60) .. "m") or "perm",
+                        ttl_sec = ttl,
+                        device  = dev, ua = ua_short, ip = ip_addr, bot_score = bs,
+                        status  = status,
+                        last_hit = last_hit > 0 and time_ago(last_hit) or "-",
+                    })
+                end
+            end
+        end
+    end
+
     table.sort(ban_ip_list,  function(a,b) return math.max(a.rep,a.ip_risk) > math.max(b.rep,b.ip_risk) end)
     table.sort(ban_id_list,  function(a,b) return a.risk > b.risk end)
 
@@ -897,8 +936,10 @@ tr:hover td{background:#1c2129}
       <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
         Chỉ hiển thị <b>IP đang bị ban</b>, kèm các <b>identity</b> (md5(ip+ua)) bị ban trên IP đó.
         <b>TTL</b> = thời gian ban còn lại (<i>vĩnh viễn</i> = permanent). Trỏ chuột vào identity để xem UA.
-        Unban/Whitelist riêng cho từng cấp.
+        Unban/Whitelist riêng cho từng cấp. Sắp xếp theo risk giảm dần, <b>100 IP mỗi trang</b>.
+        Trang đang xem được giữ nguyên qua mỗi lần tự nạp lại (60 giây).
       </div>
+      <div id="ban-pager" style="margin-bottom:10px"></div>
       <table>
         <thead><tr>
           <th>IP / Identity</th>
@@ -1310,37 +1351,6 @@ function load(){
     // nhau ngay trên một màn hình.
 
     // Bans tab: ONLY banned IPs, each with its banned identities (tidy)
-    var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
-    var devMap={
-      'mobile_chrome_android':'mobile','mobile_safari_ios':'mobile',
-      'mobile_safari_ios_old':'mobile','custom_tab':'mobile','inapp':'mobile',
-      'tablet_ipad':'tablet','tablet_android':'tablet',
-      'desktop_chrome':'desktop','desktop_safari':'desktop',
-      'desktop_firefox':'desktop','desktop_other':'desktop',
-      'crawler':'crawler','http_client':'tool',
-    }
-    function devLabelOf(dev){
-      var dg=devMap[dev||'']||'unknown'
-      var di=devIcons[dg]||'❓'
-      return dev&&dev!='?'?(di+' '+dev):'❓'
-    }
-    // TTL còn lại: -1 = vĩnh viễn, else s/m/h/d
-    function fmtTTL(sec){
-      if(sec===undefined||sec===null) return '-'
-      if(sec<0) return 'vĩnh viễn'
-      if(sec<60) return sec+'s'
-      if(sec<3600) return Math.floor(sec/60)+'m '+(sec%60)+'s'
-      if(sec<86400) return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m'
-      return Math.floor(sec/86400)+'d '+Math.floor((sec%86400)/3600)+'h'
-    }
-    // Mọi dòng ở đây ĐỀU đang bị ban → badge BANNED; "đang hit" nếu còn traffic.
-    function banBadge(r){
-      var hit = r.status==='active'
-        ? ' <span class="gray" style="font-size:9px" title="Vẫn đang bị hit ('+(r.last_hit||'')+')">· đang hit</span>'
-        : ''
-      return '<span class="tag tag-red" style="font-size:9px">BANNED</span>'+hit
-    }
-    function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
     // Group headers = chỉ IP đang bị ban. Identity chỉ hiện nếu IP của nó cũng bị ban.
     var groups={}
     for(var r of d.ban_ip_list||[]){
@@ -1350,34 +1360,11 @@ function load(){
     for(var r of d.ban_id_list||[]){
       if(r.ip && groups[r.ip]) groups[r.ip].ids.push(r)   // bỏ identity trên IP chưa bị ban
     }
-    var gkeys=Object.keys(groups).sort(function(a,b){return (groups[b].risk||0)-(groups[a].risk||0)})
-    var gh=''
-    for(var k of gkeys){
-      var g=groups[k]
-      // ── IP group-header row (IP này CHẮC CHẮN đang bị ban) ──
-      gh+=`<tr style="background:rgba(248,81,73,.07)">
-        <td class="mono"><b>${g.ip}</b></td>
-        <td class="gray" style="font-size:11px">IP · ${g.ids.length} id</td>
-        <td>${bar(g.risk)}${(g.risk*100).toFixed(0)}%</td>
-        <td class="gray" style="font-size:11px">${fmtTTL(g.ttl_sec)}</td>
-        <td>${banBadge(g)}</td>
-        <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${g.ip}')">Unban IP</button>
-            <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button></td>
-      </tr>`
-      // ── identity rows under this IP (UA ở tooltip để soi bot giả) ──
-      for(var r of g.ids){
-        gh+=`<tr>
-          <td class="mono" style="font-size:11px;padding-left:20px" title="UA: ${esc(r.ua)}">↳ ${trunc(r.id,20)}</td>
-          <td style="font-size:11px" title="UA: ${esc(r.ua)}">${devLabelOf(r.device)}</td>
-          <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
-          <td class="gray" style="font-size:11px">${fmtTTL(r.ttl_sec)}</td>
-          <td>${banBadge(r)}</td>
-          <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button>
-              <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="whitelistId('${r.id}')">Whitelist</button></td>
-        </tr>`
-      }
-    }
-    setHTML('t-ban-grouped', gh||nodata(6))
+    BANS.groups = groups
+    BANS.keys = Object.keys(groups).sort(function(a,b){return (groups[b].risk||0)-(groups[a].risk||0)})
+    // Giữ nguyên trang đang xem qua các lần tự nạp lại 60s — nhảy về trang 1
+    // mỗi phút thì không ai đọc hết được 19 trang.
+    renderBansPage(BANS.page)
 
     // Threats: rep IPs
     var rt=''
@@ -1457,6 +1444,100 @@ function load(){
     setHTML('t-ja3-list', jl||nodata(3))
   })
   .catch(e=>setText('status','Error: '+e.message))
+}
+
+// ── Bảng Bans: phân trang phía client ────────────────────────────────────
+// Dữ liệu về một lần rồi giữ trong BANS; nút chuyển trang chỉ vẽ lại, không
+// gọi lại API. `page` được giữ qua mỗi lần tự nạp 60s — nhảy về trang 1 mỗi
+// phút thì không ai đọc hết được 19 trang.
+var BANS={keys:[],groups:{},page:1,per:100}
+
+var devIcons={'mobile':'📱','tablet':'📟','desktop':'🖥️','crawler':'🕷','tool':'🔧','unknown':'❓'}
+var devMap={
+  'mobile_chrome_android':'mobile','mobile_safari_ios':'mobile',
+  'mobile_safari_ios_old':'mobile','custom_tab':'mobile','inapp':'mobile',
+  'tablet_ipad':'tablet','tablet_android':'tablet',
+  'desktop_chrome':'desktop','desktop_safari':'desktop',
+  'desktop_firefox':'desktop','desktop_other':'desktop',
+  'crawler':'crawler','http_client':'tool',
+}
+function devLabelOf(dev){
+  var dg=devMap[dev||'']||'unknown'
+  var di=devIcons[dg]||'❓'
+  return dev&&dev!='?'?(di+' '+dev):'❓'
+}
+// TTL còn lại: -1 = vĩnh viễn, else s/m/h/d
+function fmtTTL(sec){
+  if(sec===undefined||sec===null) return '-'
+  if(sec<0) return 'vĩnh viễn'
+  if(sec<60) return sec+'s'
+  if(sec<3600) return Math.floor(sec/60)+'m '+(sec%60)+'s'
+  if(sec<86400) return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m'
+  return Math.floor(sec/86400)+'d '+Math.floor((sec%86400)/3600)+'h'
+}
+// Mọi dòng ở đây ĐỀU đang bị ban → badge BANNED; "đang hit" nếu còn traffic.
+function banBadge(r){
+  var hit = r.status==='active'
+    ? ' <span class="gray" style="font-size:9px" title="Vẫn đang bị hit ('+(r.last_hit||'')+')">· đang hit</span>'
+    : ''
+  return '<span class="tag tag-red" style="font-size:9px">BANNED</span>'+hit
+}
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
+
+function renderBansPage(page){
+  var gkeys=BANS.keys, groups=BANS.groups, per=BANS.per
+  var pages=Math.max(1, Math.ceil(gkeys.length/per))
+  if(page<1) page=1
+  if(page>pages) page=pages
+  BANS.page=page
+  var from=(page-1)*per, to=Math.min(from+per, gkeys.length)
+
+  var gh=''
+  for(var k of gkeys.slice(from,to)){
+    var g=groups[k]
+    // ── IP group-header row (IP này CHẮC CHẮN đang bị ban) ──
+    gh+=`<tr style="background:rgba(248,81,73,.07)">
+      <td class="mono"><b>${g.ip}</b></td>
+      <td class="gray" style="font-size:11px">IP · ${g.ids.length} id</td>
+      <td>${bar(g.risk)}${(g.risk*100).toFixed(0)}%</td>
+      <td class="gray" style="font-size:11px">${fmtTTL(g.ttl_sec)}</td>
+      <td>${banBadge(g)}</td>
+      <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanIp('${g.ip}')">Unban IP</button>
+          <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="wlFromBan('${g.ip}')">Whitelist IP</button></td>
+    </tr>`
+    // ── identity rows under this IP (UA ở tooltip để soi bot giả) ──
+    for(var r of g.ids){
+      gh+=`<tr>
+        <td class="mono" style="font-size:11px;padding-left:20px" title="UA: ${esc(r.ua)}">↳ ${trunc(r.id,20)}</td>
+        <td style="font-size:11px" title="UA: ${esc(r.ua)}">${devLabelOf(r.device)}</td>
+        <td>${bar(r.risk)}${(r.risk*100).toFixed(0)}%</td>
+        <td class="gray" style="font-size:11px">${fmtTTL(r.ttl_sec)}</td>
+        <td>${banBadge(r)}</td>
+        <td><button class="btn btn-red" style="font-size:11px;padding:2px 7px" onclick="unbanId('${r.id}')">Unban</button>
+            <button class="btn btn-green" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="whitelistId('${r.id}')">Whitelist</button></td>
+      </tr>`
+    }
+  }
+  setHTML('t-ban-grouped', gh||nodata(6))
+
+  // Thanh chuyển trang. Chỉ hiện khi thật sự có nhiều hơn một trang.
+  if(pages<=1){ setHTML('ban-pager',''); return }
+  var btn=function(p,label,dis){
+    if(dis) return `<span class="tag tag-gray" style="padding:3px 9px;margin-right:4px">${label}</span>`
+    return `<button class="btn btn-gray" style="font-size:11px;padding:3px 9px;margin-right:4px" onclick="renderBansPage(${p})">${label}</button>`
+  }
+  var nav=btn(1,'« đầu',page===1)+btn(page-1,'‹ trước',page===1)
+  // Cửa sổ 5 số quanh trang hiện tại — 19 trang mà liệt kê hết thì rối mắt.
+  var lo=Math.max(1,page-2), hi=Math.min(pages,lo+4)
+  lo=Math.max(1,hi-4)
+  for(var p=lo;p<=hi;p++){
+    nav += p===page
+      ? `<span class="tag tag-red" style="padding:3px 9px;margin-right:4px"><b>${p}</b></span>`
+      : btn(p,String(p),false)
+  }
+  nav+=btn(page+1,'sau ›',page===pages)+btn(pages,'cuối »',page===pages)
+  nav+=`<span class="gray" style="font-size:11px;margin-left:8px">trang ${page}/${pages} — IP ${from+1}–${to} / ${gkeys.length}</span>`
+  setHTML('ban-pager', nav)
 }
 
 function renderDomains(d){
