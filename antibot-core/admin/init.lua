@@ -248,12 +248,34 @@ local function render_data()
     --  chưa giải tại một thời điểm không nói lên điều gì mà "Challenge hôm nay"
     --  cộng "Phiên đã xác minh" chưa nói rõ hơn.)
     local verified_keys = scan_keys(red, "verified:*", 500)
-    -- Filter stat keys theo HÔM NAY ngay ở SCAN. Toàn bộ stat:* qua 7 ngày
-    -- × nhiều domain × nhiều sub-keys (allow/monitor/challenge/block/dev_*/
-    -- intent_*/ibd_*) dễ vượt 2000 → SCAN cắt ngẫu nhiên → Clean/Monitor/Block
-    -- của một số domain bị thiếu trong khi Total hiện → dashboard sai.
-    local today_key     = os.date("%Y%m%d")
-    local stat_keys     = scan_keys(red, "stat:*:" .. today_key, 5000)
+    local today_key = os.date("%Y%m%d")
+
+    -- ── Danh sách domain của hôm nay ─────────────────────────────────────
+    -- Chỉ mục `stat:hosts:<ngày>` do async/logger.lua dựng. SCAN `stat:*` giờ
+    -- chỉ còn là ĐƯỜNG LÙI cho ngày deploy đầu tiên — mọi số liệu thống kê đọc
+    -- đích danh từ danh sách này, không qua SCAN nữa.
+    --
+    -- Vì sao bắt buộc phải bỏ SCAN ở đây: mỗi domain sinh ~50-60 khoá stat mỗi
+    -- ngày, nên `limit` cắt giữa chừng theo thứ tự bucket. Với bảng Domain nó
+    -- cho ra Total=21.297/Clean=0; với tab Devices nó còn tệ hơn — tử số
+    -- (`ibd_<nhóm>_<ý định>`) và mẫu số (`dev_<nhóm>`) là các KHOÁ RIÊNG, bị
+    -- cắt ĐỘC LẬP nhau, nên tỷ lệ vọt lên **Human 114%** dù về mặt ghi log
+    -- chúng luôn tăng cùng nhau đúng 1:1.
+    local host_set = red:smembers("stat:hosts:" .. today_key)
+    if not host_set or host_set == ngx.null then host_set = {} end
+    if #host_set == 0 then
+        local seen = {}
+        -- Mẫu khớp ĐỦ BA phần để `stat:hosts:<ngày>` (hai phần) không bị đọc
+        -- nhầm thành một domain tên "hosts".
+        for _, k in ipairs(scan_keys(red, "stat:*:" .. today_key, 5000)) do
+            local h = k:match("^stat:([^:]+):[^:]+:%d+$")
+            if h and not seen[h] then
+                seen[h] = true
+                table.insert(host_set, h)
+            end
+        end
+    end
+
     local ban_ctx_keys  = scan_keys(red, "ban_ctx:*",  500)
     local ua_count     = red:get("badbot:ua_count") or "0"
     local ua_sync_time = red:get("badbot:ua_sync_time") or "never"
@@ -471,78 +493,65 @@ local function render_data()
     local intent_map      = {}  -- bot vs human vs ambiguous
     local intent_by_device = {}  -- intent per device group
 
-    for _, k in ipairs(stat_keys) do
-        local host, action, date = k:match("^stat:([^:]+):([^:]+):(%d+)$")
-        if host and action and date == today
-           and action ~= "req" and not action:match("^score_") then
-            local val = tonumber(red:get(k)) or 0
+    -- ── Nhóm client + ý định: đọc ĐÍCH DANH, không qua SCAN ─────────────
+    -- Tên khoá con là hữu hạn và biết trước, nên liệt kê được. Cái giá của
+    -- việc liệt kê (phải sửa ở đây khi thêm nhóm/ý định mới) rẻ hơn nhiều so
+    -- với cái giá của SCAN: tử số và mẫu số bị cắt độc lập ⇒ **Human 114%**.
+    local DEV_GROUPS  = {"desktop","mobile","tablet","crawler","tool","unknown"}
+    local INTENTS     = {"human","goodbot","watch","bot"}
 
-            -- Device group stats
-            local dg = action:match("^dev_(%w+)$")
-            if dg and not dg:find("_block") and not dg:find("_challenge") then
-                if not device_map[dg] then
-                    device_map[dg] = {total=0, block=0, challenge=0}
-                end
-                device_map[dg].total = (device_map[dg].total or 0) + val
-            end
-            local dg2, act2 = action:match("^dev_(%w+)_(block)$")
-            if not dg2 then dg2, act2 = action:match("^dev_(%w+)_(challenge)$") end
-            if dg2 and act2 then
-                if not device_map[dg2] then
-                    device_map[dg2] = {total=0, block=0, challenge=0}
-                end
-                if act2 == "block" then
-                    device_map[dg2].block = (device_map[dg2].block or 0) + val
-                elseif act2 == "challenge" then
-                    device_map[dg2].challenge = (device_map[dg2].challenge or 0) + val
-                end
-            end
-
-            -- Intent per device group (ibd_desktop_bot, ibd_mobile_human...)
-            local dg_ibd, ig_ibd = action:match("^ibd_(%w+)_(%w+)$")
-            if dg_ibd and ig_ibd then
-                if not intent_by_device then intent_by_device = {} end
-                if not intent_by_device[dg_ibd] then
-                    intent_by_device[dg_ibd] = {bot=0,human=0,watch=0,goodbot=0}
-                end
-                intent_by_device[dg_ibd][ig_ibd] =
-                    (intent_by_device[dg_ibd][ig_ibd] or 0) + val
-            end
-
-            -- Intent stats
-            local ig = action:match("^intent_(%w+)$")
-            if ig and not ig:find("_block") and not ig:find("_challenge") then
-                if not intent_map[ig] then intent_map[ig] = {total=0, block=0, challenge=0} end
-                intent_map[ig].total = (intent_map[ig].total or 0) + val
-            end
-            local ig2, ia2 = action:match("^intent_(%w+)_(block)$")
-            if not ig2 then ig2, ia2 = action:match("^intent_(%w+)_(challenge)$") end
-            if ig2 and ia2 then
-                if not intent_map[ig2] then intent_map[ig2] = {total=0, block=0, challenge=0} end
-                if ia2 == "block" then
-                    intent_map[ig2].block = (intent_map[ig2].block or 0) + val
-                else
-                    intent_map[ig2].challenge = (intent_map[ig2].challenge or 0) + val
-                end
-            end
+    local dev_fields = {}      -- tên khoá con cần đọc cho MỖI host
+    for _, g in ipairs(DEV_GROUPS) do
+        table.insert(dev_fields, {kind="dev_total",  key="dev_"..g,                g=g})
+        table.insert(dev_fields, {kind="dev_block",  key="dev_"..g.."_block",      g=g})
+        table.insert(dev_fields, {kind="dev_chal",   key="dev_"..g.."_challenge",  g=g})
+        for _, ig in ipairs(INTENTS) do
+            table.insert(dev_fields, {kind="ibd", key="ibd_"..g.."_"..ig, g=g, i=ig})
         end
     end
-    -- ── Bảng Domain: đọc chỉ đích danh, KHÔNG qua SCAN ───────────────────
-    -- Nguồn là tập `stat:hosts:<ngày>` do async/logger.lua dựng. Xem chú thích
-    -- bên đó để biết vì sao SCAN không dùng được cho bảng này.
-    local host_set = red:smembers("stat:hosts:" .. today)
-    if not host_set or host_set == ngx.null then host_set = {} end
-    if #host_set == 0 then
-        -- Ngày deploy đầu tiên tập còn rỗng. Suy tạm từ stat_keys để bảng không
-        -- trống — vẫn có thể thiếu như cũ, nhưng tự khỏi sau một ngày.
-        -- Mẫu khớp ĐỦ BA phần để `stat:hosts:<ngày>` (chỉ hai phần) không bị
-        -- đọc nhầm thành một domain tên "hosts".
-        local seen = {}
-        for _, k in ipairs(stat_keys) do
-            local h = k:match("^stat:([^:]+):[^:]+:%d+$")
-            if h and not seen[h] then
-                seen[h] = true
-                table.insert(host_set, h)
+    for _, ig in ipairs(INTENTS) do
+        table.insert(dev_fields, {kind="int_total", key="intent_"..ig,               i=ig})
+        table.insert(dev_fields, {kind="int_block", key="intent_"..ig.."_block",     i=ig})
+        table.insert(dev_fields, {kind="int_chal",  key="intent_"..ig.."_challenge", i=ig})
+    end
+
+    -- Khởi tạo ĐỦ mọi ô về 0. Nhờ vậy nhóm không có lưu lượng vẫn hiện thành
+    -- dòng "0" thay vì biến mất khỏi bảng — vắng mặt và bằng không là hai
+    -- thông tin khác nhau.
+    for _, g in ipairs(DEV_GROUPS) do
+        device_map[g]       = {total=0, block=0, challenge=0}
+        intent_by_device[g] = {bot=0, human=0, watch=0, goodbot=0}
+    end
+    for _, ig in ipairs(INTENTS) do
+        intent_map[ig] = {total=0, block=0, challenge=0}
+    end
+
+    if #host_set > 0 then
+        red:init_pipeline()
+        for _, h in ipairs(host_set) do
+            for _, f in ipairs(dev_fields) do
+                red:get("stat:" .. h .. ":" .. f.key .. ":" .. today)
+            end
+        end
+        local res = red:commit_pipeline()
+        if res then
+            local i = 0
+            for _ = 1, #host_set do
+                for _, f in ipairs(dev_fields) do
+                    i = i + 1
+                    local v = res[i]
+                    local n = (v ~= nil and v ~= ngx.null) and (tonumber(v) or 0) or 0
+                    if n > 0 then
+                        if     f.kind == "dev_total" then device_map[f.g].total     = device_map[f.g].total     + n
+                        elseif f.kind == "dev_block" then device_map[f.g].block     = device_map[f.g].block     + n
+                        elseif f.kind == "dev_chal"  then device_map[f.g].challenge = device_map[f.g].challenge + n
+                        elseif f.kind == "ibd"       then intent_by_device[f.g][f.i] = intent_by_device[f.g][f.i] + n
+                        elseif f.kind == "int_total" then intent_map[f.i].total     = intent_map[f.i].total     + n
+                        elseif f.kind == "int_block" then intent_map[f.i].block     = intent_map[f.i].block     + n
+                        elseif f.kind == "int_chal"  then intent_map[f.i].challenge = intent_map[f.i].challenge + n
+                        end
+                    end
+                end
             end
         end
     end
@@ -597,10 +606,54 @@ local function render_data()
         end
     end
 
-    -- Build device stats list
+    -- ── Chuỗi 7 ngày cho biểu đồ Overview ───────────────────────────────
+    -- Khoá `stat:*` có TTL 7 ngày (async/logger.lua) nên 7 là ĐÚNG cửa sổ dữ
+    -- liệu còn tồn tại — xin nhiều hơn chỉ ra cột rỗng.
+    --
+    -- Dùng danh sách host của HÔM NAY cho cả 7 ngày, không đọc
+    -- `stat:hosts:<ngày cũ>`: chỉ mục đó mới có từ 2026-08-10 nên các ngày
+    -- trước chưa có. Tập domain trên một máy shared hosting gần như đứng yên,
+    -- nên sai số chỉ nằm ở domain vừa tạo/vừa xoá trong tuần — chấp nhận được,
+    -- và tự hết sau 7 ngày.
+    local daily = {}
+    if #host_set > 0 then
+        local days = {}
+        for back = 6, 0, -1 do
+            table.insert(days, os.date("%Y%m%d", os.time() - back * 86400))
+        end
+        red:init_pipeline()
+        for _, dkey in ipairs(days) do
+            for _, h in ipairs(host_set) do
+                for _, f in ipairs(DOMAIN_FIELDS) do
+                    red:get("stat:" .. h .. ":" .. f .. ":" .. dkey)
+                end
+            end
+        end
+        local res = red:commit_pipeline()
+        if res then
+            local i = 0
+            for _, dkey in ipairs(days) do
+                local row = {day = dkey:sub(7, 8) .. "/" .. dkey:sub(5, 6),
+                             req=0, allow=0, monitor=0, throttled=0,
+                             challenge=0, block=0}
+                for _ = 1, #host_set do
+                    for _, f in ipairs(DOMAIN_FIELDS) do
+                        i = i + 1
+                        local v = res[i]
+                        if v ~= nil and v ~= ngx.null then
+                            row[f] = row[f] + (tonumber(v) or 0)
+                        end
+                    end
+                end
+                table.insert(daily, row)
+            end
+        end
+    end
+
+    -- Build device stats list. Dùng lại DEV_GROUPS ở trên thay vì khai một
+    -- danh sách thứ hai cùng nội dung — hai bản sao thì sớm muộn cũng lệch.
     local device_stats = {}
-    local GROUP_ORDER = {"desktop","mobile","tablet","crawler","tool","unknown"}
-    for _, g in ipairs(GROUP_ORDER) do
+    for _, g in ipairs(DEV_GROUPS) do
         local s = device_map[g] or {total=0, block=0, challenge=0}
         local active = math.max(0, s.total - s.block - s.challenge)
         table.insert(device_stats, {
@@ -796,6 +849,7 @@ local function render_data()
             verified_capped = verified_keys.truncated and true or false,
         },
         today = today_tot,
+        daily = arr(daily),
         ban_ip_list  = arr(ban_ip_list),
         ban_id_list  = arr(ban_id_list),
         high_risk    = arr(high_risk),
@@ -918,19 +972,14 @@ tr:hover td{background:#1c2129}
   <!-- -->
   <div id="tab-overview" class="pane active">
     <div class="card" style="padding:10px 14px">
-      <h2 style="margin:0">📊 Kết cục lưu lượng — hôm nay</h2>
+      <h2 style="margin:0">📊 Kết cục lưu lượng — 7 ngày</h2>
       <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
-        Tổng của mọi domain. Đây là số liệu <b>duy nhất</b> ở đây không có ở tab khác —
-        tab Domains chỉ liệt kê từng dòng, không có hàng tổng. Năm ô cộng lại bằng Total.
+        Tổng của mọi domain. Số lớn = <b>hôm nay</b>; cột cuối cùng (viền sáng) cũng là hôm nay
+        và còn đang chạy nên thấp hơn là bình thường. Tab Domains chỉ liệt kê từng dòng,
+        không có hàng tổng — nên đây là số liệu duy nhất ở màn hình này không lặp lại tab khác.
       </div>
     </div>
-    <div class="g4" style="grid-template-columns:repeat(5,1fr)">
-      <div class="sc"><div class="sv" id="s-t-req">—</div><div class="sl">Tổng request</div></div>
-      <div class="sc"><div class="sv green" id="s-t-allow">—</div><div class="sl">Clean</div></div>
-      <div class="sc"><div class="sv gray" id="s-t-mon">—</div><div class="sl">Monitor</div></div>
-      <div class="sc"><div class="sv orange" id="s-t-thr">—</div><div class="sl">Throttled</div></div>
-      <div class="sc"><div class="sv red" id="s-t-block">—</div><div class="sl">Block</div></div>
-    </div>
+    <div id="ov-charts" class="g4" style="grid-template-columns:repeat(5,1fr)"></div>
 
     <div class="card" style="padding:10px 14px">
       <h2 style="margin:0">🔒 Đang thực thi — ngay lúc này</h2>
@@ -1148,16 +1197,29 @@ tr:hover td{background:#1c2129}
     <div class="g2">
       <div class="card">
         <h2>🧭 Client Distribution — Hôm nay</h2>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
+          Hai <b>trục khác nhau</b>, đừng cộng chéo:
+          <b>AI TRUY CẬP</b> = phân loại ý định (mỗi request rơi vào đúng một ô ⇒ hàng cộng đúng 100%);
+          <b>XỬ LÝ</b> = kết cục enforcement. Một "Bad bot" vẫn có thể được cho qua nếu điểm chưa tới ngưỡng.
+          Bảng cũ trộn hai trục vào một hàng nên đọc ra được những con số vô nghĩa như Human 114%.
+        </div>
         <table>
-          <thead><tr>
-            <th>Device</th><th>Total</th>
-            <th class="green">Active</th>
-            <th class="orange">Challenge</th>
-            <th class="red">Blocked</th>
-            <th>Block%</th>
-            <th class="red">Bot%</th>
-            <th class="green">Human%</th>
-          </tr></thead>
+          <thead>
+            <tr>
+              <th rowspan="2">Nhóm client</th>
+              <th rowspan="2">Tổng</th>
+              <th colspan="2" style="text-align:center;border-bottom:1px solid var(--color-border,#30363d)">👥 Ai truy cập</th>
+              <th colspan="4" style="text-align:center;border-bottom:1px solid var(--color-border,#30363d)">⚖️ Xử lý</th>
+            </tr>
+            <tr>
+              <th style="font-weight:400;font-size:11px">Thành phần (=100%)</th>
+              <th class="red">Bad bot</th>
+              <th class="green">Cho qua</th>
+              <th class="orange">Challenge</th>
+              <th class="red">Block</th>
+              <th>Block%</th>
+            </tr>
+          </thead>
           <tbody id="t-device-stats"></tbody>
         </table>
       </div>
@@ -1335,20 +1397,9 @@ function load(){
   })
   .then(d=>{
     var s=d.summary
-    // ── Overview: kết cục lưu lượng hôm nay ──
-    var t=d.today||{}
-    var tr=t.req||0
-    function withPct(v){
-      v=v||0
-      return tr>0 ? v.toLocaleString()+' ('+((v/tr)*100).toFixed(1)+'%)'
-                  : v.toLocaleString()
-    }
-    setText('s-t-req',   tr.toLocaleString())
-    setText('s-t-allow', withPct(t.allow))
-    setText('s-t-mon',   withPct(t.monitor))
-    setText('s-t-thr',   withPct(t.throttled))
-    setText('s-t-block', withPct(t.block))
-    setText('s-t-chal',  (t.challenge||0).toLocaleString())
+    // ── Overview: 5 biểu đồ cột 7 ngày ──
+    renderOverviewCharts(d.daily||[], d.today||{})
+    setText('s-t-chal',  ((d.today||{}).challenge||0).toLocaleString())
 
     // ── Overview: trạng thái thực thi ──
     // "≥" khi SCAN chạm trần: con số là cận dưới, không phải tổng.
@@ -1479,6 +1530,58 @@ function load(){
     setHTML('t-ja3-list', jl||nodata(3))
   })
   .catch(e=>setText('status','Error: '+e.message))
+}
+
+// ── Overview: 5 biểu đồ cột 7 ngày ──────────────────────────────────────
+// Small multiples chứ không gộp một biểu đồ: năm đại lượng lệch nhau hàng chục
+// lần (Tổng ~400k, Challenge ~1k), vẽ chung một trục thì bốn cột dưới bẹp thành
+// đường kẻ. Mỗi biểu đồ tự chuẩn hoá theo đỉnh CỦA CHÍNH NÓ, nên đọc được
+// XU HƯỚNG; con số tuyệt đối nằm ở dòng lớn phía trên và trong tooltip.
+function renderOverviewCharts(daily, today){
+  var METRICS=[
+    {k:'req',       label:'Tổng request', color:'#58a6ff'},
+    {k:'allow',     label:'Clean',        color:'#3fb950'},
+    {k:'monitor',   label:'Monitor',      color:'#8b949e'},
+    {k:'throttled', label:'Throttled',    color:'#f0883e'},
+    {k:'block',     label:'Block',        color:'#f85149'}
+  ]
+  if(!daily || daily.length===0){
+    setHTML('ov-charts','<div class="sc"><div class="sl">chưa có dữ liệu 7 ngày</div></div>')
+    return
+  }
+  var tot=today.req||0
+  var html=''
+  for(var m of METRICS){
+    var vals=daily.map(function(r){ return r[m.k]||0 })
+    var max=Math.max.apply(null,[1].concat(vals))
+    var cur=today[m.k]||0
+    var sub=(m.k!=='req'&&tot>0) ? ((cur/tot)*100).toFixed(1)+'% lưu lượng' : 'hôm nay'
+
+    var bars='', axis=''
+    for(var i=0;i<vals.length;i++){
+      var v=vals[i]
+      var h=Math.round((v/max)*100)
+      if(v>0&&h<3) h=3           // giá trị khác 0 luôn phải nhìn thấy được
+      var last=(i===vals.length-1)
+      var op=last?'1':'.5'
+      var ring=last?';box-shadow:0 0 0 1px '+m.color:''
+      bars+='<div title="'+(daily[i].day||'')+': '+v.toLocaleString()+'" '
+          + 'style="flex:1;display:flex;align-items:flex-end;height:52px">'
+          + '<div style="width:100%;height:'+h+'%;min-height:1px;background:'+m.color
+          + ';opacity:'+op+';border-radius:2px 2px 0 0'+ring+'"></div></div>'
+      axis+='<div style="flex:1;text-align:center;font-size:9px;color:#8b949e">'
+          + (daily[i].day||'').split('/')[0]+'</div>'
+    }
+    html+='<div class="sc" style="text-align:left;padding:10px 12px">'
+      + '<div style="font-size:11px;color:#8b949e">'+m.label+'</div>'
+      + '<div style="font-size:20px;font-weight:700;color:'+m.color+';line-height:1.25">'
+      +   cur.toLocaleString()+'</div>'
+      + '<div style="font-size:10px;color:#8b949e;margin-bottom:6px">'+sub+'</div>'
+      + '<div style="display:flex;gap:2px;align-items:flex-end">'+bars+'</div>'
+      + '<div style="display:flex;gap:2px;margin-top:2px">'+axis+'</div>'
+      + '</div>'
+  }
+  setHTML('ov-charts', html)
 }
 
 // ── Bảng Bans: phân trang phía client ────────────────────────────────────
@@ -1741,10 +1844,23 @@ function renderDevices(d){
     setText('dev-'+dev.group+'-total', (dev.total||0).toLocaleString())
   }
 
-  // Table — với Bot%/Human% từ intent_by_device
+  // Bảng hai trục. Trục "ai truy cập" luôn cộng đúng 100% vì async/logger.lua
+  // tăng `dev_<nhóm>` và `ibd_<nhóm>_<ý định>` CÙNG MỘT LẦN cho mỗi request.
+  // Nếu chúng lệch nhau thì đó là lỗi ĐỌC chứ không phải lỗi ghi — nên hiển thị
+  // cảnh báo thay vì lặng lẽ in ra một tỷ lệ vô lý (Human 114%).
   var rows = ''
   var ibd  = d.intent_by_device || {}
   var maxTotal = Math.max(1, ...devs.map(d=>d.total||0))
+  var grand = 0
+  for(var dv of devs){ grand += dv.total||0 }
+
+  var INTENT_VIEW = [
+    {k:'human',   label:'Human',    color:'#3fb950'},
+    {k:'goodbot', label:'Good bot', color:'#58a6ff'},
+    {k:'watch',   label:'Watch',    color:'#8b949e'},
+    {k:'bot',     label:'Bad bot',  color:'#f85149'}
+  ]
+
   for(var dev of devs){
     var total   = dev.total     || 0
     var active  = dev.active    || 0
@@ -1752,25 +1868,53 @@ function renderDevices(d){
     var blk     = dev.block     || 0
     var pct     = total > 0 ? ((blk/total)*100).toFixed(1)+'%' : '0%'
     var cls     = blk > total*0.3 ? 'red' : blk > total*0.1 ? 'orange' : 'green'
-    // Bot% = bad bot; Human% = human + goodbot; watch = phần còn lại
     var dg      = dev.group
-    var nBot    = (ibd[dg] && ibd[dg].bot)      || 0
-    var nHuman  = ((ibd[dg] && ibd[dg].human)   || 0)
-                + ((ibd[dg] && ibd[dg].goodbot) || 0)
-    var hasIbd  = ibd[dg] && (nBot + nHuman) > 0
-    var botPct  = hasIbd ? ((nBot/total)*100).toFixed(0)+'%'   : '-'
-    var humPct  = hasIbd ? ((nHuman/total)*100).toFixed(0)+'%' : '-'
-    var botCls  = nBot > total*0.5 ? 'red' : nBot > total*0.2 ? 'orange' : 'gray'
-    var humCls  = nHuman > total*0.5 ? 'green' : 'gray'
+    var src     = ibd[dg] || {}
+
+    // Mẫu số là TỔNG CÁC Ô Ý ĐỊNH, không phải `dev_<nhóm>`. Nhờ vậy thanh luôn
+    // đúng 100% kể cả khi hai nguồn lệch; phần lệch được nêu riêng ở cột Tổng.
+    var isum = 0
+    for(var iv of INTENT_VIEW){ isum += (src[iv.k]||0) }
+
+    var seg = '', legend = ''
+    if(isum > 0){
+      for(var iv of INTENT_VIEW){
+        var n = src[iv.k]||0
+        if(n === 0) continue
+        var w = (n/isum)*100
+        seg += '<div title="'+iv.label+': '+n.toLocaleString()+' ('+w.toFixed(1)+'%)" '
+             + 'style="width:'+w+'%;background:'+iv.color+'"></div>'
+        if(w >= 8) legend += '<span style="color:'+iv.color+';margin-right:8px">'
+             + iv.label+' '+w.toFixed(0)+'%</span>'
+      }
+    }
+    var barCell = isum > 0
+      ? '<div style="display:flex;height:9px;border-radius:3px;overflow:hidden;min-width:120px">'+seg+'</div>'
+        + '<div style="font-size:10px;margin-top:3px">'+legend+'</div>'
+      : '<span class="gray" style="font-size:11px">chưa có dữ liệu</span>'
+
+    var botPct = isum > 0 ? (((src.bot||0)/isum)*100).toFixed(0)+'%' : '-'
+    var botCls = (src.bot||0) > isum*0.5 ? 'red' : (src.bot||0) > isum*0.2 ? 'orange' : 'gray'
+
+    // Lệch > 1% giữa hai nguồn = dấu hiệu số liệu bị cắt. Nêu ra, đừng giấu.
+    var drift = (total > 0 && isum > 0) ? Math.abs(isum-total)/total : 0
+    var warn = drift > 0.01
+      ? ' <span class="orange" style="font-size:10px" title="dev_'+dg+'='+total.toLocaleString()
+        +' nhưng tổng các ô ý định='+isum.toLocaleString()+'. Hai nguồn phải bằng nhau — lệch nghĩa là dữ liệu đọc bị thiếu.">⚠ lệch '
+        +(drift*100).toFixed(0)+'%</span>'
+      : ''
+    var share = grand > 0 ? ' <span class="gray" style="font-size:10px">'
+                + ((total/grand)*100).toFixed(1)+'%</span>' : ''
+
     rows += '<tr>'
-      + '<td><b>' + (icons[dev.group]||'') + ' ' + (labels[dev.group]||dev.group) + '</b></td>'
-      + '<td>' + total.toLocaleString() + '</td>'
+      + '<td><b>' + (icons[dg]||'') + ' ' + (labels[dg]||dg) + '</b></td>'
+      + '<td>' + total.toLocaleString() + share + warn + '</td>'
+      + '<td style="min-width:150px">' + barCell + '</td>'
+      + '<td class="' + botCls + '"><b>' + botPct + '</b></td>'
       + '<td class="green">' + active.toLocaleString() + '</td>'
       + '<td class="orange">' + chal.toLocaleString() + '</td>'
       + '<td class="red">' + blk.toLocaleString() + '</td>'
       + '<td class="' + cls + '"><b>' + pct + '</b></td>'
-      + '<td class="' + botCls + '"><b>' + botPct + '</b></td>'
-      + '<td class="' + humCls + '"><b>' + humPct + '</b></td>'
       + '</tr>'
   }
   setHTML('t-device-stats', rows || nodata(8))
