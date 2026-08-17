@@ -18,11 +18,78 @@ local DEVICE_GROUP = {
     http_client           = "tool",
 }
 
+-- ── Nhãn ý định theo `action_reason` ─────────────────────────────────────
+-- VÌ SAO PHẢI CÓ BẢNG NÀY, chứ không chỉ dựa vào bốn trường bằng chứng:
+-- `bot_score` / `ua_flag` / `ip_rep` / `ip_risk` đều CHỈ được điền ở tầng
+-- detection + intelligence — chạy SAU khi dispatch theo class. Mà mọi lệnh
+-- chặn "khoá ở cửa" đều thoát TRƯỚC đó:
+--     banned_ip          l7/ban/ip_ban_check          STEPS_COMMON bước 6
+--     banned_id          l7/ban/ban_store             trước detection
+--     fleet_dyn_block_*  detection/fleet/check_block  STEPS_COMMON bước 4
+--     xmlrpc_ua_reject / wp_login_notc_repeat / expensive_filter_ban  thoát sớm
+-- Với chúng cả bốn trường VĨNH VIỄN = 0 (mặc định từ core/ctx/init.lua), nên
+-- điều kiện "block + có bằng chứng" bên dưới KHÔNG BAO GIỜ đúng ⇒ chúng rơi
+-- hết xuống nhánh cuối `watch`.
+--
+-- Đo 2026-08-10 trên cloud28-246: trong 59.708 lượt block, **58.765 = 98,4%**
+-- đi đường khoá-ở-cửa; chỉ 921 lượt (1,5%) qua đường chấm điểm — đường DUY
+-- NHẤT sinh ra bằng chứng. Hệ quả là hai ô bị đảo vai:
+--   `watch` chứa phần lớn kẻ ĐÃ bị kết án  ⇒ block% > 65%
+--   `bot`   chứa phần lớn kẻ MỚI bị nghi (crawler trượt verify, bot_score cao
+--           nhưng tổng điểm chưa tới ngưỡng ⇒ vẫn allow) ⇒ block% chỉ 14%
+--
+-- `action_reason` BẮT BUỘC được đặt trước mọi `ngx.exit` (quy tắc của repo),
+-- nên ở tầng log nó là bằng chứng đáng tin nhất còn dùng được.
+--
+-- Nguyên tắc chọn: CHỈ nhận những lý do là KẾT ÁN dựa trên bằng chứng đã thu,
+-- không nhận biện pháp phòng ngừa.
+local REASON_BOT = {
+    banned_ip            = true,  -- lệnh cấm tồn tại VÌ bằng chứng ở lượt trước
+    banned_id            = true,
+    xmlrpc_ua_reject     = true,  -- chữ ký UA, không phải suy đoán
+    wp_login_notc_repeat = true,  -- POST login lặp không cookie = dò mật khẩu
+    expensive_filter_ban = true,  -- ≥20 tổ hợp filter/IP: crawler bất khả chối
+}
+-- CỐ Ý KHÔNG có mặt ở bảng trên:
+--   `banned_id_shared_challenge` — chính nhánh đó tồn tại vì `ctx.identity` gộp
+--       cả văn phòng về một hash, tức người bị khớp có thể VÔ TỘI. Gán `bot`
+--       sẽ sai đúng ca mà nhánh này sinh ra để bảo vệ.
+--   `ip_farm_suspect` / `expensive_filter` — phòng ngừa (challenge / 429 theo
+--       tài nguyên), có thể trúng người thật. Để `watch` là đúng nghĩa.
+
+-- Crawler tự khai VÀ chứng minh được danh tính. "goodbot" ở đây nghĩa là
+-- **đã định danh được**, không phải "có ích" — Ahrefs/SemRush/DataForSEO vẫn
+-- vào ô này. Trước đây chúng rơi vào `human`: S2.5 cố ý đặt `bot_score = 0`
+-- nên hàm này không còn tín hiệu nào, mà chúng thì `action=allow`.
+local REASON_GOODBOT = {
+    good_bot_verified      = true,
+    good_bot_asn_verified  = true,
+    good_bot_asn_lite      = true,
+    contact_ptr_match      = true,
+    contact_org_match      = true,
+    contact_cloud_attested = true,
+    analyzer_attested      = true,
+    s25_cap_monitor        = true,
+}
+
 local function classify_intent(ctx)
+    local reason = ctx.action_reason or ""
+
     -- Good bot: đã DNS verify
     if ctx.good_bot_verified == true then
         return "goodbot"
     end
+    if REASON_GOODBOT[reason] then return "goodbot" end
+    -- Nguồn thứ hai cho cùng kết luận: reason có thể bị action khác ghi đè
+    -- (vd bot S2.5 sau đó chạm trần tốc độ), cờ tier thì không.
+    if ctx.bot_identity_tier == "S2.5" then return "goodbot" end
+    -- `good_bot_rate_<lớp>` (engine.lua:180) — bot ĐÃ xác minh bị chặn tốc độ.
+    -- Khớp tiền tố vì tên lớp polite/moderate/aggressive/default nằm ở đuôi.
+    if reason:sub(1, 14) == "good_bot_rate_" then return "goodbot" end
+
+    if REASON_BOT[reason] then return "bot" end
+    -- `fleet_dyn_block_24:<cidr>` / `_16:<cidr>` — CIDR ở đuôi nên khớp tiền tố.
+    if reason:sub(1, 16) == "fleet_dyn_block_" then return "bot" end
 
     local action    = ctx.action    or "allow"
     local bot_score = ctx.bot_score or 0.0
@@ -59,7 +126,18 @@ local function classify_intent(ctx)
         end
     end
 
-    -- Watch: action=monitor, hoặc allow với signal nhẹ — đang theo dõi
+    -- Watch: CHƯA KẾT LUẬN ĐƯỢC — monitor, hoặc allow kèm tín hiệu nhẹ, hoặc
+    -- các biện pháp phòng ngừa (ip_farm_suspect, expensive_filter,
+    -- banned_id_shared_challenge) vốn có thể trúng người thật.
+    --
+    -- Sau bản vá này `watch` KHÔNG còn là sọt đựng mọi thứ: 98,4% lệnh chặn
+    -- từng rơi vào đây giờ đã về đúng ô `bot`.
+    --
+    -- Còn một chỗ chưa chỉnh, ghi lại để khỏi quên: request trên IP đã
+    -- whitelist (`ip_whitelist`, 11.771 lượt/9h trên 246) có mọi trường bằng
+    -- chứng = 0 nên vào ô `human`, kể cả khi đó là máy (vd cron WordPress tự
+    -- gọi mình). Whitelist là quyết định KHÔNG phán xét của người vận hành,
+    -- nên để nguyên; chỉ cần biết ô `human` có lẫn phần này.
     return "watch"
 end
 
