@@ -999,8 +999,15 @@ tr:hover td{background:#1c2129}
 
     <div class="card" style="padding:10px 14px">
       <h2 style="margin:0">🔒 Đang thực thi — ngay lúc này</h2>
-      <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
-        Dấu <b>≥</b> nghĩa là SCAN đã chạm trần nên con số là <b>cận dưới</b>, không phải tổng.
+      <!-- Chỉ hiện khi thực sự có số bị cắt. Đo 2026-08-17 trên cloud28-246:
+           `ban:*`=17.680/trần 40.000, `verified:*`=105/trần 500, DBSIZE=299.935
+           ⇒ không trần nào bị chạm, dấu ≥ không bao giờ xuất hiện. Để dòng này
+           hiện thường trực là giải thích một ký hiệu vô hình. Nhưng xoá hẳn thì
+           ngày `ban:*` vượt trần, con số sẽ lặng lẽ đứng yên mà không ai hiểu
+           vì sao — nên giữ cơ chế, chỉ bỏ phần thường trực. -->
+      <div id="ov-cap-note" style="display:none;font-size:12px;color:var(--color-accent-orange,#f0883e);margin-top:4px">
+        ⚠ Dấu <b>≥</b> nghĩa là SCAN đã chạm trần nên con số là <b>cận dưới</b>, không phải tổng —
+        nới <code>scan_keys</code> trong <code>admin/init.lua</code>.
       </div>
     </div>
     <div class="g4">
@@ -1436,11 +1443,15 @@ function load(){
     setText('s-t-chal',  ((d.today||{}).challenge||0).toLocaleString())
 
     // ── Overview: trạng thái thực thi ──
-    // "≥" khi SCAN chạm trần: con số là cận dưới, không phải tổng.
+    // "≥" khi SCAN chạm trần: con số là cận dưới, không phải tổng. Lời giải
+    // thích chỉ hiện khi có ít nhất một số thật sự bị cắt — không có gì bị cắt
+    // thì cũng không có ký hiệu nào cần giải thích.
     var ge = s.ban_capped ? '≥' : ''
     setText('s-ban',   ge+s.ban_ip)
     setText('s-banid', ge+s.ban_id)
     setText('s-verif', (s.verified_capped ? '≥' : '')+s.verified)
+    var capNote = document.getElementById('ov-cap-note')
+    if(capNote) capNote.style.display = (s.ban_capped || s.verified_capped) ? '' : 'none'
 
     // Ẩn khỏi bảng: IDLE + TTL < 60s (sắp expire, không enforce).
     // IDLE với TTL còn lớn vẫn hiển thị với badge IDLE.
