@@ -497,33 +497,43 @@ local function render_data()
     -- Tên khoá con là hữu hạn và biết trước, nên liệt kê được. Cái giá của
     -- việc liệt kê (phải sửa ở đây khi thêm nhóm/ý định mới) rẻ hơn nhiều so
     -- với cái giá của SCAN: tử số và mẫu số bị cắt độc lập ⇒ **Human 114%**.
-    local DEV_GROUPS  = {"desktop","mobile","tablet","crawler","tool","unknown"}
+    -- `verified` + `gate` KHÔNG phải loại thiết bị — chúng là hai lối đi mà
+    -- `device_classifier` (STEPS_COMMON bước 10) không được chạy: cookie
+    -- fast-path return trước cả STEPS_COMMON, còn ip_ban_check/fleet_check_block
+    -- exit sớm hơn. Trước đây cả hai bị dồn vào "unknown" nên ô đó vừa to vừa
+    -- vô nghĩa (người thật đã giải PoW nằm chung với lệnh chặn ở cửa).
+    local DEV_GROUPS  = {"desktop","mobile","tablet","crawler","tool","unknown","verified","gate"}
     local INTENTS     = {"human","goodbot","watch","bot"}
+    -- Đúng bộ action mà logger ghi khoá riêng (mọi action khác `allow`).
+    -- `allow` cố tình KHÔNG có khoá — nó là phần dư, và phần dư đó mới là Clean.
+    local ACTIONS     = {"monitor","throttled","challenge","block"}
 
     local dev_fields = {}      -- tên khoá con cần đọc cho MỖI host
     for _, g in ipairs(DEV_GROUPS) do
-        table.insert(dev_fields, {kind="dev_total",  key="dev_"..g,                g=g})
-        table.insert(dev_fields, {kind="dev_block",  key="dev_"..g.."_block",      g=g})
-        table.insert(dev_fields, {kind="dev_chal",   key="dev_"..g.."_challenge",  g=g})
+        table.insert(dev_fields, {kind="dev_total",  key="dev_"..g, g=g})
+        for _, a in ipairs(ACTIONS) do
+            table.insert(dev_fields, {kind="dev_act", key="dev_"..g.."_"..a, g=g, a=a})
+        end
         for _, ig in ipairs(INTENTS) do
             table.insert(dev_fields, {kind="ibd", key="ibd_"..g.."_"..ig, g=g, i=ig})
         end
     end
     for _, ig in ipairs(INTENTS) do
-        table.insert(dev_fields, {kind="int_total", key="intent_"..ig,               i=ig})
-        table.insert(dev_fields, {kind="int_block", key="intent_"..ig.."_block",     i=ig})
-        table.insert(dev_fields, {kind="int_chal",  key="intent_"..ig.."_challenge", i=ig})
+        table.insert(dev_fields, {kind="int_total", key="intent_"..ig, i=ig})
+        for _, a in ipairs(ACTIONS) do
+            table.insert(dev_fields, {kind="int_act", key="intent_"..ig.."_"..a, i=ig, a=a})
+        end
     end
 
     -- Khởi tạo ĐỦ mọi ô về 0. Nhờ vậy nhóm không có lưu lượng vẫn hiện thành
     -- dòng "0" thay vì biến mất khỏi bảng — vắng mặt và bằng không là hai
     -- thông tin khác nhau.
     for _, g in ipairs(DEV_GROUPS) do
-        device_map[g]       = {total=0, block=0, challenge=0}
+        device_map[g]       = {total=0, monitor=0, throttled=0, challenge=0, block=0}
         intent_by_device[g] = {bot=0, human=0, watch=0, goodbot=0}
     end
     for _, ig in ipairs(INTENTS) do
-        intent_map[ig] = {total=0, block=0, challenge=0}
+        intent_map[ig] = {total=0, monitor=0, throttled=0, challenge=0, block=0}
     end
 
     if #host_set > 0 then
@@ -542,13 +552,11 @@ local function render_data()
                     local v = res[i]
                     local n = (v ~= nil and v ~= ngx.null) and (tonumber(v) or 0) or 0
                     if n > 0 then
-                        if     f.kind == "dev_total" then device_map[f.g].total     = device_map[f.g].total     + n
-                        elseif f.kind == "dev_block" then device_map[f.g].block     = device_map[f.g].block     + n
-                        elseif f.kind == "dev_chal"  then device_map[f.g].challenge = device_map[f.g].challenge + n
+                        if     f.kind == "dev_total" then device_map[f.g].total = device_map[f.g].total + n
+                        elseif f.kind == "dev_act"   then device_map[f.g][f.a]  = device_map[f.g][f.a]  + n
                         elseif f.kind == "ibd"       then intent_by_device[f.g][f.i] = intent_by_device[f.g][f.i] + n
-                        elseif f.kind == "int_total" then intent_map[f.i].total     = intent_map[f.i].total     + n
-                        elseif f.kind == "int_block" then intent_map[f.i].block     = intent_map[f.i].block     + n
-                        elseif f.kind == "int_chal"  then intent_map[f.i].challenge = intent_map[f.i].challenge + n
+                        elseif f.kind == "int_total" then intent_map[f.i].total = intent_map[f.i].total + n
+                        elseif f.kind == "int_act"   then intent_map[f.i][f.a]  = intent_map[f.i][f.a]  + n
                         end
                     end
                 end
@@ -654,12 +662,20 @@ local function render_data()
     -- danh sách thứ hai cùng nội dung — hai bản sao thì sớm muộn cũng lệch.
     local device_stats = {}
     for _, g in ipairs(DEV_GROUPS) do
-        local s = device_map[g] or {total=0, block=0, challenge=0}
-        local active = math.max(0, s.total - s.block - s.challenge)
+        local s = device_map[g] or {total=0, monitor=0, throttled=0, challenge=0, block=0}
+        -- Cột cũ tên "Cho qua" chứ không phải "Clean" là CÓ LÝ DO: nó là hiệu
+        -- `total - block - challenge`, tức gộp cả `monitor` (cho đi nhưng đã
+        -- ghi sổ) lẫn `throttled` (429 — bị từ chối). Gọi hiệu đó là "sạch" thì
+        -- sai. Nay `monitor`/`throttled` có khoá riêng nên phần dư mới đúng
+        -- nghĩa `allow`, và tên "Clean" mới trung thực — cùng nghĩa với Overview.
+        local clean = math.max(0, s.total - s.monitor - s.throttled
+                                          - s.challenge - s.block)
         table.insert(device_stats, {
             group     = g,
             total     = s.total,
-            active    = active,
+            clean     = clean,
+            monitor   = s.monitor,
+            throttled = s.throttled,
             challenge = s.challenge,
             block     = s.block,
         })
@@ -871,10 +887,10 @@ local function render_data()
         ua_unknown_samples   = arr(ua_unknown_samples),
         intent_by_device     = intent_by_device,
         intent_stats         = {
-            human     = intent_map["human"]     or {total=0,block=0,challenge=0},
-            goodbot   = intent_map["goodbot"]   or {total=0,block=0,challenge=0},
-            bot       = intent_map["bot"]       or {total=0,block=0,challenge=0},
-            watch     = intent_map["watch"]     or {total=0,block=0,challenge=0},
+            human   = intent_map["human"],
+            goodbot = intent_map["goodbot"],
+            bot     = intent_map["bot"],
+            watch   = intent_map["watch"],
         },
         fleet_mode       = fleet_mode,
         fleet_candidates = arr(fleet_candidates),
@@ -1191,7 +1207,15 @@ tr:hover td{background:#1c2129}
       </div>
       <div class="sc">
         <div class="sv gray" id="dev-unknown-total">—</div>
-        <div class="sl">❓ Unknown</div>
+        <div class="sl">❓ Unknown (UA lạ)</div>
+      </div>
+      <div class="sc">
+        <div class="sv green" id="dev-verified-total">—</div>
+        <div class="sl" title="Cookie PoW còn hiệu lực — thoát ở fast-path trước STEPS_COMMON">🍪 Verified (fast-path)</div>
+      </div>
+      <div class="sc">
+        <div class="sv red" id="dev-gate-total">—</div>
+        <div class="sl" title="ban IP / fleet dyn-block — exit trước khi device_classifier chạy">🚪 Chặn ở cửa</div>
       </div>
     </div>
     <div class="g2">
@@ -1200,8 +1224,12 @@ tr:hover td{background:#1c2129}
         <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
           Hai <b>trục khác nhau</b>, đừng cộng chéo:
           <b>AI TRUY CẬP</b> = phân loại ý định (mỗi request rơi vào đúng một ô ⇒ hàng cộng đúng 100%);
-          <b>XỬ LÝ</b> = kết cục enforcement. Một "Bad bot" vẫn có thể được cho qua nếu điểm chưa tới ngưỡng.
-          Bảng cũ trộn hai trục vào một hàng nên đọc ra được những con số vô nghĩa như Human 114%.
+          <b>XỬ LÝ</b> = kết cục enforcement (5 cột cộng đúng bằng Tổng, cùng bộ từ vựng với Overview).
+          Một "Bad bot" vẫn có thể Clean nếu điểm chưa tới ngưỡng.
+          <br><b>Nhóm client = UA nói gì</b>, không phải phán quyết: <i>Crawler</i>/<i>Tool</i> là UA tự khai
+          là máy, nên không bao giờ có ô Human. <i>Verified</i> và <i>Chặn ở cửa</i> không phải loại thiết bị —
+          đó là hai lối request thoát TRƯỚC khi device_classifier kịp chạy (cookie fast-path và ban ở cửa),
+          nên không có thông tin thiết bị để nói.
         </div>
         <table>
           <thead>
@@ -1209,12 +1237,14 @@ tr:hover td{background:#1c2129}
               <th rowspan="2">Nhóm client</th>
               <th rowspan="2">Tổng</th>
               <th colspan="2" style="text-align:center;border-bottom:1px solid var(--color-border,#30363d)">👥 Ai truy cập</th>
-              <th colspan="4" style="text-align:center;border-bottom:1px solid var(--color-border,#30363d)">⚖️ Xử lý</th>
+              <th colspan="6" style="text-align:center;border-bottom:1px solid var(--color-border,#30363d)">⚖️ Xử lý</th>
             </tr>
             <tr>
               <th style="font-weight:400;font-size:11px">Thành phần (=100%)</th>
               <th class="red">Bad bot</th>
-              <th class="green">Cho qua</th>
+              <th class="green">Clean</th>
+              <th>Monitor</th>
+              <th class="orange">Throttled</th>
               <th class="orange">Challenge</th>
               <th class="red">Block</th>
               <th>Block%</th>
@@ -1236,9 +1266,11 @@ tr:hover td{background:#1c2129}
       <table>
         <thead><tr>
           <th>Intent</th><th>Total</th>
-          <th class="green">Active</th>
+          <th class="green">Clean</th>
+          <th>Monitor</th>
+          <th class="orange">Throttled</th>
           <th class="orange">Challenge</th>
-          <th class="red">Blocked</th>
+          <th class="red">Block</th>
           <th>Block%</th>
         </tr></thead>
         <tbody id="t-intent-stats"></tbody>
@@ -1247,8 +1279,10 @@ tr:hover td{background:#1c2129}
     <div class="card" style="margin-top:0">
       <h2>❓ Unknown Client — UA Samples (24h gần nhất)</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-        UA có dáng browser nhưng KHÔNG khớp rule nào (crawler và HTTP tool giờ đã tách riêng).
-        Bucket này giờ rất nhỏ — nếu phình lên là dấu hiệu browser mới / UA lạ đáng soi, cần thêm rule vào device_classifier.lua.
+        UA có dáng browser nhưng KHÔNG khớp rule nào — crawler, HTTP tool, verified fast-path và "chặn ở cửa"
+        đều đã tách thành nhóm riêng, nên bucket này giờ mới thực sự nhỏ và đáng soi.
+        Phình lên = browser mới / UA lạ, cần thêm rule vào device_classifier.lua.
+        (Trước đây danh sách này luôn RỖNG: hàm ghi tham chiếu biến <code>ua</code> chưa khai báo ⇒ luôn nil ⇒ không lần nào lưu mẫu.)
       </div>
       <table><thead><tr><th>User-Agent</th></tr></thead>
       <tbody id="t-ua-unknown"></tbody></table>
@@ -1836,8 +1870,13 @@ function wlFromBan(ip){
 
 function renderDevices(d){
   var devs = d.device_stats || []
-  var icons = {desktop:'🖥',mobile:'📱',tablet:'📟',crawler:'🕷',tool:'🔧',unknown:'❓'}
-  var labels = {desktop:'Browser · Desktop',mobile:'Browser · Mobile',tablet:'Browser · Tablet',crawler:'Crawler',tool:'Tool',unknown:'Unknown'}
+  var icons = {desktop:'🖥',mobile:'📱',tablet:'📟',crawler:'🕷',tool:'🔧',unknown:'❓',verified:'🍪',gate:'🚪'}
+  var labels = {desktop:'Browser · Desktop',mobile:'Browser · Mobile',tablet:'Browser · Tablet',
+                crawler:'Crawler',tool:'Tool',unknown:'Unknown (UA lạ)',
+                verified:'Verified (cookie fast-path)',gate:'Chặn ở cửa'}
+  var notes  = {unknown:'UA có dáng browser nhưng không khớp rule nào trong device_classifier',
+                verified:'Đã giải PoW từ trước, cookie còn hiệu lực — thoát trước STEPS_COMMON nên không phân loại thiết bị',
+                gate:'ban IP / fleet dyn-block — exit trước device_classifier (STEPS_COMMON bước 10)'}
 
   // Summary cards
   for(var dev of devs){
@@ -1863,7 +1902,9 @@ function renderDevices(d){
 
   for(var dev of devs){
     var total   = dev.total     || 0
-    var active  = dev.active    || 0
+    var clean   = dev.clean     || 0
+    var mon     = dev.monitor   || 0
+    var thr     = dev.throttled || 0
     var chal    = dev.challenge || 0
     var blk     = dev.block     || 0
     var pct     = total > 0 ? ((blk/total)*100).toFixed(1)+'%' : '0%'
@@ -1906,18 +1947,22 @@ function renderDevices(d){
     var share = grand > 0 ? ' <span class="gray" style="font-size:10px">'
                 + ((total/grand)*100).toFixed(1)+'%</span>' : ''
 
+    var note = notes[dg] ? ' <span class="gray" style="cursor:help" title="'+notes[dg]+'">ⓘ</span>' : ''
+
     rows += '<tr>'
-      + '<td><b>' + (icons[dg]||'') + ' ' + (labels[dg]||dg) + '</b></td>'
+      + '<td><b>' + (icons[dg]||'') + ' ' + (labels[dg]||dg) + '</b>' + note + '</td>'
       + '<td>' + total.toLocaleString() + share + warn + '</td>'
       + '<td style="min-width:150px">' + barCell + '</td>'
       + '<td class="' + botCls + '"><b>' + botPct + '</b></td>'
-      + '<td class="green">' + active.toLocaleString() + '</td>'
+      + '<td class="green">' + clean.toLocaleString() + '</td>'
+      + '<td class="gray">' + mon.toLocaleString() + '</td>'
+      + '<td class="orange">' + thr.toLocaleString() + '</td>'
       + '<td class="orange">' + chal.toLocaleString() + '</td>'
       + '<td class="red">' + blk.toLocaleString() + '</td>'
       + '<td class="' + cls + '"><b>' + pct + '</b></td>'
       + '</tr>'
   }
-  setHTML('t-device-stats', rows || nodata(8))
+  setHTML('t-device-stats', rows || nodata(10))
 
   // Bar chart
   var chart = ''
@@ -1925,24 +1970,30 @@ function renderDevices(d){
     var total  = dev.total   || 0
     var blk    = dev.block   || 0
     var chal   = dev.challenge || 0
-    var active = dev.active  || 0
+    // `monitor` (ghi sổ nhưng cho đi) và `throttled` (429) gộp thành một dải
+    // giữa — chúng không sạch mà cũng không phải bị chặn hẳn.
+    var mid    = (dev.monitor||0) + (dev.throttled||0)
+    var clean  = dev.clean || 0
     if(total === 0) continue
     var wPct   = Math.round((total/maxTotal)*100)
     var blkW   = total > 0 ? Math.round((blk/total)*100)  : 0
     var chalW  = total > 0 ? Math.round((chal/total)*100) : 0
-    var actW   = 100 - blkW - chalW
+    var midW   = total > 0 ? Math.round((mid/total)*100)  : 0
+    var actW   = Math.max(0, 100 - blkW - chalW - midW)
     chart += '<div style="margin-bottom:14px">'
       + '<div style="display:flex;justify-content:space-between;margin-bottom:3px">'
       + '<span style="font-size:12px">' + (icons[dev.group]||'') + ' ' + (labels[dev.group]||dev.group) + '</span>'
       + '<span style="font-size:11px;color:#8b949e">' + total.toLocaleString() + ' reqs</span>'
       + '</div>'
       + '<div style="background:#21262d;border-radius:4px;height:18px;overflow:hidden;display:flex">'
-      + '<div style="width:'+actW+'%;background:#3fb950;transition:width .4s" title="Active: '+active+'"></div>'
+      + '<div style="width:'+actW+'%;background:#3fb950;transition:width .4s" title="Clean: '+clean+'"></div>'
+      + '<div style="width:'+midW+'%;background:#8b949e;transition:width .4s" title="Monitor + Throttled: '+mid+'"></div>'
       + '<div style="width:'+chalW+'%;background:#f0883e;transition:width .4s" title="Challenge: '+chal+'"></div>'
       + '<div style="width:'+blkW+'%;background:#f85149;transition:width .4s" title="Block: '+blk+'"></div>'
       + '</div>'
       + '<div style="display:flex;gap:12px;margin-top:3px;font-size:10px;color:#8b949e">'
-      + '<span style="color:#3fb950">■ Active: '+active.toLocaleString()+'</span>'
+      + '<span style="color:#3fb950">■ Clean: '+clean.toLocaleString()+'</span>'
+      + '<span style="color:#8b949e">■ Monitor+Throttled: '+mid.toLocaleString()+'</span>'
       + '<span style="color:#f0883e">■ Challenge: '+chal.toLocaleString()+'</span>'
       + '<span style="color:#f85149">■ Block: '+blk.toLocaleString()+'</span>'
       + '</div>'
@@ -1970,19 +2021,24 @@ function renderDevices(d){
     {key:'watch',   label:'👁 Watch',      cls:'orange'},
   ]
   for(var im of imap){
-    var s = intents[im.key] || {total:0,block:0,challenge:0}
-    var active = Math.max(0, s.total - (s.block||0) - (s.challenge||0))
-    var pct = s.total > 0 ? ((s.block/s.total)*100).toFixed(1)+'%' : '0%'
+    var s = intents[im.key] || {total:0,monitor:0,throttled:0,challenge:0,block:0}
+    // Cùng nguyên tắc như bảng trên: Clean là phần dư SAU KHI trừ hết mọi
+    // action có tên, không phải "mọi thứ không bị chặn".
+    var clean = Math.max(0, (s.total||0) - (s.monitor||0) - (s.throttled||0)
+                                         - (s.challenge||0) - (s.block||0))
+    var pct = s.total > 0 ? (((s.block||0)/s.total)*100).toFixed(1)+'%' : '0%'
     irows += '<tr>'
       + '<td><b class="'+im.cls+'">'+im.label+'</b></td>'
-      + '<td>'+s.total.toLocaleString()+'</td>'
-      + '<td class="green">'+active.toLocaleString()+'</td>'
+      + '<td>'+(s.total||0).toLocaleString()+'</td>'
+      + '<td class="green">'+clean.toLocaleString()+'</td>'
+      + '<td class="gray">'+((s.monitor||0)).toLocaleString()+'</td>'
+      + '<td class="orange">'+((s.throttled||0)).toLocaleString()+'</td>'
       + '<td class="orange">'+((s.challenge||0)).toLocaleString()+'</td>'
       + '<td class="red">'+((s.block||0)).toLocaleString()+'</td>'
       + '<td class="'+im.cls+'"><b>'+pct+'</b></td>'
       + '</tr>'
   }
-  setHTML('t-intent-stats', irows || nodata(6))
+  setHTML('t-intent-stats', irows || nodata(8))
 }
 
 function fmtFirstSeen(ts){

@@ -16,6 +16,12 @@ local DEVICE_GROUP = {
     desktop_other         = "desktop",
     crawler               = "crawler",
     http_client           = "tool",
+    -- Hai nhóm dưới KHÔNG do device_classifier sinh ra — chúng là những
+    -- request device_classifier CHƯA KỊP nhìn thấy. Xem `_M.run` để biết vì
+    -- sao phải tách: gộp chúng vào "unknown" là trộn ba dân số khác hẳn nhau
+    -- vào một dòng rồi bắt người đọc tự hiểu.
+    verified_fastpath     = "verified",
+    gate_exit             = "gate",
 }
 
 -- ── Nhãn ý định theo `action_reason` ─────────────────────────────────────
@@ -113,6 +119,27 @@ local function classify_intent(ctx)
         return "bot"
     end
 
+    -- UA TỰ KHAI là máy thì không thể là "human". `device_classifier` đặt
+    -- `crawler` khi UA có token bot/spider/crawler hoặc URL liên hệ `(+http`,
+    -- và `http_client` khi UA thiếu cả `Mozilla/` lẫn engine token (curl,
+    -- python-requests, Go-http, okhttp…). Cả hai là khai báo cấu trúc, không
+    -- phải suy đoán.
+    --
+    -- Trước bản vá này chúng rơi xuống nhánh `allow` bên dưới — nhánh đó chỉ
+    -- kiểm "không tìm thấy bằng chứng xấu", mà KHÔNG-CÓ-BẰNG-CHỨNG thì không
+    -- phải BẰNG-CHỨNG-LÀ-NGƯỜI. Kết quả: dòng Crawler và Tool ở tab Devices
+    -- hiện phần lớn là "Human" — đúng phép tính, sai kết luận.
+    --
+    -- Trả `watch` chứ không phải `bot`: một crawler tự khai mà không nằm
+    -- trong registry và không attest được (không PTR, không contact URL) thì
+    -- mới chỉ là CHƯA ĐỊNH DANH ĐƯỢC, chưa có gì nói nó có hại. Mọi crawler
+    -- đã định danh đều đã thoát ở nhóm goodbot phía trên; mọi crawler có bằng
+    -- chứng xấu đã thoát ở nhánh điểm số phía trên.
+    local dt = ctx.device_type
+    if dt == "crawler" or dt == "http_client" then
+        return "watch"
+    end
+
     -- Human: verified PoW
     if ctx.verified == true then
         return "human"
@@ -141,7 +168,7 @@ local function classify_intent(ctx)
     return "watch"
 end
 
-local function write_stats(premature, host, class, action, date, device_type, intent, beacon_got)
+local function write_stats(premature, host, class, action, date, device_type, intent, ua, beacon_got)
     if premature then return end
     local ok, pool = pcall(require, "antibot.core.redis_pool")
     if not ok then return end
@@ -176,7 +203,13 @@ local function write_stats(premature, host, class, action, date, device_type, in
     red:incr("stat:" .. host .. ":dev_" .. dg .. ":" .. date)
     red:expire("stat:" .. host .. ":dev_" .. dg .. ":" .. date, ttl_7d)
 
-    if action == "block" or action == "challenge" then
+    -- Đếm MỌI action khác `allow`, không chỉ block/challenge. Trước đây chỉ có
+    -- hai cái đó nên dashboard buộc phải suy ra phần còn lại bằng phép trừ
+    -- `total - block - challenge` rồi gọi nó là "Cho qua" — mà hiệu đó gộp cả
+    -- `monitor` lẫn `throttled` (429). Nói cách khác cột ấy KHÔNG phải traffic
+    -- sạch, và không thể đổi tên thành "Clean" chừng nào chưa tách hai action
+    -- này ra. Điều kiện `~= "allow"` để action mới trong tương lai tự có ô.
+    if action ~= "allow" then
         red:incr("stat:" .. host .. ":dev_" .. dg .. "_" .. action .. ":" .. date)
         red:expire("stat:" .. host .. ":dev_" .. dg .. "_" .. action .. ":" .. date, ttl_7d)
     end
@@ -186,7 +219,7 @@ local function write_stats(premature, host, class, action, date, device_type, in
     red:incr("stat:" .. host .. ":intent_" .. ig .. ":" .. date)
     red:expire("stat:" .. host .. ":intent_" .. ig .. ":" .. date, ttl_7d)
 
-    if action == "block" or action == "challenge" then
+    if action ~= "allow" then   -- cùng lý do như dev_ ở trên
         red:incr("stat:" .. host .. ":intent_" .. ig .. "_" .. action .. ":" .. date)
         red:expire("stat:" .. host .. ":intent_" .. ig .. "_" .. action .. ":" .. date, ttl_7d)
     end
@@ -212,8 +245,11 @@ local function write_stats(premature, host, class, action, date, device_type, in
         end
     end
 
-    -- Sample UA cho unknown device: lưu tối đa 20 UA gần nhất để admin debug
-    if dg == "unknown" and device_type == "unknown" and ua and ua ~= "" then
+    -- Sample UA cho unknown device: lưu tối đa 20 UA gần nhất để admin debug.
+    -- `ua` TRƯỚC ĐÂY KHÔNG PHẢI THAM SỐ của hàm này — nó là biến toàn cục chưa
+    -- khai báo ⇒ luôn nil ⇒ điều kiện luôn sai ⇒ bảng "Unknown Client — UA
+    -- Samples" chưa từng có một dòng nào. Nay truyền `ctx.ua` xuống đây.
+    if device_type == "unknown" and ua and ua ~= "" then
         local sample_key = "stat:ua_unknown_sample"
         red:lpush(sample_key, ua:sub(1, 120))
         red:ltrim(sample_key, 0, 19)
@@ -436,7 +472,21 @@ function _M.run(ctx)
     local action = ctx.action or "allow"
     local date   = os.date("%Y%m%d")
 
-    local device_type = ctx.device_type or "unknown"
+    -- `device_classifier` là bước 10 của STEPS_COMMON (init.lua:64), nên KHÔNG
+    -- phải request nào cũng đi qua nó:
+    --   • cookie fast-path (init.lua:153) `return` TRƯỚC cả STEPS_COMMON
+    --   • fleet_check_block (bước 5) và ip_ban_check (bước 8) `ngx.exit` sớm hơn
+    -- Cả hai để `ctx.device_type = nil`. Dòng cũ `or "unknown"` dồn chúng vào
+    -- chung ô với nhóm thứ ba — UA có dáng browser nhưng không khớp rule nào —
+    -- nên ô "Unknown" thực chất là ba dân số không liên quan gì nhau:
+    --   người thật đã giải PoW (rất đông) + lệnh chặn ở cửa + UA lạ thật sự.
+    -- Đó là lý do người đọc thấy "đã Unknown rồi mà vẫn flag ra badbot": phần
+    -- badbot ấy là 40.623 `banned_ip` + 1.369 `fleet_dyn_block` (đo 2026-08-10
+    -- trên cloud28-246), chúng chưa từng được phân loại thiết bị.
+    local device_type = ctx.device_type
+    if device_type == nil or device_type == "" then
+        device_type = ctx.verified and "verified_fastpath" or "gate_exit"
+    end
     local intent      = classify_intent(ctx)
 
     -- beacon_got = nil cho non-HTML request (skip counter), bool cho HTML-eligible.
@@ -445,7 +495,10 @@ function _M.run(ctx)
         beacon_got = ctx.beacon_received == true
     end
 
-    local ok, err = ngx.timer.at(0, write_stats, host, class, action, date, device_type, intent, beacon_got)
+    -- `ua` đặt TRƯỚC `beacon_got` vì beacon_got có thể nil (non-HTML request);
+    -- giữ tham số nil ở vị trí cuối cùng để không có nil ở giữa danh sách.
+    local ok, err = ngx.timer.at(0, write_stats, host, class, action, date,
+                                 device_type, intent, ctx.ua or "", beacon_got)
     if not ok then
         ngx.log(ngx.DEBUG, "[logger] timer.at failed: ", tostring(err))
     end
