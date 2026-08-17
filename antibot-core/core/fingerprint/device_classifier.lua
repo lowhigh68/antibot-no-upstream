@@ -102,7 +102,23 @@ local function is_crawler(ua)
         or ul:find("bot;", 1, true) ~= nil
         or ul:find("bot)", 1, true) ~= nil
         or ul:find("bot ", 1, true) ~= nil
-        or ua:find("%(%+https?://") ~= nil   -- (+http contact URL (meta-external)
+        -- URL liên hệ kiểu RFC. Mẫu cũ `%(%+https?://` đòi dấu `+` phải NGAY
+        -- SAU dấu mở ngoặc — chỉ đúng với dạng `meta-externalagent/1.1
+        -- (+https://…)` mà nó được viết ra để bắt. Dạng phổ biến hơn nhiều là
+        -- `(compatible; Tên/1.0; +http://…)`, ở đó `+http` đứng sau `; `.
+        -- Hai ca bắt được từ bảng UA Samples ngày 2026-08-17, cả hai đều
+        -- KHÔNG có token bot/spider/crawler nào để các nhánh trên tóm:
+        --   Mozilla/5.0 (compatible; YandexImages/3.0; +http://yandex.com/bots)
+        --   Mozilla/5.0 (compatible; coccocbot-image/1.0; +http://help.coccoc.com/…)
+        -- ("bots)" ≠ "bot)", và "coccocbot-image/" ≠ "bot/".)
+        --
+        -- Nới đúng một bậc: `+http` đứng sau `(` HOẶC `;`. KHÔNG nới thành
+        -- `%+https?://` trần vì như vậy là bỏ hẳn ngữ cảnh. Cũng KHÔNG thêm
+        -- "bot-" vào danh sách token phía trên: hãng điện thoại CUBOT có model
+        -- đặt tên `CUBOT-…`, sẽ thành crawler oan — mà giờ nhãn này đã ảnh
+        -- hưởng tới ý định (crawler ⇒ không bao giờ là `human`), nên FP ở đây
+        -- không còn vô hại như hồi device_type chỉ để hiển thị.
+        or ua:find("[%(;]%s*%+https?://") ~= nil
 end
 
 -- Non-browser HTTP client — real browsers always send "Mozilla/" AND an engine
