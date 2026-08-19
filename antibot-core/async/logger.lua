@@ -294,6 +294,43 @@ function _M.run(ctx)
     -- Nếu UA chứa space/= sẽ vỡ format parser → thay bằng _.
     local ua_log = (ctx.ua or "-"):sub(1, 120):gsub("[%s\"]", "_")
 
+    -- ── Nhóm thiết bị + hai header khảo sát ──────────────────────────────
+    -- `device_classifier` là bước 10 của STEPS_COMMON (init.lua:64), nên KHÔNG
+    -- phải request nào cũng đi qua nó: cookie fast-path (init.lua:153) return
+    -- TRƯỚC cả STEPS_COMMON, còn fleet_check_block (bước 5) và ip_ban_check
+    -- (bước 8) ngx.exit sớm hơn. Cả hai để `ctx.device_type = nil`. Gộp chúng
+    -- vào "unknown" là trộn ba dân số khác hẳn nhau — người thật đã giải PoW,
+    -- lệnh chặn ở cửa, và UA lạ thật sự — nên tách bằng hai nhãn riêng.
+    -- Suy ra MỘT LẦN ở đây rồi dùng lại cho cả dòng log lẫn phần thống kê.
+    local dev_log = ctx.device_type
+    if dev_log == nil or dev_log == "" then
+        dev_log = ctx.verified and "verified_fastpath" or "gate_exit"
+    end
+
+    -- `sf` / `chm` — BƯỚC 1 của khảo sát WebView (2026-08-17), CHỈ ĐO, không
+    -- đụng chấm điểm.
+    --
+    -- Đo được trên 34.141 UA phân biệt: nhóm `custom_tab` chiếm 8,3% lưu lượng,
+    -- và 27.661/27.669 = **99,97%** trong đó là WebView Chromium hiện đại
+    -- (`wv` + `Chrome/`). Nhưng `device_classifier` cấp cho CẢ nhóm
+    -- `sec_fetch_expected = false` + `ch_ua_mobile_expected = false` — sự miễn
+    -- trừ vốn viết cho trình duyệt AOSP đời cũ, mà nhánh đó đo được đúng
+    -- **8 request** (Android 2.2 / 2.3.7 / 4.4.2).
+    --
+    -- "WebView Chromium thì phải gửi Sec-Fetch" là suy luận TỪ KIẾN TRÚC, chưa
+    -- phải đo đạc. Rủi ro không đối xứng: bật kỳ vọng nhầm thì 8,3% lưu lượng
+    -- người thật ăn thêm 0,30 điểm mỗi request (header_anomaly:49). Nên đo
+    -- trước. `chm` rủi ro hơn `sf`: Sec-Fetch-* nằm ở network stack của
+    -- Chromium, còn UA client hints thì WebView từng không gửi nhiều phiên bản.
+    --
+    -- Đọc thẳng `ngx.var`: log phase luôn có, không phụ thuộc `ctx.req` (request
+    -- thoát ở cookie fast-path không có `ctx.req` đầy đủ). Cùng ba header mà
+    -- `header_anomaly:120-124` dùng, để hai bên không lệch định nghĩa.
+    local sf_log = (((ngx.var.http_sec_fetch_mode or "") ~= "")
+                 or ((ngx.var.http_sec_fetch_site or "") ~= "")
+                 or ((ngx.var.http_sec_fetch_dest or "") ~= "")) and 1 or 0
+    local chm_log = ((ngx.var.http_sec_ch_ua_mobile or "") ~= "") and 1 or 0
+
     -- Throttle decision details — chỉ append cho action=throttled để tránh
     -- bloat log line cho các request bình thường. trigger ∈ {hard_qs_len,
     -- hard_param_count, soft_score}; exp_score là weighted sum 0..1.45.
@@ -412,6 +449,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
+        " dev=%s sf=%d chm=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -431,6 +469,9 @@ function _M.run(ctx)
         beacon_state,
         ctx.session_richness or 0,
         ctx.inapp_likeness or 0,
+        dev_log,
+        sf_log,
+        chm_log,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,
@@ -472,21 +513,13 @@ function _M.run(ctx)
     local action = ctx.action or "allow"
     local date   = os.date("%Y%m%d")
 
-    -- `device_classifier` là bước 10 của STEPS_COMMON (init.lua:64), nên KHÔNG
-    -- phải request nào cũng đi qua nó:
-    --   • cookie fast-path (init.lua:153) `return` TRƯỚC cả STEPS_COMMON
-    --   • fleet_check_block (bước 5) và ip_ban_check (bước 8) `ngx.exit` sớm hơn
-    -- Cả hai để `ctx.device_type = nil`. Dòng cũ `or "unknown"` dồn chúng vào
-    -- chung ô với nhóm thứ ba — UA có dáng browser nhưng không khớp rule nào —
-    -- nên ô "Unknown" thực chất là ba dân số không liên quan gì nhau:
-    --   người thật đã giải PoW (rất đông) + lệnh chặn ở cửa + UA lạ thật sự.
-    -- Đó là lý do người đọc thấy "đã Unknown rồi mà vẫn flag ra badbot": phần
-    -- badbot ấy là 40.623 `banned_ip` + 1.369 `fleet_dyn_block` (đo 2026-08-10
-    -- trên cloud28-246), chúng chưa từng được phân loại thiết bị.
-    local device_type = ctx.device_type
-    if device_type == nil or device_type == "" then
-        device_type = ctx.verified and "verified_fastpath" or "gate_exit"
-    end
+    -- Dùng lại `dev_log` đã suy ra ở đầu hàm — MỘT nơi định nghĩa cho cả dòng
+    -- log lẫn counter, để hai bên không bao giờ lệch nhau. Lý do phải tách
+    -- `verified_fastpath`/`gate_exit` khỏi `unknown` ghi ở đó.
+    -- (Chính vì trước đây gộp mà người đọc thấy "đã Unknown rồi mà vẫn flag ra
+    -- badbot": phần badbot ấy là 40.623 `banned_ip` + 1.369 `fleet_dyn_block`
+    -- đo 2026-08-10 trên cloud28-246 — chúng thoát trước device_classifier.)
+    local device_type = dev_log
     local intent      = classify_intent(ctx)
 
     -- beacon_got = nil cho non-HTML request (skip counter), bool cho HTML-eligible.
