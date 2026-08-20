@@ -502,7 +502,7 @@ local function render_data()
     -- fast-path return trước cả STEPS_COMMON, còn ip_ban_check/fleet_check_block
     -- exit sớm hơn. Trước đây cả hai bị dồn vào "unknown" nên ô đó vừa to vừa
     -- vô nghĩa (người thật đã giải PoW nằm chung với lệnh chặn ở cửa).
-    local DEV_GROUPS  = {"desktop","mobile","tablet","crawler","tool","unknown","verified","gate"}
+    local DEV_GROUPS  = {"desktop","mobile","tablet","crawler","tool","unknown","no_ua","verified","gate"}
     local INTENTS     = {"human","goodbot","watch","bot"}
     -- Đúng bộ action mà logger ghi khoá riêng (mọi action khác `allow`).
     -- `allow` cố tình KHÔNG có khoá — nó là phần dư, và phần dư đó mới là Clean.
@@ -1217,6 +1217,10 @@ tr:hover td{background:#1c2129}
         <div class="sl">❓ Unknown (UA lạ)</div>
       </div>
       <div class="sc">
+        <div class="sv red" id="dev-no_ua-total">—</div>
+        <div class="sl" title="Không gửi header User-Agent — tín hiệu bot đứng riêng, không phải 'chưa nhận dạng được'">🕳 Không gửi UA</div>
+      </div>
+      <div class="sc">
         <div class="sv green" id="dev-verified-total">—</div>
         <div class="sl" title="Cookie PoW còn hiệu lực — thoát ở fast-path trước STEPS_COMMON">🍪 Verified (fast-path)</div>
       </div>
@@ -1236,7 +1240,9 @@ tr:hover td{background:#1c2129}
           <br><b>Nhóm client = UA nói gì</b>, không phải phán quyết: <i>Crawler</i>/<i>Tool</i> là UA tự khai
           là máy, nên không bao giờ có ô Human. <i>Verified</i> và <i>Chặn ở cửa</i> không phải loại thiết bị —
           đó là hai lối request thoát TRƯỚC khi device_classifier kịp chạy (cookie fast-path và ban ở cửa),
-          nên không có thông tin thiết bị để nói.
+          nên không có thông tin thiết bị để nói. <i>Không gửi UA</i> cũng không phải loại thiết bị: nó là
+          <b>tín hiệu bot đứng riêng</b> — trước đây nằm lẫn trong Unknown và chiếm 95% ô đó, chôn mất
+          nhóm UA-lạ-thật-sự vốn mới là thứ đáng soi.
         </div>
         <table>
           <thead>
@@ -1881,11 +1887,12 @@ function wlFromBan(ip){
 
 function renderDevices(d){
   var devs = d.device_stats || []
-  var icons = {desktop:'🖥',mobile:'📱',tablet:'📟',crawler:'🕷',tool:'🔧',unknown:'❓',verified:'🍪',gate:'🚪'}
+  var icons = {desktop:'🖥',mobile:'📱',tablet:'📟',crawler:'🕷',tool:'🔧',unknown:'❓',no_ua:'🕳',verified:'🍪',gate:'🚪'}
   var labels = {desktop:'Browser · Desktop',mobile:'Browser · Mobile',tablet:'Browser · Tablet',
-                crawler:'Crawler',tool:'Tool',unknown:'Unknown (UA lạ)',
+                crawler:'Crawler',tool:'Tool',unknown:'Unknown (UA lạ)',no_ua:'Không gửi UA',
                 verified:'Verified (cookie fast-path)',gate:'Chặn ở cửa'}
   var notes  = {unknown:'UA có dáng browser nhưng không khớp rule nào trong device_classifier',
+                no_ua:'Không gửi header User-Agent. Bản thân điều đó là tín hiệu bot (ua_anomaly đặt ua_flag=0.5), không phải "chưa nhận dạng được"',
                 verified:'Đã giải PoW từ trước, cookie còn hiệu lực — thoát trước STEPS_COMMON nên không phân loại thiết bị',
                 gate:'ban IP / fleet dyn-block — exit trước device_classifier (STEPS_COMMON bước 10)'}
 

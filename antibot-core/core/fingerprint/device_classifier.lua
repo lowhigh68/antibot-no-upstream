@@ -112,13 +112,28 @@ local function is_crawler(ua)
         --   Mozilla/5.0 (compatible; coccocbot-image/1.0; +http://help.coccoc.com/…)
         -- ("bots)" ≠ "bot)", và "coccocbot-image/" ≠ "bot/".)
         --
-        -- Nới đúng một bậc: `+http` đứng sau `(` HOẶC `;`. KHÔNG nới thành
-        -- `%+https?://` trần vì như vậy là bỏ hẳn ngữ cảnh. Cũng KHÔNG thêm
-        -- "bot-" vào danh sách token phía trên: hãng điện thoại CUBOT có model
-        -- đặt tên `CUBOT-…`, sẽ thành crawler oan — mà giờ nhãn này đã ảnh
-        -- hưởng tới ý định (crawler ⇒ không bao giờ là `human`), nên FP ở đây
-        -- không còn vô hại như hồi device_type chỉ để hiển thị.
-        or ua:find("[%(;]%s*%+https?://") ~= nil
+        -- 2026-08-20 — ĐÃ NỚI TIẾP, và lý do đáng ghi lại: hôm 17/8 tôi viết
+        -- "KHÔNG nới thành `%+https?://` trần vì như vậy là bỏ hẳn ngữ cảnh",
+        -- chọn `[%(;]%s*%+https?://`. Số liệu bác bỏ ngay chính ràng buộc đó —
+        -- đọc 282.619 dòng antibot.log, ô `unknown` chứa:
+        --   104x  Mozilla/5.0 (compatible; heritrix/3.14.2-…T06:21:22Z +https://www.image-meta.com)
+        --   124x  Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; Claude-User/1.0; +mailto:support@anthropic.com
+        -- heritrix trượt vì `+https` đứng sau **`Z `** chứ không sau `(`/`;`;
+        -- Claude-User trượt vì URL liên hệ là **`mailto:`**, không phải http.
+        --
+        -- Bản thân dấu `+` ĐÃ LÀ ngữ cảnh: nó là quy ước khai báo liên hệ của
+        -- bot, không trình duyệt nào sinh ra `+http://` hay `+mailto:`. Ràng
+        -- buộc thêm về ký tự đứng trước chỉ tạo ra chỗ lọt, không thêm an toàn.
+        --
+        -- Vẫn KHÔNG thêm "bot-" vào danh sách token phía trên: hãng điện thoại
+        -- CUBOT có model đặt tên `CUBOT-…`, sẽ thành crawler oan — mà nhãn này
+        -- đã ảnh hưởng tới ý định (crawler ⇒ không bao giờ là `human`) nên FP ở
+        -- đó không còn vô hại. Rủi ro của `+scheme:` thì khác hẳn: bằng 0.
+        --
+        -- Còn lọt có chủ đích: `MistralAI-User/1.0` (63 lượt) không token, không
+        -- URL liên hệ — không có gì để bắt. KHÔNG thêm danh sách tên riêng.
+        or ua:find("%+https?://") ~= nil
+        or ua:find("%+mailto:")  ~= nil
 end
 
 -- Non-browser HTTP client — real browsers always send "Mozilla/" AND an engine

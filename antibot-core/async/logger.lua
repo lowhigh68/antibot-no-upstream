@@ -16,12 +16,17 @@ local DEVICE_GROUP = {
     desktop_other         = "desktop",
     crawler               = "crawler",
     http_client           = "tool",
-    -- Hai nhóm dưới KHÔNG do device_classifier sinh ra — chúng là những
-    -- request device_classifier CHƯA KỊP nhìn thấy. Xem `_M.run` để biết vì
-    -- sao phải tách: gộp chúng vào "unknown" là trộn ba dân số khác hẳn nhau
+    -- Ba nhóm dưới KHÔNG do device_classifier sinh ra. Xem `_M.run` để biết vì
+    -- sao phải tách: gộp chúng vào "unknown" là trộn bốn dân số khác hẳn nhau
     -- vào một dòng rồi bắt người đọc tự hiểu.
     verified_fastpath     = "verified",
     gate_exit             = "gate",
+    -- `no_ua` — request KHÔNG gửi header User-Agent. Đo 2026-08-20 trên
+    -- cloud28-246: **14.095/14.768 = 95,4%** ô `unknown` là nhóm này, và 92%
+    -- trong đó bị chặn. Nó không phải "chưa nhận dạng được" — nó là một tín
+    -- hiệu bot đứng riêng (`ua_anomaly.run` đặt thẳng `ua_flag = 0.5` cho UA
+    -- rỗng). Trộn chung khiến 673 UA thật-mà-không-khớp-rule bị chôn dưới nó.
+    no_ua                 = "no_ua",
 }
 
 -- ── Nhãn ý định theo `action_reason` ─────────────────────────────────────
@@ -292,7 +297,14 @@ function _M.run(ctx)
 
     -- UA truncate để grep debug (googlebot, bingbot, facebook, ...).
     -- Nếu UA chứa space/= sẽ vỡ format parser → thay bằng _.
-    local ua_log = (ctx.ua or "-"):sub(1, 120):gsub("[%s\"]", "_")
+    -- `or "-"` CHỈ bắt `nil`, mà `ctx.ua` khi thiếu header là chuỗi RỖNG (xem
+    -- core/ctx/init.lua). Hệ quả: trường ghi ra là ` ua= ` trống — và mọi lệnh
+    -- `grep -oP ' ua=\K\S+'` lặng lẽ bỏ qua nó vì `\S+` không khớp được dấu
+    -- cách. Đúng cái bẫy đó đã làm phép kiểm "UA rỗng" ngày 2026-08-20 trượt
+    -- 100%: nó tìm `-` trong khi thực tế là `""`. Chuẩn hoá cả hai về `-`.
+    local ua_raw = ctx.ua
+    if ua_raw == nil or ua_raw == "" then ua_raw = "-" end
+    local ua_log = ua_raw:sub(1, 120):gsub("[%s\"]", "_")
 
     -- ── Nhóm thiết bị + hai header khảo sát ──────────────────────────────
     -- `device_classifier` là bước 10 của STEPS_COMMON (init.lua:64), nên KHÔNG
@@ -305,6 +317,13 @@ function _M.run(ctx)
     local dev_log = ctx.device_type
     if dev_log == nil or dev_log == "" then
         dev_log = ctx.verified and "verified_fastpath" or "gate_exit"
+    elseif dev_log == "unknown" and (ctx.ua == nil or ctx.ua == "") then
+        -- `device_classifier.classify` trả "unknown" ngay ở nhánh ĐẦU TIÊN khi
+        -- không có UA — cùng một nhãn với "UA có dáng browser mà không khớp
+        -- rule nào", dù hai thứ chẳng liên quan gì nhau. Tách ở đây chứ không
+        -- trong classify: `device_type` là đầu vào của `header_anomaly`, đổi
+        -- giá trị ở đó là đổi hành vi chấm điểm. Ở đây thì thuần nhãn.
+        dev_log = "no_ua"
     end
 
     -- `sf` / `chm` — BƯỚC 1 của khảo sát WebView (2026-08-17), CHỈ ĐO, không
