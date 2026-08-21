@@ -199,9 +199,34 @@ function _M.classify(ua, proto)
 
     -- ── Chrome Custom Tab / WebView ───────────────────────────
     if is_custom_tab(ua) then
+        -- `is_custom_tab` gộp HAI dân số khác hẳn nhau, và trước 2026-08-21 cả
+        -- hai cùng được miễn kiểm Sec-Fetch:
+        --   • WebView Chromium hiện đại (`wv` + `Chrome/`) — CÓ gửi Sec-Fetch
+        --   • trình duyệt AOSP đời cũ (`Version/N`, không Chrome) — KHÔNG gửi
+        -- Sự miễn trừ được viết cho nhóm sau, mà đo 2026-08-20 nhóm sau chỉ có
+        -- **8 request** (Android 2.2 / 2.3.7 / 4.4.2) trên 27.669.
+        --
+        -- BẰNG CHỨNG (không suy từ kiến trúc — đo trên antibot.log):
+        --   custom_tab, action=allow : sf=1 456 / sf=0 55 = **89,2% CÓ gửi**
+        --                              (Chrome Android thật chỉ 81,3%)
+        --   custom_tab, action=block : sf=1   0 / sf=0 353 = **0%**
+        -- Gradient tuyệt đối theo phán quyết ⇒ `sf=0` là chữ ký bot, không phải
+        -- hiện vật giao thức.
+        --
+        -- FP = 0 THEO CẤU TRÚC, đã đo chứ không phải hy vọng: 165 lượt
+        -- `custom_tab sf=0 allow` phân bố 0-9:48, 10-19:45, 20-29:72 — KHÔNG
+        -- có gì từ 30 trở lên. Phạt tăng thêm tối đa
+        -- (0,30−0,05 +0,10) × 0,45 × 35 = **+5,51 điểm thô**, đẩy đỉnh lên ~35,
+        -- còn cách ngưỡng challenge 55 hai chục điểm, và dưới cả ngưỡng 40 của
+        -- nhánh `ip_risk_lowered` (dải 34-40 đếm được **0**).
+        --
+        -- `ch_ua_mobile` thì NGƯỢC LẠI, và đó là lý do hai trường không đi cùng
+        -- nhau: chỉ **26/970 = 2,7%** WebView gửi `Sec-CH-UA-Mobile`. Bật nó sẽ
+        -- bắn oan 97% WebView thật. Giữ `false`.
+        local is_chromium_wv = ua:find("Chrome/", 1, true) ~= nil
         return {
             device_type                   = "custom_tab",
-            device_sec_fetch_expected     = false,
+            device_sec_fetch_expected     = is_chromium_wv,
             device_ch_ua_mobile_expected  = false,
             device_is_mobile              = true,
             device_ios_version            = nil,
