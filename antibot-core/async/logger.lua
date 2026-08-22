@@ -81,6 +81,10 @@ local REASON_GOODBOT = {
     contact_cloud_attested = true,
     analyzer_attested      = true,
     s25_cap_monitor        = true,
+    -- Nhà vận hành khai danh tính bằng danh sách IP công bố thay vì bằng UA
+    -- (`engine.lua`, khoá `mon:<ip>`). Cùng nghĩa "đã định danh được" như các
+    -- mục trên, chỉ khác đường chứng minh.
+    monitor_ip_cap         = true,
 }
 
 local function classify_intent(ctx)

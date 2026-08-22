@@ -591,6 +591,45 @@ function _M.run(ctx)
         ctx.monitor_flag  = true
     end
 
+    -- ── Trần cho IP do nhà vận hành CÔNG BỐ (tầng danh tính thứ ba) ──
+    -- Hai tầng sẵn có đều dựa vào UA TỰ KHAI: S4 (registry + DNS hai chiều)
+    -- và S2.5 (contact/analyzer attest). Thiếu tầng cho nhà vận hành khai
+    -- danh tính bằng cách **công bố danh sách IP** thay vì nhét vào UA —
+    -- `detection/CLAUDE.md` 2026-08-07 gọi đây là "lỗ hổng lớn nhất còn lại".
+    --
+    -- Ca đầu tiên: công cụ uptime đa điểm. Chúng bắn ~35 điểm kiểm tra ĐỒNG
+    -- THỜI từ 35 subnet với cùng UA trình duyệt trần ⇒ về cấu trúc không phân
+    -- biệt được với thăm dò có phối hợp ⇒ `distributed_swarm` (trọng số 120)
+    -- chặn thẳng. Đo 2026-08-22 trên cloud28-246: domain nhận 13,5 req/phút mà
+    -- mốc cứng là 35 /24 trong 60 GIÂY — lưu lượng tự nhiên không thể chạm,
+    -- chỉ một chùm bắn đồng thời mới tạo ra được. Bộ dò KHÔNG sai.
+    --
+    -- TRẦN chứ không phải MIỄN TRỪ, và khác biệt đó là toàn bộ lý do tồn tại
+    -- của khối này: `wl:<ip>` cho `ctx.whitelisted` → `init.lua:162` return
+    -- ngay, bỏ qua l7 rate limit + toàn bộ detection + enforcement + thống kê,
+    -- vĩnh viễn và vô hình. Ở đây mọi tầng vẫn chạy đủ, vẫn ghi log, `ban:<ip>`
+    -- vẫn chặn được ở bước 6 nếu IP đó thực sự làm bậy — chỉ riêng bước cuối
+    -- không được phép vượt `monitor`.
+    --
+    -- ĐẶT TRONG NHÁNH CHẶN LÀ CỐ Ý: Lua đánh giá `and` từ trái sang nên
+    -- `safe_get` CHỈ chạy khi đã sắp block/challenge — đo được ~5% lưu lượng
+    -- (11.307/240.396 ngày 2026-08-22). Đặt ở đầu hàm là bắt 100% request trả
+    -- một lượt Redis cho thứ 95% trong số đó không bao giờ dùng tới.
+    --
+    -- Khoá `mon:<ip>` do `scripts/monitor_ip_sync.sh` ghi, TTL 48h, cron 12h.
+    -- Hết TTL là hết miễn trừ ⇒ cron chết thì hệ tự về mặc định nghiêm ngặt.
+    if (action == "block" or action == "challenge")
+       and ctx.ip
+       and pool.safe_get("mon:" .. ctx.ip) == "1" then
+        ngx.log(ngx.INFO,
+            "[engine] monitor-IP cap action=", action, "->monitor",
+            " eff=", math.floor(ctx.effective_score or 0),
+            " ip=", ctx.ip)
+        action = "monitor"
+        ctx.action_reason = "monitor_ip_cap"
+        ctx.monitor_flag  = true
+    end
+
     -- Authenticated-session cap (session_verified tier). A request whose
     -- session_richness proves an established server session (logged-in
     -- admin/editor) must not be hard-blocked/banned by identity-CORRELATION
