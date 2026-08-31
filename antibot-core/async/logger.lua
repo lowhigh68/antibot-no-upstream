@@ -354,6 +354,43 @@ function _M.run(ctx)
                  or ((ngx.var.http_sec_fetch_dest or "") ~= "")) and 1 or 0
     local chm_log = ((ngx.var.http_sec_ch_ua_mobile or "") ~= "") and 1 or 0
 
+    -- ── BƯỚC 1 khảo sát WAF (2026-08-31) — CHỈ ĐO, KHÔNG chạm chấm điểm ──
+    -- Ba trường này định cỡ trục kiểm tra nội dung request (SQLi/XSS/webshell)
+    -- trước khi viết một dòng luật nào. Không có chúng thì mọi ước lượng chi
+    -- phí đều là phỏng đoán:
+    --   m=  method — bao nhiêu % lưu lượng CÓ body để phải đọc. Quyết định chi
+    --       phí độ trễ thật của tầng đọc body.
+    --   ct= họ Content-Type — `multi` là con số quan trọng nhất: nó quyết định
+    --       việc kiểm tra upload có phải xử lý ngay từ đầu hay không.
+    --   cl= Content-Length thô (chưa chia nhóm — chia lúc phân tích linh hoạt
+    --       hơn). Cần vì khi body vượt `client_body_buffer_size`, nginx đẩy nó
+    --       ra ĐĨA và `ngx.req.get_body_data()` trả nil. Với upload thì file
+    --       lớn đúng là ca cần nhìn nhất, nên phân bố này quyết định có phải
+    --       làm `get_body_file()` ngay vòng đầu không.
+    --
+    -- `cl=0` KHÔNG đồng nghĩa "không có body": chunked transfer-encoding không
+    -- gửi Content-Length. Đọc `cl=0` cùng với `m=` chứ đừng đọc một mình.
+    --
+    -- Cùng khuôn với đợt khảo sát WebView (commit dd4540b): thêm trường, deploy,
+    -- chờ đủ dữ liệu, đo, RỒI mới quyết. Gỡ được sau khi đã chốt thiết kế.
+    local m_log = ngx.var.request_method or "-"
+    local ct_raw = (ngx.var.http_content_type or ""):lower()
+    local ct_log
+    if ct_raw == "" then
+        ct_log = "-"
+    elseif ct_raw:find("multipart/form-data", 1, true) then
+        ct_log = "multi"
+    elseif ct_raw:find("x-www-form-urlencoded", 1, true) then
+        ct_log = "form"
+    elseif ct_raw:find("json", 1, true) then
+        ct_log = "json"
+    elseif ct_raw:find("xml", 1, true) then
+        ct_log = "xml"
+    else
+        ct_log = "other"
+    end
+    local cl_log = tonumber(ngx.var.http_content_length) or 0
+
     -- Throttle decision details — chỉ append cho action=throttled để tránh
     -- bloat log line cho các request bình thường. trigger ∈ {hard_qs_len,
     -- hard_param_count, soft_score}; exp_score là weighted sum 0..1.45.
@@ -472,7 +509,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " dev=%s sf=%d chm=%d" ..
+        " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -495,6 +532,9 @@ function _M.run(ctx)
         dev_log,
         sf_log,
         chm_log,
+        m_log,
+        ct_log,
+        cl_log,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,
