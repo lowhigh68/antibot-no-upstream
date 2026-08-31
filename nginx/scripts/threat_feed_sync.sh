@@ -7,7 +7,8 @@
 #
 # THIẾT KẾ — generalization thay vì enumeration:
 #   - IP reputation: 3 source (IPsum, Spamhaus, AbuseIPDB)
-#   - ASN classification: 2 source feed (X4BNet, jhassine) — ~7000+ ASNs
+#   - ASN classification: 1 source feed (X4BNet) — ~900 ASNs
+#     (jhassine gỡ 2026-08-31: file là danh sách CIDR, không phải ASN)
 #   - ASN reputation: derive từ classification + threat history
 #   - Manual override: chỉ cho local ISP cần exception (Vietnam carriers)
 #
@@ -51,7 +52,7 @@ URL_IPSUM="https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
 URL_SPAMHAUS_DROP="https://www.spamhaus.org/drop/drop.txt"
 URL_X4BNET_DC_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/datacenter/ASN.txt"
 URL_X4BNET_VPN_ASN="https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/vpn/ASN.txt"
-URL_JHASSINE_DC="https://raw.githubusercontent.com/jhassine/server-ip-addresses/master/data/datacenters.csv"
+# URL_JHASSINE_DC gỡ 2026-08-31 — file là danh sách CIDR, không phải ASN
 
 # ─── Manual override — VN consumer ISPs (force "residential") ─
 # Generalization principle: chỉ override khi feed comprehensive
@@ -193,16 +194,36 @@ sync_spamhaus() {
 #   - datacenter Asn.list:  ~1500 ASN
 #   - vpn Asn.list:         ~50 ASN
 #
-# Source 2: jhassine/server-ip-addresses — ASN với metadata
-#   - datacenters.csv: ~6500 ASN (overlaps + extends X4BNet)
+# (Source 2 jhassine ĐÃ GỠ — xem chú thích trong sync_asn_classification)
 #
-# Combined: ~7000+ unique ASN classified
+# Tổng: ~900 ASN được phân loại
 # ============================================================
+# Số ASN cao nhất IANA đã cấp phát (2026). Mọi giá trị ngoài [1, ASN_MAX] là
+# rác parse, không phải ASN.
+#
+# 2026-08-31 — VÌ SAO CÓ HÀM NÀY. Nguồn jhassine `datacenters.csv` được nạp bằng
+# `asn="${asn//[!0-9]/}"` (bóc mọi ký tự không phải số) dựa trên chú thích
+# `Format: asn,name,domain,cidr_count`. Chú thích SAI: cột đầu là CIDR.
+#     "1.178.1.0/24","1.178.1.0","1.178.1.255","AWS"  →  11781024
+# 52.859 dòng ⇒ 52.859 khoá `rep:asn:` + `asn:type:` rác mỗi lần chạy sạch.
+# Đo 2026-08-31: Redis có 53.761 khoá `rep:asn:`, **52.918 (98,4%) ngoài dải** —
+# trong khi script tự báo `asn_rep=928`. Hai hậu quả:
+#   1. `DBSIZE` phình ~105k ⇒ vượt trần SCAN của admin ⇒ ba máy cùng dữ liệu
+#      hiện ba danh sách Good Bot khác nhau (18/17/15 trên tổng 41).
+#   2. CIDR ngắn bóc ra vẫn LỌT dải hợp lệ ("1.0.4.0/22" → 104022) ⇒ gán
+#      `rep:asn:=0.45` cho một ASN vô tội ⇒ +15,75 điểm thô oan, âm thầm.
+# Nguồn jhassine đã gỡ (xem chỗ nó từng nằm). Hàm này là chốt chặn cho các
+# nguồn CÒN LẠI: X4BNet hôm nay sạch, nhưng nó đổi định dạng lúc nào cũng được
+# — đúng như jhassine đã đổi — và khi đó phải hỏng ỒN ÀO, không âm thầm.
+ASN_MAX=401308
+asn_valid() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "$ASN_MAX" ]; }
+
 sync_asn_classification() {
     log "→ Syncing ASN classification..."
     local count_dc=0
     local count_vpn=0
     local count_residential=0
+    local count_bad=0          # dòng bị loại vì ngoài dải — PHẢI log ra
     local pipeline_cmds=""
 
     # ── X4BNet datacenter ASNs ──────────────────────────────
@@ -211,6 +232,7 @@ sync_asn_classification() {
         while IFS= read -r asn; do
             asn="${asn//[!0-9]/}"   # strip non-digit
             [[ -z "$asn" ]] && continue
+            if ! asn_valid "$asn"; then count_bad=$((count_bad + 1)); continue; fi
             pipeline_cmds+="SET asn:type:${asn} datacenter EX ${TTL_ASN_TYPE}\n"
             pipeline_cmds+="SET rep:asn:${asn} ${SCORE_ASN_HOST} EX ${TTL_ASN}\n"
             count_dc=$((count_dc + 1))
@@ -226,6 +248,7 @@ sync_asn_classification() {
         while IFS= read -r asn; do
             asn="${asn//[!0-9]/}"
             [[ -z "$asn" ]] && continue
+            if ! asn_valid "$asn"; then count_bad=$((count_bad + 1)); continue; fi
             pipeline_cmds+="SET asn:type:${asn} vpn EX ${TTL_ASN_TYPE}\n"
             pipeline_cmds+="SET rep:asn:${asn} ${SCORE_ASN_BAD} EX ${TTL_ASN}\n"
             count_vpn=$((count_vpn + 1))
@@ -235,29 +258,21 @@ sync_asn_classification() {
         warn "X4BNet VPN fetch failed"
     fi
 
-    # ── jhassine datacenters.csv ────────────────────────────
-    # Format: asn,name,domain,cidr_count
-    # Bổ sung cho X4BNet (overlap chấp nhận, SET idempotent)
-    local cache_jh="${CACHE_DIR}/jhassine_dc.csv"
-    if curl -sSf --max-time 30 -o "$cache_jh" "$URL_JHASSINE_DC" 2>/dev/null; then
-        local count_jh=0
-        while IFS=',' read -r asn rest; do
-            asn="${asn//[!0-9]/}"
-            [[ -z "$asn" ]] && continue
-            [[ "$asn" == "asn" ]] && continue   # skip header
-            # Skip nếu đã có (idempotent SET nhưng tránh override classification chính xác hơn)
-            local existing
-            existing=$(RC GET "asn:type:${asn}" 2>/dev/null)
-            [[ -n "$existing" && "$existing" != "" ]] && continue
-            pipeline_cmds+="SET asn:type:${asn} datacenter EX ${TTL_ASN_TYPE}\n"
-            pipeline_cmds+="SET rep:asn:${asn} ${SCORE_ASN_HOST} EX ${TTL_ASN}\n"
-            count_jh=$((count_jh + 1))
-        done < "$cache_jh"
-        log "  jhassine datacenters: $count_jh additional ASNs"
-        count_dc=$((count_dc + count_jh))
-    else
-        warn "jhassine datacenters fetch failed"
-    fi
+    # ── nguồn jhassine ĐÃ GỠ (2026-08-31) — ĐỪNG THÊM LẠI ──
+    # `server-ip-addresses/data/datacenters.csv` KHÔNG phải danh sách ASN. Chú
+    # thích cũ ghi `Format: asn,name,domain,cidr_count`; định dạng thật là:
+    #     "1.178.1.0/24","1.178.1.0","1.178.1.255","AWS"
+    # Cột đầu là CIDR. Qua `${asn//[!0-9]/}` nó thành `11781024`. 52.859 dòng ⇒
+    # 52.859 khoá rác mỗi lần chạy trên Redis sạch.
+    #
+    # Lọc dải KHÔNG cứu được nguồn này: mọi dòng đều là CIDR nên sau khi lọc nó
+    # đóng góp ĐÚNG 0 ASN, chỉ khác là vẫn đốt 52.859 lệnh `GET` mỗi giờ. Đo
+    # 2026-08-31 trên cloud168-117: riêng vòng lặp này **4 phút 19 giây** để rồi
+    # báo "0 additional ASNs" — số 0 đó không phải nguồn cạn, mà là guard
+    # `existing` gặp lại chính đám rác nó ghi ra lần trước.
+    #
+    # Muốn dùng dữ liệu này thì phải khớp theo DẢI IP, không phải theo ASN — tức
+    # một cơ chế khác hẳn (`rep:ip:` hoặc CIDR match), không phải sửa vòng lặp.
 
     # ── VN datacenter allowlist — explicit datacenter tag ──
     # Force tag để feed-miss không làm Bizfly/FPT Cloud rơi vào
@@ -293,7 +308,8 @@ sync_asn_classification() {
 
     TOTAL_ASN_REP=$((count_dc + count_vpn + count_vn_dc))
     TOTAL_ASN_TYPE=$((count_dc + count_vpn + count_vn_dc + count_residential))
-    log "  ASN total: type=$TOTAL_ASN_TYPE rep=$TOTAL_ASN_REP"
+    log "  ASN total: type=$TOTAL_ASN_TYPE rep=$TOTAL_ASN_REP  (loại ngoài dải: $count_bad)"
+    [ "$count_bad" -gt 0 ] && warn "$count_bad dòng ngoài dải ASN — nguồn có thể đã đổi định dạng, KIỂM NGAY"
 }
 
 # ============================================================

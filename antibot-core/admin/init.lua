@@ -1171,8 +1171,9 @@ tr:hover td{background:#1c2129}
         <div style="font-size:12px;color:#8b949e;margin-bottom:6px">ASN Reputation</div>
         <div id="sync-asn" style="font-size:28px;font-weight:700;color:#3fb950">—</div>
         <div style="font-size:11px;color:#8b949e;margin-top:4px">
-          Số khoá <code>rep:asn:</code> — nguồn của tín hiệu <code>asn_rep</code>.
-          Vài chục thay vì vài chục nghìn = <code>threat_feed_sync.sh</code> lỗi hoặc chạy bản cũ.
+          Số ASN lần sync gần nhất nạp — nguồn của tín hiệu <code>asn_rep</code>.
+          Lành mạnh ≈ <b>900</b>. Vài chục = <code>threat_feed_sync.sh</code> chạy bản cũ.
+          Hàng chục nghìn = nguồn feed đổi định dạng, đang ghi rác vào <code>rep:asn:</code>.
         </div>
       </div>
     </div>
