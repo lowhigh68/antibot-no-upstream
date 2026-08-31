@@ -209,13 +209,24 @@ local function handle_whitelist_api()
         red:del("goodbot:dns:" .. req.name:lower())
         result = {ok=true, msg="Good bot DNS removed: "..req.name}
 
-    elseif action == "asn_type_set" and req.asn and req.itype then
-        red:set("asn:type:" .. req.asn, req.itype)
-        result = {ok=true, msg="ASN "..req.asn.." type → "..req.itype}
-
-    elseif action == "asn_type_del" and req.asn then
-        red:del("asn:type:" .. req.asn)
-        result = {ok=true, msg="ASN "..req.asn.." type override removed"}
+    -- `asn_type_set`/`asn_type_del` ĐÃ GỠ (2026-08-31). Chúng ghi `asn:type:<n>`,
+    -- mà khoá đó chảy vào `ctx.ip_net_type` và DỪNG Ở ĐÓ — không module nào đọc
+    -- (`ip_classify.lua:113` ghim `ctx.ip_score = 0.0`, quyết định đúng: iCloud
+    -- Private Relay / Zscaler / VPN doanh nghiệp khiến "datacenter = đáng ngờ"
+    -- thành máy sinh FP). Nút bấm báo thành công rồi không đổi một điểm nào.
+    --
+    -- Tệ hơn "vô dụng": admin ghi KHÔNG TTL, mà `threat_feed_sync.sh:251` lại
+    -- `continue` khi thấy `asn:type:<n>` tồn tại — `continue` đó nhảy qua CẢ
+    -- dòng ghi `rep:asn:<n>` ngay dưới. `rep:asn:` mới là thứ sống (trọng số 35
+    -- qua `intelligence/threat/asn_reputation.lua`). Nên đánh dấu tay một ASN là
+    -- "datacenter" lại GỠ MẤT hình phạt datacenter của chính nó — ngược hẳn ý
+    -- định người bấm, im lặng, vĩnh viễn.
+    --
+    -- Ba nhu cầu khai báo ASN có thật đều đã giải bằng hardcode đi qua git:
+    --   ISP tiêu dùng bị gắn nhầm  → MANUAL_OVERRIDE_RESIDENTIAL (xoá rep:asn:)
+    --   datacenter VN feed không biết → VN_DATACENTER_ASNS
+    --   good bot trên ASN mới        → goodbot:asn: qua core/data/goodbot.json
+    -- Không cái nào dùng `asn:type:`. ĐỪNG dựng lại panel này.
 
     elseif action == "ja3_allow" and req.hash then
         red:set("ja3:allow:" .. req.hash, "1")
@@ -509,8 +520,22 @@ local function render_data()
     if stats_raw then
         local ok2, obj = pcall(cjson.decode, stats_raw)
         if ok2 then
-            tsync.ip_loaded  = obj.ip  or 0
-            tsync.asn_loaded = obj.asn or 0
+            tsync.ip_loaded  = obj.ip or 0
+            -- 2026-08-31 — TRƯỚC ĐÂY đọc `obj.asn`, mà `threat_feed_sync.sh:365`
+            -- ghi ra `{"ip":…,"asn_rep":…,"asn_type":…}`. Không có trường `asn`
+            -- ⇒ `or 0` ⇒ ô "ASNs Loaded" **luôn hiện 0** kể từ khi có nó. Trông
+            -- như số liệu vô nghĩa nên không ai buồn hỏi.
+            --
+            -- Giá của việc để nó hỏng: hôm nay phát hiện hai máy chạy bản
+            -- threat_feed_sync.sh đời cũ, chỉ nạp 27 ASN thay vì 53.610 — tức
+            -- `asn_rep` (trọng số 35) gần như mù suốt nhiều ngày. Nếu ô này
+            -- chạy đúng thì nó đã hiện 27 cạnh 53.610 và lộ ra trong một cái
+            -- liếc, thay vì phải lần từ log.
+            --
+            -- Chỉ hiện `asn_rep`. `asn_type` cố tình BỎ: khoá `asn:type:` không
+            -- ảnh hưởng quyết định nào (xem nhánh action đã gỡ), hiện nó ra chỉ
+            -- là dựng lại đúng thứ vừa dọn đi.
+            tsync.asn_loaded = obj.asn_rep or 0
         end
     end
 
@@ -752,15 +777,9 @@ local function render_data()
     end
     table.sort(goodbot_dns, function(a,b) return a.name < b.name end)
 
-    -- ASN type overrides
-    local asn_type_keys = scan_keys(red, "asn:type:*", 500)
-    local asn_types = {}
-    for _, k in ipairs(asn_type_keys) do
-        local asn = k:gsub("^asn:type:", "")
-        local itype = red:get(k) or "?"
-        table.insert(asn_types, {asn=asn, itype=itype})
-    end
-    table.sort(asn_types, function(a,b) return a.asn < b.asn end)
+    -- (Bảng "ASN Type Overrides" đã gỡ — xem chú thích ở nhánh action. Cùng lúc
+    --  bỏ luôn `scan_keys(red, "asn:type:*", 500)`: quét 500 khoá mỗi lần tải
+    --  trang để dựng một bảng không ảnh hưởng quyết định nào.)
 
     -- JA3 overrides
     local ja3_allow_keys = scan_keys(red, "ja3:allow:*", 200)
@@ -917,7 +936,6 @@ local function render_data()
         -- danh sách khác nhau và KHÔNG có gì báo là đang nhìn dữ liệu thiếu.
         -- Xem khối chú thích ở `SCAN_COUNT`.
         goodbot_capped = goodbot_keys.truncated and true or false,
-        asn_types    = arr(asn_types),
         ja3_list     = arr(ja3_list),
         ja3_capped   = (ja3_allow_keys.truncated or ja3_block_keys.truncated)
                        and true or false,
@@ -1016,9 +1034,8 @@ tr:hover td{background:#1c2129}
     <div class="tab" onclick="showTab('bans')">🚫 Bans</div>
     <div class="tab" onclick="showTab('threats')">🔴 Threats</div>
     <div class="tab" onclick="showTab('whitelist')">✅ Whitelist</div>
-    <div class="tab" onclick="showTab('sync')">📡 Feed Sync</div>
+    <div class="tab" onclick="showTab('sync')">📡 Feed &amp; Registry</div>
     <div class="tab" onclick="showTab('domains')">🌐 Domains</div>
-    <div class="tab" onclick="showTab('intelligence')">🧠 Intelligence</div>
     <div class="tab" onclick="showTab('devices')">📱 Devices</div>
     <div class="tab" onclick="showTab('fleet')">🎯 Fleet Detection</div>
   </div>
@@ -1141,11 +1158,53 @@ tr:hover td{background:#1c2129}
   </div>
 
   <!-- -->
+  <!-- Feed & Registry — gộp tab Intelligence cũ vào đây (2026-08-31).
+       Ba khối dưới cùng một bản chất: dữ liệu nạp từ NGOÀI vào Redis rồi
+       antibot đọc ra. `threat_feed_sync.sh` sinh cả ba — IP/ASN reputation,
+       JA3 DB dựng từ access log — còn registry good-bot thì seed từ
+       `core/data/goodbot.json`. Tách chúng ra hai tab chỉ làm rối. -->
   <div id="tab-sync" class="pane">
     <div class="g3">
       <div class="sc"><div style="font-size:12px;color:#8b949e;margin-bottom:6px">Last Sync</div><div id="sync-time" style="font-size:14px">—</div></div>
       <div class="sc"><div style="font-size:12px;color:#8b949e;margin-bottom:6px">IPs Loaded</div><div id="sync-ip" style="font-size:28px;font-weight:700;color:#58a6ff">—</div></div>
-      <div class="sc"><div style="font-size:12px;color:#8b949e;margin-bottom:6px">ASNs Loaded</div><div id="sync-asn" style="font-size:28px;font-weight:700;color:#3fb950">—</div></div>
+      <div class="sc">
+        <div style="font-size:12px;color:#8b949e;margin-bottom:6px">ASN Reputation</div>
+        <div id="sync-asn" style="font-size:28px;font-weight:700;color:#3fb950">—</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:4px">
+          Số khoá <code>rep:asn:</code> — nguồn của tín hiệu <code>asn_rep</code>.
+          Vài chục thay vì vài chục nghìn = <code>threat_feed_sync.sh</code> lỗi hoặc chạy bản cũ.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🤖 Good Bot DNS Registry</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
+        Bots tự xưng là crawler sẽ được DNS-verified theo domain suffix đã đăng ký.
+        Danh sách chuẩn nằm ở <code>core/data/goodbot.json</code> và tự seed vào Redis mỗi lần
+        reload; thêm tay ở đây chỉ nên dùng để cầm máu, sau đó đưa vào file cho mọi máy cùng có.
+      </div>
+      <div class="wl-form">
+        <input class="inp" id="inp-gb-name" placeholder="googlebot" type="text" style="width:130px">
+        <input class="inp" id="inp-gb-sfx" placeholder="googlebot.com,google.com" type="text" style="width:240px">
+        <button class="btn btn-green" onclick="goodbotDnsAdd()">+ Add</button>
+      </div>
+      <table><thead><tr><th>Bot Name</th><th>DNS Suffixes</th><th>Action</th></tr></thead>
+      <tbody id="t-goodbot-dns"></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>🔐 JA3 TLS Fingerprint</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
+        Allowlist: browser JA3 từ production log. Blocklist: known bot TLS fingerprint.
+      </div>
+      <div class="wl-form">
+        <input class="inp" id="inp-ja3" placeholder="32-char hex JA3 hash" type="text" style="width:320px">
+        <button class="btn btn-green" onclick="ja3Action('ja3_allow')">+ Allow</button>
+        <button class="btn btn-red" onclick="ja3Action('ja3_block')">Block</button>
+      </div>
+      <table><thead><tr><th>JA3 Hash</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody id="t-ja3-list"></tbody></table>
     </div>
   </div>
 
@@ -1174,56 +1233,12 @@ tr:hover td{background:#1c2129}
 
 </div><!-- -->
 
-  <!-- intelligence pane -->
-  <div id="tab-intelligence" class="pane">
-    <div class="g2">
-      <div class="card">
-        <h2>🤖 Good Bot DNS Registry</h2>
-        <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-          Bots tự xưng là crawler sẽ được DNS-verified theo domain suffix đã đăng ký.
-        </div>
-        <div class="wl-form">
-          <input class="inp" id="inp-gb-name" placeholder="googlebot" type="text" style="width:130px">
-          <input class="inp" id="inp-gb-sfx" placeholder="googlebot.com,google.com" type="text" style="width:240px">
-          <button class="btn btn-green" onclick="goodbotDnsAdd()">+ Add</button>
-        </div>
-        <table><thead><tr><th>Bot Name</th><th>DNS Suffixes</th><th>Action</th></tr></thead>
-        <tbody id="t-goodbot-dns"></tbody></table>
-      </div>
-      <div class="card">
-        <h2>🌐 ASN Type Overrides</h2>
-        <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-          Override phân loại ASN từ GeoLite2. Dùng khi asn_org không có keyword đủ rõ.
-        </div>
-        <div class="wl-form">
-          <input class="inp" id="inp-asn" placeholder="16509" type="text" style="width:100px">
-          <select id="sel-asn-type" style="background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px">
-            <option value="datacenter">datacenter</option>
-            <option value="vpn">vpn</option>
-            <option value="tor">tor</option>
-            <option value="residential">residential</option>
-            <option value="business">business</option>
-          </select>
-          <button class="btn btn-blue" onclick="asnTypeSet()">Set</button>
-        </div>
-        <table><thead><tr><th>ASN</th><th>Type</th><th>Action</th></tr></thead>
-        <tbody id="t-asn-types"></tbody></table>
-      </div>
-    </div>
-    <div class="card">
-      <h2>🔐 JA3 TLS Fingerprint</h2>
-      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-        Allowlist: browser JA3 từ production log. Blocklist: known bot TLS fingerprint.
-      </div>
-      <div class="wl-form">
-        <input class="inp" id="inp-ja3" placeholder="32-char hex JA3 hash" type="text" style="width:320px">
-        <button class="btn btn-green" onclick="ja3Action('ja3_allow')">+ Allow</button>
-        <button class="btn btn-red" onclick="ja3Action('ja3_block')">Block</button>
-      </div>
-      <table><thead><tr><th>JA3 Hash</th><th>Status</th><th>Action</th></tr></thead>
-      <tbody id="t-ja3-list"></tbody></table>
-    </div>
-  </div>
+  <!-- Tab "Intelligence" ĐÃ GỠ (2026-08-31). Nó chứa ba thẻ:
+         Good Bot DNS Registry  → chuyển sang tab Feed & Registry
+         JA3 TLS Fingerprint    → chuyển sang tab Feed & Registry
+         ASN Type Overrides     → XOÁ HẲN, xem chú thích ở nhánh action
+       Còn lại một thẻ thì không đáng một tab riêng, nên gộp luôn: cả ba khối
+       ở tab kia đều là "dữ liệu nạp từ ngoài vào Redis". 9 tab → 8. -->
 
 </div><!-- -->
 
@@ -1601,13 +1616,6 @@ function load(){
       <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="goodbotDnsDel('${r.name}')">Remove</button></td></tr>`
     }
     setHTML('t-goodbot-dns', (d.goodbot_capped?caprow(3):'')+(gb||nodata(3)))
-    // ASN type overrides
-    var at=''
-    for(var r of (d.asn_types||[])){
-      at+=`<tr><td class="mono">AS${r.asn}</td><td><span class="tag tag-${r.itype==='datacenter'?'orange':r.itype==='tor'?'red':'blue'}">${r.itype}</span></td>
-      <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="asnTypeDel('${r.asn}')">Remove</button></td></tr>`
-    }
-    setHTML('t-asn-types', at||nodata(3))
     // JA3 list
     var jl=''
     for(var r of (d.ja3_list||[])){
@@ -1895,20 +1903,6 @@ function goodbotDnsDel(name){
   if(!confirm('Remove good bot: '+name+'?'))return
   fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'goodbot_dns_del',name:name})
-  }).then(r=>r.json()).then(d=>{load()})
-}
-function asnTypeSet(){
-  var asn=document.getElementById('inp-asn').value.trim()
-  var itype=document.getElementById('sel-asn-type').value
-  if(!asn){alert('Nhập ASN number');return}
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'asn_type_set',asn:asn,itype:itype})
-  }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
-}
-function asnTypeDel(asn){
-  if(!confirm('Remove ASN override: '+asn+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'asn_type_del',asn:asn})
   }).then(r=>r.json()).then(d=>{load()})
 }
 function ja3Action(action){
