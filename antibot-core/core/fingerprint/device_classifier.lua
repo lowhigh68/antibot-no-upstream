@@ -139,6 +139,58 @@ end
 -- Non-browser HTTP client — real browsers always send "Mozilla/" AND an engine
 -- token; libraries (curl, python-requests, Go-http, Java, okhttp, wget) send
 -- neither. Structural signal, zero maintenance.
+--
+-- 2026-08-31 — ĐỪNG BỎ DÒNG `if ua:find("Mozilla/") ... return false` phía dưới.
+-- Chú thích trên mô tả đúng thực tế (browser có CẢ `Mozilla/` LẪN token engine;
+-- thư viện KHÔNG có gì), nhưng code chỉ hiện thực được vế "không có gì". Dải
+-- giữa — **có `Mozilla/`, không có engine** — không thuộc nhánh nào, rơi xuống
+-- `unknown` ở cuối hàm. Nhìn từ bảng "Unknown Client — UA Samples" thì đó trông
+-- hệt như lỗ hổng: thấy `zgrab/0.x`, `WP-VerProbe/1.0`, `CT-WP-Probe/1.2` và
+-- `Mozilla/5.0` trần nằm chình ình trong ô `unknown`. Đo rồi thì CẢ BA hướng
+-- sửa đều tệ hơn hiện trạng.
+--
+-- Đo 1 ngày antibot.log, lọc `Mozilla` + KHÔNG `AppleWebKit|Gecko|Trident|Presto`
+-- ⇒ dải giữa rộng 23.340 req, nhưng phân bố ngược hẳn trực giác:
+--   22.743  crawler         ← `is_crawler` chạy TRƯỚC hàm này, đã hứng 97,4%
+--      254  unknown         ← phần hở THẬT, chỉ có bấy nhiêu
+--      177  gate_exit       ← thoát trước bước 10, `device_type` còn nil
+--      127  desktop_chrome  ← xem (2) và (3)
+--       36  desktop_other   ← MSIE 6/7 dị dạng, đã ăn 0,05 y như http_client
+--        2  http_client
+--        1  desktop_firefox
+--
+-- (1) Đổi nhãn 254 `unknown` → `http_client`: THUẦN THẨM MỸ. Cả hai đều
+--     `sec_fetch_expected=false` ⇒ `sec_fetch_penalty()` trả 0,05 y hệt
+--     (header_anomaly.lua:27) ⇒ không xê dịch một điểm nào. Lại còn làm mù
+--     bảng UA Samples: `logger.lua:261` CHỈ lấy mẫu ô `unknown`, đó là cửa sổ
+--     duy nhất nhìn thấy chuỗi UA thô của đám đang dò.
+--
+-- (2) Đẩy kiểm engine lên đầu hàm (`return not has_engine`): LÀM YẾU HỆ.
+--     128 dòng `desktop_chrome`/`desktop_firefox` kia đang mang
+--     `sec_fetch_expected=true` ⇒ thiếu Sec-Fetch là ăn 0,40. Biến thành
+--     `http_client` tức tụt còn 0,05: −0,35 × 0,45 × 35 = **−5,5 điểm raw**,
+--     đúng vào nhóm đáng ngờ nhất của cả dải. Sửa cho sạch nhãn hoá ra là tự
+--     tháo một mũi phạt.
+--
+-- (3) Thêm tín hiệu "khai `Chrome/`|`Firefox/` mà không engine": KHÔNG LẬT
+--     ĐƯỢC GÌ. 128 dòng đó là UA giả viết tay — 123 lượt cùng MỘT chuỗi:
+--         Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+--     = chuỗi Chrome 120 thật trừ đi hai mệnh đề engine ở giữa. KHÔNG phải
+--     hiện vật cắt chuỗi: logger cắt ở ký tự 120, mà `AppleWebKit` nằm ở ký
+--     tự 42 và chuỗi thật chỉ dài 111 — một nhát cắt sẽ GIỮ AppleWebKit rồi
+--     mất đuôi, chứ không moi được khúc giữa. Client thật không sinh ra hình
+--     dạng này ⇒ FP = 0. NHƯNG: 112 lượt đã `block` + 1 `challenge` bằng
+--     đường khác, và 15 lượt `allow` còn lại nằm ở **eff 10-19, class
+--     `api_callback`** (`score_multiplier = 0,5` ⇒ raw 20-38). Nâng
+--     `ua_lacks_browser_structure` từ 0,25 lên tận 1,00 — trọng số tối đa
+--     tuyệt đối của cả module — chỉ được 19 + 0,75×15,75×0,5 = **24,9**, vẫn
+--     dưới `MONITOR = 25`. Nhân 0,5 của lớp `api_callback` nuốt hết. Và
+--     `ip_risk_lowered` bị vô hiệu đúng cho lớp này (engine.lua:513) nên
+--     không có ngưỡng 40 nào để mượn. Lợi bằng đúng KHÔNG.
+--
+-- Tóm: ô `unknown` ở đây KHÔNG phải chỗ bot lọt. Chúng đã ăn +0,35
+-- (`ua_is_versioned_tool`) hoặc +0,25 (`ua_lacks_browser_structure`) từ trước
+-- đó. Nhãn xấu, phán quyết đúng — để nguyên.
 local function is_http_tool(ua)
     if ua:find("Mozilla/", 1, true) then return false end
     if ua:find("AppleWebKit", 1, true)
