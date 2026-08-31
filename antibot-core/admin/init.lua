@@ -38,8 +38,36 @@ end
 --
 -- COUNT 100 → 1000: giảm 10 lần số round-trip cho cùng phạm vi quét.
 -- SCAN_MAX_ITER: trần CỨNG, chặn chi phí bất kể keyspace lớn cỡ nào.
-local SCAN_COUNT    = 1000
-local SCAN_MAX_ITER = 100   -- ≤ 100.000 khoá được soi mỗi mẫu
+--
+-- 2026-08-31 — COUNT 1000 → 10000. Trần phủ cũ (1000 × 100 = 100.000 khoá)
+-- THẤP HƠN keyspace thật: `DBSIZE` đo được 250.647 / 259.071 / 317.756 trên ba
+-- máy. Hậu quả KHÔNG phải "thiếu phần đuôi" mà là ba máy CÙNG DỮ LIỆU cho ba
+-- kết quả KHÁC NHAU — bảng "Good Bot DNS Registry" hiện 18 / 17 / 15 mục trong
+-- khi Redis có đủ 41 trên cả ba (`EXISTS goodbot:dns:<tên>` = 1 với mọi tên).
+-- Các tập con còn chồng chéo lộn xộn: máy A có `googlebot-video` mà không có
+-- `googlebot`, máy B thì ngược lại.
+--
+-- Vì sao cùng code cùng dữ liệu lại khác kết quả: bảo đảm "mọi khoá tồn tại
+-- suốt quá trình lặp đều được trả về ít nhất một lần" của SCAN **chỉ có hiệu
+-- lực khi chạy HẾT tới `cursor == 0`**. Cắt ở vòng 100 là tự bước ra ngoài cam
+-- kết. Ngoài cam kết thì vị trí một khoá là `hash(tên) & (cỡ_bảng − 1)`, mà
+-- bảng băm co giãn theo TỔNG số khoá (2^18 với 250k, 2^19 với 318k) ⇒ cùng một
+-- tên rơi vào bucket khác nhau trên mỗi máy; điểm dừng ở vòng 100 lại phụ thuộc
+-- mật độ của 250.000 khoá KHÔNG liên quan gì tới mẫu đang tìm.
+--
+-- Nâng COUNT chứ KHÔNG nâng MAX_ITER — cùng khối lượng duyệt keyspace nhưng:
+--   COUNT 10000  → ~32 round-trip cho 318k khoá, trần phủ 1.000.000
+--   MAX_ITER 400 → ~318 round-trip cho 318k khoá, trần phủ 400.000
+-- Đánh đổi phải biết: Redis đơn luồng, mỗi lệnh SCAN chặn lâu hơn (~0,5ms thay
+-- vì ~0,1ms). Panel admin mở thủ công nên chấp nhận được. Và COUNT chỉ là GỢI
+-- Ý — Redis có quyền trả ít hơn mỗi vòng, nên "vòng × COUNT" là cận trên lạc
+-- quan; cờ `truncated` vẫn là thứ duy nhất nói thật.
+--
+-- KHÔNG ảnh hưởng xử lý request. Đường xác minh đọc ĐÍCH DANH
+-- (`detection/bot/ua_check.lua:100` — `safe_get("goodbot:dns:" .. tên)`), không
+-- hề quét. Lỗi này thuần hiển thị: 15/41 trên bảng mà bot vẫn verify đủ.
+local SCAN_COUNT    = 10000
+local SCAN_MAX_ITER = 100   -- ≤ 1.000.000 khoá được soi mỗi mẫu
 
 -- `max_iter` cho phép nới trần vòng lặp cho vài mẫu mà con số PHẢI đúng
 -- (`ban:*` — bảng Bans có phân trang, cần đủ khoá thì tổng mới thật). Mặc định
@@ -871,6 +899,10 @@ local function render_data()
         high_risk    = arr(high_risk),
         rep_ips      = arr(rep_ips),
         wl_ips       = arr(wl_ips),
+        -- `wl:` là MIỄN TRỪ TOÀN PHẦN (whitelist.lua:161 → init.lua:162 return
+        -- ngay, bỏ qua l7 + detection + enforcement). Soát an ninh trên một
+        -- danh sách bị cắt âm thầm là soát hụt mà không biết mình đang hụt.
+        wl_capped    = wl_ip_keys.truncated and true or false,
         wl_urls      = arr(wl_urls),
         threat_sync  = tsync,
         domain_stats = arr(domain_list),
@@ -881,8 +913,14 @@ local function render_data()
             custom    = arr(ua_custom),
         },
         goodbot_dns  = arr(goodbot_dns),
+        -- Ba cờ dưới đây tồn tại vì 2026-08-31: ba máy cùng dữ liệu hiện ba
+        -- danh sách khác nhau và KHÔNG có gì báo là đang nhìn dữ liệu thiếu.
+        -- Xem khối chú thích ở `SCAN_COUNT`.
+        goodbot_capped = goodbot_keys.truncated and true or false,
         asn_types    = arr(asn_types),
         ja3_list     = arr(ja3_list),
+        ja3_capped   = (ja3_allow_keys.truncated or ja3_block_keys.truncated)
+                       and true or false,
         device_stats         = arr(device_stats),
         ua_unknown_samples   = arr(ua_unknown_samples),
         intent_by_device     = intent_by_device,
@@ -1523,7 +1561,7 @@ function load(){
       wi+=`<tr><td class="mono">${ip}</td>
       <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="removeWlIp('${ip}')">Remove</button></td></tr>`
     }
-    setHTML('t-wl-ip', wi||nodata(2))
+    setHTML('t-wl-ip', (d.wl_capped?caprow(2):'')+(wi||nodata(2)))
 
     // Whitelist URLs
     var wu=''
@@ -1562,7 +1600,7 @@ function load(){
       gb+=`<tr><td class="mono">${r.name}</td><td class="mono gray">${r.suffixes}</td>
       <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="goodbotDnsDel('${r.name}')">Remove</button></td></tr>`
     }
-    setHTML('t-goodbot-dns', gb||nodata(3))
+    setHTML('t-goodbot-dns', (d.goodbot_capped?caprow(3):'')+(gb||nodata(3)))
     // ASN type overrides
     var at=''
     for(var r of (d.asn_types||[])){
@@ -1578,7 +1616,7 @@ function load(){
       <td><span class="tag ${sc}">${r.status}</span></td>
       <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="ja3Remove('${r.hash}')">Remove</button></td></tr>`
     }
-    setHTML('t-ja3-list', jl||nodata(3))
+    setHTML('t-ja3-list', (d.ja3_capped?caprow(3):'')+(jl||nodata(3)))
   })
   .catch(e=>setText('status','Error: '+e.message))
 }
@@ -1807,6 +1845,14 @@ function renderDomains(d){
 
 function nodata(cols){
   return `<tr><td colspan="${cols}" style="text-align:center;color:#484f58;padding:16px">Không có dữ liệu</td></tr>`
+}
+// Dòng cảnh báo chèn ĐẦU bảng khi `scan_keys` chạm trần. Không có nó thì một
+// danh sách thiếu trông y hệt một danh sách đủ — đúng cách lỗi 2026-08-31 sống
+// sót: ba máy hiện 18/17/15 mục trên tổng 41, không máy nào báo gì.
+function caprow(cols){
+  return `<tr><td colspan="${cols}" style="color:var(--color-accent-orange,#f0883e);font-size:11px;padding:6px 8px">`
+       + `⚠ Danh sách BỊ CẮT — SCAN chạm trần, đây không phải toàn bộ. `
+       + `Đối chiếu bằng <code>redis-cli --scan</code>, và xem <code>scan_keys cham tran</code> trong error.log.</td></tr>`
 }
 function uaAction(action){
   var pat=document.getElementById('inp-ua-pat').value.trim()
