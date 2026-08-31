@@ -69,6 +69,9 @@ end
 local SCAN_COUNT    = 10000
 local SCAN_MAX_ITER = 100   -- ≤ 1.000.000 khoá được soi mỗi mẫu
 
+-- Hạn của mục good-bot thêm tay qua panel. Xem nhánh `goodbot_dns_add`.
+local GOODBOT_MANUAL_TTL = 604800   -- 7 ngày
+
 -- `max_iter` cho phép nới trần vòng lặp cho vài mẫu mà con số PHẢI đúng
 -- (`ban:*` — bảng Bans có phân trang, cần đủ khoá thì tổng mới thật). Mặc định
 -- vẫn là SCAN_MAX_ITER cho mọi mẫu chỉ cần lấy mẫu.
@@ -202,8 +205,16 @@ local function handle_whitelist_api()
         result = {ok=true, msg="Pattern '"..pat.."' removed. Cache cleared."}
 
     elseif action == "goodbot_dns_add" and req.name and req.suffixes then
-        red:set("goodbot:dns:" .. req.name:lower(), req.suffixes)
-        result = {ok=true, msg="Good bot DNS: "..req.name.." → "..req.suffixes}
+        -- TTL 7 ngày, KHÔNG phải `SET` trần (2026-08-31). Hai lý do:
+        --   1. TTL là dấu vết nguồn gốc — `core/goodbot_seed.lua` nhận ra khoá
+        --      có hạn là "người vận hành đặt tạm" và chừa lại, còn khoá không
+        --      hạn là của chính nó và ghi đè bằng `goodbot.json`. Không có TTL
+        --      thì mục thêm tay CHE VĨNH VIỄN file, và git không sửa lại được.
+        --   2. Hết hạn ⇒ lượt reload kế tiếp kéo về đúng nội dung trong git ⇒
+        --      buộc bản vá lâu dài phải vào file, thay vì nằm lại trên một máy.
+        red:setex("goodbot:dns:" .. req.name:lower(), GOODBOT_MANUAL_TTL, req.suffixes)
+        result = {ok=true, msg="Good bot DNS (tạm 7 ngày): "..req.name.." → "..req.suffixes
+                              .." — nhớ đưa vào core/data/goodbot.json"}
 
     elseif action == "goodbot_dns_del" and req.name then
         red:del("goodbot:dns:" .. req.name:lower())
@@ -769,11 +780,16 @@ local function render_data()
 
     -- Good bot DNS registry
     local goodbot_keys = scan_keys(red, "goodbot:dns:*", 200)
+    -- `ttl` phân biệt nguồn gốc, không phải trang trí: -1 = seed ghi từ
+    -- `core/data/goodbot.json` (nguồn chuẩn, git quản); >= 0 = ai đó thêm tay
+    -- qua panel và nó sẽ tự hết hạn. Không hiện ra thì hai loại trông y hệt
+    -- nhau, và người xem không biết mục nào sắp biến mất.
     local goodbot_dns = {}
     for _, k in ipairs(goodbot_keys) do
         local name = k:gsub("^goodbot:dns:", "")
         local suffixes = red:get(k) or ""
-        table.insert(goodbot_dns, {name=name, suffixes=suffixes})
+        local ttl = tonumber(red:ttl(k)) or -1
+        table.insert(goodbot_dns, {name=name, suffixes=suffixes, ttl=ttl})
     end
     table.sort(goodbot_dns, function(a,b) return a.name < b.name end)
 
@@ -1182,8 +1198,12 @@ tr:hover td{background:#1c2129}
       <h2>🤖 Good Bot DNS Registry</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
         Bots tự xưng là crawler sẽ được DNS-verified theo domain suffix đã đăng ký.
-        Danh sách chuẩn nằm ở <code>core/data/goodbot.json</code> và tự seed vào Redis mỗi lần
-        reload; thêm tay ở đây chỉ nên dùng để cầm máu, sau đó đưa vào file cho mọi máy cùng có.
+        <br><span class="tag tag-green">file</span> = seed từ <code>core/data/goodbot.json</code>,
+        nguồn chuẩn do git quản, ghi đè lại mỗi lần reload.
+        <span class="tag tag-orange">tạm</span> = thêm tay ở đây,
+        <b>tự hết hạn sau 7 ngày</b> rồi quay về đúng nội dung file.
+        Nút Add chỉ để cầm máu khi một crawler đang bị chặn oan — vá lâu dài phải vào
+        <code>goodbot.json</code>, nếu không nó chỉ tồn tại trên đúng máy này.
       </div>
       <div class="wl-form">
         <input class="inp" id="inp-gb-name" placeholder="googlebot" type="text" style="width:130px">
@@ -1613,7 +1633,11 @@ function load(){
     // Good bot DNS
     var gb=''
     for(var r of (d.goodbot_dns||[])){
-      gb+=`<tr><td class="mono">${r.name}</td><td class="mono gray">${r.suffixes}</td>
+      // ttl >= 0 = them tay qua panel, se tu het han. ttl -1 = seed tu goodbot.json.
+      var src = (r.ttl>=0)
+        ? `<span class="tag tag-orange" title="Thêm tay qua panel — sẽ tự hết hạn. Đưa vào core/data/goodbot.json để giữ lâu dài.">tạm ${Math.ceil(r.ttl/86400)}n</span>`
+        : `<span class="tag tag-green" title="Seed từ core/data/goodbot.json">file</span>`
+      gb+=`<tr><td class="mono">${r.name} ${src}</td><td class="mono gray">${r.suffixes}</td>
       <td><button class="btn btn-gray" style="font-size:11px;padding:2px 7px" onclick="goodbotDnsDel('${r.name}')">Remove</button></td></tr>`
     }
     setHTML('t-goodbot-dns', (d.goodbot_capped?caprow(3):'')+(gb||nodata(3)))
