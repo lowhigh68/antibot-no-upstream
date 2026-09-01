@@ -391,6 +391,39 @@ function _M.run(ctx)
     end
     local cl_log = tonumber(ngx.var.http_content_length) or 0
 
+    -- ── BƯỚC 2 khảo sát WAF (2026-09-01) — sửa ĐƠN VỊ ĐO ──────────────
+    -- Bước 1 (`m=`) đo sai đơn vị. CRS chạy luật theo MỤC TIÊU chứ không theo
+    -- method: một GET mang 2 KB query tốn đúng lượng regex như một POST mang
+    -- 2 KB body, còn POST rỗng (82,6% số POST đo được) thì gần như không tốn
+    -- gì. `m=` chỉ định cỡ được riêng F1 (ra 6,6%), không định cỡ được WAF.
+    --
+    -- Bề mặt kiểm tra có HAI chiều, và chiều thứ hai mới là chiều nhân:
+    --   rl = tổng byte phải quét (dòng request + header + body).
+    --        `rl - cl` = phần header/request-line, tức phần mà 93,4% lưu lượng
+    --        KHÔNG có body vẫn phải quét.
+    --   na = số tham số query. CRS chạy `SecRule ARGS "@rx …"` trên TỪNG arg
+    --        một, không phải trên chuỗi gộp — nên 40 mục tiêu × 200 luật là
+    --        8.000 lượt khớp/request. Số tham số nhân chi phí mạnh hơn số byte.
+    --
+    -- Vì sao ĐẾM `&` thay vì gọi `ngx.req.get_uri_args()`:
+    --   1. `get_uri_args()` mặc định CẮT Ở 100 phần tử và không báo gì — đúng
+    --      hình dạng lỗi của `scan_keys` vừa sửa hôm qua. Ở đây ta cần con số
+    --      thật, kể cả khi kẻ tấn công gửi 500 tham số.
+    --   2. Nó cấp phát một bảng Lua mỗi request; đếm `&` chỉ quét chuỗi.
+    --   3. Log phase phải rẻ.
+    -- Đếm `&` hơi dư với `a&&b`, chấp nhận được: đoạn rỗng vẫn là một mục tiêu.
+    --
+    -- KHÔNG đếm tham số body: `ngx.req.get_post_args()` đòi body đã được đọc,
+    -- mà `req_classifier` chỉ đọc body ở nhánh chậm có điều kiện — nên ở log
+    -- phase phần lớn request chưa có. Kích cỡ body đã có `cl=` và `ct=`.
+    local rl_log = tonumber(ngx.var.request_length) or 0
+    local qs_log = ngx.var.args or ""
+    local na_log = 0
+    if qs_log ~= "" then
+        local _, amp = qs_log:gsub("&", "")
+        na_log = amp + 1
+    end
+
     -- Throttle decision details — chỉ append cho action=throttled để tránh
     -- bloat log line cho các request bình thường. trigger ∈ {hard_qs_len,
     -- hard_param_count, soft_score}; exp_score là weighted sum 0..1.45.
@@ -509,7 +542,7 @@ function _M.run(ctx)
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
-        " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d" ..
+        " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -535,6 +568,8 @@ function _M.run(ctx)
         m_log,
         ct_log,
         cl_log,
+        rl_log,
+        na_log,
         top_str,
         tostring(ctx.action_reason or "-"),
         throttle_str,
