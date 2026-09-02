@@ -229,5 +229,31 @@ else
     pass = pass + 1
 end
 
+-- script_path(): cat PATH_INFO truoc khi ghep `document_root .. uri`.
+--
+-- Hong o day KHONG lam do bat ky luat nao — no lam hong hai thu KHAC va ca hai
+-- deu hong trong IM LANG: khoa `waf:fimnew:` bi lech nen FIM danh dau ma WAF
+-- khong nhan, va cot `exists=` bao 0 cho file dang nam tren dia. Dung cot dung
+-- de phan biet "dang do tim" voi "da co san".
+local SCRIPT_CASES = {
+{"/shell.php/x",              nil, "/shell.php",       "PATH_INFO — ca lo do nay"},
+{"/shell.php/a/b/c",          nil, "/shell.php",       "PATH_INFO nhieu tang"},
+{"/wp-content/plugins/us.php/", nil, "/wp-content/plugins/us.php",
+                                                       "da xuat hien trong waf.log THAT"},
+{"/index.php/2020/01/bai/",   nil, "/index.php",       "permalink PATHINFO cua WordPress"},
+{"/shell.php",                nil, "/shell.php",       "khong co PATH_INFO — giu nguyen"},
+{"/blog/wp-config.php",       nil, "/blog/wp-config.php", "duong dan sau, giu nguyen"},
+-- `/a.php/b.php`: script THAT SU chay la cai DAU, phan sau chi la PATH_INFO.
+{"/a.php/b.php",              nil, "/a.php",           "cat o duoi PHP dau tien"},
+{"/x.php5/y",                 nil, "/x.php5",          "php5 cung la duoi thuc thi"},
+{"/x.phtml/y",                nil, "/x.phtml",         "phtml"},
+-- Khong co duoi PHP thi tra NGUYEN URI. Hong cho nay se lam moi anh/css/js bi
+-- tra khoa FIM sai, tuc lam nhieu chinh phep do.
+{"/anh/logo.png",             nil, "/anh/logo.png",    "khong phai PHP — giu nguyen"},
+{"/",                         nil, "/",                "web root"},
+{"",                          nil, "",                 "chuoi rong khong duoc no"},
+}
+run("script_path()", SCRIPT_CASES, wp.script_path)
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

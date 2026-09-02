@@ -165,6 +165,33 @@ function _M.needs_mark(uri, host)
         or low:find("/wp-includes/", 1, true) ~= nil
 end
 
+-- Cat PATH_INFO: `/shell.php/x` -> `/shell.php`. Tra nguyen URI neu khong co
+-- duoi PHP nao.
+--
+-- Vi sao can. Hai cho ghep chuoi `document_root .. uri` de hoi ve mot FILE THAT,
+-- va ca hai deu sai voi PATH_INFO:
+--   `waf/init.lua`  tra khoa `waf:fimnew:<root><uri>` — FIM ghi duong dan file
+--                   that `/…/shell.php`, tra bang `/…/shell.php/x` la LECH KHOA,
+--                   nen file FIM vua danh dau lai KHONG duoc nang tin hieu.
+--   `target_exists` `io.open("/…/shell.php/x")` tra false du `shell.php` co that
+--                   ⇒ cot `exists=` bao 0 cho mot file DANG NAM TREN DIA. Do la
+--                   cot duy nhat phan biet "dang do tim" voi "da co san", nen
+--                   sai o day lam hong dung phep do quan trong nhat.
+--
+-- Khong phai gia thuyet: `/wp-content/plugins/us.php/` da xuat hien trong
+-- waf.log that — ke tan cong tren may nay biet dung PATH_INFO.
+--
+-- `ngx.re.find` tra vi tri KET THUC cua phan khop; lookahead `(?=[/;.\\]|$)`
+-- rong nen `to` dung o ky tu cuoi cua `.php`. Cat tai do la duoc duong dan
+-- script that. `/index.php/2020/01/bai/` -> `/index.php` (permalink PATHINFO),
+-- `/a.php/b.php` -> `/a.php` (script that su chay la cai dau).
+function _M.script_path(uri)
+    if not uri or uri == "" then return uri end
+    local _, to = ngx.re.find(uri, RX_PHP_EXEC, "jo")
+    if not to then return uri end
+    return uri:sub(1, to)
+end
+
 function _M.mark(host)
     if not host or host == "" then return end
     if shared_cache then

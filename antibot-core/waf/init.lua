@@ -124,9 +124,14 @@ function _M.run_pre(ctx)
         --
         -- Một lượt Redis GET cho mỗi lần luật bắn (~4.300/ngày), KHÔNG phải mỗi
         -- request. Cùng khuôn với `is_wp_host`.
+        -- `script_path` cat PATH_INFO truoc khi ghep khoa. Thieu no thi
+        -- `/shell.php/x` tra khoa `waf:fimnew:<root>/shell.php/x` trong khi FIM
+        -- ghi `<root>/shell.php` — lech khoa, nen dung file FIM vua danh dau la
+        -- MOI lai khong duoc nang tin hieu. Ly do day du o `wp_paths.script_path`.
         local root = ngx.var.document_root
         if root and root ~= "" then
-            local b = tonumber(pool.safe_get("waf:fimnew:" .. root .. uri))
+            local b = tonumber(pool.safe_get(
+                "waf:fimnew:" .. root .. wp_paths.script_path(uri)))
             if b and b > score then
                 score = b
                 ctx.waf_fim_new = b
@@ -171,8 +176,15 @@ end
 -- Quyền không phải trở ngại: nginx vốn đã đọc thẳng những thư mục này để phục vụ
 -- file tĩnh (khối `static_fastpath` trong `da_to_openresty.sh`).
 --
--- Hai giới hạn đã biết, chấp nhận thay vì viết thêm mã:
---   PATH_INFO `/shell.php/x` trả false dù `shell.php` có thật — nối nguyên `uri`.
+-- ĐÍNH CHÍNH (2026-09-02): trước đây khối này ghi PATH_INFO là "giới hạn đã
+-- biết, chấp nhận". Sai — nó không phải giới hạn có thể chấp nhận, nó làm hỏng
+-- đúng cột mà cả hàm này sinh ra để phục vụ. `/shell.php/x` trả `exists=0`
+-- trong khi `shell.php` ĐANG NẰM TRÊN ĐĨA, tức đọc log sẽ kết luận "chỉ đang dò
+-- tìm" cho một máy đã bị đặt webshell. Và `/wp-content/plugins/us.php/` đã xuất
+-- hiện trong waf.log thật, nên đây là kỹ thuật đang được dùng chứ không phải
+-- tình huống giả định. Nay cắt bằng `wp_paths.script_path`.
+--
+-- Một giới hạn CÒN LẠI, và cái này thì thật sự chấp nhận được:
 --   Thư mục trả true (`fopen` thành công với thư mục trên glibc). Với cổng đánh
 --   dấu WordPress thì đó lại đúng: `/wp-admin/` tồn tại nghĩa là host này là WP.
 local function target_exists()
@@ -182,7 +194,7 @@ local function target_exists()
 
     -- `ngx.var.uri` đã được nginx chuẩn hoá và giải mã, `..` bị gỡ trước khi tới
     -- đây, nên phép nối chuỗi này không mở đường thoát thư mục.
-    local fh = io.open(root .. uri, "r")
+    local fh = io.open(root .. wp_paths.script_path(uri), "r")
     if not fh then return false end
     fh:close()
     return true
