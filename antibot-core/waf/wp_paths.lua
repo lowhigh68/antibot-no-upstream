@@ -206,6 +206,7 @@ function _M.check(uri, host)
     if wc then
         local rest = low:sub(wc + 12)             -- 12 = #"/wp-content/"
         local sub  = rest:match("^([^/]+)/")
+
         if sub == "uploads" then return "wp_upload_exec" end
         if sub and not WP_CONTENT_OK[sub] then return "wp_content_exec" end
         -- PHP nằm ngay tại /wp-content/x.php (không có thư mục con):
@@ -224,6 +225,25 @@ function _M.check(uri, host)
             if rest == "index.php" then return nil end
             return "wp_content_exec"
         end
+
+        -- Tới đây `sub` chắc chắn là themes|plugins|mu-plugins — mọi nhánh còn
+        -- lại đều là luật `signal`. `index.php` ở các thư mục đó cũng là chốt
+        -- chặn liệt kê thư mục của WordPress core, giống hệt cái ở wp-content.
+        --
+        -- Đo 2026-09-02: `/wp-content/themes/index.php` chiếm 17 trong 20 dòng
+        -- `wp_theme_direct` có `exists=1`, trải trên 9 domain. Lần trước tôi vá
+        -- đúng MỘT TÊN mà quên rằng WordPress rải file này vào mọi thư mục con.
+        --
+        -- ĐẶT SAU nhánh `uploads` là cố ý, không phải tiện tay: ở đó luật là
+        -- `block` và `uploads/index.php` VẪN phải bị chặn. Miễn trừ nó là mở một
+        -- lối vòng có sẵn tên gọi — kẻ tấn công chỉ cần đặt webshell tên
+        -- `index.php`. Nhiễu ở nhánh block đáng trả giá; ở nhánh signal thì
+        -- không. Đó là ranh giới, không phải thứ tự ngẫu nhiên.
+        --
+        -- CHỈ một cấp: `themes/twentytwentyone/index.php` là template của theme,
+        -- gọi thẳng nó vẫn là dò tìm nên vẫn bắt.
+        if rest == sub .. "/index.php" then return nil end
+
         if sub == "plugins"    then return "wp_plugin_direct"   end
         if sub == "mu-plugins" then return "wp_muplugin_direct" end
         if sub == "themes"     then return "wp_theme_direct"    end

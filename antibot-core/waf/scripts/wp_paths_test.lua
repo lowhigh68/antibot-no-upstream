@@ -67,6 +67,16 @@ local CASES = {
  "MOI cai dat. Chan no lam ban kenh canh bao exists=1"},
 {"/wp-content/index.php/x", WP, "wp_content_exec",
  "PATH_INFO tren index.php khong hop le nen van phai bat"},
+{"/wp-content/themes/index.php", WP, nil,
+ "CA THAT 2026-09-02: 17/20 dong wp_theme_direct co exists=1 chinh la file nay, " ..
+ "tren 9 domain. Chot chan liet ke thu muc cua WordPress core"},
+{"/wp-content/plugins/index.php",    WP, nil, "cung chot chan do"},
+{"/wp-content/mu-plugins/index.php", WP, nil, "cung chot chan do"},
+{"/wp-content/uploads/index.php", WP, "wp_upload_exec",
+ "KHONG mien tru o nhanh block: mien tru la mo mot loi vong CO SAN TEN GOI — " ..
+ "ke tan cong chi can dat webshell ten index.php"},
+{"/wp-content/themes/twentytwentyone/index.php", WP, "wp_theme_direct",
+ "CHI mot cap: day la template cua theme, goi thang van la do tim"},
 {"/wp-content/backup/db.php", WP, "wp_content_exec", "thu muc con la"},
 {"/wp-content/updraft/x.php", WP, "wp_content_exec", "thu muc backup plugin"},
 
