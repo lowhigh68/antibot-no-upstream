@@ -85,12 +85,28 @@ function _M.run(ctx)
     local wpauth = (ngx.var.http_cookie or ""):find("wordpress_logged_in_", 1, true)
         and 1 or 0
 
+    -- Mã trạng thái phản hồi. Cột QUAN TRỌNG NHẤT của file này, và là thứ duy
+    -- nhất phân biệt được hai dân số mà `wp_plugin_direct` đang gộp làm một:
+    --
+    --   /wp-content/plugins/shell/about.php → 404  = dò tìm, không thấy gì
+    --   /wp-content/plugins/shell/about.php → 200  = SITE DA BI CHIEM
+    --
+    -- Đo 2026-09-02 trên waf.log thật: cùng một luật bắn cho cả
+    -- `plugins/pwnd/pwnd.php` (webshell quay lại kiểm tra) lẫn
+    -- `plugins/elementor-pro/elementor-pro.php` (dò phiên bản plugin thật).
+    -- Phân biệt bằng danh sách tên plugin xấu là enumeration — thứ kế hoạch đã
+    -- bác bỏ. Mã trạng thái phân biệt được mà không cần biết tên gì cả.
+    --
+    -- Với luật `block` thì đây luôn là 403 (ta tự đặt), nên giá trị chỉ có ý
+    -- nghĩa ở các luật `signal`. Đó cũng là chỗ cần nó.
+    local status = ngx.status or 0
+
     for i = 1, #hits do
         local h = hits[i]
         fh:write(string.format(
             "[%s] [waf] ts=%d id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
-            .. " richness=%s wpauth=%d\n",
+            .. " richness=%s wpauth=%d status=%d\n",
             stamp,
             now,
             scrub(id, 64),
@@ -105,7 +121,8 @@ function _M.run(ctx)
             h.action or "-",
             class,
             richness,
-            wpauth))
+            wpauth,
+            status))
     end
 
     fh:close()
