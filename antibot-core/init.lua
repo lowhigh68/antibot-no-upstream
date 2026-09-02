@@ -158,7 +158,18 @@ function _M.run()
     -- đủ nằm ở khối chú thích đầu `waf/init.lua`.
     if waf_layer.run_pre(ctx) then return end
 
-    if check_verified_cookie(ctx) then return end
+    -- `run_pre` CHỈ trả true ở nhánh block. Luật `signal` đặt `ctx.waf_wp_path`
+    -- rồi trả false — và nếu để dòng dưới thoát sớm thì `compute.lua` không bao
+    -- giờ đọc tới: tín hiệu vẫn vào waf.log nhưng không tác động gì tới phán
+    -- quyết. Tức là chạy trước cửa tin cậy chỉ cứu được hard-block, còn signal
+    -- thì vẫn bị che đúng như cũ.
+    --
+    -- Nên tín hiệu WAF vô hiệu hoá fast-path: bằng chứng về NỘI DUNG được quyền
+    -- lật một lối tắt dựa trên DANH TÍNH. Cookie kia chỉ chứng minh client đã
+    -- giải một PoW `difficulty = "000"` — vài chục ms với trình duyệt, và với
+    -- kẻ tấn công là 7200s soi-không-tới nếu không có điều kiện này.
+    local verified = check_verified_cookie(ctx)
+    if verified and not ctx.waf_wp_path then return end
 
     classifier.run(ctx)
     run_steps(STEPS_COMMON, ctx)
@@ -167,7 +178,13 @@ function _M.run()
     -- loopback, url/ip whitelist…). Trước đây chỉ check verified → các
     -- whitelist khác vẫn tiếp tục vào l7 counter + detection + enforcement
     -- dù access layer đã "allow" → rate counter lên LAN IP oan (wp-cron).
-    if ctx.verified or ctx.whitelisted then return end
+    --
+    -- `waf_wp_path` vô hiệu cửa này với cùng lý lẽ ở trên, nhưng CHỈ với
+    -- `verified`. `whitelisted` là quyết định tường minh của người vận hành
+    -- (admin rule, LAN, loopback, ip/url whitelist) và WAF không lật quyết định
+    -- đó — ranh giới có nguyên tắc, không phải chỗ nào cũng ép.
+    if ctx.whitelisted then return end
+    if ctx.verified and not ctx.waf_wp_path then return end
 
     local class = ctx.req_class or "unknown"
 

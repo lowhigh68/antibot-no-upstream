@@ -19,6 +19,18 @@ local wp_paths = require "antibot.waf.wp_paths"
 -- tính đã xác minh không nói gì về nội dung, nên trần tin cậy không được phép
 -- che tầng này. Đây là lý do `run_pre` tồn tại tách khỏi `STEPS_*`.
 --
+-- VỊ TRÍ THÔI CHƯA ĐỦ — và bản đầu của khối chú thích này đã nói quá. Đứng
+-- trước cửa tin cậy chỉ cứu được nhánh BLOCK, nơi `run_pre` trả true rồi
+-- `ngx.exit`. Luật `signal` trả FALSE, nên hai cửa thoát trong `antibot/init.lua`
+-- nuốt luôn `ctx.waf_wp_path` trước khi `compute.lua` kịp đọc: tín hiệu vào
+-- waf.log mà không tác động gì. Vì vậy hai cửa đó nay có thêm điều kiện
+-- `not ctx.waf_wp_path`.
+--
+-- Đo 2026-09-02 TRƯỚC khi vá: 8.323 lượt signal, 0 lượt thật sự thoát qua
+-- fast-path (chữ ký là `final=-` trong waf.log). Lỗ có thật trong mã nhưng chưa
+-- ai đi qua. Vá vì nó rẻ và vì hợp đồng ghi ở đoạn trên phải đúng — không phải
+-- vì đang chảy máu.
+--
 -- Đổi lại, tầng này phải RẺ và phải TỰ LO ctx: nó chạy trước `ctx_layer.init`
 -- nên không có gì trong `ctx` ngoài những thứ tự nó điền.
 
