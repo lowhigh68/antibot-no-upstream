@@ -6,6 +6,7 @@ Pipeline root. `init.lua` is the single entry point invoked from per-domain ngin
 
 | Module | What it does | When it runs |
 |---|---|---|
+| [`waf/`](waf/CLAUDE.md) | Soi NỘI DUNG request (đường dẫn), + `scripts/fim.sh` giám sát toàn vẹn file ngoài request | **Bước 0 — TRƯỚC cookie fast-path**, và log phase |
 | [`core/`](core/CLAUDE.md) | Config, Redis pool, ctx init, request classifier, fingerprint primitives, good-bot seed | First (`STEPS_COMMON`) |
 | [`transport/`](transport/CLAUDE.md) | TLS (JA3/JA3S) + HTTP/2 fingerprints, cross-phase shared dict bridge | After ctx, before l7 |
 | [`l7/`](l7/CLAUDE.md) | Rate limit, burst, slow-loris, IP/identity ban (read+write) | Early — before detection |
@@ -19,6 +20,10 @@ Pipeline root. `init.lua` is the single entry point invoked from per-domain ngin
 
 ```
 access_by_lua_block { antibot.run() }
+  ↓
+0. waf.run_pre(ctx) → exposed.check → wp_paths.check
+     block  → ngx.exit(403) NGAY (trước mọi cửa tin cậy)
+     signal → ctx.waf_wp_path, và cửa `verified` bên dưới KHÔNG nuốt nó
   ↓
 1. cookie fast-path: if verified:<cookie>=1 → set ctx.verified, RETURN
 2. classifier.run(ctx) → ctx.req_class + score_multiplier + rate_weight + skip_layers
