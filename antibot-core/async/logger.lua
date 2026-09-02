@@ -600,7 +600,19 @@ function _M.run(ctx)
 
     write_log_line(line)
 
-    -- Escalated events also go to nginx error log for visibility
+    -- CỐ Ý GIỮ Ở WARN — mặc định dòng này KHÔNG hiện ở đâu cả.
+    --
+    -- Chú thích cũ ghi "escalated events also go to nginx error log for
+    -- visibility", nhưng `da_to_openresty.sh:313` sinh `error_log <path>;` không
+    -- kèm mức ⇒ nginx lấy mặc định `error` ⇒ WARN bị lọc. Đo 2026-09-02: nâng
+    -- lên ERR sẽ đổ 5.116 dòng/ngày vào error log của domain nhiều nhất, 38.273
+    -- dòng/ngày cho riêng 15 domain đầu — biến error log của khách thành nhiễu
+    -- antibot và phá đúng công dụng soi lỗi PHP của nó. Mà antibot.log đã có đủ
+    -- action/reason/score/top cho từng dòng, bản sao này không thêm thông tin.
+    --
+    -- Nên coi đây là CÔNG CỤ GỠ LỖI THEO YÊU CẦU, không phải kênh log thường
+    -- trực: khi cần xem block trực tiếp cho một domain, sửa vhost của riêng nó
+    -- thành `error_log <path> warn;`, reload, xem, rồi trả lại.
     if ctx.action == "block" or ctx.action == "challenge" then
         ngx.log(ngx.WARN,
             "[antibot] ", ctx.action,
