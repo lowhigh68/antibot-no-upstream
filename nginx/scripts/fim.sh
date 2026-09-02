@@ -50,6 +50,20 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 # script, va no du vi hai dan so do khac nhau ve BAC do lon.
 GROUP_MAX=5
 
+# ── Bao tin hieu sang WAF ─────────────────────────────────────────────
+# FIM ghi `waf:fimnew:<host>:<uri>`; `waf/init.lua` doc key nay khi mot luat
+# `signal` ban va nang tin hieu len. KHONG phai chan: luat WAF dong gop tin hieu,
+# engine quyet cung ba tang tin cay — nen quan tri vien dang nhap that
+# (session_richness >= 0.5) van duoc `auth_session_cap` giu o monitor, con
+# scanner an danh thi len block. An toan FP theo cau truc, khong can luat mien tru.
+#
+# DB PHAI KHOP `core/config.lua` _M.redis.db (hien tai 0). Lech db thi FIM ghi
+# mot noi WAF doc mot noi, khong bao gio khop, va KHONG AI BAO LOI. Vi vay ham
+# `push_marks` doc nguoc mot key vua ghi de tu xac minh.
+REDIS_CLI="${FIM_REDIS_CLI:-redis-cli}"
+REDIS_DB="${FIM_REDIS_DB:-0}"
+MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
+
 usage() { echo "dung: $0 {baseline|check} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
@@ -190,7 +204,10 @@ fi
 # Con lai (web root, wp-config.php, .htaccess ngoai cung) la HIGH.
 #
 # Sap xep theo chuoi muc do cho ra dung thu tu can doc: CRITICAL < HIGH < ROUTINE.
-report=$(awk -F'|' -v max="$GROUP_MAX" '
+marks=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$marks"' EXIT
+
+report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" '
     function sev(p) {
         if (p ~ /\/wp-content\/uploads\//)    return "CRITICAL"
         if (p ~ /\/wp-content\/mu-plugins\//) return "CRITICAL"
@@ -218,7 +235,17 @@ report=$(awk -F'|' -v max="$GROUP_MAX" '
                        f[1], f[2], n[k], f[3]
             else {
                 m = split(item[k], L, "\n")
-                for (i = 1; i < m; i++) printf "%-8s %-3s %s\n", f[1], f[2], L[i]
+                for (i = 1; i < m; i++) {
+                    printf "%-8s %-3s %s\n", f[1], f[2], L[i]
+                    # CHI danh dau NEW, va CHI khi da duoc liet ke tung file.
+                    # Hai dieu kien deu can:
+                    #   NEW  — cap nhat plugin sinh hang loat CHG hop le.
+                    #   da liet ke — mot ban cai plugin moi la hang tram file NEW
+                    #     cung luc, danh dau het se nang tin hieu cho ca mot plugin
+                    #     that trong 7 ngay. Webshell den MOT MINH; nguong gom nhom
+                    #     von da phan biet duoc hai dan so do, dung lai chinh no.
+                    if (f[2] == "NEW" && markfile != "") print L[i] > markfile
+                }
             }
         }
     }' "$diff_out" | sort)
@@ -227,7 +254,52 @@ report=$(awk -F'|' -v max="$GROUP_MAX" '
 # nhat phan mem — bao dong o do la bien script thanh thu khong ai doc nua.
 crit=$(printf '%s\n' "$report" | grep -E '^(CRITICAL|HIGH) ' | grep -vc 'cap nhat')
 
-header="=== FIM $(date '+%Y-%m-%d %H:%M') — $total thay doi, $crit dang chu y ==="
+# ── Day danh dau sang Redis cho WAF ───────────────────────────────────
+# Bo qua o --dry: --dry nghia la "xem thu", ma ghi Redis la tac dong that.
+marked=0; mark_err=""
+if [ $dry -eq 0 ] && [ -s "$marks" ]; then
+  if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
+    # KHONG chet: FIM van phat hien va van bao. Chi la WAF khong duoc bao tin.
+    mark_err="thieu '$REDIS_CLI' — phat hien van chay, nhung WAF khong nhan duoc tin hieu."
+  else
+    cmds=$(awk -v ttl="$MARK_TTL" '
+        {
+            p = $0
+            i = index(p, "/domains/");        if (i == 0) { bad++; next }
+            rest = substr(p, i + 9)                       # 9  = #"/domains/"
+            j = index(rest, "/public_html/"); if (j == 0) { bad++; next }
+            host = substr(rest, 1, j - 1)
+            uri  = substr(rest, j + 12)                   # 12 = #"/public_html"
+            # Key di qua STDIN cua redis-cli, noi khoang trang la ranh gioi doi
+            # so va dau nhay la cu phap. Mot duong dan chua chung se thanh mot
+            # LENH KHAC. Loc trang cho chac, va dem so bi bo de khong mat lang le.
+            if (host !~ /^[A-Za-z0-9.-]+$/) { bad++; next }
+            if (uri  !~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) { bad++; next }
+            printf "SETEX waf:fimnew:%s:%s %d 1\n",     host, uri, ttl
+            printf "SETEX waf:fimnew:www.%s:%s %d 1\n", host, uri, ttl
+        }
+        END { if (bad) printf "  [fim] %d duong dan KHONG danh dau duoc (dinh dang la hoac ky tu khong an toan)\n", bad > "/dev/stderr" }
+    ' "$marks" 2>>"$LOG")
+
+    if [ -n "$cmds" ]; then
+        marked=$(printf '%s\n' "$cmds" | wc -l)
+        printf '%s\n' "$cmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+        # XAC MINH VONG TRON. Doc nguoc mot key vua ghi. Lech db giua redis-cli
+        # va core/config.lua, sai host, Redis chet — het thay deu lo ra o day
+        # thay vi de FIM ghi mot noi va WAF doc mot noi, mai mai khong khop ma
+        # khong ai bao loi.
+        probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
+        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "1" ]; then
+            mark_err="KHONG XAC MINH DUOC: da ghi $marked key nhung doc nguoc that bai."
+            mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
+        fi
+    fi
+  fi
+fi
+
+header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dang chu y, $marked key bao WAF ==="
+[ -n "$mark_err" ] && header="$header
+!! $mark_err"
 
 # LOG luon nhan day du, ke ca ROUTINE: khi dieu tra mot vu thi lich su cap nhat
 # plugin lai la thu can doi chieu.
@@ -235,7 +307,7 @@ header="=== FIM $(date '+%Y-%m-%d %H:%M') — $total thay doi, $crit dang chu y 
 
 # stdout — tuc mail cua cron — CHI khi co gi dang chu y. Cap nhat plugin dinh ky
 # ma cung gui mail thi vai tuan nua khong ai mo mail cua no nua.
-if [ "$crit" -gt 0 ] || [ $verbose -eq 1 ]; then
+if [ "$crit" -gt 0 ] || [ -n "$mark_err" ] || [ $verbose -eq 1 ]; then
     echo "$header"
     printf '%s\n' "$report"
 fi

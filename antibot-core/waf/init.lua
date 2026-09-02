@@ -1,6 +1,7 @@
 local _M = {}
 local wp_paths = require "antibot.waf.wp_paths"
 local exposed  = require "antibot.waf.exposed"
+local pool     = require "antibot.core.redis_pool"
 
 -- Tầng WAF. Khác mọi tầng khác ở MỘT điểm quyết định: nó chạy TRƯỚC các cửa
 -- thoát tin cậy trong `init.lua`, không phải sau.
@@ -74,11 +75,35 @@ function _M.run_pre(ctx)
     }
 
     if rule.action ~= "block" then
-        -- Chỉ góp điểm. `engine.lua` quyết cùng ba tầng tin cậy
-        -- (good_bot_verified / ip_shared_verified / auth_session_cap), đúng
-        -- nguyên tắc: luật WAF ĐÓNG GÓP tín hiệu, không tự ra phán quyết.
-        if (ctx.waf_wp_path or 0) < rule.score then
-            ctx.waf_wp_path = rule.score
+        local score = rule.score
+
+        -- FIM xác nhận: đúng file này MỚI XUẤT HIỆN trên đĩa.
+        --
+        -- Đây là thứ ba luật `signal` đang thiếu, và là thứ duy nhất phân biệt
+        -- được hai vật thể mà chúng đang gộp làm một:
+        --   /wp-content/plugins/elementor-pro/elementor-pro.php  — plugin thật
+        --   /wp-content/plugins/xx/shell.php                     — webshell
+        -- Cùng luật, cùng 12,5 điểm. FIM biết cái nào vừa xuất hiện, WAF không.
+        --
+        -- NÂNG TÍN HIỆU chứ KHÔNG chặn. Đúng nguyên tắc đã ghi ở dưới: luật WAF
+        -- đóng góp tín hiệu, `engine.lua` quyết cùng ba tầng tin cậy. Điều đó
+        -- làm nó an toàn FP THEO CẤU TRÚC — chuyện quan trọng trên hosting chia
+        -- sẻ, nơi khách hàng CÓ upload file PHP mới một cách hợp lệ: quản trị
+        -- viên đăng nhập thật vẫn được `auth_session_cap` giữ ở monitor, còn
+        -- scanner ẩn danh thì lên block. Không cần luật miễn trừ nào.
+        --
+        -- 1.0 × trọng số 50 = 50 điểm: dưới BLOCK(80) và dưới CHALLENGE(55) nên
+        -- vẫn cần tín hiệu khác cộng vào — cố ý, để FIM không tự mình phán quyết.
+        --
+        -- Một lượt Redis GET cho mỗi lần luật bắn (~4.300/ngày), KHÔNG phải mỗi
+        -- request. Cùng khuôn với `is_wp_host`.
+        if pool.safe_get("waf:fimnew:" .. host .. ":" .. uri) == "1" then
+            score = 1.0
+            ctx.waf_fim_new = true
+        end
+
+        if (ctx.waf_wp_path or 0) < score then
+            ctx.waf_wp_path = score
         end
         return false
     end

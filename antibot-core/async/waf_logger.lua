@@ -108,12 +108,18 @@ function _M.run(ctx)
     -- — đúng chỗ đã làm lạc hướng cả một buổi điều tra.
     local final  = ctx.action or "-"
 
+    -- FIM da xac nhan file nay MOI xuat hien tren dia (`nginx/scripts/fim.sh`
+    -- ghi `waf:fimnew:<host>:<uri>`, `waf/init.lua` doc). fim=1 nghia la tin
+    -- hieu da duoc nang tu 0.25/0.50 len 1.0. Doc cung `exists=`: exists noi
+    -- file CO tren dia, fim noi no MOI CO — hai cau khac nhau.
+    local fim = ctx.waf_fim_new and "1" or "0"
+
     for i = 1, #hits do
         local h = hits[i]
         fh:write(string.format(
             "[%s] [waf] ts=%d id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
-            .. " richness=%s wpauth=%d status=%d exists=%s final=%s\n",
+            .. " richness=%s wpauth=%d status=%d exists=%s final=%s fim=%s\n",
             stamp,
             now,
             scrub(id, 64),
@@ -131,7 +137,8 @@ function _M.run(ctx)
             wpauth,
             status,
             exists,
-            final))
+            final,
+            fim))
     end
 
     fh:close()
