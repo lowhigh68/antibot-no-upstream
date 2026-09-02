@@ -36,6 +36,7 @@ Tín hiệu WAF phá được `verified`, **không phá được `whitelisted`**
 | `init.lua` | Điều phối. `run_pre` (access, chỉ đọc) → `run_log` (log, sở hữu `io.open` duy nhất và phép ghi WP-host duy nhất) | access + log |
 | `exposed.lua` | 2 luật, cả hai `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed` | access |
 | `wp_paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
+| `body.lua` | **Giai đoạn 1 — chỉ quan sát, KHÔNG luật nào bắn.** Đọc body an toàn, điền `ctx.waf_body` | access |
 | `scripts/fim.sh` | **Nửa ngoài-request của tầng này.** Cron, giám sát toàn vẹn file | ngoài request |
 | `scripts/wp_paths_test.lua` + `run.sh` | 72 assertion. `deploy.sh` bước `[3b]` gác trên nó | build |
 | `async/waf_logger.lua` *(ở `async/`)* | Ghi `/var/log/antibot/waf.log`. **Không** nối vào `antibot.log` | log |
@@ -188,6 +189,51 @@ fim.sh check    [--hot] [--dry] [-v]
 
 **Không** dùng vòng `while read` gọi `classify`/`dirname` cho từng dòng: một bản cập nhật core 2.000 file sẽ sinh 4.000 tiến trình con. Đã trả giá một lần (script khảo sát chạy 11 phút 21 giây). Một lượt awk.
 
+## `body.lua` — bộ đo body (giai đoạn 1)
+
+**Không luật nào bắn.** Module này chỉ ghi lại **cái gì có trong body** rồi thôi.
+
+Lý do là kỷ luật, không phải sự thận trọng suông: trong phiên xây tầng này, **sáu giả thuyết liên tiếp bị số liệu thật bác bỏ** — file mu-plugins "backdoor" hoá ra là bản vá của agency SEO, "`status=200` nghĩa là đã bị chiếm" sai hai lần, "công cụ quản trị WP tập trung" bị chính output bác bỏ. Viết luật body khi chưa biết body trên dàn máy này chứa gì là lặp lại đúng sai lầm đó, chỉ khác là hậu quả rơi vào 43 domain thật.
+
+### Cái giá thực sự bằng KHÔNG
+
+`ngx.req.read_body()` nghe thì đắt, thực tế không thêm gì: **`proxy_request_buffering` không được đặt trong repo ⇒ mặc định `on` ⇒ nginx vốn đã đọc và đệm trọn body trước khi gửi lên Apache.** Đọc nó ở access phase chỉ là nhìn vào thứ đã nằm sẵn trong bộ nhớ.
+
+`proxy_buffering off` trong `da_to_openresty.sh` là đệm **phản hồi** — directive khác, đọc nhầm thì kết luận ngược.
+
+### Cổng lọc
+
+```
+method ∈ {POST, PUT, PATCH, DELETE}   ← GET/HEAD thoát ngay, không I/O
+        AND có Content-Type
+```
+
+**Cổng là `Content-Type`, tuyệt đối không phải `Content-Length`.** Đo 2026-09-02: **387 POST multipart trong 24h báo `cl=0`** — chunked transfer-encoding thì không có Content-Length. Gác bằng `cl > 0` sẽ bỏ qua đúng nhóm đáng quan tâm nhất (upload file), và bỏ qua **trong im lặng**.
+
+Gọi từ `run_pre` **sau** phép khớp luật đường dẫn và **bỏ qua nhánh `block`** — request đó sắp `ngx.exit(403)`, đọc body của nó là trả giá cho thứ sắp bị vứt đi. Nhưng vẫn chạy khi **không luật nào khớp**, vì đó mới là ~99% lưu lượng, tức đúng phân bố cần đo.
+
+### `ctx.waf_body`
+
+| Trường | Nghĩa |
+|---|---|
+| `family` | `urlencoded` / `multipart` / `json` / `xml` / `text` / `other` |
+| `len` | Số byte, hoặc **`-1`** nếu spill |
+| `spill` | Body vượt `client_body_buffer_size` → nginx ghi ra file tạm, `get_body_data()` trả `nil` |
+| `php` | Có thẻ mở PHP không (`<?php` / `<?=`, không phân biệt hoa thường) |
+| `nargs` | Số tham số, **chỉ với `urlencoded`**; `nil` cho phần còn lại |
+
+**Không đọc file tạm ở access phase.** `io.open` là I/O chặn nằm trên đường đi của mọi request — đúng điều luật repo cấm. Ghi nhận `spill` rồi đi tiếp; chính con số đó quyết định `client_body_buffer_size` nên đặt bao nhiêu, **không cần viết thêm mã**.
+
+**Đếm `&` chứ không gọi `get_post_args()`** — cùng ba lý do đã ghi ở `async/logger.lua:414`: hàm đó **cắt ở 100 và không báo gì** (mà 500 tham số mới là trường hợp đáng ngờ nhất), nó cấp phát một bảng Lua mỗi request, và đây là access phase.
+
+**`<?xml` KHÔNG tính là PHP.** Bắt `<?` trần sẽ biến mọi upload SVG, mọi feed RSS, mọi SOAP envelope thành dương tính — chế ra một cỗ máy FP đúng lúc đang cố đo xem FP nằm ở đâu.
+
+### `client_body_buffer_size 64k`
+
+Mặc định nginx là 8k/16k, nghĩa là **hôm nay** body 16k–64k đã bị ghi ra đĩa rồi mới đọc lại. Nâng lên 64k **giảm** một vòng ghi-đọc đĩa cho nhóm đó, kể cả khi không ai soi. Bộ đệm cấp cho **từng request có body và chỉ trong lúc đọc**, không cấp trước theo `worker_connections`.
+
+64k là **mốc khởi đầu, không phải kết luận**. Cột `blen=`/`spill=` sẽ cho phân bố thật để chỉnh lại có căn cứ.
+
 ## waf.log
 
 File **riêng**, không nhập vào `antibot.log`. Nối ngược bằng cặp `id=` + `ts=`.
@@ -195,6 +241,19 @@ File **riêng**, không nhập vào `antibot.log`. Nối ngược bằng cặp `
 Lý do: WAF sinh nhiều FP và phải soi log thường xuyên, trong khi `antibot.log` ghi **mọi** request — trộn vào nhau thì mỗi lần dò một FP phải lọc qua hàng trăm nghìn dòng không liên quan. Và `write_log_line` bên `logger.lua` `io.open`/write/`close` cho **từng** request; nối thêm chi tiết WAF vào đó là bắt 99% lưu lượng không dính luật nào trả giá cho 1% dính. Cùng mô hình tách error-log/audit-log của ModSecurity.
 
 `waf_logger.ensure()` tạo sẵn file rỗng lúc `init_worker`. Khác `antibot.log` ở một điểm quyết định: `logger.run()` chạy cho mọi request nên `antibot.log` tái sinh sau vài ms — vắng mặt nó là chẩn đoán rõ ràng. `waf_logger.run()` thoát sớm khi không luật nào bắn, nên thiếu `ensure()` thì sau deploy `waf.log` **không tồn tại**, và người vận hành không phân biệt được "chưa có tấn công nào" với "module hỏng / sai quyền thư mục".
+
+Hai loại dòng, **nhãn khác nhau**:
+
+| Nhãn | Bắn khi | Dân số |
+|---|---|---|
+| `[waf]` | Có luật khớp | ~4.300/ngày |
+| `[waf-body]` | Mọi POST soi được | mọi POST |
+
+Tách nhãn chứ **không** thêm cột vào dòng luật: dòng `[waf]` có 19 cột và mọi lệnh awk dùng suốt quá trình đo đều dựa vào đó — thêm cột là làm hỏng chúng trong im lặng. Và trộn hai dân số khác hẳn nhau vào một định dạng là tự tạo ra kết luận sai, đúng cái bẫy `status=` đã mất một buổi để gỡ.
+
+```bash
+grep -F '[waf-body]' /var/log/antibot/waf.log
+```
 
 ### Ba cột phải đọc cùng nhau
 

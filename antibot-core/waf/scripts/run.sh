@@ -18,4 +18,16 @@ if [ ! -x "$RESTY" ]; then
     exit 2
 fi
 
-exec "$RESTY" --shdict "antibot_cache 1m" "$HERE/wp_paths_test.lua"
+# Chay TUNG bo test. `exec` chi chay duoc mot cai, nen phai gom ma thoat tay:
+# neu bo dau hong ma van `exec` bo sau thi ma thoat cua bo dau BIEN MAT va cong
+# [3b] cua deploy.sh se cho qua mot ban hong.
+rc=0
+
+echo "── wp_paths ──────────────────────────────────────────"
+"$RESTY" --shdict "antibot_cache 1m" "$HERE/wp_paths_test.lua" || rc=1
+
+echo
+echo "── body ──────────────────────────────────────────────"
+"$RESTY" "$HERE/body_test.lua" || rc=1
+
+exit $rc

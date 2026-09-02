@@ -51,6 +51,45 @@ function _M.ensure()
     return true
 end
 
+-- Dong DO BODY — nhan `[waf-body]`, KHAC nhan `[waf]` cua dong luat.
+--
+-- Tach nhan chu khong them cot vao dong luat, vi hai ly do:
+--   1. Dong luat co 19 cot va moi lenh awk da dung suot qua trinh do dac deu
+--      dua vao do. Them cot la lam hong chung mot cach im lang.
+--   2. Dong nay ban cho MOI POST, dong kia chi ban khi co luat khop. Tron hai
+--      dan so khac han nhau vao mot dinh dang la tu tao ra ket luan sai — dung
+--      cai bay `status=` da mat mot buoi de go.
+--
+-- Loc rieng: `grep -F '[waf-body]' waf.log`
+function _M.run_body(ctx)
+    if not ctx then return end
+    local b = ctx.waf_body
+    if not b then return end
+
+    local fh = io.open(WAF_LOG, "a")
+    if not fh then return end   -- `run` da bao ERR neu mo that bai, khong lap lai
+
+    fh:write(string.format(
+        "[%s] [waf-body] ts=%d id=%s domain=%s ip=%s method=%s uri=%s"
+        .. " ct=%s blen=%d spill=%d php=%d nargs=%s class=%s richness=%s\n",
+        os.date("%Y-%m-%d %H:%M:%S"),
+        ngx.time(),
+        scrub(ctx.identity or ctx.fp_light, 64),
+        scrub((ctx.req and ctx.req.host) or ngx.var.host, 80),
+        scrub(ctx.ip or ngx.var.remote_addr, 45),
+        scrub(ngx.req.get_method(), 10),
+        scrub(ngx.var.uri, 120),
+        b.family,
+        b.len,
+        b.spill and 1 or 0,
+        b.php and 1 or 0,
+        b.nargs and tostring(b.nargs) or "-",
+        ctx.req_class or "-",
+        ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-"))
+
+    fh:close()
+end
+
 function _M.run(ctx)
     if not ctx then return end
     local hits = ctx.waf_hits

@@ -1,0 +1,120 @@
+local _M = {}
+
+-- BO DO BODY — giai doan 1: CHI QUAN SAT, khong luat nao ban.
+--
+-- Vi sao chua co luat. Ca phien lam viec nay da bac bo sau gia thuyet lien tiep
+-- bang so lieu that (mu-plugins "backdoor" hoa ra la ban va cua agency SEO;
+-- "status=200 nghia la da bi chiem" sai hai lan; "cong cu quan tri WP tap trung"
+-- bi chinh output bac bo). Viet luat body ma khong biet body tren dan may nay
+-- chua gi la lap lai dung sai lam do — chi khac la lan nay hau qua roi vao
+-- 43 domain that.
+--
+-- Nen module nay ghi lai NHUNG GI CO TRONG BODY va khong quyet dinh gi ca. Sau
+-- vai ngay se co phan bo that de viet luat co can cu.
+--
+-- ── Cai gia thuc su bang KHONG ──────────────────────────────────────────
+-- `ngx.req.read_body()` nghe thi dat, thuc te khong them gi:
+-- `proxy_request_buffering` KHONG duoc dat trong repo nay ⇒ mac dinh `on` ⇒
+-- nginx VON DA doc va dem tron body truoc khi gui len Apache. Doc no o day chi
+-- la nhin vao thu da nam san trong bo nho.
+-- (`proxy_buffering off` trong `da_to_openresty.sh` la dem PHAN HOI — directive
+-- khac, dung nham thi ket luan nguoc.)
+
+local INSPECT_METHODS = {
+    POST = true, PUT = true, PATCH = true, DELETE = true,
+}
+
+-- The mo PHP, khong phan biet hoa thuong: `<?PHP` cung la PHP hop le.
+-- `<?=` la short echo tag, bat mac dinh tu PHP 5.4.
+-- KHONG bat `<?` tran: XML khai bao `<?xml` va se lam nhieu moi upload SVG/RSS.
+local RX_PHP_OPEN = [[<\?(?:php|=)]]
+
+-- Phan loai content-type ve mot nhan NGAN de dem duoc.
+-- Chuoi that dai va co bien the (`multipart/form-data; boundary=----WebKit...`),
+-- do nguyen vao log thi khong nhom duoc bang uniq -c.
+local function ct_family(ct)
+    if not ct or ct == "" then return "-" end
+    local low = ct:lower()
+    if low:find("multipart/form-data", 1, true)               then return "multipart"  end
+    if low:find("application/x-www-form-urlencoded", 1, true) then return "urlencoded" end
+    if low:find("json", 1, true)                              then return "json"       end
+    if low:find("xml",  1, true)                              then return "xml"        end
+    if low:find("text/", 1, true)                             then return "text"       end
+    return "other"
+end
+
+-- Dem tham so body bang cach dem `&`, KHONG goi `ngx.req.get_post_args()`.
+-- Cung ba ly do da ghi o `async/logger.lua:414` cho tham so query:
+--   1. `get_post_args()` mac dinh CAT O 100 phan tu va khong bao gi. Ta can con
+--      so THAT, ke ca khi ben gui 500 tham so — do chinh la truong hop dang ngo.
+--   2. No cap phat mot bang Lua moi request; dem `&` chi quet chuoi.
+--   3. Day la access phase, nam tren duong di cua moi request.
+-- Chi co nghia voi urlencoded. Multipart phan cach bang boundary, dem `&` ra so
+-- vo nghia — nen tra nil de log ghi `-` thay vi mot con so sai.
+local function count_args(body, family)
+    if family ~= "urlencoded" or not body or body == "" then return nil end
+    local n = 1
+    local pos = 1
+    while true do
+        local i = body:find("&", pos, true)
+        if not i then break end
+        n = n + 1
+        pos = i + 1
+    end
+    return n
+end
+
+-- Chay trong `waf.run_pre`, TRUOC cua thoat tin cay — cung ly do ca tang WAF
+-- dung o do: cookie `verified` song 7200s, va danh tinh da xac minh khong noi gi
+-- ve NOI DUNG request.
+--
+-- Cong loc phai RE, vi no chay cho moi request:
+--   1. method — mot lan `ngx.req.get_method()`, khong I/O
+--   2. co Content-Type khong
+-- GET/HEAD (gan het luu luong) thoat o buoc 1.
+--
+-- CONG LA Content-Type, TUYET DOI KHONG PHAI Content-Length.
+-- Do 2026-09-02 tren luu luong that: 387 POST multipart trong 24h bao `cl=0`
+-- — chunked transfer-encoding thi khong co Content-Length. Gac bang `cl > 0` se
+-- bo qua dung nhom dang quan tam nhat (upload file), va bo qua trong im lang.
+function _M.probe(ctx)
+    if not INSPECT_METHODS[ngx.req.get_method()] then return end
+
+    local ct = ngx.var.http_content_type
+    if not ct or ct == "" then return end
+
+    local family = ct_family(ct)
+
+    ngx.req.read_body()
+    local body = ngx.req.get_body_data()
+
+    if not body then
+        -- Body vuot `client_body_buffer_size` nen nginx ghi ra file tam.
+        -- KHONG doc file do o day: access phase, `io.open` la I/O CHAN nam tren
+        -- duong di cua moi request — dung dieu luat repo cam (xem `run_log`,
+        -- noi phep cham dia duy nhat cua tang nay duoc phep ton tai).
+        --
+        -- Ghi nhan la `spill` roi di tiep. Chinh con so nay quyet dinh
+        -- `client_body_buffer_size` nen dat bao nhieu: neu spill hiem thi 64k da
+        -- du; neu spill nhieu thi nang buffer, dung viet them ma.
+        ctx.waf_body = {
+            family = family,
+            spill  = true,
+            len    = -1,
+            php    = false,
+            nargs  = nil,
+        }
+        return
+    end
+
+    ctx.waf_body = {
+        family = family,
+        spill  = false,
+        len    = #body,
+        -- Mot luot PCRE da JIT tren toi da `client_body_buffer_size` byte.
+        php    = ngx.re.find(body, RX_PHP_OPEN, "ijo") ~= nil,
+        nargs  = count_args(body, family),
+    }
+end
+
+return _M

@@ -1,6 +1,7 @@
 local _M = {}
 local wp_paths = require "antibot.waf.wp_paths"
 local exposed  = require "antibot.waf.exposed"
+local body     = require "antibot.waf.body"
 local pool     = require "antibot.core.redis_pool"
 
 -- Tầng WAF. Khác mọi tầng khác ở MỘT điểm quyết định: nó chạy TRƯỚC các cửa
@@ -60,9 +61,24 @@ function _M.run_pre(ctx)
     if not rule_id then
         rule_id, rules = wp_paths.check(uri, host), wp_paths.RULES
     end
-    if not rule_id then return false end
 
-    local rule = rules[rule_id]
+    local rule = rule_id and rules[rule_id]
+
+    -- BO DO BODY (giai doan 1 — chi quan sat, khong luat nao ban).
+    --
+    -- Chay cho MOI request co the soi duoc, TRU nhanh `block`: request do sap
+    -- `ngx.exit(403)` o duoi nen doc body cua no la tra gia cho thu sap bi vut
+    -- di, va no cung la nhanh ma scanner bam vao nhieu nhat.
+    --
+    -- Phai chay ca khi KHONG luat nao khop — do moi la ~99% luu luong, tuc la
+    -- dung phan bo can do. Neu chi chay khi co luat khop thi bo do chi thay
+    -- duoc lat cat da bi loc, va moi ket luan rut ra tu no deu lech.
+    --
+    -- `probe` tu gac lay: GET/HEAD thoat ngay o phep kiem method dau tien.
+    if not (rule and rule.action == "block") then
+        body.probe(ctx)
+    end
+
     if not rule then return false end
 
     ctx.waf_hits = ctx.waf_hits or {}

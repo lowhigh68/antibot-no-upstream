@@ -223,6 +223,10 @@ function _M.log()
     -- và là nơi DUY NHẤT đánh dấu host là WordPress (access phase chỉ đọc cờ đó).
     waf_layer.run_log(ctx)
     waf_logger.run(ctx)
+    -- Dòng đo body ghi RIÊNG, nhãn `[waf-body]`. Nó bắn cho mọi POST soi được,
+    -- còn `run` ở trên chỉ bắn khi có luật khớp — hai dân số khác hẳn nhau nên
+    -- không gộp chung định dạng.
+    waf_logger.run_body(ctx)
 end
 
 function _M.init_worker()
