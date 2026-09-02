@@ -4,7 +4,7 @@ local _M = {}
 --
 -- Khác `wp_paths.lua` ở phạm vi: những luật này áp cho MỌI site trên máy, kể cả
 -- site code tự viết mà bảy luật WordPress cố tình không đụng tới. Cũng vì vậy
--- chúng không đi qua cổng `is_wp_host`.
+-- chúng không đi qua cổng `is_wp_root`.
 --
 -- Đo 2026-09-02: quét toàn bộ `nginx/da_to_openresty.sh` chỉ thấy bốn dòng chứa
 -- `.well-known`, đều là location CHO PHÉP. Không có `location ~ /\.` deny ở bất

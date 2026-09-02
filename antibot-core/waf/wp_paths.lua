@@ -13,7 +13,7 @@ local pool = require "antibot.core.redis_pool"
 -- WordPress. Site không phải WP không có chúng, nên không cần cấu hình
 -- "domain này là WP" cho ba luật đầu — chính đường dẫn đã là bộ lọc.
 -- Riêng luật 3 (file PHP ở web root) KHÔNG tự giới hạn được, xem chú thích
--- tại `is_wp_host`.
+-- tại `is_wp_root`.
 
 -- ── Đuôi thực thi PHP ────────────────────────────────────────────────
 -- KHÔNG neo vào cuối chuỗi. Trên Apache cấu hình bằng
@@ -113,11 +113,18 @@ local RULES = {
 }
 _M.RULES = RULES
 
--- ── Host này có phải WordPress không ──────────────────────────────────
+-- ── (host, tiền tố) này có phải một GỐC WordPress không ───────────────
 -- Luật 3 nhắm "file PHP lạ ở web root". Trên hosting chia sẻ có cả site code
 -- tự viết (đo được: cloud183-139, 366k request/ngày), root PHP tuỳ ý là chuyện
 -- BÌNH THƯỜNG — bắn tín hiệu cho mọi request như vậy là chế ra một cỗ máy FP.
 -- Luật này chỉ có nghĩa khi web root có danh sách file cố định, tức là WordPress.
+--
+-- "Gốc WordPress" là một CẶP (host, tiền tố), không phải chỉ host. Đo trên
+-- cloud168-101 (2026-09-02): 5 bản WordPress nằm một cấp dưới docroot, tất cả
+-- đều là bản cài trong thư mục con (`/en` ×4, `/id` ×1), không cái nào là
+-- subdomain. Một host có thể có hai gốc: `""` và `"/en"`, và hai câu hỏi đó
+-- phải độc lập — biết `/en` là WordPress KHÔNG cho phép kết luận gì về gốc
+-- domain, và ngược lại.
 --
 -- Cách nhận biết không cần khai báo: thấy bất kỳ đường dẫn riêng của WP nào
 -- trên host đó thì đánh dấu. Tự học, không cấu hình, không danh sách domain.
@@ -151,18 +158,58 @@ local shared_cache = ngx.shared.antibot_cache
 -- Có cần chạm đĩa để quyết định đánh dấu không. Rẻ: một lượt shdict + tối đa ba
 -- phép tìm chuỗi. Trả false cho gần hết lưu lượng, nên phép chạm đĩa của người
 -- gọi chỉ xảy ra một lần mỗi 300s cho mỗi host.
+-- WordPress không chỉ nằm ở gốc domain. Đo trên cloud168-101 (2026-09-02):
+-- 5/5 thư mục có WordPress nằm một cấp dưới docroot đều là bản cài THẬT trong
+-- thư mục con — `/en` trên 4 site, `/id` trên 1 — không cái nào là subdomain.
+--
+-- Nên "gốc WordPress" là một cặp (host, tiền tố), không phải chỉ host. Cùng một
+-- host có thể có hai gốc: `""` và `"/en"`.
+--
+-- CHẶN Ở ĐỘ SÂU 1. `/a/b/wp-admin/` không được học. Không phải để tiết kiệm mà
+-- để chặn phình: tiền tố do người gửi request đặt, nên độ sâu tuỳ ý nghĩa là
+-- không gian khoá tuỳ ý. Đúng loại lỗ đã phải vá một lần khi việc đánh dấu còn
+-- chạy ở access phase.
+local WP_MARKERS = { "/wp-content/", "/wp-admin/", "/wp-includes/" }
+
+local function wp_prefix(low)
+    for i = 1, #WP_MARKERS do
+        local p = low:find(WP_MARKERS[i], 1, true)
+        if p then
+            local prefix = low:sub(1, p - 1)   -- "" khi ở gốc domain
+            if prefix == "" then return "" end
+            if prefix:match("^/[^/]+$") then return prefix end
+            return nil                          -- sâu hơn 1 cấp: không học
+        end
+    end
+    return nil
+end
+_M.wp_prefix = wp_prefix
+
+-- Khoá: tiền tố rỗng giữ NGUYÊN tên cũ. Cố ý — Redis đang có sẵn khoá
+-- `waf:wphost:*` với TTL 30 ngày, đổi tên là vứt hết và bắt học lại từ đầu.
+local function cache_key(host, prefix)
+    if prefix == "" then return "wphost:" .. host end
+    return "wproot:" .. host .. ":" .. prefix
+end
+
+local function redis_key(host, prefix)
+    if prefix == "" then return "waf:wphost:" .. host end
+    return "waf:wproot:" .. host .. ":" .. prefix
+end
+
+-- Trả về TIỀN TỐ cần đánh dấu (chuỗi, có thể rỗng), hoặc nil.
+-- Trả tiền tố chứ không phải boolean vì người gọi cần chính nó để `mark`.
 function _M.needs_mark(uri, host)
-    if not uri or not host or host == "" then return false end
-    -- Đã đánh dấu trong 300s gần đây thì thôi. Giá trị 0 (âm, do `is_wp_host`
+    if not uri or not host or host == "" then return nil end
+    local prefix = wp_prefix(uri:lower())
+    if not prefix then return nil end
+    -- Đã đánh dấu trong 300s gần đây thì thôi. Giá trị 0 (âm, do `is_wp_root`
     -- cache lại) KHÔNG chặn ở đây — nhờ vậy một host mới cài WordPress vẫn tự
     -- được nhận ra thay vì kẹt ở kết quả âm cũ.
-    if shared_cache and shared_cache:get("wphost:" .. host) == 1 then
-        return false
+    if shared_cache and shared_cache:get(cache_key(host, prefix)) == 1 then
+        return nil
     end
-    local low = uri:lower()
-    return low:find("/wp-content/",  1, true) ~= nil
-        or low:find("/wp-admin/",    1, true) ~= nil
-        or low:find("/wp-includes/", 1, true) ~= nil
+    return prefix
 end
 
 -- Cat PATH_INFO: `/shell.php/x` -> `/shell.php`. Tra nguyen URI neu khong co
@@ -192,23 +239,24 @@ function _M.script_path(uri)
     return uri:sub(1, to)
 end
 
-function _M.mark(host)
-    if not host or host == "" then return end
+function _M.mark(host, prefix)
+    if not host or host == "" or not prefix then return end
     if shared_cache then
-        shared_cache:set("wphost:" .. host, 1, WP_HOST_TTL_SHARED)
+        shared_cache:set(cache_key(host, prefix), 1, WP_HOST_TTL_SHARED)
     end
-    pool.safe_set("waf:wphost:" .. host, "1", WP_HOST_TTL_REDIS)
+    pool.safe_set(redis_key(host, prefix), "1", WP_HOST_TTL_REDIS)
 end
 
-local function is_wp_host(host)
-    if not host or host == "" then return false end
+local function is_wp_root(host, prefix)
+    if not host or host == "" or not prefix then return false end
+    local ck = cache_key(host, prefix)
     if shared_cache then
-        local v = shared_cache:get("wphost:" .. host)
+        local v = shared_cache:get(ck)
         if v ~= nil then return v == 1 end
     end
-    local hit = pool.safe_get("waf:wphost:" .. host) == "1"
+    local hit = pool.safe_get(redis_key(host, prefix)) == "1"
     if shared_cache then
-        shared_cache:set("wphost:" .. host, hit and 1 or 0, WP_HOST_TTL_SHARED)
+        shared_cache:set(ck, hit and 1 or 0, WP_HOST_TTL_SHARED)
     end
     return hit
 end
@@ -307,9 +355,43 @@ function _M.check(uri, host)
     -- có đuôi PHP ở đâu đó, nên `/foo/bar.php` vẫn phải ra nil (bar.php không ở
     -- web root). Và `/index.php/2020/01/bai-viet/` giữ nguyên hành vi cũ —
     -- permalink dạng PATHINFO của WordPress — vì index.php nằm trong WP_ROOT_OK.
-    local seg = low:match("^/([^/]+)")
-    if seg and ngx.re.find(seg, RX_PHP_EXEC, "jo")
-       and not WP_ROOT_OK[seg] and is_wp_host(host) then
+    -- Tìm segment ĐẦU TIÊN có đuôi PHP. Phần đứng trước nó là tiền tố.
+    --
+    -- KHÔNG dùng `script_path` ở đây, dù nó cũng cắt PATH_INFO. Đã thử và đó là
+    -- một lỗi hồi quy: `script_path("/wp-config.php.bak")` ra `/wp-config.php`,
+    -- mà chuỗi đó NẰM TRONG `WP_ROOT_OK` ⇒ luật ngừng bắn cho đúng một mẫu dò
+    -- lộ mật khẩu database. Hai phép cắt trông giống nhau nhưng khác bản chất:
+    --   PATH_INFO  là ranh giới `/`      — phải cắt
+    --   đuôi kép   nằm TRONG một segment — không được cắt
+    -- `script_path` không phân biệt được, nên nó chỉ dùng cho việc TRA FILE TRÊN
+    -- ĐĨA (khoá FIM, `target_exists`), không dùng cho việc KHỚP LUẬT.
+    --
+    -- Chỉ xét hai segment. Cận trên độ sâu không phải để tiết kiệm mà để chặn
+    -- phình: tiền tố do người gửi request đặt, độ sâu tuỳ ý nghĩa là không gian
+    -- khoá tuỳ ý. Ở đây nó rơi ra tự nhiên — không có nhánh nào cho segment 3.
+    local seg1, rest = low:match("^/([^/]+)(.*)$")
+    if not seg1 then return nil end
+
+    local file, prefix
+    if ngx.re.find(seg1, RX_PHP_EXEC, "jo") then
+        -- `/shell.php` và `/shell.php/x` — gốc domain. `rest` bỏ qua, đó chính
+        -- là cách PATH_INFO được xử lý đúng.
+        file, prefix = seg1, ""
+    else
+        -- `/en/shell.php` — WordPress cài trong THƯ MỤC CON. Đo trên
+        -- cloud168-101 (2026-09-02): 5 bản cài như vậy (`/en` ×4, `/id` ×1),
+        -- không cái nào là subdomain. Trước thay đổi này chúng không sinh luật
+        -- nào ⇒ `init.lua` không tra `waf:fimnew:` ⇒ FIM đã biết file vừa xuất
+        -- hiện mà WAF không bao giờ hỏi. Nối lại đường dây đã có sẵn hai đầu.
+        --
+        -- `rest:match("^/([^/]+)")` KHÔNG neo `$` — nếu neo thì `/en/shell.php/x`
+        -- trượt, tức mở lại lỗ PATH_INFO ở đúng tầng vừa thêm.
+        local seg2 = rest:match("^/([^/]+)")
+        if not seg2 or not ngx.re.find(seg2, RX_PHP_EXEC, "jo") then return nil end
+        file, prefix = seg2, "/" .. seg1
+    end
+
+    if not WP_ROOT_OK[file] and is_wp_root(host, prefix) then
         return "wp_root_unknown"
     end
 

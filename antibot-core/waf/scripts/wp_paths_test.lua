@@ -27,7 +27,7 @@ if not ngx.shared.antibot_cache then
     os.exit(2)
 end
 
--- Redis gia. Cong `is_wp_host` doc qua day, nen bang nay la thu quyet dinh host
+-- Redis gia. Cong `is_wp_root` doc qua day, nen bang nay la thu quyet dinh (host,tien to)
 -- nao duoc coi la WordPress trong test.
 local REDIS = {}
 package.preload["antibot.core.redis_pool"] = function()
@@ -40,9 +40,14 @@ end
 local wp = dofile(SRC .. "waf/wp_paths.lua")
 local ex = dofile(SRC .. "waf/exposed.lua")
 
-local WP    = "wp.test"       -- host DA duoc danh dau la WordPress
+local WP    = "wp.test"       -- host DA duoc danh dau la WordPress O GOC
+local WPSUB = "wpsub.test"    -- WordPress cai trong THU MUC CON /en (khong o goc)
 local PLAIN = "plain.test"    -- host code tu viet: luat 3 phai im
 REDIS["waf:wphost:" .. WP] = "1"
+-- Chu y: WPSUB KHONG co `waf:wphost:` — goc domain cua no khong phai WordPress.
+-- Do la ca dang kiem nhat: hai cau hoi "host nay co WordPress o goc khong" va
+-- "/en co phai mot goc WordPress khong" phai doc lap voi nhau.
+REDIS["waf:wproot:" .. WPSUB .. ":/en"] = "1"
 
 local CASES = {
 -- wp_upload_exec — BLOCK
@@ -113,6 +118,21 @@ local CASES = {
 
 -- wp_root_unknown — SIGNAL 0.50, CAN host WordPress
 {"/shell.php", WP, "wp_root_unknown", "PHP la o web root"},
+-- WordPress cai trong thu muc con: `/en/shell.php`. Truoc `19fecf6` day tra nil
+-- va do la lo hong nguoi van hanh chi ra — khong luat nao ban ⇒ init.lua khong
+-- tra `waf:fimnew:` ⇒ FIM biet file moi ma WAF khong bao gio hoi.
+{"/en/shell.php", WPSUB, "wp_root_unknown", "WordPress cai trong /en"},
+{"/en/shell.php/x", WPSUB, "wp_root_unknown", "PATH_INFO trong thu muc con"},
+{"/en/index.php", WPSUB, nil, "WP_ROOT_OK ap dung ca trong thu muc con"},
+{"/en/wp-login.php", WPSUB, nil, ""},
+-- Tien to CHUA duoc danh dau thi im. `WPSUB` chi co `/en`, khong co `/fr`.
+{"/fr/shell.php", WPSUB, nil,
+ "tien to chua hoc — im, khong doan"},
+-- Host co goc WordPress nhung `/en` chua hoc: `/en/shell.php` phai im.
+{"/en/shell.php", WP, nil,
+ "host la WP o GOC, nhung /en chua duoc danh dau — hai cau hoi khac nhau"},
+-- Sau hon mot cap: khong co nhanh nao, phai nil.
+{"/a/b/shell.php", WPSUB, nil, "do sau 3: ngoai pham vi"},
 {"/shell.php/x", WP, "wp_root_unknown",
  "MUC 2: PATH_INFO. Ban cu neo $ nen ra nil va lot sach"},
 {"/shell.php/x.jpg", WP, "wp_root_unknown", "PATH_INFO co duoi gia"},
@@ -139,14 +159,28 @@ local CASES = {
 {"", WP, nil, "URI rong"},
 }
 
+-- needs_mark tra ve TIEN TO can danh dau (chuoi, CO THE RONG) hoac nil.
+-- Chuoi rong = goc domain. Vi "" van truthy trong Lua, moi phep kiem o phia goi
+-- phai so `~= nil`, KHONG duoc dung `if wp` roi tuong minh dang loai "" ra.
 local MARK_CASES = {
-{"/wp-content/themes/x/style.css", "m1.test", true,
+{"/wp-content/themes/x/style.css", "m1.test", "",
  "anh va CSS duoi wp-content la bang chung WordPress manh nhat"},
-{"/wp-admin/",           "m2.test", true,  ""},
-{"/wp-includes/js/x.js", "m3.test", true,  ""},
-{"/",                    "m4.test", false, "khong phai duong dan WordPress"},
-{"/about-us",            "m5.test", false, ""},
-{"/wp-content/x.jpg",    "",        false, "host rong"},
+{"/wp-admin/",           "m2.test", "",  ""},
+{"/wp-includes/js/x.js", "m3.test", "",  ""},
+{"/",                    "m4.test", nil, "khong phai duong dan WordPress"},
+{"/about-us",            "m5.test", nil, ""},
+{"/wp-content/x.jpg",    "",        nil, "host rong"},
+
+-- WordPress cai trong THU MUC CON. Do duoc 5 ban tren cloud168-101 (2026-09-02):
+-- `/en` tren 4 site, `/id` tren 1 — khong cai nao la subdomain.
+{"/en/wp-admin/",        "m6.test", "/en", "ban cai trong thu muc con"},
+{"/en/wp-content/themes/x/style.css", "m7.test", "/en", ""},
+{"/id/wp-includes/js/x.js", "m8.test", "/id", ""},
+-- Sau hon mot cap thi KHONG hoc. Tien to do NGUOI GUI dat, nen do sau tuy y
+-- nghia la khong gian khoa tuy y — dung loai lo da phai va mot lan khi viec
+-- danh dau con chay o access phase.
+{"/a/b/wp-admin/",       "m9.test", nil, "sau hon 1 cap: khong hoc"},
+{"/a/b/c/wp-content/x.jpg", "m10.test", nil, ""},
 }
 
 -- MUC 7 + 8 — waf/exposed.lua, khong phu thuoc WordPress, khong cong host.
@@ -216,15 +250,37 @@ run("thu tu uu tien", PREC_CASES, dispatch)
 
 -- Ngat mach shdict: da danh dau roi thi khong duoc cham dia lan nua. Hong cho
 -- nay la io.open chay cho MOI request cua host do trong suot 300s.
-io.write("mark() ngat mach - 2 case\n")
-wp.mark("marked.test")
-if wp.needs_mark("/wp-content/x.jpg", "marked.test") ~= false then
-    bad("  SAI  sau mark(), needs_mark van tra true (mat ngat mach shdict)\n")
+io.write("mark() ngat mach - 5 case\n")
+wp.mark("marked.test", "")
+if wp.needs_mark("/wp-content/x.jpg", "marked.test") ~= nil then
+    bad("  SAI  sau mark(), needs_mark van tra tien to (mat ngat mach shdict)\n")
 else
     pass = pass + 1
 end
 if REDIS["waf:wphost:marked.test"] ~= "1" then
-    bad("  SAI  mark() khong ghi Redis\n")
+    bad("  SAI  mark() khong ghi Redis (tien to rong phai giu ten khoa CU)\n")
+else
+    pass = pass + 1
+end
+
+-- Ngat mach phai theo TUNG TIEN TO, khong phai theo host. Danh dau goc roi thi
+-- `/en` van phai duoc hoc — neu khong, host nao co WordPress o goc se vinh vien
+-- khong bao gio hoc duoc ban cai trong thu muc con cua no, tuc lo hong van con
+-- nguyen tren dung 5 domain vua do duoc.
+if wp.needs_mark("/en/wp-admin/", "marked.test") ~= "/en" then
+    bad("  SAI  danh dau goc lai chan luon viec hoc /en\n")
+else
+    pass = pass + 1
+end
+
+wp.mark("marked.test", "/en")
+if wp.needs_mark("/en/wp-admin/", "marked.test") ~= nil then
+    bad("  SAI  sau mark(host,'/en'), needs_mark van tra tien to\n")
+else
+    pass = pass + 1
+end
+if REDIS["waf:wproot:marked.test:/en"] ~= "1" then
+    bad("  SAI  mark() khong ghi Redis cho tien to /en\n")
 else
     pass = pass + 1
 end

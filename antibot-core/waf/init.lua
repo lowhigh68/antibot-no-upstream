@@ -123,7 +123,7 @@ function _M.run_pre(ctx)
         -- chung docroot, không phải liệt kê ra.
         --
         -- Một lượt Redis GET cho mỗi lần luật bắn (~4.300/ngày), KHÔNG phải mỗi
-        -- request. Cùng khuôn với `is_wp_host`.
+        -- request. Cùng khuôn với `is_wp_root`.
         -- `script_path` cat PATH_INFO truoc khi ghep khoa. Thieu no thi
         -- `/shell.php/x` tra khoa `waf:fimnew:<root>/shell.php/x` trong khi FIM
         -- ghi `<root>/shell.php` — lech khoa, nen dung file FIM vua danh dau la
@@ -210,15 +210,19 @@ function _M.run_log(ctx)
 
     local hit  = ctx.waf_hits and #ctx.waf_hits > 0
     local host = ngx.var.host
+    -- `needs_mark` trả về TIỀN TỐ cần đánh dấu (chuỗi, có thể RỖNG) hoặc nil.
+    -- Rỗng là gốc domain, `"/en"` là WordPress cài trong thư mục con. Vì chuỗi
+    -- rỗng vẫn truthy trong Lua, `if wp` ở đây là đúng — nhưng phải so `~= nil`
+    -- khi ý là "có giá trị", đừng đổi thành `wp ~= ""`.
     local wp   = wp_paths.needs_mark(ngx.var.uri, host)
 
-    -- Lối ra của gần hết lưu lượng: không luật nào bắn, VÀ host đã được đánh dấu
-    -- (hoặc đường dẫn không phải của WordPress). Không chạm đĩa.
-    if not hit and not wp then return end
+    -- Lối ra của gần hết lưu lượng: không luật nào bắn, VÀ tiền tố này đã được
+    -- đánh dấu (hoặc đường dẫn không phải của WordPress). Không chạm đĩa.
+    if not hit and wp == nil then return end
 
     local ex = target_exists()
     if hit then ctx.waf_target_exists = ex end
-    if wp and ex == true then wp_paths.mark(host) end
+    if wp ~= nil and ex == true then wp_paths.mark(host, wp) end
 end
 
 return _M
