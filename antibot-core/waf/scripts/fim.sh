@@ -131,6 +131,25 @@ scan_hot() {
         # bien tren may nay vi `da_to_openresty.sh:271` cho SUBDOMAIN mot webroot
         # dang <public_html>/<sub_name> — nen mu-plugins cua moi subdomain nam o
         # do, va ban truoc cua tang nong khong he thay chung.
+        #
+        # DUNG CAT `$ROOTS/*` DU NO TRONG NHU NHIEU. Do tren cloud168-101
+        # (2026-09-02, 15.770 file / 0,474 giay): wp-includes 10.523 + wp-admin
+        # 4.257 = 93,7% tang nong den TU DAY, chu khong tu subdomain (en 69,
+        # id 17, libraries 5, cli 4). Nhin qua thi day la phinh — no KHONG phai,
+        # va lan review dau tien cua chinh nguoi viet dong nay da suyt cat nham.
+        #
+        # Ly do giu y het ly do mu-plugins co mat: `wp-includes/*.php` do sau 1
+        # (functions.php, load.php, plugin.php, formatting.php…) la nhung file
+        # WordPress `require` luc khoi dong. Backdoor that hiem khi la FILE MOI —
+        # no la dong CHEN VAO mot file core co san, roi chay tren MOI request.
+        # Khong co request HTTP nao go vao duong dan do de WAF chan. Luat
+        # `wp_includes_exec` chan viec GO THANG /wp-includes/xxx.php — chuyen
+        # khac han.
+        #
+        # GIOI HAN da biet, chap nhan: `-maxdepth 1` nen file core o do sau 2+
+        # (wp-includes/rest-api/…, wp-includes/blocks/…) KHONG nam trong tang
+        # nong, du chung cung duoc core require. Chung van duoc TANG DAY phu,
+        # chi la mot ngay mot lan thay vi 15 phut.
         # Van la glob co dich chu khong phai traversal, nen chi phi gan nhu khong doi.
         find $ROOTS/*             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
         find $ROOTS/*/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
