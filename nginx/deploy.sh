@@ -81,6 +81,22 @@ if [ $lua_fail -ne 0 ]; then
     echo "HUY: co file Lua sai cu phap. KHONG sync, cay dang chay giu nguyen."
     exit 1
 fi
+
+# .sh trong antibot-core cung phai qua cong nay, cung ly le voi Lua o tren:
+# waf/fim.sh la thanh phan cua tang WAF va no CHAY TU CAY DA DEPLOY, nen mot loi
+# cu phap o do la cron im lang khong chay nua — kieu hong khong ai thay.
+sh_fail=0
+while IFS= read -r f; do
+    if ! bash -n "$f" 2>/dev/null; then
+        echo "    LOI CU PHAP: $f"
+        bash -n "$f" || true
+        sh_fail=1
+    fi
+done < <(find "$SOURCE_DIR" -name '*.sh')
+if [ $sh_fail -ne 0 ]; then
+    echo "HUY: co file shell sai cu phap. KHONG sync, cay dang chay giu nguyen."
+    exit 1
+fi
 echo "    OK"
 
 # goodbot.json hong = goodbot_seed bo qua toan bo registry -> moi bot xin
@@ -105,9 +121,9 @@ fi
 # NGU NGHIA van qua duoc `luajit -b` sach se. Cho no ra production nghia la
 # phat hien FP bang cach gay ra FP tren luu luong khach hang.
 # Can resty chu khong phai luajit: luat quyet dinh bang PCRE lookahead cua ngx.re.
-if [ -x "$RESTY" ] && [ -x "$REPO_DIR/test/run.sh" ]; then
+if [ -x "$RESTY" ] && [ -x "$REPO_DIR/antibot-core/waf/scripts/run.sh" ]; then
     echo "[3b] Chay T (test luat WAF)..."
-    if ! "$REPO_DIR/test/run.sh"; then
+    if ! "$REPO_DIR/antibot-core/waf/scripts/run.sh"; then
         if [ "${SKIP_TEST:-0}" = "1" ]; then
             echo "     SKIP_TEST=1 — di tiep BAT CHAP test hong."
         else

@@ -7,7 +7,10 @@ set -u
 
 RESTY=${RESTY:-/usr/local/openresty/bin/resty}
 HERE=$(cd "$(dirname "$0")" && pwd)
-export ANTIBOT_SRC="$(cd "$HERE/.." && pwd)/antibot-core/"
+# waf/scripts/ -> len hai cap la goc cay nguon (antibot-core/, hoac thu muc conf
+# da deploy). Duong dan TUONG DOI nen chay dung o ca hai noi: deploy.sh goi no
+# tu repo TRUOC khi rsync, con chay tay tren server thi tu cay da deploy.
+export ANTIBOT_SRC="$(cd "$HERE/../.." && pwd)/"
 
 if [ ! -x "$RESTY" ]; then
     echo "khong tim thay resty tai $RESTY"

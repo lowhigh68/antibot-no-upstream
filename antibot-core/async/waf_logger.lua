@@ -108,7 +108,7 @@ function _M.run(ctx)
     -- — đúng chỗ đã làm lạc hướng cả một buổi điều tra.
     local final  = ctx.action or "-"
 
-    -- FIM da xac nhan file nay MOI xuat hien tren dia (`nginx/scripts/fim.sh`
+    -- FIM da xac nhan file nay MOI xuat hien tren dia (`waf/fim.sh`
     -- ghi `waf:fimnew:<host>:<uri>`, `waf/init.lua` doc). fim=1 nghia la tin
     -- hieu da duoc nang tu 0.25/0.50 len 1.0. Doc cung `exists=`: exists noi
     -- file CO tren dia, fim noi no MOI CO — hai cau khac nhau.
