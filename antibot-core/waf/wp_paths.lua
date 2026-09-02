@@ -52,6 +52,15 @@ local WP_CONTENT_OK = {
     ["mu-plugins"] = true,
 }
 
+-- File duy nhất dưới `/wp-includes/` được fetch thẳng qua HTTP một cách hợp lệ.
+-- Đường dẫn tính từ sau `/wp-includes/`. Mọi thứ còn lại ở đó là thư viện core,
+-- file nào cũng mở đầu bằng guard ABSPATH và chỉ được `require` từ trong PHP.
+-- Đây cũng là chỗ thả webshell kinh điển, chính vì hiếm ai nhìn vào.
+local WP_INCLUDES_OK = {
+    ["js/tinymce/wp-tinymce.php"] = true,   -- bộ nạp JS động, trình duyệt gọi thật
+    ["ms-files.php"]              = true,   -- multisite phục vụ file qua PHP
+}
+
 -- File PHP hợp lệ ở web root của WordPress. Danh sách này ổn định qua nhiều
 -- phiên bản; thiếu một cái thì hậu quả là tín hiệu thừa chứ không phải chặn oan
 -- (luật 3 chỉ chấm điểm, không chặn).
@@ -87,6 +96,20 @@ local RULES = {
         why = "PHP la o web root cua mot host da xac nhan la WordPress" },
     wp_plugin_direct = { action = "signal", score = 0.25,
         why = "Goi thang file PHP trong /wp-content/plugins/" },
+    -- 0.50 chu khong phai 0.25 nhu plugins: mu-plugin HOP LE khong bao gio bi
+    -- fetch qua HTTP ca — WordPress tu `include` moi file .php o day tren MOI
+    -- request, khong can kich hoat. Nen mot request truc tiep dang ngo hon han
+    -- so voi plugins, noi ma khong it plugin cu van tu goi PHP cua chinh no.
+    wp_muplugin_direct = { action = "signal", score = 0.50,
+        why = "Goi thang PHP trong /wp-content/mu-plugins/" },
+    -- Van 0.25 va van signal: timthumb.php cung ca mot the he theme cu that su
+    -- goi thang PHP cua chinh chung. Block o day la FP hang loat.
+    wp_theme_direct  = { action = "signal", score = 0.25,
+        why = "Goi thang PHP trong /wp-content/themes/" },
+    wp_includes_exec = { action = "block",  score = 0,
+        why = "PHP duoi /wp-includes/ ngoai 2 file trong allowlist" },
+    wp_admin_includes_exec = { action = "block", score = 0,
+        why = "PHP duoi /wp-admin/includes/ — thu vien thuan, chi duoc require" },
 }
 _M.RULES = RULES
 
@@ -201,8 +224,30 @@ function _M.check(uri, host)
             if rest == "index.php" then return nil end
             return "wp_content_exec"
         end
-        if sub == "plugins" then return "wp_plugin_direct" end
-        return nil                                 -- themes/, mu-plugins/
+        if sub == "plugins"    then return "wp_plugin_direct"   end
+        if sub == "mu-plugins" then return "wp_muplugin_direct" end
+        if sub == "themes"     then return "wp_theme_direct"    end
+        -- Không tới được với WP_CONTENT_OK hiện tại, nhưng giữ làm lối thoát an
+        -- toàn nếu bảng đó được mở rộng mà quên thêm luật tương ứng.
+        return nil
+    end
+
+    -- /wp-includes/ — thư viện core. Xem chú thích tại WP_INCLUDES_OK.
+    local wi = low:find("/wp-includes/", 1, true)
+    if wi then
+        local rest = low:sub(wi + 13)              -- 13 = #"/wp-includes/"
+        if WP_INCLUDES_OK[rest] then return nil end
+        return "wp_includes_exec"
+    end
+
+    -- /wp-admin/includes/ — cũng là thư viện thuần, chỉ được `require`.
+    --
+    -- CHỈ `includes/`, KHÔNG chặn cả `/wp-admin/*.php`. Danh sách endpoint hợp
+    -- lệ ở đó dài và còn dài thêm (admin-ajax, admin-post, async-upload,
+    -- load-scripts, load-styles, customize, media-upload, nav-menus…) — liệt kê
+    -- nó là quay lại đúng cái bẫy mà đầu file này bác bỏ.
+    if low:find("/wp-admin/includes/", 1, true) then
+        return "wp_admin_includes_exec"
     end
 
     -- Segment ĐẦU, không neo `$`. Bản cũ dùng `^/([^/]+)$` nên `/shell.php/x`

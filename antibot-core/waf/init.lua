@@ -1,5 +1,6 @@
 local _M = {}
 local wp_paths = require "antibot.waf.wp_paths"
+local exposed  = require "antibot.waf.exposed"
 
 -- Tầng WAF. Khác mọi tầng khác ở MỘT điểm quyết định: nó chạy TRƯỚC các cửa
 -- thoát tin cậy trong `init.lua`, không phải sau.
@@ -50,10 +51,17 @@ function _M.run_pre(ctx)
     local ip   = ngx.var.remote_addr or ""
     local host = ngx.var.host or "-"
 
-    local rule_id = wp_paths.check(uri, host)
+    -- `exposed` chạy trước `wp_paths`: nó rộng hơn (mọi site, không cổng host)
+    -- và rẻ hơn (không chạm Redis/shdict). Thứ tự này cũng cho kết quả TỐT HƠN
+    -- ở chỗ chồng lấn: `/wp-config.php.bak` khớp cả `dump_exposed` (block) lẫn
+    -- `wp_root_unknown` (signal 0.50) — nhãn đúng là cái chặn.
+    local rule_id, rules = exposed.check(uri), exposed.RULES
+    if not rule_id then
+        rule_id, rules = wp_paths.check(uri, host), wp_paths.RULES
+    end
     if not rule_id then return false end
 
-    local rule = wp_paths.RULES[rule_id]
+    local rule = rules[rule_id]
     if not rule then return false end
 
     ctx.waf_hits = ctx.waf_hits or {}

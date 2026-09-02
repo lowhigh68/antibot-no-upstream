@@ -69,7 +69,15 @@ For multi-step tasks, state a brief plan:
 
 ## Pipeline: `antibot.run()`
 
-0. **`waf.run_pre`** — runs **before** the cookie fast-path, deliberately. `waf/wp_paths.lua` matches four WordPress path rules; two `block` (exit 403), two contribute `ctx.waf_wp_path`. It must not sit behind the trust short-circuits: `cfg.ttl.verified` is 7200s, so a client that solved one PoW would otherwise get two hours of completely uninspected uploads. AntiBot scores *who* sends; a WAF inspects *what* is inside — verified identity says nothing about content. Cheap by construction (one `find`, one `ngx.re.find`) and self-scoping (`/wp-content/` only exists on WordPress).
+0. **`waf.run_pre`** — runs **before** the cookie fast-path, deliberately. Dispatches `waf/exposed.lua` first (broader, no host gate, cheaper), then `waf/wp_paths.lua`. AntiBot scores *who* sends; a WAF inspects *what* is inside — verified identity says nothing about content, so the trust short-circuits must not hide this layer (`cfg.ttl.verified` is 7200s = two hours of uninspected uploads after one PoW at `difficulty="000"`).
+
+   **Position alone is not enough.** `run_pre` returns `true` only on the block branch; `signal` rules return `false`, so both trust exits in `init.lua` used to swallow `ctx.waf_wp_path` before `compute.lua` read it. Both now carry `not ctx.waf_wp_path`. A WAF signal defeats `verified` but **not** `whitelisted` — whitelist is an explicit operator decision.
+
+   - `waf/exposed.lua` (2 rules, both `block`, **not WordPress-specific**): `dotfile_exposed` (any path component starting with `.`, one mandatory exception `/.well-known/` or ACME renewal breaks fleet-wide), `dump_exposed` (`.sql .wpress .bak .old .orig .save .swp .swo`, optional `.gz/.bz2/.xz`). Deliberately excludes `.zip`/`.gz` alone — legitimately served from uploads.
+   - `waf/wp_paths.lua` (8 rules): `block` = `wp_upload_exec`, `wp_content_exec`, `wp_includes_exec` (2-entry allowlist), `wp_admin_includes_exec`; `signal` → `ctx.waf_wp_path` = `wp_root_unknown` 0.50, `wp_muplugin_direct` 0.50, `wp_plugin_direct` 0.25, `wp_theme_direct` 0.25.
+   - `wp_root_unknown` needs a host known to be WordPress. Marking runs in **log phase** (`waf.run_log`) and only when the WP path is a **real file on disk** — access phase is read-only. URI-only marking was poisonable: one `GET /wp-admin/` set a 30-day flag on any host, including via a forged `Host` header (unbounded Redis writes + LRU eviction on the shared `antibot_cache`).
+   - Measured limits: a URI WAF cannot see `include()`/LFI, cron/CLI, direct `127.0.0.1:8080` to Apache, or mu-plugins auto-execution (WordPress includes every `.php` there on every request — no request to block). Those need `open_basedir`, Apache config, and file-integrity monitoring.
+   - Tests: `test/wp_paths_test.lua` (67 assertions, `resty` — PCRE lookahead, `luajit` alone is not enough). `deploy.sh` step `[3b]` gates on it; `SKIP_TEST=1` overrides.
 1. **Cookie fast-path** — `verified:<cookie> == "1"` → set `ctx.verified`, return immediately.
 2. **Classifier** (`core/req_classifier.lua`) — tags as `resource | navigation | interaction | api_callback | auth_endpoint | feed_or_meta | inapp_browser | unknown`. Sets `score_multiplier`, `rate_weight`, `skip_layers`. Changes here ripple into every layer.
 3. **`STEPS_COMMON`** — always runs: ctx init → `l7.ban.ip_ban_check` → `device_classifier` → `access` (whitelist) → `transport` (TLS + HTTP/2 fingerprint).
@@ -80,7 +88,7 @@ For multi-step tasks, state a brief plan:
    - others → `STEPS_FULL_DETECTION`: `fingerprint` → `l7` → `detection` → `intelligence` → `enforcement`.
 6. Each step returns `(ok, exit)`. `exit==true` stops pipeline. `ok==false` + `fatal==true` → 500. Only `fingerprint_layer` is fatal.
 
-**`action_reason` discipline:** any module that calls `ngx.exit(...)` MUST set `ctx.action` and `ctx.action_reason` first — `log_by_lua` runs after exit and produces `reason=-` otherwise. Pattern in `l7/ban/ban_store.lua` (`banned_id`), `l7/ban/ip_ban_check.lua` (`banned_ip`), `waf/init.lua` (`wp_upload_exec`, `wp_content_exec`), and `engine.lua` (`whitelisted`, `good_bot_verified`, `good_bot_asn_lite`).
+**`action_reason` discipline:** any module that calls `ngx.exit(...)` MUST set `ctx.action` and `ctx.action_reason` first — `log_by_lua` runs after exit and produces `reason=-` otherwise. Pattern in `l7/ban/ban_store.lua` (`banned_id`), `l7/ban/ip_ban_check.lua` (`banned_ip`), `waf/init.lua` (`wp_upload_exec`, `wp_content_exec`, `wp_includes_exec`, `wp_admin_includes_exec`, `dotfile_exposed`, `dump_exposed`), and `engine.lua` (`whitelisted`, `good_bot_verified`, `good_bot_asn_lite`).
 
 **Beacon injection** is two-phase: `trigger.lua` sets `ctx.inject_candidate` from `Accept` header; `header_filter_by_lua` confirms via actual response `Content-Type`. Both must agree. Never short-circuit — CSS/JS/image responses must never have `Content-Length` cleared.
 
@@ -111,7 +119,7 @@ S2.5 difference vs S3/S4: does NOT set `good_bot_verified` → engine still comp
 | Layer | Path | Role |
 |---|---|---|
 | core | `core/config.lua`, `redis_pool.lua`, `req_classifier.lua`, `goodbot_seed.lua`, `data/goodbot.json` | Thresholds, Redis pool, classification, good-bot registry seed |
-| waf | `waf/init.lua`, `waf/wp_paths.lua` | **Runs before the trust short-circuits** (step 0). Path-scoped WordPress hardening; blocks write `ctx.action_reason` themselves. Logs to a separate `/var/log/antibot/waf.log` via `async/waf_logger.lua` — never appended to `antibot.log`, join on `id=`+`ts=` |
+| waf | `waf/init.lua`, `waf/wp_paths.lua`, `waf/exposed.lua` | **Runs before the trust short-circuits** (step 0). `run_pre` = access phase, read-only; `run_log` = log phase, owns the only `io.open` and the only WP-host write. Blocks write `ctx.action_reason` themselves. Logs to a separate `/var/log/antibot/waf.log` via `async/waf_logger.lua` — never appended to `antibot.log`, join on `id=`+`ts=`. Columns `exists=` (file really on disk) and `final=` (engine's actual verdict) exist because `status=` is ambiguous: antibot's own PoW page is 200, and WordPress rewrites every missing path to `index.php` so 200 is the *default* for a path that does not exist |
 | transport | `transport/tls/`, `transport/http2/` | JA3/JA3S, H2 fingerprints |
 | l7 | `l7/` | Rate limiting, burst, slow-loris, IP ban (`ban_store`/`ip_ban_check` set `action_reason` before exit) |
 | detection | `detection/bot/{init,ua_check,dns_reverse,dns_forward,lite_verify}.lua`, `anomaly/`, `browser/`, `cluster/`, `graph/` | Signal families; each `init.lua` checks `ctx.skip_layers`. `bot/` houses the 4-path verification |

@@ -38,6 +38,7 @@ package.preload["antibot.core.redis_pool"] = function()
 end
 
 local wp = dofile(SRC .. "waf/wp_paths.lua")
+local ex = dofile(SRC .. "waf/exposed.lua")
 
 local WP    = "wp.test"       -- host DA duoc danh dau la WordPress
 local PLAIN = "plain.test"    -- host code tu viet: luat 3 phai im
@@ -76,13 +77,29 @@ local CASES = {
  "file chinh plugin that van ban tin hieu, nhung 0.25 la duoi nguong"},
 {"/wp-content/plugins/woocommerce/assets/js/x.js", WP, nil, "khong phai PHP"},
 
--- GAP da biet: themes va mu-plugins. Hai dong nay ghi HANH VI HIEN TAI.
--- Muc 5 se doi ky vong sang tin hieu.
-{"/wp-content/themes/x/timthumb.php", WP, nil,
- "GAP: themes/ nam trong WP_CONTENT_OK nen khong luat nao ap"},
-{"/wp-content/mu-plugins/dev-ci-lint-woocommerce-job-update.php", WP, nil,
- "GAP: CHINH file tim thay 2026-09-02 tren 13 site. mu-plugins tu chay moi " ..
- "request nen ke tan cong khong can gui request nao — luat URI mu vinh vien"},
+-- MUC 5 — themes va mu-plugins khong con la vung mu. Hai dong nay TRUOC DAY
+-- danh dau GAP voi ky vong nil; viec doi ky vong o day chinh la bang chung muc
+-- 5 lam dung viec no hua.
+{"/wp-content/themes/x/timthumb.php", WP, "wp_theme_direct",
+ "signal 0.25 chu khong block: timthumb cung ca mot the he theme cu THAT SU " ..
+ "goi thang PHP cua chinh chung"},
+{"/wp-content/mu-plugins/dev-ci-lint-woocommerce-job-update.php", WP,
+ "wp_muplugin_direct",
+ "CHINH file tim thay 2026-09-02 tren 13 site. 0.50 chu khong 0.25 vi mu-plugin " ..
+ "HOP LE khong bao gio bi fetch qua HTTP. VAN khong cuu duoc truong hop no tu " ..
+ "chay: WordPress include no moi request, khong co request nao de chan"},
+
+-- MUC 6 — /wp-includes/ va /wp-admin/includes/
+{"/wp-includes/js/tinymce/wp-tinymce.php", WP, nil,
+ "ALLOWLIST: bo nap JS dong, trinh duyet fetch that"},
+{"/wp-includes/ms-files.php", WP, nil, "ALLOWLIST: multisite phuc vu file"},
+{"/wp-includes/functions.php", WP, "wp_includes_exec",
+ "thu vien core, guard ABSPATH, chi duoc require tu trong PHP"},
+{"/wp-includes/x/shell.php", WP, "wp_includes_exec",
+ "cho tha webshell kinh dien, chinh vi hiem ai nhin vao"},
+{"/wp-admin/includes/plugin.php", WP, "wp_admin_includes_exec", "thu vien thuan"},
+{"/wp-admin/admin-post.php", WP, nil,
+ "endpoint hop le — CHI chan includes/, KHONG chan ca /wp-admin/*.php"},
 
 -- wp_root_unknown — SIGNAL 0.50, CAN host WordPress
 {"/shell.php", WP, "wp_root_unknown", "PHP la o web root"},
@@ -122,6 +139,43 @@ local MARK_CASES = {
 {"/wp-content/x.jpg",    "",        false, "host rong"},
 }
 
+-- MUC 7 + 8 — waf/exposed.lua, khong phu thuoc WordPress, khong cong host.
+local EXPOSED_CASES = {
+{"/.env",       nil, "dotfile_exposed", "ro credential database + API key"},
+{"/.git/config",nil, "dotfile_exposed", "tai ve toan bo ma nguon kem lich su"},
+{"/.htaccess",  nil, "dotfile_exposed", ""},
+{"/.user.ini",  nil, "dotfile_exposed", ""},
+{"/sub/.env",   nil, "dotfile_exposed", "dotfile o thu muc con"},
+{"/.well-known/acme-challenge/aBc123", nil, nil,
+ "NGOAI LE BAT BUOC: chan nham day la MOI domain tren may khong gia han duoc " ..
+ "chung chi, va no hong lang le toi tan ngay het han"},
+{"/.well-known/security.txt", nil, nil, "moi thu duoi .well-known deu di qua"},
+{"/style.css",  nil, nil, "dau cham khong dung sau dau /"},
+{"/backup.sql", nil, "dump_exposed", "mot .sql ro ra la mat tron database"},
+{"/db.sql.gz",  nil, "dump_exposed", ""},
+{"/site.wpress",nil, "dump_exposed", "dinh dang All-in-One WP Migration"},
+{"/wp-config.php.bak", nil, "dump_exposed", "CA THAT — chungkhoanplus.com"},
+{"/tai-lieu.zip", nil, nil,
+ "CO Y KHONG chan: .zip duoc phuc vu hop le (file tai ve trong uploads) va " ..
+ "khong phan biet duoc voi ban sao luu chi bang duong dan"},
+{"/anh.jpg",    nil, nil, ""},
+{"/backup.sql/x", nil, nil, "neo $ — .sql phai o cuoi duong dan"},
+}
+
+-- Thu tu uu tien, sao lai dung dispatch trong waf/init.lua:run_pre.
+local function dispatch(uri, host)
+    return ex.check(uri) or wp.check(uri, host)
+end
+
+local PREC_CASES = {
+{"/wp-config.php.bak", WP, "dump_exposed",
+ "khop CA dump_exposed (block) lan wp_root_unknown (signal 0.50). exposed chay " ..
+ "truoc nen nhan la cai chan — dung hon khi doc log"},
+{"/shell.php", WP, "wp_root_unknown", "khong khop exposed nen roi xuong wp_paths"},
+{"/.env", WP, "dotfile_exposed", "exposed thang, khong can cong host"},
+{"/wp-content/uploads/shell.php", WP, "wp_upload_exec", "duong di WordPress binh thuong"},
+}
+
 local pass, fail = 0, 0
 local function bad(fmt, ...)
     fail = fail + 1
@@ -147,6 +201,8 @@ end
 io.write("\n")
 run("check()", CASES, wp.check)
 run("needs_mark()", MARK_CASES, wp.needs_mark)
+run("exposed.check()", EXPOSED_CASES, ex.check)
+run("thu tu uu tien", PREC_CASES, dispatch)
 
 -- Ngat mach shdict: da danh dau roi thi khong duoc cham dia lan nua. Hong cho
 -- nay la io.open chay cho MOI request cua host do trong suot 300s.
