@@ -188,7 +188,19 @@ function _M.check(uri, host)
         -- PHP nằm ngay tại /wp-content/x.php (không có thư mục con):
         -- drop-in như advanced-cache.php chỉ được PHP `include`, không bao giờ
         -- được gọi thẳng qua HTTP. Gọi thẳng là dấu hiệu.
-        if not sub then return "wp_content_exec" end
+        if not sub then
+            -- TRỪ index.php. WordPress core tự đặt một file rỗng
+            -- `<?php // Silence is golden.` ở đây để chặn liệt kê thư mục, nên
+            -- nó có trên MỌI cài đặt WP. Chặn nó vô hại về chức năng (file vốn
+            -- trả rỗng) — cái mất là nó ĐẦU ĐỘC kênh cảnh báo `exists=1`, thứ
+            -- chỉ có giá trị khi sạch. Đo 2026-09-02, ngày đầu có cột đó:
+            -- 3 trong 4 dòng `exists=1` của luật này chính là file này
+            -- (achauled.com, vietnampost.online).
+            -- `/wp-content/index.php/x` vẫn bị bắt: khi đó `sub` không nil nên
+            -- nhánh này không chạy tới.
+            if rest == "index.php" then return nil end
+            return "wp_content_exec"
+        end
         if sub == "plugins" then return "wp_plugin_direct" end
         return nil                                 -- themes/, mu-plugins/
     end

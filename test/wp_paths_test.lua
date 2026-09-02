@@ -61,6 +61,11 @@ local CASES = {
 -- wp_content_exec — BLOCK
 {"/wp-content/advanced-cache.php", WP, "wp_content_exec",
  "drop-in chi duoc PHP include, goi thang qua HTTP la dau hieu"},
+{"/wp-content/index.php", WP, nil,
+ "CA THAT 2026-09-02: file rong cua WordPress core (Silence is golden), co tren " ..
+ "MOI cai dat. Chan no lam ban kenh canh bao exists=1"},
+{"/wp-content/index.php/x", WP, "wp_content_exec",
+ "PATH_INFO tren index.php khong hop le nen van phai bat"},
 {"/wp-content/backup/db.php", WP, "wp_content_exec", "thu muc con la"},
 {"/wp-content/updraft/x.php", WP, "wp_content_exec", "thu muc backup plugin"},
 
@@ -124,7 +129,7 @@ local function bad(fmt, ...)
 end
 
 local function run(label, cases, fn)
-    io.write(label, " — ", #cases, " case\n")
+    io.write(label, " - ", #cases, " case\n")
     for _, c in ipairs(cases) do
         local uri, host, want, why = c[1], c[2], c[3], c[4]
         local ok, got = pcall(fn, uri, host)
@@ -145,7 +150,7 @@ run("needs_mark()", MARK_CASES, wp.needs_mark)
 
 -- Ngat mach shdict: da danh dau roi thi khong duoc cham dia lan nua. Hong cho
 -- nay la io.open chay cho MOI request cua host do trong suot 300s.
-io.write("mark() ngat mach — 2 case\n")
+io.write("mark() ngat mach - 2 case\n")
 wp.mark("marked.test")
 if wp.needs_mark("/wp-content/x.jpg", "marked.test") ~= false then
     bad("  SAI  sau mark(), needs_mark van tra true (mat ngat mach shdict)\n")
