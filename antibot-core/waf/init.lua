@@ -92,14 +92,29 @@ function _M.run_pre(ctx)
         -- viên đăng nhập thật vẫn được `auth_session_cap` giữ ở monitor, còn
         -- scanner ẩn danh thì lên block. Không cần luật miễn trừ nào.
         --
-        -- 1.0 × trọng số 50 = 50 điểm: dưới BLOCK(80) và dưới CHALLENGE(55) nên
-        -- vẫn cần tín hiệu khác cộng vào — cố ý, để FIM không tự mình phán quyết.
+        -- MỨC TIN CẬY THEO BẬC, không phải cờ bật/tắt. FIM ghi sẵn giá trị:
+        --   1.0   file mới ở web root / mu-plugins, đến một mình
+        --   0.75  plugin/theme mới đến một mình, hoặc mu-plugins trong một đợt
+        --   0.35  plugin/theme trong một đợt cài hàng loạt
+        -- Ngay cả 1.0 × trọng số 50 = 50 điểm vẫn dưới CHALLENGE(55) và
+        -- BLOCK(80), nên FIM không bao giờ tự mình phán quyết được.
+        --
+        -- KHOÁ LÀ ĐƯỜNG DẪN FILE THẬT, không phải `<host>:<uri>`.
+        -- `da_to_openresty.sh:271` cho subdomain một webroot dạng
+        -- `<public_html>/<sub_name>`, nên `document_root .. uri` LUÔN bằng đúng
+        -- đường dẫn trên đĩa — cho domain chính, subdomain, lẫn WordPress cài
+        -- trong thư mục con. Domain pointer/alias cũng tự đúng vì chúng dùng
+        -- chung docroot, không phải liệt kê ra.
         --
         -- Một lượt Redis GET cho mỗi lần luật bắn (~4.300/ngày), KHÔNG phải mỗi
         -- request. Cùng khuôn với `is_wp_host`.
-        if pool.safe_get("waf:fimnew:" .. host .. ":" .. uri) == "1" then
-            score = 1.0
-            ctx.waf_fim_new = true
+        local root = ngx.var.document_root
+        if root and root ~= "" then
+            local b = tonumber(pool.safe_get("waf:fimnew:" .. root .. uri))
+            if b and b > score then
+                score = b
+                ctx.waf_fim_new = b
+            end
         end
 
         if (ctx.waf_wp_path or 0) < score then

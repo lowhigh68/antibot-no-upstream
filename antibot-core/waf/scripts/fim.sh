@@ -100,9 +100,17 @@ scan_full() {
 # `-maxdepth 1` tren hai muc dau la thu lam tang nay gan nhu mien phi.
 scan_hot() {
     {
-        find $ROOTS             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS               -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/wp-content    -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/wp-content/mu-plugins     "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        # THEM MOT TANG: WordPress cai trong thu muc con cua public_html. Rat pho
+        # bien tren may nay vi `da_to_openresty.sh:271` cho SUBDOMAIN mot webroot
+        # dang <public_html>/<sub_name> — nen mu-plugins cua moi subdomain nam o
+        # do, va ban truoc cua tang nong khong he thay chung.
+        # Van la glob co dich chu khong phai traversal, nen chi phi gan nhu khong doi.
+        find $ROOTS/*             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/*/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/*/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
     } 2>/dev/null | sort -u
 }
 
@@ -222,30 +230,47 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" '
         while (i > 1 && substr(p, i, 1) != "/") i--
         return substr(p, 1, i - 1)
     }
+    # Gom theo SLUG cua plugin/theme, khong theo thu muc chua file.
+    # Mot ban cai/cap nhat goi la MOT giao dich nhung trai tren hang chuc thu muc
+    # con (assets/, includes/, languages/…). Gom theo dirname se dem no thanh
+    # hang chuc nhom nho, moi nhom duoi nguong, va the la ca goi bi liet ke tung
+    # file nhu the tung file den mot minh — dung nguoc voi y do.
+    function gkey(p) {
+        if (match(p, /\/wp-content\/(plugins|themes)\/[^\/]+/))
+            return substr(p, 1, RSTART + RLENGTH - 1)
+        return dirn(p)
+    }
+    # Muc tin cay "file MOI = doc hai", theo vung va theo viec no den mot minh
+    # hay den trong mot dot. Khong con nhi phan danh-dau/khong-danh-dau nua:
+    # GROUP_MAX la nguong CONG KHAI, ke tan cong chi can tha 6 file la thoat sach.
+    # Ha muc tin cay thi khong co nguong nao de vuot qua.
+    function boost(p, bulk) {
+        if (p ~ /\/wp-content\/mu-plugins\//)       return bulk ? "0.75" : "1.0"
+        if (p ~ /\/wp-content\/(plugins|themes)\//) return bulk ? "0.35" : "0.75"
+        return bulk ? "0.5" : "1.0"
+    }
     {
-        key = sev($2) "\t" $1 "\t" dirn($2)
+        key = sev($2) "\t" $1 "\t" gkey($2)
         n[key]++
         if (n[key] <= max) item[key] = item[key] $2 "\n"
+        # Giu MOI duong dan NEW, khong chi max cai dau — de END con danh dau het.
+        if ($1 == "NEW" && markfile != "") allnew[key] = allnew[key] $2 "\n"
     }
     END {
         for (k in n) {
             split(k, f, "\t")
-            if (n[k] > max)
+            bulk = (n[k] > max)
+            if (bulk)
                 printf "%-8s %-3s %4d file trong %s  (nhieu kha nang la cap nhat)\n", \
                        f[1], f[2], n[k], f[3]
             else {
                 m = split(item[k], L, "\n")
-                for (i = 1; i < m; i++) {
-                    printf "%-8s %-3s %s\n", f[1], f[2], L[i]
-                    # CHI danh dau NEW, va CHI khi da duoc liet ke tung file.
-                    # Hai dieu kien deu can:
-                    #   NEW  — cap nhat plugin sinh hang loat CHG hop le.
-                    #   da liet ke — mot ban cai plugin moi la hang tram file NEW
-                    #     cung luc, danh dau het se nang tin hieu cho ca mot plugin
-                    #     that trong 7 ngay. Webshell den MOT MINH; nguong gom nhom
-                    #     von da phan biet duoc hai dan so do, dung lai chinh no.
-                    if (f[2] == "NEW" && markfile != "") print L[i] > markfile
-                }
+                for (i = 1; i < m; i++) printf "%-8s %-3s %s\n", f[1], f[2], L[i]
+            }
+            if (markfile != "" && (k in allnew)) {
+                m = split(allnew[k], L, "\n")
+                for (i = 1; i < m; i++)
+                    printf "%s|%s\n", boost(L[i], bulk), L[i] > markfile
             }
         }
     }' "$diff_out" | sort)
@@ -262,23 +287,34 @@ if [ $dry -eq 0 ] && [ -s "$marks" ]; then
     # KHONG chet: FIM van phat hien va van bao. Chi la WAF khong duoc bao tin.
     mark_err="thieu '$REDIS_CLI' — phat hien van chay, nhung WAF khong nhan duoc tin hieu."
   else
+    # KHOA LA CHINH DUONG DAN FILE, khong phai <host>:<uri>.
+    #
+    # Ban dau toi dinh tach host + uri roi ghi them bien the `www.`. Sai o hai
+    # cho, va `da_to_openresty.sh:271` chi ra vi sao:
+    #     webroot="/home/<user>/domains/<parent>/public_html/<sub_name>"
+    # SUBDOMAIN co document_root la mot THU MUC CON cua public_html. Nen
+    # <public_html>:<uri-tinh-tu-public_html> khong bao gio khop voi cai WAF
+    # nhin thay, va domain pointer/alias thi phai liet ke ra moi phu duoc.
+    #
+    # `document_root .. uri` LUON bang dung duong dan that tren dia — cho domain
+    # chinh, subdomain, lan WordPress cai trong thu muc con. FIM biet duong dan
+    # do truc tiep; WAF ghep lai tu hai bien no da co san. Khong phan tich chuoi
+    # o dau ca, va pointer/alias tu dung vi chung dung chung docroot.
+    #
+    # Gioi han da biet, dong nhat voi `target_exists`: PATH_INFO (`/shell.php/x`)
+    # ghep ra mot duong dan khong ton tai nen tra miss.
     cmds=$(awk -v ttl="$MARK_TTL" '
         {
-            p = $0
-            i = index(p, "/domains/");        if (i == 0) { bad++; next }
-            rest = substr(p, i + 9)                       # 9  = #"/domains/"
-            j = index(rest, "/public_html/"); if (j == 0) { bad++; next }
-            host = substr(rest, 1, j - 1)
-            uri  = substr(rest, j + 12)                   # 12 = #"/public_html"
+            i = index($0, "|");  if (i == 0) { bad++; next }
+            b = substr($0, 1, i - 1)
+            p = substr($0, i + 1)
             # Key di qua STDIN cua redis-cli, noi khoang trang la ranh gioi doi
             # so va dau nhay la cu phap. Mot duong dan chua chung se thanh mot
-            # LENH KHAC. Loc trang cho chac, va dem so bi bo de khong mat lang le.
-            if (host !~ /^[A-Za-z0-9.-]+$/) { bad++; next }
-            if (uri  !~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) { bad++; next }
-            printf "SETEX waf:fimnew:%s:%s %d 1\n",     host, uri, ttl
-            printf "SETEX waf:fimnew:www.%s:%s %d 1\n", host, uri, ttl
+            # LENH KHAC. Loc trang, va dem so bi bo de khong mat lang le.
+            if (p !~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) { bad++; next }
+            printf "SETEX waf:fimnew:%s %d %s\n", p, ttl, b
         }
-        END { if (bad) printf "  [fim] %d duong dan KHONG danh dau duoc (dinh dang la hoac ky tu khong an toan)\n", bad > "/dev/stderr" }
+        END { if (bad) printf "  [fim] %d duong dan KHONG danh dau duoc (ky tu khong an toan cho key Redis)\n", bad > "/dev/stderr" }
     ' "$marks" 2>>"$LOG")
 
     if [ -n "$cmds" ]; then

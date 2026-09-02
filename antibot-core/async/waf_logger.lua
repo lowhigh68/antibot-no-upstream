@@ -108,11 +108,15 @@ function _M.run(ctx)
     -- — đúng chỗ đã làm lạc hướng cả một buổi điều tra.
     local final  = ctx.action or "-"
 
-    -- FIM da xac nhan file nay MOI xuat hien tren dia (`waf/fim.sh`
-    -- ghi `waf:fimnew:<host>:<uri>`, `waf/init.lua` doc). fim=1 nghia la tin
-    -- hieu da duoc nang tu 0.25/0.50 len 1.0. Doc cung `exists=`: exists noi
-    -- file CO tren dia, fim noi no MOI CO — hai cau khac nhau.
-    local fim = ctx.waf_fim_new and "1" or "0"
+    -- Muc tin cay FIM da nang tin hieu len, 0 = khong danh dau. `waf/scripts/
+    -- fim.sh` ghi `waf:fimnew:<duong-dan-file-that>`, `waf/init.lua` doc bang
+    -- `ngx.var.document_root .. uri`.
+    --   1.00  file moi o web root / mu-plugins, den mot minh
+    --   0.75  plugin/theme moi den mot minh
+    --   0.35  plugin/theme trong mot dot cai hang loat
+    -- Doc cung `exists=`: exists noi file CO tren dia, fim noi no MOI CO va
+    -- CHAC bao nhieu — ba cau khac nhau.
+    local fim = ctx.waf_fim_new and string.format("%.2f", ctx.waf_fim_new) or "0"
 
     for i = 1, #hits do
         local h = hits[i]

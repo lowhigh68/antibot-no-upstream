@@ -83,7 +83,8 @@ if [ $lua_fail -ne 0 ]; then
 fi
 
 # .sh trong antibot-core cung phai qua cong nay, cung ly le voi Lua o tren:
-# waf/fim.sh la thanh phan cua tang WAF va no CHAY TU CAY DA DEPLOY, nen mot loi
+# waf/scripts/fim.sh la thanh phan cua tang WAF va no CHAY TU CAY DA DEPLOY,
+# nen mot loi
 # cu phap o do la cron im lang khong chay nua — kieu hong khong ai thay.
 sh_fail=0
 while IFS= read -r f; do
