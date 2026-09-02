@@ -73,8 +73,17 @@ NAMES=( \( -name '*.php'  -o -name '*.php[0-9]' -o -name '*.phtml' \
         -o -name '*.phar' -o -name '*.pht'      -o -name '*.phps'  \
         -o -name '.htaccess' -o -name '.user.ini' \) )
 
+# `|| :` GIU LAI du da co `2>/dev/null`: hai thu chan hai duong khac nhau.
+# `2>/dev/null` nuot THONG BAO, `|| :` nuot MA THOAT. Voi `set -o pipefail`
+# (dong 37) mot ma thoat khac 0 o bat ky khau nao lam hong ca pipeline, va
+# `find` tra 1 khi duong dan khong ton tai — day la chuyen BINH THUONG o
+# `scan_hot` vi glob khong khop thi bash de nguyen chuoi mau. Xem chu thich o do.
+#
+# Cai gia: mot loi that (dia hong, mount bien mat) cung im lang. Bu lai bang
+# chot "quet ra 0 file" o ca hai nhanh baseline va check ben duoi — do moi la
+# thu phan biet duoc "khong co gi" voi "khong nhin thay gi".
 scan_full() {
-    find $ROOTS "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null | sort
+    { find $ROOTS "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :; } 2>/dev/null | sort
 }
 
 # TANG NONG — chi nhung noi CHAY DUOC MA KHONG CAN MOT HTTP REQUEST NAO.
@@ -98,19 +107,34 @@ scan_full() {
 # (day anh). Quet day du van phu no.
 #
 # `-maxdepth 1` tren hai muc dau la thu lam tang nay gan nhu mien phi.
+# MOI `find` PHAI co `|| :`. Day khong phai phong thu thua ma la dieu kien
+# VAN HANH BINH THUONG: `$ROOTS` khong dat trong nhay nen bash bung glob, va khi
+# mot mau khong khop gi (may khong co WordPress cai trong thu muc con) bash de
+# NGUYEN CHUOI MAU lam tham so — `find` nhan duong dan khong ton tai va tra 1.
+# Voi `set -o pipefail` o dong 37, mot ma thoat 1 lam hong ca pipeline va script
+# bao "quet that bai" du 5/6 nhanh chay tot.
+#
+# Da gap that tren cloud168-101 (2026-09-02): tang day chay ngon 317.343 file,
+# tang nong chet ngay tu baseline chi vi nhanh `mu-plugins` cua subdomain khong
+# khop. Ba nhanh sau day la ba nhanh TUY CHON theo dinh nghia — khong phai may
+# nao cung co subdomain.
+#
+# `shopt -s nullglob` KHONG dung duoc thay cho cach nay: glob rong se lam `find`
+# chay khong tham so, tuc quet THU MUC HIEN TAI. Doi mot loi on ao lay mot loi
+# im lang va sai dia chi.
 scan_hot() {
     {
-        find $ROOTS               -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/wp-content    -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/wp-content/mu-plugins     "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS               -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        find $ROOTS/wp-content    -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        find $ROOTS/wp-content/mu-plugins     "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
         # THEM MOT TANG: WordPress cai trong thu muc con cua public_html. Rat pho
         # bien tren may nay vi `da_to_openresty.sh:271` cho SUBDOMAIN mot webroot
         # dang <public_html>/<sub_name> — nen mu-plugins cua moi subdomain nam o
         # do, va ban truoc cua tang nong khong he thay chung.
         # Van la glob co dich chu khong phai traversal, nen chi phi gan nhu khong doi.
-        find $ROOTS/*             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/*/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
-        find $ROOTS/*/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/*             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        find $ROOTS/*/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        find $ROOTS/*/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
     } 2>/dev/null | sort -u
 }
 
@@ -163,7 +187,17 @@ fi
 
 if [ "$mode" = "baseline" ]; then
     scan > "$MANIFEST" || { echo "quet that bai" >&2; exit 2; }
-    echo "baseline: $(wc -l < "$MANIFEST") file"
+    n=$(wc -l < "$MANIFEST")
+    # 0 file KHONG phai mot ket qua hop le. Tren mot may hosting dang chay,
+    # `/home/*/domains/*/public_html` luon co it nhat mot .php — quet ra rong
+    # nghia la FIM_ROOTS sai, mount chua gan, hoac khong co quyen doc. Neu de
+    # manifest rong ton tai thi lan `check` sau se coi MOI file la NEW.
+    if [ "$n" -eq 0 ]; then
+        rm -f "$MANIFEST"
+        echo "quet ra 0 file — khong ghi manifest. Kiem FIM_ROOTS=$ROOTS" >&2
+        exit 2
+    fi
+    echo "baseline: $n file"
     exit 0
 fi
 
@@ -175,6 +209,28 @@ diff_out=$(mktemp) || exit 2
 trap 'rm -f "$new_scan" "$diff_out"' EXIT
 
 scan > "$new_scan" || { echo "quet that bai" >&2; exit 2; }
+
+# CHOT AN TOAN — thu duy nhat dung giua mot lan quet HONG va mot tham hoa.
+#
+# Chuoi su kien neu thieu no: quet ra rong (mount roi, FIM_ROOTS sai, doi user
+# chay cron) → khoi END cua awk in `DEL|` cho ca 317.343 duong dan → script van
+# chay tiep → dong `cp "$new_scan" "$MANIFEST"` o cuoi ghi de manifest bang file
+# RONG → lan chay ke tiep thay ca 317.343 file la NEW → day tat ca thanh khoa
+# `waf:fimnew:` vao Redis. Moi file PHP tren may duoc nang tin hieu cung mot luc,
+# tuc canh bao mat het y nghia dung luc no phai co y nghia nhat.
+#
+# `pipefail` von dang chan viec nay mot cach TINH CO. Sau khi them `|| :` vao
+# tung `find` o tren, cho chan do khong con — nen phai noi thanh loi o day.
+#
+# CHI chan truong hop 0. Xoa mot domain that su co the lam bien mat hang nghin
+# file, nen mot nguong theo TY LE se chan ca thao tac hop le; con 0 file thi
+# khong the la ket qua that khi manifest dang co san hang tram nghin.
+if [ ! -s "$new_scan" ]; then
+    echo "quet ra 0 file trong khi manifest co $(wc -l < "$MANIFEST") — coi la" >&2
+    echo "LOI QUET, khong phai xoa hang loat. Manifest giu nguyen." >&2
+    echo "Kiem FIM_ROOTS=$ROOTS va quyen doc cua user dang chay." >&2
+    exit 2
+fi
 
 # Mot luot awk: NEW (duong dan chua tung thay), CHG (kich thuoc hoac mtime doi),
 # DEL (bien mat). So sanh theo DUONG DAN chu khong theo dong, nen mot file doi
@@ -324,8 +380,17 @@ if [ $dry -eq 0 ] && [ -s "$marks" ]; then
         # va core/config.lua, sai host, Redis chet — het thay deu lo ra o day
         # thay vi de FIM ghi mot noi va WAF doc mot noi, mai mai khong khop ma
         # khong ai bao loi.
+        # So voi GIA TRI DA GHI, khong phai hang so "1".
+        #
+        # Cho nay tung dung: ban a253016 ghi `... %d 1` nen `!= "1"` la phep so
+        # sanh chinh xac. Ban nay (boost theo bac) ghi 1.0 / 0.75 / 0.35 / 0.5 —
+        # nen so voi "1" thi KHONG BAO GIO khop, va vong xac minh bao hong o MOI
+        # lan chay du Redis hoan toan khoe. Mot canh bao luon sang la mot canh bao
+        # day nguoi van hanh bo qua no, dung luc no can duoc tin.
+        # Dong `SETEX <key> <ttl> <boost>`: $2 = key, $4 = gia tri.
         probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
-        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "1" ]; then
+        want=$(printf  '%s\n' "$cmds" | head -1 | awk '{print $4}')
+        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "$want" ]; then
             mark_err="KHONG XAC MINH DUOC: da ghi $marked key nhung doc nguoc that bai."
             mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
         fi
