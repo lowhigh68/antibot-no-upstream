@@ -40,6 +40,19 @@
     create 0640 nginx nginx
 }
 
+# FIM ghi bang `tee -a` mot lan moi lan chay (cron hang ngay), khong giu handle
+# — nen `create` an toan giong hai khoi tren. Chu so huu root vi cron chay duoi
+# root, khac antibot.log do worker nginx ghi.
+/var/log/antibot/fim.log {
+    weekly
+    rotate 12
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root root
+}
+
 # ── Log cua CHINH nginx ───────────────────────────────────────────────
 # Nam trong file ten `antibot` vi deploy.sh buoc [4b] cai dung MOT file nay.
 # Tach ra file thu hai la them mot duong cai dat nua cho cung mot loai cau hinh.
