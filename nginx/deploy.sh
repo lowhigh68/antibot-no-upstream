@@ -101,6 +101,23 @@ if [ -x "$RESTY" ] && [ -f "$SOURCE_DIR/core/data/goodbot.json" ]; then
     fi
 fi
 
+# T — bo test luat WAF. Chay TREN NGUON, cung ly do voi buoc [2]: mot luat sai
+# NGU NGHIA van qua duoc `luajit -b` sach se. Cho no ra production nghia la
+# phat hien FP bang cach gay ra FP tren luu luong khach hang.
+# Can resty chu khong phai luajit: luat quyet dinh bang PCRE lookahead cua ngx.re.
+if [ -x "$RESTY" ] && [ -x "$REPO_DIR/test/run.sh" ]; then
+    echo "[3b] Chay T (test luat WAF)..."
+    if ! "$REPO_DIR/test/run.sh"; then
+        if [ "${SKIP_TEST:-0}" = "1" ]; then
+            echo "     SKIP_TEST=1 — di tiep BAT CHAP test hong."
+        else
+            echo "HUY: co test hong. KHONG sync, cay dang chay giu nguyen."
+            echo "     Ep di tiep khi that su can: SKIP_TEST=1 ./deploy.sh"
+            exit 1
+        fi
+    fi
+fi
+
 echo "[4] Sync core folder..."
 rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
 
