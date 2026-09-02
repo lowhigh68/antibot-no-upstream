@@ -99,6 +99,29 @@ Bản đầu đánh dấu theo URI ở access phase và **đầu độc được
 
 Giá trị **âm** được cache nhưng `needs_mark` **không** chặn trên nó — nhờ vậy host mới cài WordPress vẫn tự được nhận ra thay vì kẹt ở kết quả âm cũ.
 
+## Log phase CẤM cosocket — và điều đó đã giết việc đánh dấu trong 4 tháng
+
+`waf.run_log` chạy ở `log_by_lua`, nơi OpenResty **cấm cosocket**. `pool.safe_set` dùng `resty.redis`, tức cosocket, nên **mọi phép ghi Redis trực tiếp trong `run_log` đều thất bại** — và vì là `safe_*` nên thất bại **hoàn toàn im lặng**.
+
+**Đo trên aramex.vn 2026-09-03 00:12**, một request `/en/wp-includes/js/jquery/jquery.min.js`:
+
+```
+[wafdbg] uri=/en/wp-includes/js/... host=aramex.vn wp=/en hit=nil shd=1
+redis-cli --scan 'waf:wproot:*'   →  TRỐNG
+```
+
+`shd=1` chứng minh `mark()` chạy tới nơi và shdict ghi được (bộ nhớ chia sẻ, không phải cosocket). Redis thì không nhận gì.
+
+**Vì sao không ai thấy trong bốn tháng.** `d3bfd04` chuyển việc đánh dấu từ access phase sang log phase để có quyền chạm đĩa, và mang theo một phép ghi Redis không chạy được ở đó. Nhưng `waf:wphost:*` có TTL **30 ngày** và đã được ghi từ **trước** lần chuyển đó — khoá cũ còn sống nên cơ chế trông vẫn chạy trong khi đã chết hẳn.
+
+> Một bộ đệm sống lâu hơn thứ sinh ra nó thì che được đúng cái chết của nó.
+
+**Quy tắc rút ra, áp cho mọi thứ viết thêm vào `run_log`:** bất kỳ phép chạm Redis nào ở log phase **phải** đi qua `ngx.timer.at(0, …)` — cùng khuôn `async/risk_update.lua` đã dùng. `io.open` thì ngược lại, chạy thẳng được; đó là lý do `target_exists()` không cần timer.
+
+**Và thứ tự ghi phải là Redis trước, bộ đệm sau.** Bản cũ ghi shdict trước rồi mới ghi Redis, nên bộ đệm tuyên bố "xong rồi" trước khi biết việc có xong không — mỗi lần hỏng là 300 giây không thử lại. Nay chỉ ghi shdict TTL đầy đủ **bên trong** callback, sau khi `safe_set` trả `true`. Một chốt tạm 10 giây ghi ngay để 20 asset của cùng một trang không cùng tạo 20 timer (`lua_max_running_timers` mặc định 256).
+
+Bộ đệm chỉ được phép nhớ một sự thật **đã** xảy ra.
+
 ## `run_log` — nửa log-phase
 
 Gộp hai việc vào một hàm vì cả hai cần **đúng một** phép chạm đĩa: điền `ctx.waf_target_exists` cho waf.log, và quyết định có đánh dấu host là WordPress không.

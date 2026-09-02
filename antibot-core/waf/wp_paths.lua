@@ -239,12 +239,57 @@ function _M.script_path(uri)
     return uri:sub(1, to)
 end
 
+-- Ngắn, để bọc cửa sổ giữa lúc lên lịch timer và lúc timer ghi xong. Không phải
+-- TTL thật của việc đánh dấu — nó chỉ ngăn 20 request asset của cùng một trang
+-- cùng tạo 20 timer. Timer nào ghi Redis thành công sẽ nâng lên
+-- `WP_HOST_TTL_SHARED`.
+local WP_HOST_TTL_INFLIGHT = 10
+
+-- ĐÁNH DẤU PHẢI ĐI QUA `ngx.timer.at`, VÀ ĐÂY LÀ MỘT LỖI ĐÃ CHẠY THẬT.
+--
+-- `mark` được gọi từ `waf.run_log`, tức LOG PHASE — nơi OpenResty **cấm
+-- cosocket**. `pool.safe_set` dùng `resty.redis`, tức cosocket, nên nó KHÔNG THỂ
+-- thành công ở đó. Và vì là `safe_*` nên nó nuốt lỗi: hỏng hoàn toàn im lặng.
+--
+-- Đo trên aramex.vn 2026-09-03 00:12: một request `/en/wp-includes/js/...` cho
+-- `wp=/en shd=1` mà `redis-cli --scan 'waf:wproot:*'` trống. shdict ghi được
+-- (bộ nhớ chia sẻ, không phải cosocket), Redis thì không. Đó là toàn bộ lý do
+-- WordPress cài trong thư mục con không bao giờ được học.
+--
+-- VÌ SAO KHÔNG AI THẤY TRONG BỐN THÁNG: `d3bfd04` chuyển việc đánh dấu từ access
+-- phase sang log phase để có quyền chạm đĩa, và mang theo phép ghi Redis không
+-- chạy được ở đó. Nhưng `waf:wphost:*` có TTL 30 NGÀY và đã được ghi từ TRƯỚC
+-- lần chuyển đó — khoá cũ còn sống nên cơ chế trông vẫn chạy trong khi đã chết.
+-- Một bộ đệm sống lâu hơn thứ sinh ra nó thì che được đúng cái chết của nó.
+--
+-- THỨ TỰ GHI ĐẢO LẠI. Bản cũ ghi shdict TRƯỚC rồi mới ghi Redis, nên bộ đệm
+-- tuyên bố "xong rồi" trước khi biết việc có xong không — mỗi lần hỏng là 300
+-- giây không thử lại. Nay Redis trước, và shdict chỉ được ghi khi Redis đã
+-- nhận. Bộ đệm chỉ được phép nhớ một sự thật ĐÃ xảy ra.
 function _M.mark(host, prefix)
     if not host or host == "" or not prefix then return end
+
+    local ck = cache_key(host, prefix)
+    local rk = redis_key(host, prefix)
+
+    -- Chốt tạm: nếu không có nó, mỗi asset của một trang lại lên lịch một timer
+    -- cho tới khi cái đầu tiên ghi xong. `lua_max_running_timers` mặc định 256.
     if shared_cache then
-        shared_cache:set(cache_key(host, prefix), 1, WP_HOST_TTL_SHARED)
+        shared_cache:set(ck, 1, WP_HOST_TTL_INFLIGHT)
     end
-    pool.safe_set(redis_key(host, prefix), "1", WP_HOST_TTL_REDIS)
+
+    local ok, err = ngx.timer.at(0, function()
+        if pool.safe_set(rk, "1", WP_HOST_TTL_REDIS) and shared_cache then
+            shared_cache:set(ck, 1, WP_HOST_TTL_SHARED)
+        end
+    end)
+
+    -- Lên lịch thất bại thì gỡ chốt tạm ngay, đừng để nó chặn 10 giây cho một
+    -- việc chắc chắn không xảy ra.
+    if not ok then
+        if shared_cache then shared_cache:delete(ck) end
+        ngx.log(ngx.ERR, "[waf] khong len lich duoc mark ", rk, ": ", tostring(err))
+    end
 end
 
 local function is_wp_root(host, prefix)

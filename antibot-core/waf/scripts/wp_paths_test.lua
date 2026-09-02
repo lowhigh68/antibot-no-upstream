@@ -30,12 +30,29 @@ end
 -- Redis gia. Cong `is_wp_root` doc qua day, nen bang nay la thu quyet dinh (host,tien to)
 -- nao duoc coi la WordPress trong test.
 local REDIS = {}
+local REDIS_FAIL = false
 package.preload["antibot.core.redis_pool"] = function()
     return {
         safe_get = function(k) return REDIS[k] end,
-        safe_set = function(k, v) REDIS[k] = v return true end,
+        -- Tra ve false khi REDIS_FAIL — `mark()` PHAI phan biet duoc "da ghi"
+        -- voi "tuong la da ghi". Chinh cho do la lo hong 4 thang: safe_set that
+        -- bai im lang trong log phase (cosocket bi cam) ma shdict van duoc danh
+        -- dau, nen he thong tin rang minh da hoc xong.
+        safe_set = function(k, v)
+            if REDIS_FAIL then return false, "gia lap loi" end
+            REDIS[k] = v
+            return true
+        end,
     }
 end
+
+-- `ngx.timer.at` gia: chay callback NGAY.
+--
+-- `mark()` bat buoc phai day phep ghi Redis qua timer vi no chay o LOG PHASE,
+-- noi OpenResty cam cosocket. Nhung `resty` se thoat truoc khi mot timer that
+-- kip chay, nen test se xanh gia. Chay dong bo o day kiem dung thu duy nhat con
+-- lai dang kiem: GHI DUNG KHOA, va CHI ghi shdict khi Redis da nhan.
+ngx.timer.at = function(_, fn) fn(false) return true end
 
 local wp = dofile(SRC .. "waf/wp_paths.lua")
 local ex = dofile(SRC .. "waf/exposed.lua")
@@ -251,6 +268,8 @@ run("thu tu uu tien", PREC_CASES, dispatch)
 -- Ngat mach shdict: da danh dau roi thi khong duoc cham dia lan nua. Hong cho
 -- nay la io.open chay cho MOI request cua host do trong suot 300s.
 io.write("mark() ngat mach - 5 case\n")
+-- Chu y thu tu: cac ca duoi day dua vao `ngx.timer.at` gia chay dong bo. Voi
+-- timer that, `mark()` tra ve TRUOC khi Redis duoc ghi.
 wp.mark("marked.test", "")
 if wp.needs_mark("/wp-content/x.jpg", "marked.test") ~= nil then
     bad("  SAI  sau mark(), needs_mark van tra tien to (mat ngat mach shdict)\n")
@@ -281,6 +300,36 @@ else
 end
 if REDIS["waf:wproot:marked.test:/en"] ~= "1" then
     bad("  SAI  mark() khong ghi Redis cho tien to /en\n")
+else
+    pass = pass + 1
+end
+
+-- REDIS HONG: khong duoc de lai dau hieu "da hoc xong".
+--
+-- Day la ca tai hien dung lo hong da chay that 4 thang (do tren aramex.vn
+-- 2026-09-03): `safe_set` that bai im lang o log phase vi cosocket bi cam, ma
+-- ban cu van ghi shdict TRUOC nen he thong tin la da hoc. Ket qua: Redis vinh
+-- vien khong co khoa, va shdict chan viec thu lai suot 300 giay.
+io.write("mark() khi Redis hong - 2 case\n")
+REDIS_FAIL = true
+wp.mark("redisdown.test", "/en")
+if REDIS["waf:wproot:redisdown.test:/en"] ~= nil then
+    bad("  SAI  ghi duoc vao Redis trong khi safe_set bao that bai\n")
+else
+    pass = pass + 1
+end
+REDIS_FAIL = false
+
+-- Va `mark()` phai THU LAI DUOC: goi lai khi Redis da khoe thi phai ghi thanh
+-- cong, khong bi ket boi lan that bai truoc.
+--
+-- Ca nay KHONG kiem duoc TTL cua chot tam — `mark()` khong doc shdict bao gio.
+-- Cua so mu 10 giay sau mot lan hong nam o `needs_mark`, va no phu thuoc thoi
+-- gian nen khong kiem duoc trong mot bo test don vi. Ghi ra day de khong ai
+-- tuong dong duoi da phu no.
+wp.mark("redisdown.test", "/en")
+if REDIS["waf:wproot:redisdown.test:/en"] ~= "1" then
+    bad("  SAI  mark() khong thu lai duoc sau khi Redis khoe tro lai\n")
 else
     pass = pass + 1
 end
