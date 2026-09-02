@@ -217,6 +217,12 @@ function _M.init_worker()
     -- trong init_worker_by_lua* context. Timer 0s = chạy ngay sau init_worker
     -- trong context cho phép cosocket.
     if ngx.worker.id() == 0 then
+        -- Tạo sẵn waf.log để sự vắng mặt của nó có nghĩa duy nhất là "hỏng",
+        -- không phải "chưa có luật nào bắn". KHÔNG defer: file I/O thường,
+        -- không phải cosocket. Chạy ở đây nên mỗi `nginx -s reload` cũng dựng
+        -- lại file nếu ai đó lỡ xoá.
+        waf_logger.ensure()
+
         local ok, err = ngx.timer.at(0, function(premature)
             if premature then return end
             local ok2, seed = pcall(require, "antibot.core.goodbot_seed")

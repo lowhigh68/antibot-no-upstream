@@ -27,6 +27,30 @@ local function scrub(s, max)
     return s
 end
 
+-- Tạo sẵn file rỗng lúc khởi động worker.
+--
+-- Khác `antibot.log` ở một điểm quyết định: `logger.run()` chạy cho MỌI request
+-- nên antibot.log tái sinh trong vài mili giây sau khi bị xoá — vắng mặt nó là
+-- một chẩn đoán rõ ràng. `waf_logger.run()` thoát sớm khi không luật nào bắn,
+-- nên nếu không có hàm này thì sau khi deploy `waf.log` KHÔNG TỒN TẠI, và
+-- `tail` nó trả "No such file or directory". Người vận hành không phân biệt
+-- được "chưa có tấn công nào" với "module hỏng / sai quyền thư mục".
+--
+-- Chạy được thẳng trong `init_worker_by_lua`: đây là file I/O thường, không
+-- phải cosocket, nên không vướng lệnh cấm đã buộc `goodbot_seed` phải defer
+-- qua `ngx.timer.at`.
+function _M.ensure()
+    local fh, err = io.open(WAF_LOG, "a")
+    if not fh then
+        ngx.log(ngx.ERR, "[waf] KHONG TAO DUOC ", WAF_LOG, ": ", tostring(err),
+                " — moi luat WAF se ban ma khong ghi duoc gi. Kiem thu muc",
+                " /var/log/antibot va quyen cua user `nginx`.")
+        return false
+    end
+    fh:close()
+    return true
+end
+
 function _M.run(ctx)
     if not ctx then return end
     local hits = ctx.waf_hits
@@ -34,7 +58,10 @@ function _M.run(ctx)
 
     local fh, err = io.open(WAF_LOG, "a")
     if not fh then
-        ngx.log(ngx.WARN, "[waf] khong mo duoc ", WAF_LOG, ": ", tostring(err))
+        -- ngx.ERR chứ không WARN. `da_to_openresty.sh` sinh `error_log <path>;`
+        -- KHÔNG kèm mức ⇒ nginx lấy mặc định `error` ⇒ WARN bị lọc sạch trong
+        -- mọi server block per-domain. Ghi ở WARN nghĩa là hỏng trong im lặng.
+        ngx.log(ngx.ERR, "[waf] khong mo duoc ", WAF_LOG, ": ", tostring(err))
         return
     end
 
