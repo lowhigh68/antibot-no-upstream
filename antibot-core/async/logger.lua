@@ -524,6 +524,16 @@ function _M.run(ctx)
             ctx.h2_bot_confidence or 0)
     end
 
+    -- Dấu WAF: CHỈ để nối sang waf.log, không phải để đọc ở đây. Chi tiết đầy
+    -- đủ (target, matched, severity, wpauth) nằm bên waf.log; ghép hai file
+    -- bằng cặp `id=` + `ts=`. Cố ý không ghi `matched=` vào antibot.log — đó là
+    -- dữ liệu kẻ tấn công điều khiển, giữ nó ở đúng một file dễ kiểm soát hơn.
+    local waf_str = ""
+    if ctx.waf_hits and #ctx.waf_hits > 0 then
+        local h = ctx.waf_hits[1]
+        waf_str = string.format(" waf=%s wafv=%.2f", h.rule or "-", h.score or 0)
+    end
+
     -- Beacon coverage state (Step 0 telemetry).
     -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
     -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
@@ -543,7 +553,7 @@ function _M.run(ctx)
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -578,7 +588,8 @@ function _M.run(ctx)
         auth_str,
         xf_str,
         sc_str,
-        mm_str
+        mm_str,
+        waf_str
     )
 
     write_log_line(line)

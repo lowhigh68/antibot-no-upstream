@@ -7,3 +7,6 @@
 *.conf      text eol=lf
 *.json      text eol=lf
 *.md        text eol=lf
+# Khong co duoi file nen khong roi vao mau nao o tren; logrotate doc CRLF ra loi
+# "unexpected text" rat kho lan. Cung ly do da ghi o dau file.
+nginx/logrotate/*   text eol=lf

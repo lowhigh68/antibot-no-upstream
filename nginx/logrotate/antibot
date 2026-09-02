@@ -1,0 +1,41 @@
+# Xoay vong log antibot. Cai vao /etc/logrotate.d/antibot bang deploy.sh.
+#
+# Vi sao file nay nam trong repo: truoc day rotation cau hinh bang tay tren tung
+# may va da troi — cloud183-139 co antibot.log KHONG xoay suot 28 ngay, khien
+# mot phep do bi lech 46 lan vi cua so thoi gian khong nhu tuong. Cau hinh nam
+# canh code thi `git pull` la dong bo.
+#
+# `create` chu KHONG `copytruncate`:
+#   `async/logger.lua` va `async/waf_logger.lua` deu `io.open(path,"a")` roi
+#   `close()` cho TUNG request — khong giu file handle qua request. Nen doi ten
+#   file cu roi tao file moi la an toan tuyet doi: request ke tiep mo dung file
+#   moi, khong can bao hieu gi cho nginx. `copytruncate` nguoc lai co khe cua so
+#   giua luc copy va luc truncate, mat dong ghi vao do — khong co ly do nao de
+#   chap nhan rui ro do o day.
+#
+# Chu so huu phai la `nginx`: worker chay duoi user do (nginx.conf:19 `user nginx;`).
+# Tao file 0640 root:root la worker khong ghi duoc, va trieu chung se la mot
+# dong `cannot open log file` trong error log roi im lang mat log.
+
+/var/log/antibot/antibot.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 nginx nginx
+}
+
+# waf.log tach rieng vi soi thu cong nhieu hon han. Giu lau hon antibot.log:
+# no nho hon nhieu lan (chi ghi khi co luat ban, khong ghi moi request) va khi
+# dieu tra mot vu thi thuong phai nhin nguoc lai xa hon.
+/var/log/antibot/waf.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 nginx nginx
+}

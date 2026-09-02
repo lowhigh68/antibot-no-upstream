@@ -69,6 +69,7 @@ For multi-step tasks, state a brief plan:
 
 ## Pipeline: `antibot.run()`
 
+0. **`waf.run_pre`** — runs **before** the cookie fast-path, deliberately. `waf/wp_paths.lua` matches four WordPress path rules; two `block` (exit 403), two contribute `ctx.waf_wp_path`. It must not sit behind the trust short-circuits: `cfg.ttl.verified` is 7200s, so a client that solved one PoW would otherwise get two hours of completely uninspected uploads. AntiBot scores *who* sends; a WAF inspects *what* is inside — verified identity says nothing about content. Cheap by construction (one `find`, one `ngx.re.find`) and self-scoping (`/wp-content/` only exists on WordPress).
 1. **Cookie fast-path** — `verified:<cookie> == "1"` → set `ctx.verified`, return immediately.
 2. **Classifier** (`core/req_classifier.lua`) — tags as `resource | navigation | interaction | api_callback | auth_endpoint | feed_or_meta | inapp_browser | unknown`. Sets `score_multiplier`, `rate_weight`, `skip_layers`. Changes here ripple into every layer.
 3. **`STEPS_COMMON`** — always runs: ctx init → `l7.ban.ip_ban_check` → `device_classifier` → `access` (whitelist) → `transport` (TLS + HTTP/2 fingerprint).
@@ -79,7 +80,7 @@ For multi-step tasks, state a brief plan:
    - others → `STEPS_FULL_DETECTION`: `fingerprint` → `l7` → `detection` → `intelligence` → `enforcement`.
 6. Each step returns `(ok, exit)`. `exit==true` stops pipeline. `ok==false` + `fatal==true` → 500. Only `fingerprint_layer` is fatal.
 
-**`action_reason` discipline:** any module that calls `ngx.exit(...)` MUST set `ctx.action` and `ctx.action_reason` first — `log_by_lua` runs after exit and produces `reason=-` otherwise. Pattern in `l7/ban/ban_store.lua` (`banned_id`), `l7/ban/ip_ban_check.lua` (`banned_ip`), and `engine.lua` (`whitelisted`, `good_bot_verified`, `good_bot_asn_lite`).
+**`action_reason` discipline:** any module that calls `ngx.exit(...)` MUST set `ctx.action` and `ctx.action_reason` first — `log_by_lua` runs after exit and produces `reason=-` otherwise. Pattern in `l7/ban/ban_store.lua` (`banned_id`), `l7/ban/ip_ban_check.lua` (`banned_ip`), `waf/init.lua` (`wp_upload_exec`, `wp_content_exec`), and `engine.lua` (`whitelisted`, `good_bot_verified`, `good_bot_asn_lite`).
 
 **Beacon injection** is two-phase: `trigger.lua` sets `ctx.inject_candidate` from `Accept` header; `header_filter_by_lua` confirms via actual response `Content-Type`. Both must agree. Never short-circuit — CSS/JS/image responses must never have `Content-Length` cleared.
 
@@ -110,6 +111,7 @@ S2.5 difference vs S3/S4: does NOT set `good_bot_verified` → engine still comp
 | Layer | Path | Role |
 |---|---|---|
 | core | `core/config.lua`, `redis_pool.lua`, `req_classifier.lua`, `goodbot_seed.lua`, `data/goodbot.json` | Thresholds, Redis pool, classification, good-bot registry seed |
+| waf | `waf/init.lua`, `waf/wp_paths.lua` | **Runs before the trust short-circuits** (step 0). Path-scoped WordPress hardening; blocks write `ctx.action_reason` themselves. Logs to a separate `/var/log/antibot/waf.log` via `async/waf_logger.lua` — never appended to `antibot.log`, join on `id=`+`ts=` |
 | transport | `transport/tls/`, `transport/http2/` | JA3/JA3S, H2 fingerprints |
 | l7 | `l7/` | Rate limiting, burst, slow-loris, IP ban (`ban_store`/`ip_ban_check` set `action_reason` before exit) |
 | detection | `detection/bot/{init,ua_check,dns_reverse,dns_forward,lite_verify}.lua`, `anomaly/`, `browser/`, `cluster/`, `graph/` | Signal families; each `init.lua` checks `ctx.skip_layers`. `bot/` houses the 4-path verification |

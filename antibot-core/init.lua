@@ -24,6 +24,8 @@ local risk_update        = require "antibot.async.risk_update"
 local adaptive_weight    = require "antibot.async.adaptive_weight"
 local intel_reporter     = require "antibot.async.intel_reporter"
 local logger             = require "antibot.async.logger"
+local waf_layer          = require "antibot.waf"
+local waf_logger         = require "antibot.async.waf_logger"
 local pool               = require "antibot.core.redis_pool"
 
 local STEPS_COMMON = {
@@ -150,6 +152,12 @@ function _M.run()
     local ctx = ngx.ctx.antibot or {}
     ngx.ctx.antibot = ctx
 
+    -- WAF chạy TRƯỚC cả hai cửa thoát tin cậy bên dưới, không phải sau.
+    -- Cookie `antibot_fp` còn hạn là thoát sạch pipeline trong 7200s; với quản
+    -- lý bot đó là đúng, với WAF thì đó là 2 giờ upload không ai soi. Lý do đầy
+    -- đủ nằm ở khối chú thích đầu `waf/init.lua`.
+    if waf_layer.run_pre(ctx) then return end
+
     if check_verified_cookie(ctx) then return end
 
     classifier.run(ctx)
@@ -194,6 +202,7 @@ function _M.log()
     end
 
     logger.run(ctx)
+    waf_logger.run(ctx)
 end
 
 function _M.init_worker()

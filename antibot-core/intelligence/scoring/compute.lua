@@ -82,6 +82,16 @@ local DEFAULT_WEIGHTS = {
 
     swarm_attack        = 120,
 
+    -- waf_wp_path: luật đường dẫn WordPress KHÔNG chặn (waf/wp_paths.lua).
+    -- Hai luật chặn ở đó thoát ngay tại access phase nên không bao giờ tới đây;
+    -- chỉ hai luật `signal` đổ vào signal này.
+    -- Cân trọng số theo ngưỡng của engine.lua (MONITOR=25, CHALLENGE=55):
+    --   wp_root_unknown  0,50 × 50 = 25,0 → chạm đúng MONITOR khi đứng một mình
+    --   wp_plugin_direct 0,25 × 50 = 12,5 → dưới MONITOR, chỉ góp vào tổng
+    -- Cố ý để một mình không đủ challenge: gọi thẳng file PHP trong plugin là
+    -- chuyện plugin hợp lệ vẫn làm. Phải cộng thêm tín hiệu khác mới leo thang.
+    waf_wp_path         = 50,
+
     fp_degraded_pen     = 0,
     correlated_boost    = 15,
     corr_rule_weight    = 50,
@@ -202,6 +212,10 @@ local function get_signal(name, ctx)
 
     if name == "swarm_attack" then
         return safe_val(ctx.swarm_attack)
+    end
+
+    if name == "waf_wp_path" then
+        return safe_val(ctx.waf_wp_path)
     end
 
     if name == "fast_solve" then
