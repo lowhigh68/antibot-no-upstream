@@ -19,19 +19,30 @@
 #             kich thuoc cu. Can chan ca cai do thi doi sang sha256sum va chay
 #             hang tuan thay vi hang ngay.
 #
+# HAI TANG. Do tren may that: quet day du 317.343 file / 27 giay, ba lan lien
+# tiep deu 27 giay — cache am khong giup gi. Chi tiet o chu thich `scan_hot`.
+#   --hot   chi nhung noi chay duoc MA KHONG CAN mot HTTP request nao. Gan nhu
+#           mien phi, dat lich day (5 phut).
+#   (mac dinh) day du. Dat lich thua (30-60 phut).
+# Manifest va lock TACH RIENG cho tung tang.
+#
 # DUNG:
-#   fim.sh baseline        tao manifest dau tien, khong bao cao gi
-#   fim.sh check           so sanh, bao cao, cap nhat manifest
-#   fim.sh check --dry     so sanh, bao cao, KHONG cap nhat manifest
+#   fim.sh baseline [--hot]           tao manifest dau tien, khong bao cao gi
+#   fim.sh check    [--hot] [--dry] [-v]
+#     --dry  bao cao nhung KHONG cap nhat manifest
+#     -v     in ca khi khong co gi (mac dinh im lang de cron khong spam mail)
 #
 # Ma thoat: 0 = khong co gi dang chu y   1 = co phat hien CRITICAL/HIGH
 #           2 = khong chay duoc
 set -uo pipefail
 
-ROOTS="/home/*/domains/*/public_html"
-STATE="/var/lib/antibot/fim"
-MANIFEST="$STATE/manifest.txt"
-LOG="/var/log/antibot/fim.log"
+# Ba bien cho phep ghi de bang moi truong CHI de chay thu tren cay gia. Mac dinh
+# la duong that; khong co cai nay thi script nay khong the kiem duoc o dau ngoai
+# production, va hom nay da hai lan phai giao ma chua chay.
+ROOTS="${FIM_ROOTS:-/home/*/domains/*/public_html}"
+STATE="${FIM_STATE:-/var/lib/antibot/fim}"
+LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
+# MANIFEST dat sau khi biet tier — xem chu thich tai cho gan.
 
 # Nguong gom nhom. Mot ban cap nhat plugin hoac core cham hang tram file cung
 # luc; mot webshell cham DUNG MOT. Nhom dong hon nguong nay gop thanh mot dong
@@ -39,29 +50,67 @@ LOG="/var/log/antibot/fim.log"
 # script, va no du vi hai dan so do khac nhau ve BAC do lon.
 GROUP_MAX=5
 
-usage() { echo "dung: $0 {baseline|check} [--dry]" >&2; exit 2; }
+usage() { echo "dung: $0 {baseline|check} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
 # loi vong ma khong luat URI nao nhin thay.
-scan() {
-    find $ROOTS \
-        \( -name '*.php'  -o -name '*.php[0-9]' -o -name '*.phtml' \
+NAMES=( \( -name '*.php'  -o -name '*.php[0-9]' -o -name '*.phtml' \
         -o -name '*.phar' -o -name '*.pht'      -o -name '*.phps'  \
-        -o -name '.htaccess' -o -name '.user.ini' \) \
-        -type f -printf '%p|%s|%T@\n' 2>/dev/null | sort
+        -o -name '.htaccess' -o -name '.user.ini' \) )
+
+scan_full() {
+    find $ROOTS "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null | sort
 }
+
+# TANG NONG — chi nhung noi CHAY DUOC MA KHONG CAN MOT HTTP REQUEST NAO.
+#
+# Do tren may that: quet day du la 317.343 file / 27 giay, va ba lan chay lien
+# tiep deu 27 giay — cache am khong giup gi, nut that la so lan stat chu khong
+# phai tim dia. Chay moi 10 phut la 43 phut CPU/ngay, va day moi la may NHO.
+#
+# Nhung 95% so file do nam trong plugins/ va themes/ — dung nhung cho script
+# phan loai ROUTINE roi gop thanh mot dong. Nen tach tang khong lam mat gi.
+#
+# Tieu chi chon KHONG phai la re, ma la: WAF co thay duoc khong.
+#   mu-plugins/       WordPress `include` moi .php o day tren MOI request. Khong
+#                     co request nao de chan — FIM la phong tuyen DUY NHAT.
+#   web root          wp-config.php bi sua la cua hau chay tren moi request.
+#   wp-content/ (1)   drop-in: advanced-cache.php, object-cache.php, db.php,
+#                     sunrise.php… WordPress tu include, khong ai goi qua HTTP.
+#
+# uploads/ CO Y khong nam o day: webshell trong do phai co HTTP request moi chay
+# duoc, va `wp_upload_exec` chan thang o WAF. No cung la cho traversal dat nhat
+# (day anh). Quet day du van phu no.
+#
+# `-maxdepth 1` tren hai muc dau la thu lam tang nay gan nhu mien phi.
+scan_hot() {
+    {
+        find $ROOTS             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+        find $ROOTS/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n'
+    } 2>/dev/null | sort -u
+}
+
+scan() { if [ "$tier" = "hot" ]; then scan_hot; else scan_full; fi; }
 
 mode="${1:-}"; [ -n "$mode" ] || usage
 shift
-dry=0; verbose=0
+dry=0; verbose=0; tier=full
 for a in "$@"; do
     case "$a" in
+        --hot)        tier=hot ;;
         --dry)        dry=1 ;;
         -v|--verbose) verbose=1 ;;
         *)            usage ;;
     esac
 done
+
+# MANIFEST RIENG CHO TUNG TIER, va day la yeu cau DUNG DAN chu khong phai gon
+# gang: tang nong quet mot tap con: doi chieu no voi manifest day du se bao MOI
+# FILE KHONG DUOC PHU la DEL. Mot lan chay --hot se bien manifest day du thanh
+# rac va nuot luon moi thay doi ve sau.
+MANIFEST="$STATE/manifest.$tier.txt"
 
 mkdir -p "$STATE" || { echo "khong tao duoc $STATE" >&2; exit 2; }
 
@@ -73,7 +122,18 @@ mkdir -p "$STATE" || { echo "khong tao duoc $STATE" >&2; exit 2; }
 #
 # `-n` = khong doi. Lan chay bi trung se thoat im lang: no khong co gi de bao,
 # lan dang chay se bao.
-exec 9>"$STATE/.lock" || { echo "khong mo duoc lockfile" >&2; exit 2; }
+#
+# Kiem su ton tai cua `flock` RIENG, truoc khi goi. `if ! flock -n 9` khong phan
+# biet duoc "khoa dang bi giu" (exit 1) voi "khong co lenh flock" (exit 127) —
+# ca hai deu vao nhanh thoat 0 im lang. Nghia la tren may thieu util-linux,
+# FIM se KHONG LAM GI CA va bao thanh cong, mai mai. Chet o day to tieng con hon.
+command -v flock >/dev/null 2>&1 || {
+    echo "thieu lenh 'flock' (goi util-linux). Khong chay ma khong co khoa:" >&2
+    echo "hai lan chay chong nhau se ghi de manifest bang anh chup cu hon." >&2
+    exit 2
+}
+
+exec 9>"$STATE/.lock.$tier" || { echo "khong mo duoc lockfile" >&2; exit 2; }
 if ! flock -n 9; then
     [ $verbose -eq 1 ] && echo "dang co lan chay khac, bo qua"
     exit 0
