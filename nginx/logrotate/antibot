@@ -39,3 +39,39 @@
     delaycompress
     create 0640 nginx nginx
 }
+
+# ── Log cua CHINH nginx ───────────────────────────────────────────────
+# Nam trong file ten `antibot` vi deploy.sh buoc [4b] cai dung MOT file nay.
+# Tach ra file thu hai la them mot duong cai dat nua cho cung mot loai cau hinh.
+#
+# Do 2026-09-02: ba file nay CHUA TUNG xoay ke tu 22/7 — access.log 433 MB,
+# error.log 22 MB, hostname.log 19 MB. Hau qua khong phai het dia (con day cho)
+# ma la MU CHAN DOAN: error.log con om nguyen su co 5.858 dong tu 21-22/7 (reboot
+# chua bat Redis), va dong do lam nhieu moi phep do, ton han mot luot dieu tra
+# moi xac dinh duoc ma moi co nem loi hay khong.
+#
+# `kill -USR1` la BAT BUOC o day, va day la cho khac han khoi antibot.log phia
+# tren. nginx GIU file handle cua access/error log suot doi worker, khong mo-ghi-
+# dong tung request nhu logger.lua. Doi ten ma khong bao hieu thi worker tiep tuc
+# ghi vao inode cu, file moi dung yen 0 byte, va log bien mat LANG LE — dung kieu
+# hong ma ca file nay sinh ra de tranh.
+#
+# `create 0644 root root` chu khong phai `nginx nginx`: master process (chay
+# duoi root) moi la ben mo nhung file nay, khac voi antibot.log do worker mo.
+# Dat sai chu so huu o day la nginx khong mo lai duoc sau khi xoay.
+#
+# `delaycompress` de nginx kip nha file .1 truoc khi no bi nen.
+/usr/local/openresty/nginx/logs/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    create 0644 root root
+    postrotate
+        [ -s /usr/local/openresty/nginx/logs/nginx.pid ] && \
+            kill -USR1 "$(cat /usr/local/openresty/nginx/logs/nginx.pid)"
+    endscript
+}
