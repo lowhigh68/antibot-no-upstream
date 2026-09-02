@@ -85,28 +85,35 @@ function _M.run(ctx)
     local wpauth = (ngx.var.http_cookie or ""):find("wordpress_logged_in_", 1, true)
         and 1 or 0
 
-    -- Mã trạng thái phản hồi. Cột QUAN TRỌNG NHẤT của file này, và là thứ duy
-    -- nhất phân biệt được hai dân số mà `wp_plugin_direct` đang gộp làm một:
-    --
-    --   /wp-content/plugins/shell/about.php → 404  = dò tìm, không thấy gì
-    --   /wp-content/plugins/shell/about.php → 200  = SITE DA BI CHIEM
-    --
-    -- Đo 2026-09-02 trên waf.log thật: cùng một luật bắn cho cả
-    -- `plugins/pwnd/pwnd.php` (webshell quay lại kiểm tra) lẫn
-    -- `plugins/elementor-pro/elementor-pro.php` (dò phiên bản plugin thật).
-    -- Phân biệt bằng danh sách tên plugin xấu là enumeration — thứ kế hoạch đã
-    -- bác bỏ. Mã trạng thái phân biệt được mà không cần biết tên gì cả.
-    --
-    -- Với luật `block` thì đây luôn là 403 (ta tự đặt), nên giá trị chỉ có ý
-    -- nghĩa ở các luật `signal`. Đó cũng là chỗ cần nó.
+    -- Mã trạng thái phản hồi. ĐÍNH CHÍNH: khi thêm cột này tôi ghi rằng 200
+    -- nghĩa là site đã bị chiếm. Sai, và sai hai lần — đo trên lưu lượng thật
+    -- 2026-09-02, 7 đường dẫn nghi vấn trả 200 mà KHÔNG file nào tồn tại:
+    --   · 3/7 là trang PoW của chính antibot (`challenge/init.lua:14` đặt 200).
+    --   · 4/7 là WordPress: `.htaccess` chuẩn rewrite mọi đường dẫn không phải
+    --     file thật về index.php, và theme trả 200 cho trang 404 đó. Nên trên
+    --     WordPress, 200 là phản hồi MẶC ĐỊNH cho đường dẫn KHÔNG tồn tại.
+    -- Giữ lại vì rẻ và vẫn hữu ích khi đọc cùng `final=`, nhưng thứ thật sự trả
+    -- lời câu hỏi "dò tìm hay đã có sẵn" là `exists=`.
     local status = ngx.status or 0
+
+    -- File đích có thật trên đĩa không, do `waf.run_log` điền. Đây mới là cột
+    -- quyết định: `/wp-content/plugins/shell/about.php` với exists=1 nghĩa là
+    -- file ĐANG NẰM ĐÓ, không phụ thuộc site trả mã gì.
+    local ex     = ctx.waf_target_exists
+    local exists = (ex == true and "1") or (ex == false and "0") or "-"
+
+    -- Phán quyết THẬT của engine, khác với `action=` vốn chỉ là hành động mà
+    -- LUẬT muốn (hằng số "signal"/"block" theo rule_id, không mang thông tin).
+    -- Thiếu cột này thì không đọc được 200 kia là origin hay là trang challenge
+    -- — đúng chỗ đã làm lạc hướng cả một buổi điều tra.
+    local final  = ctx.action or "-"
 
     for i = 1, #hits do
         local h = hits[i]
         fh:write(string.format(
             "[%s] [waf] ts=%d id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
-            .. " richness=%s wpauth=%d status=%d\n",
+            .. " richness=%s wpauth=%d status=%d exists=%s final=%s\n",
             stamp,
             now,
             scrub(id, 64),
@@ -122,7 +129,9 @@ function _M.run(ctx)
             class,
             richness,
             wpauth,
-            status))
+            status,
+            exists,
+            final))
     end
 
     fh:close()

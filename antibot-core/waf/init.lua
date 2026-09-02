@@ -26,12 +26,16 @@ function _M.run_pre(ctx)
     local uri = ngx.var.uri
     if not uri or uri == "" then return false end
 
-    -- Loopback: wp-cron và health check nội bộ đi đường này. `$remote_addr` ở
-    -- đây là IP client thật (không có upstream block) nên 127.0.0.1 đúng nghĩa
-    -- là do chính máy phát ra. Không miễn cả dải private: LAN vẫn phải soi.
-    local ip = ngx.var.remote_addr or ""
-    if ip == "127.0.0.1" or ip == "::1" then return false end
-
+    -- KHÔNG miễn loopback. Miễn trừ cũ không mua được gì: lưu lượng 127.0.0.1
+    -- thật sự chỉ có wp-cron gọi `/wp-cron.php` (đã nằm trong WP_ROOT_OK nên
+    -- không luật nào bắn) và health check gọi `/` (không phải PHP). Đổi lại nó
+    -- mở đúng một đường: SSRF, hoặc PHP của tài khoản khác trên hosting chia sẻ
+    -- curl về localhost — cả hai tới đây với `$remote_addr` = 127.0.0.1.
+    --
+    -- Giới hạn phải nói rõ: `curl 127.0.0.1:8080` đi THẲNG vào Apache, không
+    -- qua OpenResty, nên tầng này không nhìn thấy. Bịt chỗ đó là việc của cấu
+    -- hình Apache + open_basedir, không phải của Lua.
+    local ip   = ngx.var.remote_addr or ""
     local host = ngx.var.host or "-"
 
     local rule_id = wp_paths.check(uri, host)
@@ -73,6 +77,60 @@ function _M.run_pre(ctx)
 
     ngx.exit(403)
     return true
+end
+
+-- Đường dẫn được yêu cầu có phải thứ CÓ THẬT trên đĩa không.
+--
+-- Đây là cột duy nhất phân biệt được "đang dò tìm" với "đã có sẵn", sau khi hai
+-- ứng viên trước đều hỏng khi đối chiếu lưu lượng thật (đo 2026-09-02):
+--   `status` — trang PoW của chính antibot trả 200 (`challenge/init.lua:14`), và
+--      WordPress rewrite mọi thứ về index.php nên soft-404 cũng 200. Đo được:
+--      7/7 đường dẫn nghi vấn trả 200, 0/7 file tồn tại.
+--   `bytes`  — soft-404 render nguyên theme, to hơn output của phần lớn webshell.
+--
+-- CHỈ gọi ở log phase. `io.open` là I/O chặn: ở access phase nó nằm trên đường
+-- đi của mọi request, ở log phase nó chạy sau khi client đã nhận xong phản hồi.
+-- Người gọi phải tự lọc để nó không chạy cho mọi request.
+--
+-- Quyền không phải trở ngại: nginx vốn đã đọc thẳng những thư mục này để phục vụ
+-- file tĩnh (khối `static_fastpath` trong `da_to_openresty.sh`).
+--
+-- Hai giới hạn đã biết, chấp nhận thay vì viết thêm mã:
+--   PATH_INFO `/shell.php/x` trả false dù `shell.php` có thật — nối nguyên `uri`.
+--   Thư mục trả true (`fopen` thành công với thư mục trên glibc). Với cổng đánh
+--   dấu WordPress thì đó lại đúng: `/wp-admin/` tồn tại nghĩa là host này là WP.
+local function target_exists()
+    local root = ngx.var.document_root
+    local uri  = ngx.var.uri
+    if not root or root == "" or not uri or uri == "" then return nil end
+
+    -- `ngx.var.uri` đã được nginx chuẩn hoá và giải mã, `..` bị gỡ trước khi tới
+    -- đây, nên phép nối chuỗi này không mở đường thoát thư mục.
+    local fh = io.open(root .. uri, "r")
+    if not fh then return false end
+    fh:close()
+    return true
+end
+
+-- Nửa log-phase của tầng WAF. Gọi TRƯỚC `waf_logger.run` trong `_M.log()`.
+--
+-- Gộp hai việc vào một hàm vì cả hai cần đúng một phép chạm đĩa: điền
+-- `ctx.waf_target_exists` cho waf.log, và quyết định có đánh dấu host là
+-- WordPress hay không.
+function _M.run_log(ctx)
+    if not ctx then return end
+
+    local hit  = ctx.waf_hits and #ctx.waf_hits > 0
+    local host = ngx.var.host
+    local wp   = wp_paths.needs_mark(ngx.var.uri, host)
+
+    -- Lối ra của gần hết lưu lượng: không luật nào bắn, VÀ host đã được đánh dấu
+    -- (hoặc đường dẫn không phải của WordPress). Không chạm đĩa.
+    if not hit and not wp then return end
+
+    local ex = target_exists()
+    if hit then ctx.waf_target_exists = ex end
+    if wp and ex == true then wp_paths.mark(host) end
 end
 
 return _M

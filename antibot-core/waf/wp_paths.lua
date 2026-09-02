@@ -37,6 +37,11 @@ local pool = require "antibot.core.redis_pool"
 --      `location /` ⇒ proxy sang Apache ⇒ AddHandler VẪN chạy nó như PHP.
 -- Vì trường hợp thứ hai còn nguy hiểm nên vẫn bắt cả hai; đọc waf.log thì nhớ
 -- phân biệt để khỏi đánh giá quá mức mức độ nghiêm trọng.
+--
+-- Khôi phục 2026-09-02 sau khi bị xoá ngoài phiên làm việc: phân biệt này vừa
+-- chứng minh là có tải trọng thật — `/wp-config.php.bak` trả 200 trên
+-- chungkhoanplus.com, và câu "nó được chạy như PHP hay phục vụ nguyên văn kèm
+-- credential MySQL" trả lời được chính nhờ hai nhánh ghi ở trên.
 local RX_PHP_EXEC = [[\.(?:php[0-9]?|phtml|phar|pht|phps)(?=[/;.\\]|$)]]
 
 -- Thư mục con của /wp-content/ mà PHP nằm ở đó là HỢP LỆ.
@@ -97,11 +102,49 @@ local WP_HOST_TTL_REDIS  = 2592000   -- 30 ngày, làm mới mỗi lần thấy
 local WP_HOST_TTL_SHARED = 300       -- cùng mức với ip_classify.lua
 local shared_cache = ngx.shared.antibot_cache
 
-local function mark_wp_host(host)
+-- ĐÁNH DẤU CHẠY Ở LOG PHASE, KHÔNG PHẢI ACCESS PHASE.
+--
+-- Bản đầu đánh dấu ngay trong `check()`, dựa hoàn toàn vào URI do client gõ:
+-- một `GET /wp-admin/` là cờ WordPress sống 30 ngày, trên host bất kỳ. Ba hậu quả:
+--   1. Đầu độc — một request đủ để mọi PHP ở web root của một site code tự viết
+--      bắn `wp_root_unknown`, đúng cỗ máy FP mà cổng này sinh ra để tránh.
+--   2. `host` lấy từ `ngx.var.host` nên Host header bịa cũng tạo được key Redis
+--      TTL 30 ngày ⇒ nguyên thủy ghi không giới hạn, giá một request.
+--   3. Key rác chèn vào shdict `antibot_cache` (dùng chung với ip_classify)
+--      ⇒ đẩy LRU, bán kính nổ vượt ra ngoài WAF.
+--
+-- Cổng mới: chỉ đánh dấu khi đường dẫn WordPress đó là thứ CÓ THẬT trên đĩa.
+-- Host không phải WP không có thư mục `/wp-admin/`; Host header bịa rơi vào
+-- default_server cũng vậy. Kẻ tấn công không tạo được file trên đĩa của người
+-- khác nên không giả được bằng chứng này.
+--
+-- Đã cân nhắc và LOẠI: gác theo mã trạng thái phản hồi. Trên WordPress,
+-- `.htaccess` chuẩn rewrite mọi đường dẫn không phải file thật về `index.php`,
+-- và nhiều theme trả 200 cho chính trang 404 đó — nên 200 là phản hồi MẶC ĐỊNH
+-- cho đường dẫn không tồn tại, đúng trên nền tảng mà luật này nhắm tới.
+-- Đo trên lưu lượng thật 2026-09-02: 7/7 đường dẫn nghi vấn trả 200 nhưng
+-- KHÔNG file nào tồn tại.
+
+-- Có cần chạm đĩa để quyết định đánh dấu không. Rẻ: một lượt shdict + tối đa ba
+-- phép tìm chuỗi. Trả false cho gần hết lưu lượng, nên phép chạm đĩa của người
+-- gọi chỉ xảy ra một lần mỗi 300s cho mỗi host.
+function _M.needs_mark(uri, host)
+    if not uri or not host or host == "" then return false end
+    -- Đã đánh dấu trong 300s gần đây thì thôi. Giá trị 0 (âm, do `is_wp_host`
+    -- cache lại) KHÔNG chặn ở đây — nhờ vậy một host mới cài WordPress vẫn tự
+    -- được nhận ra thay vì kẹt ở kết quả âm cũ.
+    if shared_cache and shared_cache:get("wphost:" .. host) == 1 then
+        return false
+    end
+    local low = uri:lower()
+    return low:find("/wp-content/",  1, true) ~= nil
+        or low:find("/wp-admin/",    1, true) ~= nil
+        or low:find("/wp-includes/", 1, true) ~= nil
+end
+
+function _M.mark(host)
     if not host or host == "" then return end
     if shared_cache then
-        -- Đã ghi trong 300s gần đây thì khỏi chạm Redis lần nữa.
-        if shared_cache:get("wphost:" .. host) == 1 then return end
         shared_cache:set("wphost:" .. host, 1, WP_HOST_TTL_SHARED)
     end
     pool.safe_set("waf:wphost:" .. host, "1", WP_HOST_TTL_REDIS)
@@ -129,12 +172,9 @@ function _M.check(uri, host)
 
     local wc = low:find("/wp-content/", 1, true)
 
-    -- Đánh dấu host là WordPress ngay cả khi request không phải PHP: ảnh và CSS
-    -- dưới /wp-content/ là bằng chứng chắc chắn nhất, và cũng là loại request
-    -- nhiều nhất trên site WP.
-    if wc or low:find("/wp-admin/", 1, true) or low:find("/wp-includes/", 1, true) then
-        mark_wp_host(host)
-    end
+    -- Không đánh dấu host ở đây nữa — `check()` chạy ở access phase và giờ CHỈ
+    -- ĐỌC. Việc ghi chuyển sang `needs_mark`/`mark`, gọi từ `waf.run_log` ở log
+    -- phase, nơi có thể chạm đĩa để xác minh. Lý do đầy đủ ở khối trên `needs_mark`.
 
     -- Không trỏ tới file PHP thì cả bốn luật đều không áp dụng. Đây là lối ra
     -- của tuyệt đại đa số request, và nó chỉ tốn một lượt regex.
@@ -153,8 +193,19 @@ function _M.check(uri, host)
         return nil                                 -- themes/, mu-plugins/
     end
 
-    local file = low:match("^/([^/]+)$")
-    if file and not WP_ROOT_OK[file] and is_wp_host(host) then
+    -- Segment ĐẦU, không neo `$`. Bản cũ dùng `^/([^/]+)$` nên `/shell.php/x`
+    -- ra nil và lọt sạch — đúng cái PATH_INFO mà lookahead `/` trong
+    -- RX_PHP_EXEC dựng ra để bắt, rồi bị cái neo này vứt đi. Không phải giả
+    -- thuyết: `/wp-content/plugins/us.php/` đã xuất hiện trong waf.log thật, nên
+    -- kẻ tấn công trên máy này biết dùng PATH_INFO.
+    --
+    -- Phải kiểm đuôi PHP trên CHÍNH segment đó: guard phía trên chỉ bảo đảm URI
+    -- có đuôi PHP ở đâu đó, nên `/foo/bar.php` vẫn phải ra nil (bar.php không ở
+    -- web root). Và `/index.php/2020/01/bai-viet/` giữ nguyên hành vi cũ —
+    -- permalink dạng PATHINFO của WordPress — vì index.php nằm trong WP_ROOT_OK.
+    local seg = low:match("^/([^/]+)")
+    if seg and ngx.re.find(seg, RX_PHP_EXEC, "jo")
+       and not WP_ROOT_OK[seg] and is_wp_host(host) then
         return "wp_root_unknown"
     end
 

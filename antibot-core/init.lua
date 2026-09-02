@@ -202,6 +202,9 @@ function _M.log()
     end
 
     logger.run(ctx)
+    -- run_log TRƯỚC waf_logger: nó điền `ctx.waf_target_exists` mà waf.log đọc,
+    -- và là nơi DUY NHẤT đánh dấu host là WordPress (access phase chỉ đọc cờ đó).
+    waf_layer.run_log(ctx)
     waf_logger.run(ctx)
 end
 
