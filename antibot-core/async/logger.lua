@@ -275,8 +275,14 @@ end
 local function write_log_line(line)
     local fh, err = io.open(LOG_FILE, "a")
     if not fh then
-        -- Fallback to nginx error log only on open failure (permission, missing dir)
-        ngx.log(ngx.WARN, "[antibot] cannot open log file: ", tostring(err))
+        -- ngx.ERR, KHÔNG phải WARN. Chú thích cũ ở đây hứa "fallback sang nginx
+        -- error log" nhưng lời hứa đó chưa bao giờ thành hiện thực:
+        -- `da_to_openresty.sh:313` sinh `error_log <path>;` KHÔNG kèm mức, nên
+        -- nginx lấy mặc định `error` và mọi WARN trong server block per-domain
+        -- bị lọc sạch. Nghĩa là hỏng đúng thứ đáng báo nhất — mất toàn bộ
+        -- antibot.log vì sai quyền hay thiếu thư mục — lại là thứ im lặng nhất.
+        ngx.log(ngx.ERR, "[antibot] cannot open log file: ", tostring(err),
+                " — MAT TOAN BO antibot.log. Kiem /var/log/antibot va quyen user `nginx`.")
         return
     end
     fh:write(line, "\n")
