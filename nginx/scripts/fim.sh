@@ -53,9 +53,31 @@ scan() {
 }
 
 mode="${1:-}"; [ -n "$mode" ] || usage
-dry=0; [ "${2:-}" = "--dry" ] && dry=1
+shift
+dry=0; verbose=0
+for a in "$@"; do
+    case "$a" in
+        --dry)        dry=1 ;;
+        -v|--verbose) verbose=1 ;;
+        *)            usage ;;
+    esac
+done
 
 mkdir -p "$STATE" || { echo "khong tao duoc $STATE" >&2; exit 2; }
+
+# KHOA CHONG CHAY CHONG. Bat buoc khi chay day (moi 15 phut): neu mot lan quet
+# lau hon khoang cach giua hai lan, hai tien trinh se cung ghi $MANIFEST va ban
+# ghi thang nao ket thuc sau thi thang. Hau qua khong phai bao dong sai ma la
+# BO SOT: manifest bi ghi de bang anh chup cu hon, va thay doi giua hai moc do
+# bien mat vinh vien.
+#
+# `-n` = khong doi. Lan chay bi trung se thoat im lang: no khong co gi de bao,
+# lan dang chay se bao.
+exec 9>"$STATE/.lock" || { echo "khong mo duoc lockfile" >&2; exit 2; }
+if ! flock -n 9; then
+    [ $verbose -eq 1 ] && echo "dang co lan chay khac, bo qua"
+    exit 0
+fi
 
 if [ "$mode" = "baseline" ]; then
     scan > "$MANIFEST" || { echo "quet that bai" >&2; exit 2; }
@@ -88,7 +110,10 @@ awk -F'|' '
 total=$(wc -l < "$diff_out")
 if [ "$total" -eq 0 ]; then
     [ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
-    echo "khong co thay doi nao"
+    # IM LANG khi khong co gi. cron gui mail theo BAT KY dong stdout nao, khong
+    # phai theo ma thoat — in "khong co thay doi" moi 15 phut la 96 mail/ngay,
+    # va hop thu bi nhan chim thi canh bao that cung chim theo.
+    [ $verbose -eq 1 ] && echo "khong co thay doi nao"
     exit 0
 fi
 
@@ -142,10 +167,18 @@ report=$(awk -F'|' -v max="$GROUP_MAX" '
 # nhat phan mem — bao dong o do la bien script thanh thu khong ai doc nua.
 crit=$(printf '%s\n' "$report" | grep -E '^(CRITICAL|HIGH) ' | grep -vc 'cap nhat')
 
-{
-    echo "=== FIM $(date '+%Y-%m-%d %H:%M') — $total thay doi, $crit dang chu y ==="
+header="=== FIM $(date '+%Y-%m-%d %H:%M') — $total thay doi, $crit dang chu y ==="
+
+# LOG luon nhan day du, ke ca ROUTINE: khi dieu tra mot vu thi lich su cap nhat
+# plugin lai la thu can doi chieu.
+{ echo "$header"; printf '%s\n' "$report"; } >> "$LOG"
+
+# stdout — tuc mail cua cron — CHI khi co gi dang chu y. Cap nhat plugin dinh ky
+# ma cung gui mail thi vai tuan nua khong ai mo mail cua no nua.
+if [ "$crit" -gt 0 ] || [ $verbose -eq 1 ]; then
+    echo "$header"
     printf '%s\n' "$report"
-} | tee -a "$LOG"
+fi
 
 [ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
 
