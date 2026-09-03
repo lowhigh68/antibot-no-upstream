@@ -148,16 +148,32 @@ local function check_verified_cookie(ctx)
     return false
 end
 
--- Có tín hiệu WAF nào đang chờ `compute.lua` đọc không.
+-- Có tín hiệu WAF nào đủ sức lật cửa thoát tin cậy không.
 --
--- MỘT nguồn sự thật cho cả hai cửa thoát tin cậy bên dưới. Danh sách này phải
--- được mở rộng mỗi khi `waf/` thêm một tín hiệu — quên là tín hiệu đó bị nuốt
--- trong im lặng với mọi client có cookie verified, tức đúng lỗ hổng mà cả tầng
--- WAF sinh ra để bịt (đã xảy ra một lần với `waf_arg`, từ `f9124a3`).
+-- MỘT nguồn sự thật cho cả hai cửa bên dưới.
+--
+-- TIÊU CHÍ VÀO DANH SÁCH NÀY LÀ TRỌNG SỐ, KHÔNG PHẢI "có phải tín hiệu WAF".
+-- Chỉ tín hiệu có `DEFAULT_WEIGHTS > 0` mới được vào. Tín hiệu trọng số 0 đang
+-- ở chế độ quan sát: nó phải KHÔNG đổi gì trong hành vi hệ thống, kể cả luồng
+-- đi của request.
+--
+-- Vì sao ranh giới nằm đúng ở đó. Bản `3a99bdc` để `waf_arg` (trọng số 0) trong
+-- danh sách này, và hậu quả không phải là chi phí — nó đầu độc chính phép đo mà
+-- chế độ quan sát sinh ra để phục vụ. Một client có cookie verified gửi
+-- `?f=../x` mất fast-path, chạy hết pipeline, rồi bị một tín hiệu KHÁC đưa lên
+-- challenge. waf.log ghi `rule=arg_traversal ... final=challenge`, đọc lên
+-- tưởng luật gây FP — trong khi nó cộng 0 điểm. Nhưng cũng không vô can: không
+-- có luật thì request đã `allow`. Luật đổi phán quyết qua đường ĐỔI LUỒNG chứ
+-- không qua điểm số, và cột `final=` vốn thêm vào để chống lệch lại là chỗ lệch.
+--
+-- `contract_test.lua` kiểm HAI CHIỀU theo trọng số, nên danh sách này không còn
+-- phải nhớ bằng tay: quên nối một tín hiệu có trọng số → chiều một báo đỏ; để
+-- sót một tín hiệu trọng số 0 ở đây → chiều hai báo đỏ. Ngày nâng `waf_arg` lên
+-- khỏi 0, sửa `compute.lua` rồi chạy `[3b]` là biết phải thêm gì vào đây.
 --
 -- KHÔNG gộp `ctx.waf_body` vào đây: đó là telemetry thuần, không phải tín hiệu.
 local function waf_signal(ctx)
-    return ctx.waf_wp_path or ctx.waf_arg or ctx.waf_body_arg
+    return ctx.waf_wp_path
 end
 
 function _M.run()
@@ -180,16 +196,13 @@ function _M.run()
     -- lật một lối tắt dựa trên DANH TÍNH. Cookie kia chỉ chứng minh client đã
     -- giải một PoW `difficulty = "000"` — vài chục ms với trình duyệt, và với
     -- kẻ tấn công là 7200s soi-không-tới nếu không có điều kiện này.
-    -- `waf_signal(ctx)` chứ KHÔNG phải `not ctx.waf_wp_path`.
+    -- Gọi qua `waf_signal(ctx)` chứ KHÔNG so thẳng `not ctx.waf_wp_path`: danh
+    -- sách tín hiệu nào đủ tư cách lật cửa này thuộc về một chỗ duy nhất, và
+    -- tiêu chí của nó là trọng số — xem khối chú thích của `waf_signal` ở trên.
     --
-    -- Bản trước liệt kê đúng MỘT tín hiệu, và tới `f9124a3` khi thêm `waf_arg`
-    -- thì hợp đồng ghi ngay trên đây trở thành sai mà không ai sửa: một request
-    -- có cookie verified kèm `?f=php://filter/...` vẫn được phát hiện, vẫn vào
-    -- waf.log, nhưng thoát TRƯỚC `compute.lua` nên không tác động gì tới phán
-    -- quyết. Đúng lỗ hổng mà cả khối chú thích này viết ra để bịt.
-    --
-    -- Hàm gom lại là để lần sau thêm tín hiệu WAF thì chỉ phải sửa MỘT chỗ, chứ
-    -- không phải nhớ ra hai cửa thoát nằm cách nhau 15 dòng.
+    -- Hàm gom lại cũng để lần sau nâng một tín hiệu WAF lên khỏi trọng số 0 thì
+    -- chỉ phải sửa MỘT chỗ, chứ không phải nhớ ra hai cửa thoát nằm cách nhau
+    -- 15 dòng. `f9124a3` đã quên đúng chuyện đó với `waf_arg`.
     local verified = check_verified_cookie(ctx)
     if verified and not waf_signal(ctx) then return end
 

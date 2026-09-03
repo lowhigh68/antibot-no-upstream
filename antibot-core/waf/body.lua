@@ -66,6 +66,48 @@ local function count_args(body, family)
     return n
 end
 
+-- Lan khop co nam TRONG mot `filename=` cua multipart khong.
+--
+-- COT PHAN TANG, KHONG PHAI LUAT. No khong chan gi, khong doi diem — no tra
+-- loi mot cau hoi ma phan bo hien tai KHONG tra loi duoc: trong so lan
+-- `arg_rule` ban tren than multipart, bao nhieu la ten file (gan nhu chac chan
+-- la tan cong) va bao nhieu la NOI DUNG file/bai viet (gan nhu chac chan la FP).
+--
+-- Vi sao them cot thay vi thu hep luat ngay. Thu hep bay gio la ra ket luan
+-- roi moi di tim du lieu ung ho no: se khong bao gio biet noi dung tu do ban
+-- bao nhieu lan, ma do dung la con so can de quyet dinh co nen thu hep hay
+-- khong. Trong so dang la 0 nen quet rong khong ton gi ngoai mot dong log.
+--
+-- CACH XAC DINH. Cau truc mot phan multipart:
+--     --BOUNDARY\r\n
+--     Content-Disposition: form-data; name="f"; filename="../../x.php"\r\n
+--     \r\n
+--     <noi dung file>\r\n
+-- Ten file nam TREN CUNG MOT DONG voi `filename=`; noi dung file thi nam sau
+-- mot dong trong. Nen phep kiem dung la "cung dong", khong phai mot cua so
+-- nhin-lui tuy y — cua so thi phai chon do rong, ma moi lua chon deu sai voi
+-- mot header du dai.
+--
+-- Chi chay khi `arg_rule` DA ban, tuc gan nhu khong bao gio. Chi phi tren luu
+-- luong thuong bang 0.
+--
+-- `at` chi co nghia voi `decode == false`, va multipart luon la truong hop do
+-- — xem chu thich cua `args.check`.
+local function in_filename(body, family, at)
+    if not at or family ~= "multipart" then return nil end
+
+    -- Dau dong chua vi tri `at`: dau xuong dong cuoi cung TRUOC no.
+    local bol, p = 0, 1
+    while true do
+        local i = body:find("\n", p, true)
+        if not i or i >= at then break end
+        bol = i
+        p = i + 1
+    end
+
+    return body:sub(bol + 1, at - 1):lower():find("filename=", 1, true) ~= nil
+end
+
 -- Chay trong `waf.run_pre`, TRUOC cua thoat tin cay — cung ly do ca tang WAF
 -- dung o do: cookie `verified` song 7200s, va danh tinh da xac minh khong noi gi
 -- ve NOI DUNG request.
@@ -116,13 +158,36 @@ function _M.probe(ctx)
         ctx.waf_body = {
             family   = family,
             spill    = spilled,
-            len      = -1,
+            -- `-1` CHI cho spill: do dai co that, ta khong doc. Voi hai truong
+            -- hop con lai (khong co body / body rong) thi do dai DA BIET va
+            -- bang 0 — ghi `-1` o do la gop "khong biet" vao mot gia tri, dung
+            -- toi da lam voi `php = false` ngay ben duoi, va no se thoi phong
+            -- chinh con so dung de chon `client_body_buffer_size`.
+            len      = spilled and -1 or 0,
             php      = nil,
             nargs    = nil,
             arg_rule = nil,
+            fnm      = nil,
         }
         return
     end
+
+    -- Ba luat tham so, ap len than request. `args.check` khong biet gi ve NGUON
+    -- chuoi no nhan, nen dung lai nguyen ven — cung ba mau, cung vong giai ma.
+    --
+    -- Co ap cho multipart: `../` trong TEN FILE cua mot phan multipart la dung
+    -- ky thuat traversal khi upload, va no khong xuat hien o dau khac.
+    --
+    -- KHAC BIET THAT SU so voi query string, va la ly do nay chi la SIGNAL:
+    -- than request chua NOI DUNG NGUOI DUNG SOAN. Mot quan tri vien viet bai ve
+    -- stream wrapper PHP roi bam Luu se gui `php://` trong than POST toi
+    -- /wp-admin/post.php. Query string khong bao gio co chuyen do.
+    --
+    -- `decode` CHI bat cho urlencoded. Da giai thich day du o `args.check`:
+    -- giai ma mot noi dung khong phai percent-encoding la dien giai sai ban
+    -- chat du lieu va TU TAO ra duong tinh gia — mot file .txt upload chua
+    -- chuoi ky tu `%2e%2e%2f` se bien thanh `../` sau mot lan unescape.
+    local rule, at = args.check(body, family == "urlencoded")
 
     ctx.waf_body = {
         family = family,
@@ -131,27 +196,7 @@ function _M.probe(ctx)
         -- Mot luot PCRE da JIT tren toi da `client_body_buffer_size` byte.
         php    = ngx.re.find(body, RX_PHP_OPEN, "ijo") ~= nil,
         nargs  = count_args(body, family),
-
-        -- Ba luat tham so, ap len than request. `args.check` khong biet gi ve
-        -- NGUON chuoi no nhan, nen dung lai nguyen ven — cung ba mau, cung vong
-        -- giai ma 3 muc, cung 35 assertion da kiem.
-        --
-        -- Co ap cho multipart: `../` trong TEN FILE cua mot phan multipart la
-        -- dung ky thuat traversal khi upload, va no khong xuat hien o dau khac.
-        --
-        -- KHAC BIET THAT SU so voi query string, va la ly do nay chi la SIGNAL:
-        -- than request chua NOI DUNG NGUOI DUNG SOAN. Mot quan tri vien viet bai
-        -- ve stream wrapper PHP roi bam Luu se gui `php://` trong than POST toi
-        -- /wp-admin/post.php. Query string khong bao gio co chuyen do. FP o day
-        -- vo hai (50 diem duoi CHALLENGE, va `auth_session_cap` da chan quan tri
-        -- vien dang nhap o muc monitor) nhung phai DEM duoc truoc khi tinh
-        -- chuyen nang len block.
-        -- `decode` CHI bat cho urlencoded. Da giai thich day du o `args.check`:
-        -- giai ma mot noi dung khong phai percent-encoding la dien giai sai ban
-        -- chat du lieu va TU TAO ra duong tinh gia — mot file .txt upload chua
-        -- chuoi ky tu `%2e%2e%2f` se bien thanh `../` sau mot lan unescape.
-        arg_rule = args.check(body, family == "urlencoded"),
+        arg_rule = rule,
+        fnm    = in_filename(body, family, at),
     }
 end
-
-return _M

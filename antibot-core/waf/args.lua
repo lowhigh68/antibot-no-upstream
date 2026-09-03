@@ -73,6 +73,15 @@ local MAX_DECODE = 3
 --
 -- Tien the: giam tu toi da 9 luot regex + 2 lan cap phat chuoi 64k xuong con 3
 -- luot regex + 0 cap phat cho nhom multipart/json/binary.
+--
+-- Tra ve `rule_id, from` — `from` la vi tri byte cua lan khop.
+--
+-- `from` CHI CO NGHIA KHI `decode == false`. Luc do vong lap chay dung mot luot
+-- tren `s = args:lower()`, ma `lower()` giu nguyen do dai byte, nen `from` anh
+-- xa 1:1 sang chuoi goc. Voi `decode == true` thi `s` co the la ban da giai ma
+-- — do dai khac han — nen `from` tro vao mot chuoi khong con ton tai. Nguoi goi
+-- duy nhat dung `from` la `body.lua` cho multipart, va multipart luon
+-- `decode = false`.
 function _M.check(args, decode)
     if not args or args == "" then return nil end
     if decode == nil then decode = true end
@@ -82,9 +91,10 @@ function _M.check(args, decode)
         -- Thu tu theo do CHAC CHAN giam dan, vi chi tra ve mot rule_id: NUL va
         -- wrapper gan nhu khong the la nham lan, con `../` thi hiem khi nhung
         -- van co the la mot URL tuong doi trong tham so redirect.
-        if ngx.re.find(s, RX_NULLBYTE,  "jo") then return "arg_null_byte"   end
-        if ngx.re.find(s, RX_WRAPPER,   "jo") then return "arg_php_wrapper" end
-        if ngx.re.find(s, RX_TRAVERSAL, "jo") then return "arg_traversal"   end
+        local from
+        from = ngx.re.find(s, RX_NULLBYTE,  "jo"); if from then return "arg_null_byte",   from end
+        from = ngx.re.find(s, RX_WRAPPER,   "jo"); if from then return "arg_php_wrapper", from end
+        from = ngx.re.find(s, RX_TRAVERSAL, "jo"); if from then return "arg_traversal",   from end
 
         if not decode or i == MAX_DECODE then break end
         local dec = ngx.unescape_uri(s)
@@ -115,27 +125,69 @@ end
 local MAX_NAMES = 8
 local MAX_NAME_LEN = 32
 
+-- Ten tham so cung la DU LIEU KE GUI DIEU KHIEN. `waf_logger.scrub` da ep ve
+-- ASCII in duoc nen khong gia mao duoc dong log, nhung `,` `:` `<` `>` van
+-- song sot va lam nhieu dung dinh dang `<a,b:35>` cua chinh ham nay. Ep ve mot
+-- bang chu cai hep. Thay bang `_` chu KHONG bam: `describe()` ton tai de nguoi
+-- doc log hieu ngay, mot hash bien no thanh thu phai tra nguoc, con `_` da noi
+-- du rang cho do co ky tu la va `:35` van giu do dai that.
+local function safe_name(name)
+    return (name:gsub("[^A-Za-z0-9_.%-]", "_"))
+end
+
 function _M.describe(qs)
     if not qs or qs == "" then return "-" end
 
     local names, n = {}, 0
     local pos = 1
+
+    -- `truncated` = co phai ta dung vi CHAM TRAN MAX_NAMES khong.
+    --
+    -- Ban truoc hoi sai cau: no kiem "phia sau `pos` con dau `&` nao khong".
+    -- Voi dung 9 tham so, vong 8 xu ly tham so thu 8 va day `pos` toi dau tham
+    -- so thu 9 — la tham so CUOI, khong con `&` nao phia sau — nen marker `,+`
+    -- khong xuat hien va 9 tham so hien ra y het 8. Marker chi bat dau dung tu
+    -- 10 tro len. Co nay hoi dung cau can hoi.
+    local truncated = true
     while n < MAX_NAMES do
         local amp = qs:find("&", pos, true)
         local pair = amp and qs:sub(pos, amp - 1) or qs:sub(pos)
         local eq = pair:find("=", 1, true)
-        local name = eq and pair:sub(1, eq - 1) or pair
-        if name ~= "" then
-            n = n + 1
-            names[n] = #name > MAX_NAME_LEN
-                and (name:sub(1, MAX_NAME_LEN) .. "~") or name
+
+        local name, keyonly
+        if eq then
+            name = pair:sub(1, eq - 1)
+        elseif pair ~= "" then
+            -- THAM SO KHONG CO DAU `=`: ca chuoi CHINH LA gia tri.
+            --
+            -- Ghi "ten" o day la ghi noi dung ra log — dung thu ca ham nay sinh
+            -- ra de tranh. Mot token dat trong query dang key-only (`?<token>`)
+            -- se ro 32 ky tu dau qua duong nay, va whitelist ky tu KHONG cuu
+            -- duoc: mot token base64 toan [A-Za-z0-9] di qua bo loc nguyen ven.
+            -- Nen khong ghi gi ca, chi ghi rang co mot tham so dang do.
+            name, keyonly = "?", true
         end
-        if not amp then break end
+
+        if name and name ~= "" then
+            -- `?` la nhan CUA TA, khong phai du lieu ke gui — khong dua qua
+            -- `safe_name` (no se doi `?` thanh `_`, lan voi mot ten that co ky
+            -- tu la) va khong can cat do dai.
+            if not keyonly then
+                name = safe_name(name)
+                if #name > MAX_NAME_LEN then
+                    name = name:sub(1, MAX_NAME_LEN) .. "~"
+                end
+            end
+            n = n + 1
+            names[n] = name
+        end
+        if not amp then truncated = false; break end
         pos = amp + 1
     end
 
     if n == 0 then return "<:" .. #qs .. ">" end
-    local more = (qs:find("&", pos, true) and n >= MAX_NAMES) and ",+" or ""
+    -- `pos <= #qs` de mot dau `&` thua o cuoi khong bia ra tham so thu 9.
+    local more = (truncated and pos <= #qs) and ",+" or ""
     return "<" .. table.concat(names, ",") .. more .. ":" .. #qs .. ">"
 end
 

@@ -120,7 +120,7 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
-        .. " argrule=%s smp=%d\n",
+        .. " argrule=%s fnm=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -140,9 +140,16 @@ function _M.run_body(ctx)
         ctx.req_class or "-",
         ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-",
         -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
-        -- cung `id=`+`ts=` de biet cai do la than hay query string — dong `[waf]`
+        -- cung `rid=` de biet cai do la than hay query string — dong `[waf]`
         -- phan biet bang cot `target=` (ARGS / BODY).
         b.arg_rule or "-",
+        -- Lan khop nam trong `filename=` cua multipart (1) hay o noi dung khac
+        -- (0); `-` khi khong ap dung — khong phai multipart, hoac khong luat
+        -- nao ban. Cot PHAN TANG de doc phan bo, khong tac dong gi toi phan
+        -- quyet. Doc cung `family=` va `richness=`: ten file la tan cong, noi
+        -- dung bai viet la FP, va hai cai do phai tach duoc TRUOC khi tinh
+        -- chuyen `waf_body_arg` len khoi trong so 0.
+        (b.fnm == nil) and "-" or (b.fnm and "1" or "0"),
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --

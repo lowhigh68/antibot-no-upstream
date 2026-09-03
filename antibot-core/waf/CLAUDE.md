@@ -107,7 +107,20 @@ Ba chi tiết mẫu là chịu lực:
 
 **Bắn ĐỘC LẬP với luật đường dẫn**, không phải nhánh `else`. Hai nguồn bằng chứng về hai phần khác nhau của cùng một request; gộp vào chuỗi "khớp nhiều nhất một luật" sẽ làm cái thứ hai biến mất mỗi khi cái thứ nhất đã bắn. Một request mang **cả hai** thì hai tín hiệu cộng lại và mới vượt ngưỡng — đó chính là lý do phải tách.
 
-Tín hiệu riêng `waf_arg = 50` trong `compute.lua`, **không** dùng chung `waf_wp_path`: hai họ luật có bản chất FP khác hẳn nhau (đường dẫn PHP lạ là chuyện site tự viết vẫn làm; `php://` trong tham số thì không), nên phải hiệu chỉnh riêng được.
+Tín hiệu riêng `waf_arg`, **không** dùng chung `waf_wp_path`: hai họ luật có bản chất FP khác hẳn nhau (đường dẫn PHP lạ là chuyện site tự viết vẫn làm; `php://` trong tham số thì không), nên phải hiệu chỉnh riêng được. Thân request tách tiếp thành `waf_body_arg` — nó chứa **nội dung người dùng soạn**, dân số FP khác hẳn query string.
+
+**Cả hai đang ở trọng số 0 — chế độ quan sát.** Và "quan sát" ở đây có nghĩa hẹp hơn nó nghe: tín hiệu trọng số 0 **không được có mặt trong `waf_signal()`** ở `antibot/init.lua`.
+
+Vì sao ranh giới nằm đúng ở đó. `waf_signal()` quyết định tín hiệu nào đủ sức vô hiệu cookie fast-path. Bản `3a99bdc` để `waf_arg` trong danh sách đó, nên một client có cookie verified gửi `?f=../x` mất fast-path, chạy hết pipeline, rồi có thể bị một tín hiệu **khác** đưa lên challenge. `waf.log` ghi `rule=arg_traversal … final=challenge` và người đọc kết luận luật gây FP — trong khi nó cộng 0 điểm. Nhưng cũng không vô can: không có luật thì request đã `allow`. Luật đổi phán quyết qua đường **đổi luồng**, không qua điểm số — lệch âm thầm đúng trên cột `final=` vốn thêm vào để chống lệch.
+
+`waf/scripts/contract_test.lua` kiểm **hai chiều** theo trọng số, nên danh sách trong `init.lua` không còn phải nhớ bằng tay:
+
+| Trọng số trong `DEFAULT_WEIGHTS` | Bắt buộc |
+|---|---|
+| `> 0` | **PHẢI** có trong `waf_signal()` — thiếu là tín hiệu bị nuốt im lặng với mọi client đã giải PoW |
+| `== 0` | **KHÔNG ĐƯỢC** có trong `waf_signal()` — thừa là chế độ quan sát đang đổi luồng request |
+
+Ngày nâng `waf_arg` lên khỏi 0: sửa `compute.lua`, chạy `[3b]`, cổng sẽ nói phải thêm gì vào `waf_signal()`.
 
 Cả ba là `signal`. Ngay cả 1.00 × 50 = 50 điểm vẫn dưới CHALLENGE(55) — **không luật nào tự mình phán quyết được**. Nâng lên `block` hay không là việc của số liệu sau vài ngày đọc `waf.log`, không phải của trực giác.
 
@@ -326,6 +339,17 @@ Tách nhãn chứ **không** thêm cột vào dòng luật: dòng `[waf]` có 19
 grep -F '[waf-body]' /var/log/antibot/waf.log
 ```
 
+**`[waf-body]` được LẤY MẪU.** Dòng "đáng chú ý" (`php`, `argrule`, `spill`) luôn ghi; phần còn lại chỉ ghi 1/20. Cột `smp=` là **hệ số nhân** (1 hoặc 20) — nhân lên trước khi kết luận bất cứ điều gì về số lượng. Hệ quả cho người vận hành: **một POST bình thường gửi thử có 95% khả năng không xuất hiện**, nên phép thử khói phải dùng body *đáng chú ý*:
+
+```bash
+curl -s -X POST -d 'x=<?php' https://<host>/ -o /dev/null   # ép một dòng [waf-body]
+curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [waf] target=ARGS
+```
+
+**`fnm=` là cột phân tầng, không phải luật.** Trên thân multipart, `argrule` đang gộp hai dân số ngược nhau: `../` trong **tên file** (gần như chắc chắn là tấn công) và `../` trong **nội dung** file/bài viết (gần như chắc chắn là FP). `fnm=1` nghĩa là chỗ khớp nằm cùng dòng với một `filename=`; `fnm=0` là nằm chỗ khác; `fnm=-` là không áp dụng (không phải multipart, hoặc không luật nào bắn).
+
+Đây là dữ liệu phải có **trước** khi quyết định nâng `waf_body_arg` lên khỏi 0 — thu hẹp luật trước khi đo là ra kết luận rồi mới đi tìm dữ liệu ủng hộ nó.
+
 ### Ba cột phải đọc cùng nhau
 
 | Cột | Trả lời câu gì |
@@ -373,6 +397,14 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-04 — **Chế độ quan sát trở thành quan sát thật + bốn lỗi telemetry từ bản review.**
+  - **`waf_signal()` chỉ còn `waf_wp_path`.** Tín hiệu trọng số 0 (`waf_arg`, `waf_body_arg`) không còn vô hiệu cookie fast-path. Trước đó chúng đổi **luồng đi** của request mà không đổi điểm — client verified gửi `?f=../x` chạy hết pipeline rồi có thể bị tín hiệu khác đưa lên challenge, và `waf.log` ghi `rule=arg_traversal … final=challenge` như thể luật gây ra. `contract_test.lua` nay kiểm **hai chiều** theo trọng số nên hợp đồng tự bảo trì.
+  - **`body.lua`: `len = spilled and -1 or 0`.** `-1` chỉ đúng cho spill (độ dài có thật, không đọc). Với "không có body / body rỗng" thì độ dài **đã biết** và bằng 0 — ghi `-1` ở đó là gộp "không biết" vào một giá trị, đúng lỗi đã sửa với `php = false`, và nó thổi phồng chính con số dùng để chọn `client_body_buffer_size`.
+  - **`describe()`: marker `,+` sai ở đúng 9 tham số.** Hàm hỏi "phía sau còn `&` không" thay vì "có phải dừng vì chạm trần không": vòng thứ 8 đẩy `pos` tới tham số **cuối**, không còn `&`, nên 9 tham số hiện ra y hệt 8. Thay bằng cờ `truncated`, thêm test neo cả hai mép (7/8/9/10 + dấu `&` thừa).
+  - **`describe()`: tham số key-only làm rò chính thứ hàm này sinh ra để che.** `?<token>` không có `=` thì cả chuỗi thành "tên" và bị ghi 32 ký tự đầu; whitelist ký tự **không** cứu được vì token base64 toàn `[A-Za-z0-9]`. Nay ghi `?`. Tên có `=` thì ép về `[A-Za-z0-9_.-]` (thay `_`, **không** băm — băm làm log mất tính đọc được ngay).
+  - **Cột `fnm=` mới trên `[waf-body]`** — phân tầng, không phải luật. Tách "khớp trong `filename=`" (tấn công) khỏi "khớp trong nội dung" (FP) trên thân multipart, bằng phép kiểm *cùng dòng* chứ không phải cửa sổ nhìn-lui. Chỉ chạy khi `arg_rule` đã bắn ⇒ chi phí trên lưu lượng thường bằng 0. Đây là dữ liệu phải có **trước** khi nâng `waf_body_arg` khỏi 0 — thu hẹp luật trước khi đo là ra kết luận rồi mới tìm dữ liệu ủng hộ.
+  - **`contract_test.lua` ghi rõ tính bất đối xứng của nó:** nó tìm chuỗi trong mã nguồn, không phân tích cú pháp Lua. **Báo đỏ ⇒ chắc chắn có lỗi. Báo xanh ⇒ không chứng minh được gì.** Một `name == "waf_arg"` nằm trong chú thích vẫn làm phép kiểm qua.
 
 - 2026-09-02 (`0e27ae0`) — Ghi lại vì sao 94% tầng nóng là `wp-includes`/`wp-admin`. Chỉ chú thích. Chú thích cũ khai tầng nóng gồm "mu-plugins, web root, wp-content drop-in" — tức **nói dối về 94% thứ mình đang làm**, và người đọc sau sẽ cắt nhầm.
 - 2026-09-02 (`822fb41`) — 4 lỗi làm tầng nóng chết ngay từ baseline. Glob không khớp → `find` trả 1 → `pipefail` giết pipeline; `scan_full` có y hệt lỗ đó; chốt an toàn tường minh thay chỗ chặn tình cờ của `pipefail`; vòng xác minh Redis so với hằng số `"1"` trong khi giá trị ghi là `1.0` → **báo hỏng ở mọi lần chạy dù Redis khoẻ** (lỗi do chính `99947ac` gây ra).

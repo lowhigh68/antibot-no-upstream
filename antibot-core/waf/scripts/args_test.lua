@@ -143,13 +143,48 @@ dcheck("code=oauth_secret_abc&state=xyz",
        "<code,state:31>",       "OAuth authorization code")
 dcheck("s=ao+dai",              "<s:8>",  "o tim kiem — gia tri cung khong ghi")
 dcheck("",                      "-",      "rong")
-dcheck("khongcodau",            "<khongcodau:10>", "khong co dau bang")
 dcheck("=chigiatri",            "<:10>",  "khong co ten tham so")
+
+-- THAM SO KHONG CO DAU `=`: ca chuoi chinh la gia tri, nen ghi "ten" o day la
+-- ghi noi dung. Mot token dat trong query dang key-only di qua duong nay se ro
+-- 32 ky tu dau, va whitelist ky tu KHONG cuu duoc vi token base64 toan
+-- [A-Za-z0-9]. Ghi `?`: co mot tham so dang do, khong noi no la gi.
+dcheck("khongcodau",            "<?:10>", "key-only — KHONG duoc ghi noi dung")
+dcheck("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdef",
+       "<?:43>",                "JWT dat tran trong query — chi ghi `?`")
+dcheck("a=1&SECRETTOKEN",       "<a,?:15>", "key-only nam sau mot tham so thuong")
 
 -- Chan do dai: mot ten tham so dai bat thuong cung la du lieu ke tan cong dieu
 -- khien, khong duoc de no chiem het dong log.
 local long = string.rep("k", 60)
 dcheck(long .. "=1", "<" .. string.rep("k", 32) .. "~:62>", "ten dai bi cat")
+
+-- TEN THAM SO LA DU LIEU KE GUI DIEU KHIEN. `scrub` ben waf_logger da chan gia
+-- mao dong log, nhung `,` `:` `<` `>` van song sot va lam nhieu dung dinh dang
+-- `<a,b:35>` cua chinh ham nay. Ep ve [A-Za-z0-9_.-], thay bang `_`.
+dcheck("a:9=1",       "<a_9:5>",   "dau `:` trong ten lam nhieu truong do dai")
+dcheck("x,y=1",       "<x_y:5>",   "dau phay trong ten lam nhieu bang phan cach")
+dcheck("<b>=1",       "<_b_:5>",   "dau nhon lam nhieu cap bao ngoai")
+dcheck("ok_.-1=1",    "<ok_.-1:8>", "ky tu hop le KHONG bi doi")
+
+io.write("\nargs.describe() — marker `,+` khi vuot MAX_NAMES\n")
+
+-- MEP CUA MAX_NAMES = 8. Ban truoc hoi sai cau ("phia sau con dau `&` nao
+-- khong") nen dung 9 tham so hien ra Y HET 8: vong thu 8 day `pos` toi tham so
+-- CUOI, khong con `&` phia sau, marker khong bat. Bon ca duoi day neo ca hai
+-- mep — 7 va 8 phai IM, 9 va 10 phai co marker.
+local function mk(k)
+    local t = {}
+    for i = 1, k do t[i] = string.char(96 + i) .. "=1" end
+    return table.concat(t, "&")
+end
+
+dcheck(mk(7),  "<a,b,c,d,e,f,g:27>",      "7 tham so — chua cham tran")
+dcheck(mk(8),  "<a,b,c,d,e,f,g,h:31>",    "8 tham so — cham tran DUNG, khong du")
+dcheck(mk(9),  "<a,b,c,d,e,f,g,h,+:35>",  "9 tham so — DUNG CA DA LOT")
+dcheck(mk(10), "<a,b,c,d,e,f,g,h,+:39>",  "10 tham so — van co marker")
+dcheck(mk(8) .. "&", "<a,b,c,d,e,f,g,h:32>",
+       "8 tham so + dau `&` thua — KHONG duoc bia ra tham so thu 9")
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

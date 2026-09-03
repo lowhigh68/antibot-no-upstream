@@ -12,7 +12,16 @@
 -- Day la kiem CAU TRUC: doi chieu hai danh sach o hai file phai khop nhau. No
 -- bat duoc dung lop loi da lot, va chay duoc trong cong [3b] khong can ha tang.
 --
--- Cai no KHONG chung minh, noi ro de khong ai tuong nham:
+-- NO CHI DANG TIN THEO MOT CHIEU. Bo test nay TIM CHUOI trong ma nguon, khong
+-- phan tich cu phap Lua. Mot chuoi `name == "waf_arg"` nam trong mot khoi chu
+-- thich, hoac trong mot nhanh khong bao gio chay, van lam phep kiem qua. Nen:
+--   BAO DO  => chac chan co loi. Sua truoc khi deploy.
+--   BAO XANH => khong chung minh duoc gi ca.
+-- Sua duoc chuyen do thi phai viet mot bo phan tich cu phap Lua, va cai gia do
+-- khong xung voi mot lop lint. Ghi ro ra day de khong ai doc mau xanh thanh mot
+-- bao dam.
+--
+-- Nhung thu khac no KHONG chung minh, noi ro de khong ai tuong nham:
 --   - khong chung minh diem so thuc su toi enforcement
 --   - khong chung minh thu tu cac buoc trong pipeline
 --   - khong chung minh gi ve race hay timer
@@ -42,22 +51,39 @@ if not compute or not root then
     io.write("khong doc duoc compute.lua hoac init.lua\n"); os.exit(2)
 end
 
--- ── 1. Moi tin hieu `waf_*` phai co mat trong `waf_signal` ───────────
+-- ── 1. `waf_signal` phai KHOP DUNG tap tin hieu co trong so > 0 ──────
 --
 -- `waf_signal(ctx)` trong antibot/init.lua quyet dinh tin hieu WAF nao du suc
--- vo hieu hoa cookie fast-path. Thieu mot cai la tin hieu do bi nuot IM LANG
--- voi moi client da giai PoW — tuc dung lo hong ma ca tang WAF sinh ra de bit.
+-- vo hieu hoa cookie fast-path. Kiem HAI CHIEU, va chieu thu hai moi la cai da
+-- thieu:
+--
+--   trong so > 0  PHAI co trong waf_signal
+--       Thieu => tin hieu bi nuot IM LANG voi moi client da giai PoW, tuc dung
+--       lo hong ma ca tang WAF sinh ra de bit. Da xay ra that voi `waf_arg`.
+--
+--   trong so == 0  KHONG DUOC co trong waf_signal
+--       Thua => "che do quan sat" khong con la quan sat. Tin hieu cong 0 diem
+--       nhung van day request qua het pipeline, noi mot tin hieu KHAC co the
+--       dua no len challenge. waf.log ghi `rule=arg_traversal ... final=
+--       challenge` va nguoi doc ket luan luat gay FP — trong khi that ra no
+--       doi phan quyet qua duong DOI LUONG. Do la lech am tham dung tren cot
+--       sinh ra de chong lech.
+--
+-- Vi tieu chi la TRONG SO chu khong phai ten, danh sach trong init.lua khong
+-- con phai nho bang tay: ngay nang `waf_arg` len khoi 0, chieu mot bao do va
+-- noi phai them gi.
 io.write("\nhop dong: tin hieu WAF <-> cua thoat tin cay\n")
 
 local guard = root:match("local function waf_signal%b()(.-)\nend")
 if not guard then
     bad("  SAI  khong tim thay ham `waf_signal` trong init.lua\n")
 else
-    -- Lay ten tin hieu tu DEFAULT_WEIGHTS: dong dang `waf_xxx = <so>,`
-    local names, n = {}, 0
-    for name in compute:gmatch("\n%s*(waf_[%w_]+)%s*=%s*%d") do
+    -- Lay ten VA trong so tu DEFAULT_WEIGHTS: dong dang `waf_xxx = <so>,`
+    local names, weights, n = {}, {}, 0
+    for name, w in compute:gmatch("\n%s*(waf_[%w_]+)%s*=%s*([%d%.]+)") do
         n = n + 1
         names[n] = name
+        weights[name] = tonumber(w)
     end
 
     if n == 0 then
@@ -66,12 +92,22 @@ else
         io.write(string.format("  tim thay %d tin hieu waf_* trong compute.lua\n", n))
         for i = 1, n do
             local nm = names[i]
-            if guard:find("ctx." .. nm, 1, true) then
-                pass = pass + 1
+            -- Neo bien tu: khong co no thi `ctx.waf_arg` khop nham vao mot ten dai hon
+            -- co cung tien to, va do la mot lan BAO XANH SAI.
+            local in_guard = guard:find("ctx%." .. nm .. "%f[%W]") ~= nil
+            local enforced = (weights[nm] or 0) > 0
+
+            if enforced and not in_guard then
+                bad("  SAI  `%s` co trong so %s nhung KHONG co trong waf_signal()\n" ..
+                    "       => tin hieu nay bi nuot voi moi client co cookie verified\n",
+                    nm, tostring(weights[nm]))
+            elseif not enforced and in_guard then
+                bad("  SAI  `%s` co trong so 0 nhung LAI co trong waf_signal()\n" ..
+                    "       => che do quan sat dang doi luong request, khong con\n" ..
+                    "          la quan sat. Bo no khoi waf_signal, hoac nang trong so.\n",
+                    nm)
             else
-                bad("  SAI  `%s` co trong DEFAULT_WEIGHTS nhung KHONG co trong " ..
-                    "waf_signal()\n       => tin hieu nay bi nuot voi moi client " ..
-                    "co cookie verified\n", nm)
+                pass = pass + 1
             end
         end
     end

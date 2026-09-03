@@ -121,6 +121,12 @@ check("khong co body -> KHONG phai spill",
       probe("POST", URLENC, nil, false).spill, false)
 check("khong co body van co family",
       probe("POST", URLENC, nil, false).family, "urlencoded")
+-- `-1` CHI cho spill: do dai co that, ta khong doc no. Khong co body / body
+-- rong thi do dai DA BIET va bang 0. Ghi `-1` o day la gop "khong biet" vao
+-- mot gia tri — dung loi da sua voi `php = false` — va se THOI PHONG con so
+-- dung de chon `client_body_buffer_size`.
+check("khong co body -> len 0, KHONG phai -1",
+      probe("POST", URLENC, nil, false).len, 0)
 
 -- ── The mo PHP ───────────────────────────────────────────────────────
 check("php thuong",      probe("POST", MULTI, "x<?php eval($_POST[0]);").php, true)
@@ -170,6 +176,34 @@ check("multipart ten file traversal",
 -- Spill: khong co body trong bo nho thi khong the soi. Phai la nil, KHONG duoc
 -- doan bua — mot ket qua bia o day se lam lech moi phep dem ve sau.
 check("spill khong co arg_rule", probe("POST", MULTI, nil).arg_rule, nil)
+
+
+-- ── Cot phan tang `fnm` ─────────────────────────────────────────────
+-- KHONG phai luat: no khong chan gi, khong doi diem. No tach hai dan so ma
+-- `arg_rule` dang gop lam mot tren than multipart — TEN FILE (gan nhu chac chan
+-- la tan cong) va NOI DUNG file/bai viet (gan nhu chac chan la FP) — de vai
+-- ngay nua co can cu quyet dinh co nang `waf_body_arg` len khoi 0 hay khong.
+--
+-- Phep kiem la "cung DONG voi `filename=`", vi trong multipart ten file nam
+-- tren dong header Content-Disposition con noi dung file nam sau mot dong
+-- trong. Mot cua so nhin-lui tuy y thi phai chon do rong, va moi lua chon deu
+-- sai voi mot header du dai.
+local MP_NAME = 'Content-Disposition: form-data; name="f"; filename="../../shell.php"'
+local MP_BODY = 'Content-Disposition: form-data; name="post_content"\r\n'
+             .. '\r\n'
+             .. 'Bai viet noi ve duong dan tuong doi ../ trong PHP\r\n'
+
+check("fnm: khop trong ten file",   probe("POST", MULTI, MP_NAME).fnm, true)
+check("fnm: khop trong noi dung",   probe("POST", MULTI, MP_BODY).fnm, false)
+
+-- Ngoai multipart thi cau hoi khong co nghia — `-` chu khong phai 0. Cung
+-- nguyen tac da dung cho `php` va `exists`: khong biet thi noi khong biet, dung
+-- bien mot khoang trong thanh mot am tinh.
+check("fnm: urlencoded -> nil",
+      probe("POST", URLENC, "f=../../wp-config.php").fnm, nil)
+check("fnm: multipart nhung khong luat nao ban -> nil",
+      probe("POST", MULTI, "noi dung vo hai").fnm, nil)
+check("fnm: spill -> nil", probe("POST", MULTI, nil).fnm, nil)
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
