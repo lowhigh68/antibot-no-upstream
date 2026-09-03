@@ -71,7 +71,8 @@ function _M.run_body(ctx)
 
     fh:write(string.format(
         "[%s] [waf-body] ts=%d id=%s domain=%s ip=%s method=%s uri=%s"
-        .. " ct=%s blen=%d spill=%d php=%d nargs=%s class=%s richness=%s\n",
+        .. " ct=%s blen=%d spill=%d php=%d nargs=%s class=%s richness=%s"
+        .. " argrule=%s\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         scrub(ctx.identity or ctx.fp_light, 64),
@@ -85,7 +86,11 @@ function _M.run_body(ctx)
         b.php and 1 or 0,
         b.nargs and tostring(b.nargs) or "-",
         ctx.req_class or "-",
-        ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-"))
+        ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-",
+        -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
+        -- cung `id=`+`ts=` de biet cai do la than hay query string — dong `[waf]`
+        -- phan biet bang cot `target=` (ARGS / BODY).
+        b.arg_rule or "-"))
 
     fh:close()
 end

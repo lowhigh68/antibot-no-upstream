@@ -16,6 +16,14 @@ if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
 end
 
+-- `body.lua` require `antibot.waf.args`. Nap bang dofile thi duong dan module
+-- khong phan giai duoc, nen phai preload — cung cach wp_paths_test lam voi
+-- redis_pool. Preload BAN THAT chu khong phai stub: ta muon kiem dung ket noi
+-- giua hai module, khong phai kiem mot ban gia cua no.
+package.preload["antibot.waf.args"] = function()
+    return dofile(SRC .. "waf/args.lua")
+end
+
 local body = dofile(SRC .. "waf/body.lua")
 
 local ngx_var_real, ngx_req_real = ngx.var, ngx.req
@@ -131,6 +139,22 @@ check("500 tham so KHONG bi cat",
 -- no se lang le di vao moi phep thong ke ve sau.
 check("multipart nargs = nil", probe("POST", MULTI, "a&b&c").nargs, nil)
 check("json nargs = nil",      probe("POST", "application/json", "{\"a\":1}").nargs, nil)
+
+-- ── Luat tham so ap len THAN request ────────────────────────────────
+-- Cung ba mau da kiem 35 assertion o args_test. O day chi kiem MOI NOI: than
+-- request duoc dua qua args.check, va ket qua ve dung o `arg_rule`.
+check("body traversal",  probe("POST", URLENC, "f=../../wp-config.php").arg_rule, "arg_traversal")
+check("body wrapper",    probe("POST", URLENC, "f=php://input").arg_rule,         "arg_php_wrapper")
+check("body NUL",        probe("POST", URLENC, "f=x%00.jpg").arg_rule,            "arg_null_byte")
+check("body sach",       probe("POST", URLENC, "name=nguyen&city=ha noi").arg_rule, nil)
+-- Multipart: `../` trong TEN FILE la ky thuat traversal khi upload, va no khong
+-- xuat hien o dau khac. Phai bat.
+check("multipart ten file traversal",
+      probe("POST", MULTI, 'Content-Disposition: form-data; name="f"; filename="../../shell.php"').arg_rule,
+      "arg_traversal")
+-- Spill: khong co body trong bo nho thi khong the soi. Phai la nil, KHONG duoc
+-- doan bua — mot ket qua bia o day se lam lech moi phep dem ve sau.
+check("spill khong co arg_rule", probe("POST", MULTI, nil).arg_rule, nil)
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

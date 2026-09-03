@@ -18,6 +18,19 @@ local function add_hit(ctx, rule_id, rule, target, matched)
     }
 end
 
+-- Ghi mot lan cham luat THAM SO. Dung chung cho ARGS va BODY: cung bang luat,
+-- cung tin hieu `ctx.waf_arg`, chi khac `target` va chuoi `matched`.
+-- `rule_id` co the la nil (khong khop) — nhan luon o day cho hai noi goi gon.
+local function record_arg_hit(ctx, rule_id, target, matched)
+    if not rule_id then return end
+    local rule = args.RULES[rule_id]
+    if not rule then return end
+    add_hit(ctx, rule_id, rule, target, matched)
+    if (ctx.waf_arg or 0) < rule.score then
+        ctx.waf_arg = rule.score
+    end
+end
+
 -- Tầng WAF. Khác mọi tầng khác ở MỘT điểm quyết định: nó chạy TRƯỚC các cửa
 -- thoát tin cậy trong `init.lua`, không phải sau.
 --
@@ -104,14 +117,26 @@ function _M.run_pre(ctx)
         -- string), nen `args.check` thoat ngay o phep kiem dau. Khong I/O.
         local qs = ngx.var.args
         if qs and qs ~= "" then
-            local aid = args.check(qs)
-            if aid then
-                local arule = args.RULES[aid]
-                add_hit(ctx, aid, arule, "ARGS", qs)
-                if (ctx.waf_arg or 0) < arule.score then
-                    ctx.waf_arg = arule.score
-                end
-            end
+            record_arg_hit(ctx, args.check(qs), "ARGS", qs)
+        end
+
+        -- Cùng ba luật đó, áp lên THÂN REQUEST. `body.probe` đã chạy ở trên và
+        -- để kết quả trong `ctx.waf_body.arg_rule`.
+        --
+        -- `matched=` TUYỆT ĐỐI KHÔNG ĐƯỢC là nội dung thân request.
+        --
+        -- Một POST tới `/wp-login.php` chứa `pwd=<mật khẩu người dùng>`. Ghi
+        -- thân request vào `matched=` là ghi mật khẩu của khách hàng ra
+        -- `/var/log/antibot/waf.log` — một file text, quyền đọc rộng, giữ 30
+        -- ngày. Với query string thì rủi ro đó không tồn tại (mật khẩu không đi
+        -- qua URL), nên khác biệt này chỉ có ở đây và phải xử lý ngay tại đây.
+        --
+        -- Ghi một mô tả thay thế: kiểu nội dung + độ dài. Đủ để đối chiếu với
+        -- dòng `[waf-body]` cùng `id=`+`ts=`, không lộ một byte nào.
+        local b = ctx.waf_body
+        if b and b.arg_rule then
+            record_arg_hit(ctx, b.arg_rule, "BODY",
+                           "<" .. b.family .. ":" .. b.len .. ">")
         end
     end
 

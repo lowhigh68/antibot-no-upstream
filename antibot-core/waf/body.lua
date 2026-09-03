@@ -20,6 +20,8 @@ local _M = {}
 -- (`proxy_buffering off` trong `da_to_openresty.sh` la dem PHAN HOI — directive
 -- khac, dung nham thi ket luan nguoc.)
 
+local args = require "antibot.waf.args"
+
 local INSPECT_METHODS = {
     POST = true, PUT = true, PATCH = true, DELETE = true,
 }
@@ -103,6 +105,10 @@ function _M.probe(ctx)
             len    = -1,
             php    = false,
             nargs  = nil,
+            -- Khong co body trong bo nho thi khong soi duoc. Ghi ro nil chu
+            -- khong doan bua: mot ket qua bia o day se lam lech moi phep dem
+            -- ve sau, va "khong soi duoc" khac han "soi roi, khong thay gi".
+            arg_rule = nil,
         }
         return
     end
@@ -114,6 +120,22 @@ function _M.probe(ctx)
         -- Mot luot PCRE da JIT tren toi da `client_body_buffer_size` byte.
         php    = ngx.re.find(body, RX_PHP_OPEN, "ijo") ~= nil,
         nargs  = count_args(body, family),
+
+        -- Ba luat tham so, ap len than request. `args.check` khong biet gi ve
+        -- NGUON chuoi no nhan, nen dung lai nguyen ven — cung ba mau, cung vong
+        -- giai ma 3 muc, cung 35 assertion da kiem.
+        --
+        -- Co ap cho multipart: `../` trong TEN FILE cua mot phan multipart la
+        -- dung ky thuat traversal khi upload, va no khong xuat hien o dau khac.
+        --
+        -- KHAC BIET THAT SU so voi query string, va la ly do nay chi la SIGNAL:
+        -- than request chua NOI DUNG NGUOI DUNG SOAN. Mot quan tri vien viet bai
+        -- ve stream wrapper PHP roi bam Luu se gui `php://` trong than POST toi
+        -- /wp-admin/post.php. Query string khong bao gio co chuyen do. FP o day
+        -- vo hai (50 diem duoi CHALLENGE, va `auth_session_cap` da chan quan tri
+        -- vien dang nhap o muc monitor) nhung phai DEM duoc truoc khi tinh
+        -- chuyen nang len block.
+        arg_rule = args.check(body),
     }
 end
 
