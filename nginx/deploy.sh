@@ -76,9 +76,25 @@ while IFS= read -r f; do
         "$LUAJIT" -b "$f" /dev/null || true
         lua_fail=1
     fi
+
+    # Module thieu `return _M` van DUNG CU PHAP hoan toan, nen `luajit -b` o tren
+    # cho qua. Nhung Lua 5.1 khong bao loi khi module tra nil — `require` tra
+    # `true` (boolean). Loi no MUON, o cho dung module do:
+    #     local body = require "antibot.waf.body"   -- = true
+    #     body.probe(ctx)   -- attempt to index a boolean value
+    # Voi `waf/body.lua` thi cho do la `run_pre`, access phase, tren moi request
+    # khong di nhanh `block` => 500 dien rong ca dan may.
+    #
+    # Da xay ra that ngay 2026-09-04 (f69b896): mot lan ghep file bang sed nuot
+    # mat dong cuoi. Bo test bat duoc, nhung chi vi tinh co co bo test cho dung
+    # module do — mot module khong co test se di thang ra san xuat.
+    if grep -qE '^local _M[[:space:]]*=[[:space:]]*{' "$f" && ! grep -qE '^return _M' "$f"; then
+        echo "    THIEU 'return _M': $f"
+        lua_fail=1
+    fi
 done < <(find "$SOURCE_DIR" -name '*.lua')
 if [ $lua_fail -ne 0 ]; then
-    echo "HUY: co file Lua sai cu phap. KHONG sync, cay dang chay giu nguyen."
+    echo "HUY: co file Lua hong. KHONG sync, cay dang chay giu nguyen."
     exit 1
 fi
 
