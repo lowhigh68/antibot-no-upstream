@@ -200,3 +200,5 @@ function _M.probe(ctx)
         fnm    = in_filename(body, family, at),
     }
 end
+
+return _M
