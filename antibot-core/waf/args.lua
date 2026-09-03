@@ -22,7 +22,14 @@ local _M = {}
 
 -- `..` theo sau bang `/` hoac `\`. Khong bat `..` tran: mot dau cham doi trong
 -- ten file (`bao-cao..pdf`) hay trong so thap phan la chuyen binh thuong.
-local RX_TRAVERSAL = [[\.\.[/\\]]]
+--
+-- CHUOI CO NHAY, KHONG DUOC dung `[[...]]`. Mau ket thuc bang mot lop ky tu
+-- `[/\\]`, nen viet `[[\.\.[/\\]]]` thi Lua doc `]]` DAU TIEN la dau dong chuoi
+-- va con lai mot `]` lac => loi cu phap. Dung cai bay da ghi san cho RX_DOTFILE
+-- ben exposed.lua, va van mac lai — chu thich dung khong cuu duoc gi neu nguoi
+-- viet khong doc lai no.
+-- Trong chuoi co nhay, moi `\` phai nhan doi: "\\." ra `\.`, "\\\\" ra `\\`.
+local RX_TRAVERSAL = "\\.\\.[/\\\\]"
 
 -- Stream wrapper cua PHP. `://` la bat buoc trong mau — thieu no thi
 -- `data:image/png;base64,...` (dang HTML hop le, khong co hai dau gach) se bi
