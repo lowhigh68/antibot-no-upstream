@@ -146,7 +146,11 @@ function _M.probe(ctx)
         -- vo hai (50 diem duoi CHALLENGE, va `auth_session_cap` da chan quan tri
         -- vien dang nhap o muc monitor) nhung phai DEM duoc truoc khi tinh
         -- chuyen nang len block.
-        arg_rule = args.check(body),
+        -- `decode` CHI bat cho urlencoded. Da giai thich day du o `args.check`:
+        -- giai ma mot noi dung khong phai percent-encoding la dien giai sai ban
+        -- chat du lieu va TU TAO ra duong tinh gia — mot file .txt upload chua
+        -- chuoi ky tu `%2e%2e%2f` se bien thanh `../` sau mot lan unescape.
+        arg_rule = args.check(body, family == "urlencoded"),
     }
 end
 

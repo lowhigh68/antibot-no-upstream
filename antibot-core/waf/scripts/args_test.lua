@@ -89,6 +89,35 @@ check("f=php://filter/resource=../../wp-config.php",
       "arg_php_wrapper", "co ca wrapper lan traversal — wrapper chac hon")
 check("f=../x%00",  "arg_null_byte", "co ca traversal lan NUL — NUL chac hon")
 
+io.write("\nargs.check(s, decode=false) — noi dung KHONG phai percent-encoding\n")
+
+local function ncheck(s, want, why)
+    local ok, got = pcall(args.check, s, false)
+    if not ok then
+        fail = fail + 1
+        io.write(string.format("  LOI  %-52s %s\n", s, tostring(got)))
+    elseif got ~= want then
+        fail = fail + 1
+        io.write(string.format("  SAI  %-52s cho=%s duoc=%s\n       %s\n",
+                 s, tostring(want), tostring(got), why))
+    else
+        pass = pass + 1
+    end
+end
+
+-- Mau THO van bat binh thuong.
+ncheck("f=../../wp-config.php", "arg_traversal",   "mau tho van bat")
+ncheck("f=php://input",         "arg_php_wrapper", "mau tho van bat")
+
+-- DANH DOI CO Y, va day la ly do ton tai cua tham so nay: mot body multipart
+-- chua dung chuoi KY TU `%2e%2e%2f` (vi du mot file .txt duoc upload) se BIEN
+-- THANH `../` sau mot lan unescape va ban — mot FP hoan toan do buoc giai ma
+-- tao ra, khong he co trong du lieu goc. Multipart/JSON/binary khong phai
+-- percent-encoding, nen giai ma chung la dien giai sai ban chat du lieu.
+ncheck("f=%2e%2e%2fx", nil, "khong giai ma => khong thay, va do la DUNG voi multipart")
+ncheck("noi dung file: %2e%2e%2f la mot chuoi vo hai", nil,
+       "chinh la FP ma tham so nay ngan chan")
+
 io.write("\nargs.describe() — KHONG duoc lo gia tri\n")
 
 local function dcheck(qs, want, why)

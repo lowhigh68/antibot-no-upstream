@@ -111,7 +111,26 @@ Tín hiệu riêng `waf_arg = 50` trong `compute.lua`, **không** dùng chung `w
 
 Cả ba là `signal`. Ngay cả 1.00 × 50 = 50 điểm vẫn dưới CHALLENGE(55) — **không luật nào tự mình phán quyết được**. Nâng lên `block` hay không là việc của số liệu sau vài ngày đọc `waf.log`, không phải của trực giác.
 
-**Chưa phủ:** thân request (`body.lua` đang ở giai đoạn quan sát), header, cookie. Ba mẫu này dùng lại được nguyên vẹn cho thân request khi giai đoạn 2 tới — `args.check()` không biết gì về nguồn của chuỗi nó nhận.
+### Giới hạn đã biết của luật tham số — đo được, KHÔNG vá bằng thêm mẫu
+
+Ghi ra để không ai tưởng tầng này phủ nhiều hơn thực tế:
+
+| Lọt gì | Vì sao không đuổi theo |
+|---|---|
+| JSON escape `<?php` | Mỗi lược đồ mã hoá là một bộ giải mã mới. Đó là con đường dẫn thẳng tới bộ luật CRS mà tầng này **cố ý** không đi |
+| Body nén (`Content-Encoding: gzip`) | Phải giải nén trong access phase — CPU và bộ nhớ do người gửi điều khiển |
+| Body vượt `client_body_buffer_size` | Ghi ra file tạm, đọc là I/O chặn. Ghi nhận `spill=1` chứ không đoán |
+| Header, cookie | Chưa có số liệu nào về nội dung header trên dàn máy này. `../` trong `Referer` có thể hợp lệ — cần bộ ràng buộc khác, không chuyển thẳng ba mẫu này sang được |
+
+**Nguyên tắc đằng sau bảng này:** một tầng bắt được payload ngây thơ mà **không bắn oan** có giá trị hơn một tầng cố phủ 100% rồi chặn khách hàng thật. Phần còn lại là việc của `fim.sh` (thấy file sau khi đáp xuống) và các tầng chấm điểm.
+
+### `decode` — và vì sao nó là chuyện đúng/sai, không phải chuyện nhanh/chậm
+
+`args.check(s, decode)` giải mã tối đa 3 mức, nhưng **chỉ với nội dung percent-encoded**. Query string luôn bật; thân request chỉ bật khi `family == "urlencoded"`.
+
+Multipart là byte thô kèm boundary, JSON dùng `\uXXXX`. Giải mã chúng là **diễn giải sai bản chất dữ liệu**, và nó **tự tạo dương tính giả**: một file `.txt` được upload có chứa đúng chuỗi ký tự `%2e%2e%2f` sẽ biến thành `../` sau một lần unescape rồi bắn — một FP không hề có trong dữ liệu gốc.
+
+Tiện thể: giảm từ tối đa 9 lượt regex + 2 lần cấp phát chuỗi 64k xuống 3 lượt regex + 0 cấp phát cho nhóm multipart/json/binary.
 
 ### Cổng `is_wp_host`
 

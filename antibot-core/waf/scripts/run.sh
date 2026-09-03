@@ -27,6 +27,10 @@ echo "── wp_paths ───────────────────�
 "$RESTY" --shdict "antibot_cache 1m" "$HERE/wp_paths_test.lua" || rc=1
 
 echo
+echo "── hop dong giua cac module ──────────────────────────"
+"$RESTY" "$HERE/contract_test.lua" || rc=1
+
+echo
 echo "── args ──────────────────────────────────────────────"
 "$RESTY" "$HERE/args_test.lua" || rc=1
 

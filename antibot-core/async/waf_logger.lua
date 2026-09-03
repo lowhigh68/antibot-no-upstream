@@ -8,8 +8,19 @@ local _M = {}
 -- `io.open`/write/`close` cho TỪNG request — nối thêm chi tiết WAF vào đó là
 -- bắt 99% lưu lượng không dính luật nào trả giá cho 1% dính.
 --
--- Nối ngược về antibot.log bằng cặp `id=` + `ts=`. Cùng mô hình tách
--- error-log/audit-log của ModSecurity.
+-- Ghép dòng: dùng `rid=` (`$request_id` của nginx, 32 hex, duy nhất từng
+-- request). Nó ghép chính xác `[waf]` với `[waf-body]`.
+--
+-- ĐÍNH CHÍNH: khối này trước đây bảo ghép bằng cặp `id=`+`ts=`. Cặp đó KHÔNG
+-- duy nhất — `id` là `ctx.identity`, mà mọi request thoát sớm (block ở access
+-- phase, cookie fast-path, ban ở cửa) đều có `id=-`, còn `ts` chỉ tới giây.
+-- Trên máy 43 domain thì hàng chục request cùng mang `id=- ts=<cùng giây>`.
+--
+-- Nối ngược về `antibot.log` thì VẪN phải dùng `id=`+`ts=` vì file đó chưa có
+-- `rid=`. Giới hạn đã biết, chưa sửa — thêm `rid` vào `logger.lua` là đổi định
+-- dạng dòng mà mọi lệnh awk dùng suốt quá trình đo đều dựa vào.
+--
+-- Cùng mô hình tách error-log/audit-log của ModSecurity.
 local WAF_LOG = "/var/log/antibot/waf.log"
 
 -- `matched=` là dữ liệu KẺ TẤN CÔNG ĐIỀU KHIỂN HOÀN TOÀN đi vào file log.
@@ -61,20 +72,58 @@ end
 --      cai bay `status=` da mat mot buoi de go.
 --
 -- Loc rieng: `grep -F '[waf-body]' waf.log`
+-- Định danh DUY NHẤT cho một request, để ghép dòng `[waf]` với `[waf-body]`.
+--
+-- Cặp `id=`+`ts=` KHÔNG đủ, và đó là lỗi trong chính hướng dẫn tôi viết ở đầu
+-- file này: `id` là `ctx.identity`, mà mọi request thoát sớm (block ở access
+-- phase, cookie fast-path, ban ở cửa) đều có `id=-`; còn `ts` chỉ tới giây.
+-- Trên một máy 43 domain thì hàng chục request cùng mang `id=- ts=<cùng giây>`
+-- — ghép theo cặp đó là ghép bừa.
+--
+-- `$request_id` của nginx là 32 ký tự hex sinh riêng cho từng request (có từ
+-- nginx 1.11). Rẻ: một lượt đọc biến, không tính toán.
+local function req_id()
+    local rid = ngx.var.request_id
+    if not rid or rid == "" then return "-" end
+    return rid
+end
+
+-- Đếm per-worker để LẤY MẪU những dòng không có gì đáng chú ý. Không cần chính
+-- xác tuyệt đối, không cần chia sẻ giữa worker — chỉ cần giảm đều.
+local body_seen = 0
+local BODY_SAMPLE = 20
+
 function _M.run_body(ctx)
     if not ctx then return end
     local b = ctx.waf_body
     if not b then return end
 
+    -- LẤY MẪU. `run_body` bắn cho MỌI POST/PUT/PATCH/DELETE có Content-Type, và
+    -- mỗi lần là một bộ ba syscall `io.open`/write/`close`. Trên site
+    -- WooCommerce hay REST API thì đó là lượng I/O thật, cho một bộ đo TẠM.
+    --
+    -- Nhưng KHÔNG lấy mẫu cái đáng chú ý: `php`, `arg_rule`, `spill` đều hiếm và
+    -- đều là thứ ta dựng bộ đo này để đếm. Chỉ lấy mẫu phần còn lại — tức phần
+    -- chỉ đóng góp vào PHÂN BỐ (`blen`), mà phân bố thì lấy mẫu không làm méo.
+    --
+    -- Bỏ mẫu ở đây an toàn vì mọi lượt CHẠM LUẬT đã có dòng `[waf]` riêng với
+    -- `target=BODY`; dòng `[waf-body]` không phải nguồn duy nhất của chúng.
+    local notable = b.php or b.arg_rule or b.spill
+    if not notable then
+        body_seen = body_seen + 1
+        if body_seen % BODY_SAMPLE ~= 0 then return end
+    end
+
     local fh = io.open(WAF_LOG, "a")
     if not fh then return end   -- `run` da bao ERR neu mo that bai, khong lap lai
 
     fh:write(string.format(
-        "[%s] [waf-body] ts=%d id=%s domain=%s ip=%s method=%s uri=%s"
+        "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
-        .. " argrule=%s\n",
+        .. " argrule=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
+        req_id(),
         scrub(ctx.identity or ctx.fp_light, 64),
         scrub((ctx.req and ctx.req.host) or ngx.var.host, 80),
         scrub(ctx.ip or ngx.var.remote_addr, 45),
@@ -93,7 +142,14 @@ function _M.run_body(ctx)
         -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
         -- cung `id=`+`ts=` de biet cai do la than hay query string — dong `[waf]`
         -- phan biet bang cot `target=` (ARGS / BODY).
-        b.arg_rule or "-"))
+        b.arg_rule or "-",
+        -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
+        -- `smp=20` = nó đại diện cho 20 request cùng loại.
+        --
+        -- Bắt buộc phải có: lấy mẫu mà không ghi tỉ lệ ra là làm cho mọi phép
+        -- đếm về sau thấp đi 20 lần trong khi log trông vẫn bình thường — đúng
+        -- kiểu lệch âm thầm đã mất một buổi để gỡ với cột `status=`.
+        notable and 1 or BODY_SAMPLE))
 
     fh:close()
 end
@@ -184,11 +240,12 @@ function _M.run(ctx)
     for i = 1, #hits do
         local h = hits[i]
         fh:write(string.format(
-            "[%s] [waf] ts=%d id=%s domain=%s ip=%s rule=%s target=%s"
+            "[%s] [waf] ts=%d rid=%s id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
             .. " richness=%s wpauth=%d status=%d exists=%s final=%s fim=%s\n",
             stamp,
             now,
+            req_id(),
             scrub(id, 64),
             scrub(domain, 80),
             scrub(ctx.ip or ngx.var.remote_addr, 45),

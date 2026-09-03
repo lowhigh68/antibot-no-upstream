@@ -62,11 +62,23 @@ _M.RULES = RULES
 -- chan viec mot chuoi doc hai bat CPU giai ma vo han.
 local MAX_DECODE = 3
 
-function _M.check(args)
+-- `decode` MAC DINH true (query string luon la percent-encoded). Nguoi goi PHAI
+-- truyen false cho nhung noi dung KHONG phai percent-encoding.
+--
+-- Khong phai de tiet kiem — de khong TU TAO duong tinh gia. Body multipart la
+-- byte tho kem boundary, JSON dung `\uXXXX`. Giai ma chung la dien giai sai
+-- ban chat du lieu: mot file .txt upload chua dung chuoi ky tu `%2e%2e%2f` se
+-- BIEN THANH `../` sau mot lan unescape va ban — mot FP hoan toan do buoc giai
+-- ma tao ra, khong he co trong du lieu goc.
+--
+-- Tien the: giam tu toi da 9 luot regex + 2 lan cap phat chuoi 64k xuong con 3
+-- luot regex + 0 cap phat cho nhom multipart/json/binary.
+function _M.check(args, decode)
     if not args or args == "" then return nil end
+    if decode == nil then decode = true end
 
     local s = args:lower()
-    for i = 1, MAX_DECODE do
+    for i = 1, (decode and MAX_DECODE or 1) do
         -- Thu tu theo do CHAC CHAN giam dan, vi chi tra ve mot rule_id: NUL va
         -- wrapper gan nhu khong the la nham lan, con `../` thi hiem khi nhung
         -- van co the la mot URL tuong doi trong tham so redirect.
@@ -74,7 +86,7 @@ function _M.check(args)
         if ngx.re.find(s, RX_WRAPPER,   "jo") then return "arg_php_wrapper" end
         if ngx.re.find(s, RX_TRAVERSAL, "jo") then return "arg_traversal"   end
 
-        if i == MAX_DECODE then break end
+        if not decode or i == MAX_DECODE then break end
         local dec = ngx.unescape_uri(s)
         if dec == s then break end   -- da giai het, khong con lop nao
         s = dec
