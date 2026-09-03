@@ -348,6 +348,15 @@ local SCRIPT_CASES = {
 {"/index.php/2020/01/bai/",   nil, "/index.php",       "permalink PATHINFO cua WordPress"},
 {"/shell.php",                nil, "/shell.php",       "khong co PATH_INFO — giu nguyen"},
 {"/blog/wp-config.php",       nil, "/blog/wp-config.php", "duong dan sau, giu nguyen"},
+-- DUOI KEP: KHONG duoc cat. Ca that tren alumicastore.com 2026-09-03 — ban cu
+-- cat thanh `/wp-config.php` nen `target_exists` di kiem mot file KHAC, va bao
+-- exists=1 cho mot file luon ton tai thay vi cho ban `.txt` dang bi hoi.
+{"/wp-config.php.txt",        nil, "/wp-config.php.txt", "duoi kep — ten file that gom ca .txt"},
+{"/wp-config.php.bak",        nil, "/wp-config.php.bak", "duoi kep, khong cat"},
+{"/shell.php.jpg",            nil, "/shell.php.jpg",     "duoi kep dang anh"},
+-- Nhung PATH_INFO thi VAN cat — day la ranh gioi `/`, khac han.
+{"/wp-config.php.txt/x",      nil, "/wp-config.php.txt/x",
+                              "duoi kep TRUOC, nen `.php` khong duoc theo boi `/`"},
 -- `/a.php/b.php`: script THAT SU chay la cai DAU, phan sau chi la PATH_INFO.
 {"/a.php/b.php",              nil, "/a.php",           "cat o duoi PHP dau tien"},
 {"/x.php5/y",                 nil, "/x.php5",          "php5 cung la duoi thuc thi"},

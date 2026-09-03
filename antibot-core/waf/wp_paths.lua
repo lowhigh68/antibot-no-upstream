@@ -236,6 +236,23 @@ function _M.script_path(uri)
     if not uri or uri == "" then return uri end
     local _, to = ngx.re.find(uri, RX_PHP_EXEC, "jo")
     if not to then return uri end
+
+    -- CHỈ cắt khi ký tự ngay sau là `/`. Đó mới là PATH_INFO — phần đứng sau là
+    -- một segment khác, không thuộc tên file.
+    --
+    -- Nếu là `.` thì đây là ĐUÔI KÉP, và tên file thật bao gồm cả phần sau. Cắt
+    -- ở đó là đi kiểm một file KHÁC với file được yêu cầu.
+    --
+    -- Đã chạy sai thật (đo 2026-09-03): `/wp-config.php.txt` trên
+    -- alumicastore.com báo `exists=1` — nhưng đó là `wp-config.php` (file LUÔN
+    -- tồn tại trên mọi WordPress), không phải bản `.txt`. Cột `exists=` sinh ra
+    -- để trả lời "file này có thật không", mà nó lại trả lời về một file khác:
+    -- báo động giả ở đúng chỗ nguy hiểm nhất, vì `wp-config.php.txt` lộ ra là
+    -- toàn bộ mật khẩu database.
+    --
+    -- Cùng ranh giới đã ghi trong `check()`: PATH_INFO là ranh giới `/`, đuôi kép
+    -- nằm TRONG một segment. Ở `check()` tôi tránh được; ở đây thì không.
+    if uri:sub(to + 1, to + 1) ~= "/" then return uri end
     return uri:sub(1, to)
 end
 
