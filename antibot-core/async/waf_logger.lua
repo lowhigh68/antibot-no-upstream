@@ -146,6 +146,22 @@ function _M.run(ctx)
     local ex     = ctx.waf_target_exists
     local exists = (ex == true and "1") or (ex == false and "0") or "-"
 
+    -- CHỈ có nghĩa với luật ĐƯỜNG DẪN. `target_exists()` kiểm
+    -- `document_root .. uri`, nên với một luật tham số (`target=ARGS`/`BODY`)
+    -- nó trả lời về đường dẫn — thứ KHÔNG phải mục tiêu của luật đó.
+    --
+    -- Và nó trả lời SAI theo hướng tệ nhất: `/?f=../../wp-config.php` có
+    -- `uri = "/"`, mà `io.open` trên một thư mục THÀNH CÔNG trên glibc ⇒ mọi
+    -- lượt `arg_traversal` đều báo `exists=1`. Đọc log sẽ tưởng có file thật.
+    --
+    -- Cùng lỗi đã làm `/wp-config.php.txt` báo `exists=1` sáng 2026-09-03: một
+    -- cột trả lời về một thứ khác với thứ đang được hỏi. Ghi `-` thay vì một
+    -- con số sai — không biết thì nói không biết.
+    local function exists_for(target)
+        if target == "URI" then return exists end
+        return "-"
+    end
+
     -- Phán quyết THẬT của engine, khác với `action=` vốn chỉ là hành động mà
     -- LUẬT muốn (hằng số "signal"/"block" theo rule_id, không mang thông tin).
     -- Thiếu cột này thì không đọc được 200 kia là origin hay là trang challenge
@@ -184,7 +200,7 @@ function _M.run(ctx)
             richness,
             wpauth,
             status,
-            exists,
+            exists_for(h.target),
             final,
             fim))
     end

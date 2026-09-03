@@ -262,7 +262,23 @@ end
 function _M.run_log(ctx)
     if not ctx then return end
 
-    local hit  = ctx.waf_hits and #ctx.waf_hits > 0
+    -- CHỈ đếm lượt chạm luật ĐƯỜNG DẪN. Từ `9890ad6`, `ctx.waf_hits` còn chứa
+    -- luật tham số (`target=ARGS`/`BODY`), mà với chúng thì `target_exists()`
+    -- trả lời về đường dẫn — không phải mục tiêu của luật, và luôn `1` vì
+    -- `io.open` trên thư mục `/` thành công trên glibc.
+    --
+    -- Nên đếm `#ctx.waf_hits > 0` là chạm đĩa cho một câu hỏi không ai hỏi, rồi
+    -- ghi ra một con số sai. Bỏ cả hai.
+    local uri_hit = false
+    if ctx.waf_hits then
+        for i = 1, #ctx.waf_hits do
+            if ctx.waf_hits[i].target == "URI" then
+                uri_hit = true
+                break
+            end
+        end
+    end
+
     local host = ngx.var.host
     -- `needs_mark` trả về TIỀN TỐ cần đánh dấu (chuỗi, có thể RỖNG) hoặc nil.
     -- Rỗng là gốc domain, `"/en"` là WordPress cài trong thư mục con. Vì chuỗi
@@ -272,10 +288,10 @@ function _M.run_log(ctx)
 
     -- Lối ra của gần hết lưu lượng: không luật nào bắn, VÀ tiền tố này đã được
     -- đánh dấu (hoặc đường dẫn không phải của WordPress). Không chạm đĩa.
-    if not hit and wp == nil then return end
+    if not uri_hit and wp == nil then return end
 
     local ex = target_exists()
-    if hit then ctx.waf_target_exists = ex end
+    if uri_hit then ctx.waf_target_exists = ex end
     if wp ~= nil and ex == true then wp_paths.mark(host, wp) end
 end
 
