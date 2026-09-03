@@ -36,6 +36,7 @@ Tín hiệu WAF phá được `verified`, **không phá được `whitelisted`**
 | `init.lua` | Điều phối. `run_pre` (access, chỉ đọc) → `run_log` (log, sở hữu `io.open` duy nhất và phép ghi WP-host duy nhất) | access + log |
 | `exposed.lua` | 2 luật, cả hai `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed` | access |
 | `wp_paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
+| `args.lua` | 3 luật `signal` soi **query string**: `arg_traversal`, `arg_php_wrapper`, `arg_null_byte` | access |
 | `body.lua` | **Giai đoạn 1 — chỉ quan sát, KHÔNG luật nào bắn.** Đọc body an toàn, điền `ctx.waf_body` | access |
 | `scripts/fim.sh` | **Nửa ngoài-request của tầng này.** Cron, giám sát toàn vẹn file | ngoài request |
 | `scripts/wp_paths_test.lua` + `run.sh` | 72 assertion. `deploy.sh` bước `[3b]` gác trên nó | build |
@@ -83,6 +84,34 @@ if rest == sub .. "/index.php" then return nil end   -- SAU, không phải trư�
 Miễn nó dưới `uploads/` là mở một đường thoát có tên: kẻ tấn công chỉ cần đặt tên webshell là `index.php`.
 
 Đo được vì sao phải miễn: 17/20 lượt `wp_theme_direct exists=1` là `/wp-content/themes/index.php` — chốt chặn liệt kê thư mục mà WordPress đặt ở **mọi** thư mục con, không chỉ một.
+
+### `args.lua` — 3 luật, soi THAM SỐ
+
+Cho tới 2026-09-03, tầng này chỉ đọc `ngx.var.uri`. Mười luật, tất cả đều là luật đường dẫn. **Query string, thân request, header, cookie — không có gì cả.**
+
+Đó là lỗ hổng lõi, vì trên WordPress hosting chia sẻ việc chiếm quyền thật sự hầu như luôn đi qua một **lỗ hổng plugin khai thác bằng tham số**. Đường dẫn của những request đó hoàn toàn bình thường — `/index.php`, `/wp-admin/admin-ajax.php` — tải trọng nằm trong query string.
+
+| rule_id | score | Bắt gì |
+|---|---|---|
+| `arg_traversal` | 0.75 | `..` theo sau bằng `/` hoặc `\` — LFI / đọc file tuỳ ý |
+| `arg_php_wrapper` | 1.00 | `php:// data:// expect:// phar:// zip:// file:// compress.*://` |
+| `arg_null_byte` | 1.00 | `%00` hoặc byte NUL thật — cắt chuỗi để vượt kiểm đuôi file |
+
+**Ba luật, không phải ba trăm.** Đây không phải CRS thu nhỏ. Ba mẫu này được chọn vì chúng gần như không có bản sao hợp lệ trong lưu lượng thật. Luật SQLi/XSS của CRS thì ngược lại — nổi tiếng bắn oan nội dung bài viết và ô tìm kiếm trên chính WordPress, và đó là thứ phải tránh trên dàn máy có hàng trăm khách hàng.
+
+Ba chi tiết mẫu là chịu lực:
+
+- `\.\.[/\\]` — **không** bắt `..` trần. `bao-cao..pdf`, `range=10..20`, `v=1.2..1.3` đều hợp lệ.
+- Wrapper **bắt buộc có `://`**. Thiếu nó thì `data:image/png;base64,…` (dạng HTML hợp lệ) bị bắt oan. Và `?file=https://x` **không** khớp vì `file` phải dính liền `://`.
+- Giải mã tối đa **3 mức** (gốc + 2 lần). `%2e%2e%2f` cần một lần, `%252e%252e%252f` cần hai. Bộ lọc chỉ nhìn chuỗi thô trượt cả hai; bộ lọc giải mã đúng một lần trượt cái thứ hai.
+
+**Bắn ĐỘC LẬP với luật đường dẫn**, không phải nhánh `else`. Hai nguồn bằng chứng về hai phần khác nhau của cùng một request; gộp vào chuỗi "khớp nhiều nhất một luật" sẽ làm cái thứ hai biến mất mỗi khi cái thứ nhất đã bắn. Một request mang **cả hai** thì hai tín hiệu cộng lại và mới vượt ngưỡng — đó chính là lý do phải tách.
+
+Tín hiệu riêng `waf_arg = 50` trong `compute.lua`, **không** dùng chung `waf_wp_path`: hai họ luật có bản chất FP khác hẳn nhau (đường dẫn PHP lạ là chuyện site tự viết vẫn làm; `php://` trong tham số thì không), nên phải hiệu chỉnh riêng được.
+
+Cả ba là `signal`. Ngay cả 1.00 × 50 = 50 điểm vẫn dưới CHALLENGE(55) — **không luật nào tự mình phán quyết được**. Nâng lên `block` hay không là việc của số liệu sau vài ngày đọc `waf.log`, không phải của trực giác.
+
+**Chưa phủ:** thân request (`body.lua` đang ở giai đoạn quan sát), header, cookie. Ba mẫu này dùng lại được nguyên vẹn cho thân request khi giai đoạn 2 tới — `args.check()` không biết gì về nguồn của chuỗi nó nhận.
 
 ### Cổng `is_wp_host`
 

@@ -92,6 +92,24 @@ local DEFAULT_WEIGHTS = {
     -- chuyện plugin hợp lệ vẫn làm. Phải cộng thêm tín hiệu khác mới leo thang.
     waf_wp_path         = 50,
 
+    -- waf_arg: luật THAM SỐ (`waf/args.lua`), tách hẳn khỏi `waf_wp_path`.
+    --
+    -- Tách chứ không gộp, vì đây là bằng chứng về một PHẦN KHÁC của request:
+    -- `/index.php?f=../../wp-config.php` có đường dẫn hoàn toàn bình thường.
+    -- Gộp làm một thì không hiệu chỉnh riêng được, mà hai họ luật này có bản
+    -- chất FP khác hẳn nhau — đường dẫn PHP lạ là chuyện site tự viết vẫn làm,
+    -- còn `php://` trong tham số thì không có bản sao hợp lệ nào.
+    --
+    -- Cùng trọng số 50, cân theo ngưỡng engine.lua (MONITOR=25, CHALLENGE=55):
+    --   arg_php_wrapper 1,00 × 50 = 50,0 → dưới CHALLENGE khi đứng một mình
+    --   arg_null_byte   1,00 × 50 = 50,0 → như trên
+    --   arg_traversal   0,75 × 50 = 37,5 → trên MONITOR, dưới CHALLENGE
+    -- Cố ý: ngay cả bằng chứng chắc nhất cũng không tự mình phán quyết được,
+    -- đúng nguyên tắc của tầng WAF. Một request mang CẢ luật đường dẫn lẫn luật
+    -- tham số thì hai tín hiệu cộng lại, và lúc đó nó vượt ngưỡng — đó chính là
+    -- lý do hai luật phải bắn độc lập thay vì "khớp nhiều nhất một".
+    waf_arg             = 50,
+
     fp_degraded_pen     = 0,
     correlated_boost    = 15,
     corr_rule_weight    = 50,
@@ -216,6 +234,10 @@ local function get_signal(name, ctx)
 
     if name == "waf_wp_path" then
         return safe_val(ctx.waf_wp_path)
+    end
+
+    if name == "waf_arg" then
+        return safe_val(ctx.waf_arg)
     end
 
     if name == "fast_solve" then

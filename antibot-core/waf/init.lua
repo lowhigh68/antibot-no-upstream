@@ -1,8 +1,22 @@
 local _M = {}
 local wp_paths = require "antibot.waf.wp_paths"
 local exposed  = require "antibot.waf.exposed"
+local args     = require "antibot.waf.args"
 local body     = require "antibot.waf.body"
 local pool     = require "antibot.core.redis_pool"
+
+-- Ghi mot lan cham luat vao ctx. Tach ra vi tu 2026-09-03 co HAI nguon doc lap:
+-- luat duong dan (`uri`) va luat tham so (`args`).
+local function add_hit(ctx, rule_id, rule, target, matched)
+    ctx.waf_hits = ctx.waf_hits or {}
+    ctx.waf_hits[#ctx.waf_hits + 1] = {
+        rule    = rule_id,
+        target  = target,
+        matched = matched,
+        action  = rule.action,
+        score   = rule.score,
+    }
+end
 
 -- Tầng WAF. Khác mọi tầng khác ở MỘT điểm quyết định: nó chạy TRƯỚC các cửa
 -- thoát tin cậy trong `init.lua`, không phải sau.
@@ -77,18 +91,33 @@ function _M.run_pre(ctx)
     -- `probe` tu gac lay: GET/HEAD thoat ngay o phep kiem method dau tien.
     if not (rule and rule.action == "block") then
         body.probe(ctx)
+
+        -- LUAT THAM SO — doc lap voi luat duong dan, KHONG phai nhanh else.
+        --
+        -- Hai nguon bang chung ve HAI PHAN khac nhau cua cung mot request:
+        -- `/index.php?f=../../wp-config.php` co duong dan hoan toan binh thuong
+        -- va tai trong nam tron trong query string. Gop chung vao mot chuoi
+        -- "khop nhieu nhat mot luat" se lam cai thu hai bien mat moi khi cai
+        -- thu nhat da ban — ma mot request mang CA HAI thi dang ngo hon han.
+        --
+        -- `ngx.var.args` la nil voi gan het luu luong (request khong co query
+        -- string), nen `args.check` thoat ngay o phep kiem dau. Khong I/O.
+        local qs = ngx.var.args
+        if qs and qs ~= "" then
+            local aid = args.check(qs)
+            if aid then
+                local arule = args.RULES[aid]
+                add_hit(ctx, aid, arule, "ARGS", qs)
+                if (ctx.waf_arg or 0) < arule.score then
+                    ctx.waf_arg = arule.score
+                end
+            end
+        end
     end
 
     if not rule then return false end
 
-    ctx.waf_hits = ctx.waf_hits or {}
-    ctx.waf_hits[#ctx.waf_hits + 1] = {
-        rule    = rule_id,
-        target  = "URI",
-        matched = uri,
-        action  = rule.action,
-        score   = rule.score,
-    }
+    add_hit(ctx, rule_id, rule, "URI", uri)
 
     if rule.action ~= "block" then
         local score = rule.score

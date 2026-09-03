@@ -27,6 +27,10 @@ echo "── wp_paths ───────────────────�
 "$RESTY" --shdict "antibot_cache 1m" "$HERE/wp_paths_test.lua" || rc=1
 
 echo
+echo "── args ──────────────────────────────────────────────"
+"$RESTY" "$HERE/args_test.lua" || rc=1
+
+echo
 echo "── body ──────────────────────────────────────────────"
 "$RESTY" "$HERE/body_test.lua" || rc=1
 
