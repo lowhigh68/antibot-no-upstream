@@ -148,6 +148,18 @@ local function check_verified_cookie(ctx)
     return false
 end
 
+-- Có tín hiệu WAF nào đang chờ `compute.lua` đọc không.
+--
+-- MỘT nguồn sự thật cho cả hai cửa thoát tin cậy bên dưới. Danh sách này phải
+-- được mở rộng mỗi khi `waf/` thêm một tín hiệu — quên là tín hiệu đó bị nuốt
+-- trong im lặng với mọi client có cookie verified, tức đúng lỗ hổng mà cả tầng
+-- WAF sinh ra để bịt (đã xảy ra một lần với `waf_arg`, từ `f9124a3`).
+--
+-- KHÔNG gộp `ctx.waf_body` vào đây: đó là telemetry thuần, không phải tín hiệu.
+local function waf_signal(ctx)
+    return ctx.waf_wp_path or ctx.waf_arg or ctx.waf_body_arg
+end
+
 function _M.run()
     local ctx = ngx.ctx.antibot or {}
     ngx.ctx.antibot = ctx
@@ -168,8 +180,18 @@ function _M.run()
     -- lật một lối tắt dựa trên DANH TÍNH. Cookie kia chỉ chứng minh client đã
     -- giải một PoW `difficulty = "000"` — vài chục ms với trình duyệt, và với
     -- kẻ tấn công là 7200s soi-không-tới nếu không có điều kiện này.
+    -- `waf_signal(ctx)` chứ KHÔNG phải `not ctx.waf_wp_path`.
+    --
+    -- Bản trước liệt kê đúng MỘT tín hiệu, và tới `f9124a3` khi thêm `waf_arg`
+    -- thì hợp đồng ghi ngay trên đây trở thành sai mà không ai sửa: một request
+    -- có cookie verified kèm `?f=php://filter/...` vẫn được phát hiện, vẫn vào
+    -- waf.log, nhưng thoát TRƯỚC `compute.lua` nên không tác động gì tới phán
+    -- quyết. Đúng lỗ hổng mà cả khối chú thích này viết ra để bịt.
+    --
+    -- Hàm gom lại là để lần sau thêm tín hiệu WAF thì chỉ phải sửa MỘT chỗ, chứ
+    -- không phải nhớ ra hai cửa thoát nằm cách nhau 15 dòng.
     local verified = check_verified_cookie(ctx)
-    if verified and not ctx.waf_wp_path then return end
+    if verified and not waf_signal(ctx) then return end
 
     classifier.run(ctx)
     run_steps(STEPS_COMMON, ctx)
@@ -184,7 +206,7 @@ function _M.run()
     -- (admin rule, LAN, loopback, ip/url whitelist) và WAF không lật quyết định
     -- đó — ranh giới có nguyên tắc, không phải chỗ nào cũng ép.
     if ctx.whitelisted then return end
-    if ctx.verified and not ctx.waf_wp_path then return end
+    if ctx.verified and not waf_signal(ctx) then return end
 
     local class = ctx.req_class or "unknown"
 

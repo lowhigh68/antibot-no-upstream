@@ -83,4 +83,48 @@ function _M.check(args)
     return nil
 end
 
+-- Mo ta mot query string de ghi log MA KHONG ghi gia tri.
+--
+-- Tra ve dang `<ten1,ten2:len>`, vi du `<action,key,login:84>`.
+--
+-- VI SAO KHONG GHI NGUYEN QUERY STRING. Lap luan cu cua toi la "mat khau khong
+-- di qua URL" — dung voi mat khau, SAI voi token dat lai mat khau, ma do chinh
+-- la dinh dang cua WordPress:
+--     /wp-login.php?action=rp&key=<token>&login=<user>
+-- Mot credential song nam tron trong query string. Cong OAuth authorization
+-- code, API key trong tich hop cu, signed URL, email trong tham so. Ghi nguyen
+-- van vao waf.log — file text, giu 30 ngay — la lam ro chung ra.
+--
+-- TEN tham so thi ghi duoc: do la lUOC DO, khong phai du lieu. Va no la thu
+-- huu ich nhat khi doc log: biet luat ban o `key=` hay o `s=` la biet ngay day
+-- la tan cong hay mot o tim kiem.
+--
+-- Do dai giu lai vi no phan biet mot payload ngan voi mot lan dan nhieu KB.
+local MAX_NAMES = 8
+local MAX_NAME_LEN = 32
+
+function _M.describe(qs)
+    if not qs or qs == "" then return "-" end
+
+    local names, n = {}, 0
+    local pos = 1
+    while n < MAX_NAMES do
+        local amp = qs:find("&", pos, true)
+        local pair = amp and qs:sub(pos, amp - 1) or qs:sub(pos)
+        local eq = pair:find("=", 1, true)
+        local name = eq and pair:sub(1, eq - 1) or pair
+        if name ~= "" then
+            n = n + 1
+            names[n] = #name > MAX_NAME_LEN
+                and (name:sub(1, MAX_NAME_LEN) .. "~") or name
+        end
+        if not amp then break end
+        pos = amp + 1
+    end
+
+    if n == 0 then return "<:" .. #qs .. ">" end
+    local more = (qs:find("&", pos, true) and n >= MAX_NAMES) and ",+" or ""
+    return "<" .. table.concat(names, ",") .. more .. ":" .. #qs .. ">"
+end
+
 return _M

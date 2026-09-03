@@ -29,15 +29,18 @@ local body = dofile(SRC .. "waf/body.lua")
 local ngx_var_real, ngx_req_real = ngx.var, ngx.req
 
 -- Dung mot canh: method, content-type, va body nhan duoc.
--- `data = nil` mo phong truong hop nginx da ghi body ra file tam (vuot
--- `client_body_buffer_size`), tuc `get_body_data()` tra nil.
-local function probe(method, ct, data)
+-- `data = nil` mo phong `get_body_data()` tra nil. Nhung nil co BA nghia khac
+-- nhau, va tham so `bodyfile` la thu phan biet chung:
+--   bodyfile co gia tri -> body da ghi ra file tam (spill that)
+--   bodyfile = false    -> khong co body / body rong (KHONG phai spill)
+local function probe(method, ct, data, bodyfile)
+    if bodyfile == nil then bodyfile = "/tmp/gia" end
     ngx.var = { http_content_type = ct }
     ngx.req = {
         get_method    = function() return method end,
         read_body     = function() end,
         get_body_data = function() return data end,
-        get_body_file = function() return "/tmp/gia" end,
+        get_body_file = function() return bodyfile or nil end,
     }
     local ctx = {}
     -- pcall BAT BUOC. Neu `probe` nem loi ma khong bat, hai dong khoi phuc duoi
@@ -105,7 +108,19 @@ check("khong spill",     probe("POST", URLENC, "a=1").spill,   false)
 check("spill co ghi nhan", probe("POST", MULTI, nil).spill,    true)
 check("spill len = -1",    probe("POST", MULTI, nil).len,      -1)
 check("spill van co family", probe("POST", MULTI, nil).family, "multipart")
-check("spill khong doan php", probe("POST", MULTI, nil).php,   false)
+-- NIL chu khong phai false. "Khong soi duoc" khac han "da soi, sach" — neu mot
+-- phep thong ke ve sau coi php=0 la am tinh thi moi ty le deu lech, va khong ai
+-- biet vi log trong nhu binh thuong.
+check("spill: php la nil (chua soi)",      probe("POST", MULTI, nil).php,      nil)
+check("spill: arg_rule la nil (chua soi)", probe("POST", MULTI, nil).arg_rule, nil)
+
+-- get_body_data() tra nil KHONG dong nghia voi spill: POST rong cung tra nil.
+-- Phan biet bang get_body_file(). Gop chung lam mot se thoi phong so spill bang
+-- so POST rong, tuc quyet dinh `client_body_buffer_size` tren mot phep dem sai.
+check("khong co body -> KHONG phai spill",
+      probe("POST", URLENC, nil, false).spill, false)
+check("khong co body van co family",
+      probe("POST", URLENC, nil, false).family, "urlencoded")
 
 -- ── The mo PHP ───────────────────────────────────────────────────────
 check("php thuong",      probe("POST", MULTI, "x<?php eval($_POST[0]);").php, true)

@@ -91,23 +91,34 @@ function _M.probe(ctx)
     local body = ngx.req.get_body_data()
 
     if not body then
-        -- Body vuot `client_body_buffer_size` nen nginx ghi ra file tam.
-        -- KHONG doc file do o day: access phase, `io.open` la I/O CHAN nam tren
+        -- `get_body_data()` tra nil o BA tinh huong khac nhau, va gop chung lam
+        -- mot la lam hong chinh phep do nay:
+        --   1. body vuot `client_body_buffer_size` -> nginx ghi ra file tam
+        --   2. khong co body (POST rong, hoac Content-Length 0)
+        --   3. body rong
+        -- Chi (1) moi la `spill`. Phan biet bang `get_body_file()`: co duong dan
+        -- file tam nghia la (1), khong co nghia la (2)/(3).
+        --
+        -- Neu goi ca ba la spill thi con so dung de quyet dinh
+        -- `client_body_buffer_size` bi thoi phong bang so POST rong — tuc quyet
+        -- dinh sai tren mot phep dem sai.
+        local spilled = ngx.req.get_body_file() ~= nil
+
+        -- KHONG doc file tam o day: access phase, `io.open` la I/O CHAN nam tren
         -- duong di cua moi request — dung dieu luat repo cam (xem `run_log`,
         -- noi phep cham dia duy nhat cua tang nay duoc phep ton tai).
         --
-        -- Ghi nhan la `spill` roi di tiep. Chinh con so nay quyet dinh
-        -- `client_body_buffer_size` nen dat bao nhieu: neu spill hiem thi 64k da
-        -- du; neu spill nhieu thi nang buffer, dung viet them ma.
+        -- `php` va `arg_rule` de NIL, khong phai `false`/`0`.
+        -- "Khong soi duoc" khac han "da soi, khong thay gi". Ban truoc ghi
+        -- `php = false` ngay canh chu thich noi dung dieu do — tuc tu mau thuan.
+        -- Neu mot phep thong ke ve sau coi `php=0` la am tinh thi moi ty le deu
+        -- lech, va khong ai biet vi log trong nhu binh thuong.
         ctx.waf_body = {
-            family = family,
-            spill  = true,
-            len    = -1,
-            php    = false,
-            nargs  = nil,
-            -- Khong co body trong bo nho thi khong soi duoc. Ghi ro nil chu
-            -- khong doan bua: mot ket qua bia o day se lam lech moi phep dem
-            -- ve sau, va "khong soi duoc" khac han "soi roi, khong thay gi".
+            family   = family,
+            spill    = spilled,
+            len      = -1,
+            php      = nil,
+            nargs    = nil,
             arg_rule = nil,
         }
         return

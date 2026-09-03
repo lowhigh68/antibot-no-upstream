@@ -237,23 +237,29 @@ function _M.script_path(uri)
     local _, to = ngx.re.find(uri, RX_PHP_EXEC, "jo")
     if not to then return uri end
 
-    -- CHỈ cắt khi ký tự ngay sau là `/`. Đó mới là PATH_INFO — phần đứng sau là
-    -- một segment khác, không thuộc tên file.
+    -- Cắt tại dấu `/` ĐẦU TIÊN nằm SAU đuôi PHP. Không có `/` nào thì giữ
+    -- nguyên toàn bộ.
     --
-    -- Nếu là `.` thì đây là ĐUÔI KÉP, và tên file thật bao gồm cả phần sau. Cắt
-    -- ở đó là đi kiểm một file KHÁC với file được yêu cầu.
+    -- Một dòng này xử lý đúng cả hai ca mà hai bản trước đều làm sai một nửa:
+    --   `/shell.php/x`            → `/shell.php`         (PATH_INFO)
+    --   `/wp-config.php.txt`      → `/wp-config.php.txt` (đuôi kép, giữ nguyên)
+    --   `/shell.php.jpg/path`     → `/shell.php.jpg`     (đuôi kép RỒI PATH_INFO)
     --
-    -- Đã chạy sai thật (đo 2026-09-03): `/wp-config.php.txt` trên
-    -- alumicastore.com báo `exists=1` — nhưng đó là `wp-config.php` (file LUÔN
-    -- tồn tại trên mọi WordPress), không phải bản `.txt`. Cột `exists=` sinh ra
-    -- để trả lời "file này có thật không", mà nó lại trả lời về một file khác:
-    -- báo động giả ở đúng chỗ nguy hiểm nhất, vì `wp-config.php.txt` lộ ra là
-    -- toàn bộ mật khẩu database.
+    -- Bản đầu cắt ngay tại `to`, nên `/wp-config.php.txt` thành `/wp-config.php`
+    -- — một file LUÔN tồn tại trên mọi WordPress. Đo 2026-09-03 trên
+    -- alumicastore.com: báo `exists=1` cho một file không hề có. Báo động giả ở
+    -- đúng chỗ nguy hiểm nhất, vì `wp-config.php.txt` lộ ra là toàn bộ mật khẩu
+    -- database.
     --
-    -- Cùng ranh giới đã ghi trong `check()`: PATH_INFO là ranh giới `/`, đuôi kép
-    -- nằm TRONG một segment. Ở `check()` tôi tránh được; ở đây thì không.
-    if uri:sub(to + 1, to + 1) ~= "/" then return uri end
-    return uri:sub(1, to)
+    -- Bản thứ hai chỉ cắt khi ký tự ngay sau là `/`, nên `/shell.php.jpg/path`
+    -- giữ nguyên toàn bộ — trong khi `.php.jpg` chính là dạng `RX_PHP_EXEC` sinh
+    -- ra để bắt (AddHandler khớp `.php` ở GIỮA tên). Luật bảo "đây là file có
+    -- thể thực thi", `script_path` bảo "đây không phải tên file": hai câu mâu
+    -- thuẫn trong cùng một module, và test còn ghi nhận hành vi sai đó như thể
+    -- nó đúng.
+    local slash = uri:find("/", to + 1, true)
+    if not slash then return uri end
+    return uri:sub(1, slash - 1)
 end
 
 -- Ngắn, để bọc cửa sổ giữa lúc lên lịch timer và lúc timer ghi xong. Không phải

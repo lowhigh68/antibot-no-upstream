@@ -100,15 +100,39 @@ local DEFAULT_WEIGHTS = {
     -- chất FP khác hẳn nhau — đường dẫn PHP lạ là chuyện site tự viết vẫn làm,
     -- còn `php://` trong tham số thì không có bản sao hợp lệ nào.
     --
-    -- Cùng trọng số 50, cân theo ngưỡng engine.lua (MONITOR=25, CHALLENGE=55):
-    --   arg_php_wrapper 1,00 × 50 = 50,0 → dưới CHALLENGE khi đứng một mình
-    --   arg_null_byte   1,00 × 50 = 50,0 → như trên
-    --   arg_traversal   0,75 × 50 = 37,5 → trên MONITOR, dưới CHALLENGE
-    -- Cố ý: ngay cả bằng chứng chắc nhất cũng không tự mình phán quyết được,
-    -- đúng nguyên tắc của tầng WAF. Một request mang CẢ luật đường dẫn lẫn luật
-    -- tham số thì hai tín hiệu cộng lại, và lúc đó nó vượt ngưỡng — đó chính là
-    -- lý do hai luật phải bắn độc lập thay vì "khớp nhiều nhất một".
-    waf_arg             = 50,
+    -- ĐANG Ở 0 — CHẾ ĐỘ QUAN SÁT, CÓ CHỦ ĐÍCH.
+    --
+    -- Ba luật này chưa có cổng gì cả: chúng áp cho MỌI site như nhau. So sánh
+    -- với `wp_root_unknown`, vốn có cổng `is_wp_root` chính vì đã đo được rằng
+    -- trên site code TỰ VIẾT, PHP tuỳ ý ở web root là chuyện bình thường
+    -- (cloud183-139, 366k request/ngày). Cổng đó sinh ra từ số liệu.
+    --
+    -- Luật tham số chưa có số liệu tương đương, và code PHP cũ viết tay là đúng
+    -- chỗ `../` trong tham số CÓ THỂ hợp lệ — router kiểu `?page=../inc/x.php`
+    -- rất phổ biến trong mã cũ. Trên WordPress chuyện đó không tồn tại, nên bộ
+    -- test hiện có kiểm đúng thứ đã biết và mù đúng thứ cần biết.
+    --
+    -- Trọng số 0 = `waf.log` vẫn ghi ĐẦY ĐỦ mọi lượt chạm luật, điểm đóng góp
+    -- bằng không. Và không mất gì khi đo: waf.log có cột `richness=`, nên vẫn
+    -- suy được tác động thi hành giả định (`richness ≥ 0.5` thì `auth_session_cap`
+    -- đã chặn ở monitor; `richness = 0.00` mới là nhóm có thể bị challenge oan).
+    --
+    -- Khi có số, cân theo ngưỡng engine.lua (MONITOR=25, CHALLENGE=55) thì 50 là
+    -- mức đã tính: 1,00 × 50 = 50 → dưới CHALLENGE khi đứng một mình.
+    waf_arg             = 0,
+
+    -- TÁCH KHỎI `waf_arg`, cùng lý do đã tách `waf_arg` khỏi `waf_wp_path`:
+    -- hai họ bằng chứng có bản chất FP khác hẳn nhau nên phải hiệu chỉnh riêng.
+    --
+    -- Thân request chứa NỘI DUNG NGƯỜI DÙNG SOẠN. Một quản trị viên viết bài về
+    -- stream wrapper PHP rồi bấm Lưu sẽ gửi `php://` trong thân POST tới
+    -- `/wp-admin/post.php`; một ticket hỗ trợ dán đường dẫn `../` cũng vậy.
+    -- Query string không bao giờ có chuyện đó.
+    --
+    -- Chú thích này đã có trong `waf/CLAUDE.md` từ `9890ad6`, nhưng lúc đó cả
+    -- hai vẫn đổ vào MỘT tín hiệu một trọng số — tức lập luận đúng mà cấu trúc
+    -- không cho phép hành động theo nó.
+    waf_body_arg        = 0,
 
     fp_degraded_pen     = 0,
     correlated_boost    = 15,
@@ -238,6 +262,10 @@ local function get_signal(name, ctx)
 
     if name == "waf_arg" then
         return safe_val(ctx.waf_arg)
+    end
+
+    if name == "waf_body_arg" then
+        return safe_val(ctx.waf_body_arg)
     end
 
     if name == "fast_solve" then

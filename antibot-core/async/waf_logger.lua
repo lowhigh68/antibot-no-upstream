@@ -71,7 +71,7 @@ function _M.run_body(ctx)
 
     fh:write(string.format(
         "[%s] [waf-body] ts=%d id=%s domain=%s ip=%s method=%s uri=%s"
-        .. " ct=%s blen=%d spill=%d php=%d nargs=%s class=%s richness=%s"
+        .. " ct=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
         .. " argrule=%s\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -83,7 +83,10 @@ function _M.run_body(ctx)
         b.family,
         b.len,
         b.spill and 1 or 0,
-        b.php and 1 or 0,
+        -- `-` chứ không phải `0` khi không đọc được body. "Chưa soi" khác hẳn
+        -- "đã soi, sạch"; ghi `0` là biến một khoảng trống thành một âm tính,
+        -- và mọi phép đếm về sau sẽ lệch mà log trông vẫn bình thường.
+        (b.php == nil) and "-" or (b.php and "1" or "0"),
         b.nargs and tostring(b.nargs) or "-",
         ctx.req_class or "-",
         ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-",

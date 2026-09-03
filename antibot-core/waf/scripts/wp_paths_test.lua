@@ -354,9 +354,15 @@ local SCRIPT_CASES = {
 {"/wp-config.php.txt",        nil, "/wp-config.php.txt", "duoi kep — ten file that gom ca .txt"},
 {"/wp-config.php.bak",        nil, "/wp-config.php.bak", "duoi kep, khong cat"},
 {"/shell.php.jpg",            nil, "/shell.php.jpg",     "duoi kep dang anh"},
--- Nhung PATH_INFO thi VAN cat — day la ranh gioi `/`, khac han.
-{"/wp-config.php.txt/x",      nil, "/wp-config.php.txt/x",
-                              "duoi kep TRUOC, nen `.php` khong duoc theo boi `/`"},
+-- DUOI KEP ROI PATH_INFO: phai cat tai `/`, GIU nguyen phan duoi kep.
+-- Hai ca duoi day tung ghi nhan hanh vi SAI nhu the no dung (ban 45af639 chi
+-- cat khi ky tu ngay sau `.php` la `/`), va do la loai test te hon khong co
+-- test. Nguoi review bat duoc dung cho nay.
+{"/wp-config.php.txt/x",      nil, "/wp-config.php.txt",
+                              "duoi kep ROI PATH_INFO — giu duoi, cat PATH_INFO"},
+{"/shell.php.jpg/path-info",  nil, "/shell.php.jpg",
+                              ".php.jpg la dang RX_PHP_EXEC sinh ra de bat: " ..
+                              "AddHandler khop `.php` o GIUA ten"},
 -- `/a.php/b.php`: script THAT SU chay la cai DAU, phan sau chi la PATH_INFO.
 {"/a.php/b.php",              nil, "/a.php",           "cat o duoi PHP dau tien"},
 {"/x.php5/y",                 nil, "/x.php5",          "php5 cung la duoi thuc thi"},

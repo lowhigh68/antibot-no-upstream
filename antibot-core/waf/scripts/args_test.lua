@@ -89,5 +89,38 @@ check("f=php://filter/resource=../../wp-config.php",
       "arg_php_wrapper", "co ca wrapper lan traversal — wrapper chac hon")
 check("f=../x%00",  "arg_null_byte", "co ca traversal lan NUL — NUL chac hon")
 
+io.write("\nargs.describe() — KHONG duoc lo gia tri\n")
+
+local function dcheck(qs, want, why)
+    local ok, got = pcall(args.describe, qs)
+    if not ok then
+        fail = fail + 1
+        io.write(string.format("  LOI  %-52s %s\n", qs, tostring(got)))
+    elseif got ~= want then
+        fail = fail + 1
+        io.write(string.format("  SAI  %-52s cho=%s duoc=%s\n       %s\n",
+                 qs, tostring(want), tostring(got), why))
+    else
+        pass = pass + 1
+    end
+end
+
+-- Ca quan trong nhat cua ca file nay. Day la dinh dang dat lai mat khau CUA
+-- CHINH WordPress — mot credential song trong query string. Ten tham so duoc
+-- ghi (lUOC DO, huu ich khi doc log), gia tri thi KHONG.
+dcheck("action=rp&key=SECRET123&login=admin",
+       "<action,key,login:35>", "token dat lai mat khau — chi ghi TEN")
+dcheck("code=oauth_secret_abc&state=xyz",
+       "<code,state:31>",       "OAuth authorization code")
+dcheck("s=ao+dai",              "<s:8>",  "o tim kiem — gia tri cung khong ghi")
+dcheck("",                      "-",      "rong")
+dcheck("khongcodau",            "<khongcodau:10>", "khong co dau bang")
+dcheck("=chigiatri",            "<:10>",  "khong co ten tham so")
+
+-- Chan do dai: mot ten tham so dai bat thuong cung la du lieu ke tan cong dieu
+-- khien, khong duoc de no chiem het dong log.
+local long = string.rep("k", 60)
+dcheck(long .. "=1", "<" .. string.rep("k", 32) .. "~:62>", "ten dai bi cat")
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

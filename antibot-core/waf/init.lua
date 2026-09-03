@@ -26,8 +26,13 @@ local function record_arg_hit(ctx, rule_id, target, matched)
     local rule = args.RULES[rule_id]
     if not rule then return end
     add_hit(ctx, rule_id, rule, target, matched)
-    if (ctx.waf_arg or 0) < rule.score then
-        ctx.waf_arg = rule.score
+
+    -- HAI tín hiệu riêng, không phải một. Query string và thân request có bản
+    -- chất FP khác hẳn nhau (thân chứa nội dung người dùng soạn), nên phải hiệu
+    -- chỉnh trọng số độc lập — cùng lý do đã tách `waf_arg` khỏi `waf_wp_path`.
+    local field = (target == "BODY") and "waf_body_arg" or "waf_arg"
+    if (ctx[field] or 0) < rule.score then
+        ctx[field] = rule.score
     end
 end
 
@@ -115,9 +120,18 @@ function _M.run_pre(ctx)
         --
         -- `ngx.var.args` la nil voi gan het luu luong (request khong co query
         -- string), nen `args.check` thoat ngay o phep kiem dau. Khong I/O.
+        -- `args.describe(qs)` CHỨ KHÔNG phải `qs`.
+        --
+        -- Query string chứa được credential sống: WordPress đặt lại mật khẩu là
+        -- `/wp-login.php?action=rp&key=<token>&login=<user>`, cộng OAuth code,
+        -- API key trong tích hợp cũ, signed URL, email. Ghi nguyên văn vào
+        -- waf.log — file text, giữ 30 ngày — là làm rò chúng ra.
+        --
+        -- Lập luận cũ của tôi là "mật khẩu không đi qua URL". Đúng với mật khẩu,
+        -- sai với token. Tôi che thân request rồi để ngỏ đúng chỗ tương đương.
         local qs = ngx.var.args
         if qs and qs ~= "" then
-            record_arg_hit(ctx, args.check(qs), "ARGS", qs)
+            record_arg_hit(ctx, args.check(qs), "ARGS", args.describe(qs))
         end
 
         -- Cùng ba luật đó, áp lên THÂN REQUEST. `body.probe` đã chạy ở trên và
