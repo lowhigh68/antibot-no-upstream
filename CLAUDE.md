@@ -151,6 +151,6 @@ S2.5 difference vs S3/S4: does NOT set `good_bot_verified` → engine still comp
 - **`lua_shared_dict`** names (`antibot_tls`, `whitelist_cache`, `antibot_stats`, `antibot_ua_cache`, `antibot_cache`) declared in `nginx/nginx.conf:49-53` — add new dicts there only.
 - **Secrets** hardcoded in `admin/init.lua` (`AUTH_USER`/`AUTH_PASS`) and `config.lua` (`pow.challenge_secret`). Don't log or rotate casually.
 - **`cfg.pow.difficulty = "000"`** — tuning impacts user latency, don't change without explicit request.
-- `log_by_lua`: `risk_update` and `adaptive_weight` run via `ngx.timer.at(0,…)` and skip `req_class=="resource"`. Never block in log phase.
+- `log_by_lua`: `risk_update` và `adaptive_weight` chạy qua `ngx.timer.at(0,…)` và bỏ qua `req_class=="resource"`. **Cosocket bị CẤM ở log phase**, nên mọi phép chạm Redis ở đây phải qua timer — gọi thẳng `pool.safe_*` sẽ thất bại **trong im lặng**, không phải chỉ chậm. `io.open` thì chạy thẳng được (`waf/init.lua:target_exists`). Lẫn hai thứ này đã giết `wp_paths.mark()` 4 tháng.
 - **Init-worker cosocket:** disabled in `init_worker_by_lua*`. Defer Redis/DNS work via `ngx.timer.at(0, fn)` (see `goodbot_seed` invocation in `init.lua:init_worker`).
 
