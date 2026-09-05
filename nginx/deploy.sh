@@ -165,6 +165,38 @@ if [ -f "$REPO_DIR/nginx/logrotate/antibot" ] && [ -d /etc/logrotate.d ]; then
     fi
 fi
 
+# Quyen thu muc log. CHAN O THU MUC, khong phai o tung file.
+#
+# `async/logger.lua` va `async/waf_logger.lua` deu tao file bang
+# `io.open(path,"a")` — Lua khong dat duoc mode, no lay 0666 tru umask, va umask
+# cua worker tren dan may nay bang 0. Ket qua: moi file log do CHINH antibot tao
+# ra deu la `-rw-rw-rw-`.
+#
+# Do 2026-09-05 tren cloud183-139: `antibot.log-20260905` 8,9 GB, mode 666.
+# Tren hosting chia se co tenant khong tin cay, do la moi khach hang deu DOC
+# duoc IP/UA/domain/hash danh tinh cua moi domain khac, va GHI them duoc dong
+# gia vao dung file ma moi phep do dang dua vao.
+#
+# Vi sao sua o THU MUC chu khong chmod tung file: chmod file chi dung toi luc
+# file do bi xoa hoac chua ton tai — lan `ensure()` ke tiep tao lai la 666 lai.
+# Thu muc khong cho `others` di vao thi mode cua file ben trong thanh vo nghia,
+# va no dung cho ca file chua duoc tao. logrotate `create 0640` lo phan con lai.
+#
+# 0750 chu khong phai 0700: giu nhom `nginx` doc duoc, vi worker chay duoi user
+# do va `admin/init.lua` cung o trong so.
+if [ -d /var/log/antibot ]; then
+    cur=$(stat -c '%a' /var/log/antibot 2>/dev/null || echo "?")
+    if [ "$cur" != "750" ]; then
+        chown nginx:nginx /var/log/antibot
+        chmod 0750 /var/log/antibot
+        echo "[4c] quyen log: /var/log/antibot $cur -> 750 (nginx:nginx)"
+    fi
+    # Vet lai file da bi tao 666 truoc khi co buoc nay. `|| :` vi thu muc co the
+    # rong o lan deploy dau tien tren mot may moi.
+    find /var/log/antibot -maxdepth 1 -type f -perm /0066 \
+         -exec chmod 0640 {} + 2>/dev/null || :
+fi
+
 echo "[5] nginx -t..."
 "$NGINX" -t
 
