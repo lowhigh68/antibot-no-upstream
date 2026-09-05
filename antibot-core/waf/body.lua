@@ -31,6 +31,23 @@ local INSPECT_METHODS = {
 -- KHONG bat `<?` tran: XML khai bao `<?xml` va se lam nhieu moi upload SVG/RSS.
 local RX_PHP_OPEN = [[<\?(?:php|=)]]
 
+-- Family nao mang BYTE NHI PHAN. Dung de tat luat NUL — xem chu thich day du o
+-- `args.check`, tham so `binary`.
+--
+-- Do 2026-09-05: 67/67 luot `arg_null_byte` deu nam trong NOI DUNG file upload
+-- (`fnm=0` cho ca 61 luot multipart do duoc). Moi file nhi phan chua byte NUL
+-- theo dinh nghia dinh dang, nen luat do khong phat hien tan cong — no phat
+-- hien "vua co nguoi upload file".
+--
+-- `other` vao danh sach nay vi no la nhan cho Content-Type khong khop mau nao,
+-- ma `application/octet-stream` roi dung vao do. Do duoc 4 luot NUL mang nhan
+-- `other` kich thuoc 2–7 KB. Doan sai theo huong AN TOAN: bo mot tin hieu con
+-- hon ban oan moi upload tren 43 domain.
+local BINARY_FAMILY = {
+    multipart = true,
+    other     = true,
+}
+
 -- Phan loai content-type ve mot nhan NGAN de dem duoc.
 -- Chuoi that dai va co bien the (`multipart/form-data; boundary=----WebKit...`),
 -- do nguyen vao log thi khong nhom duoc bang uniq -c.
@@ -187,7 +204,10 @@ function _M.probe(ctx)
     -- giai ma mot noi dung khong phai percent-encoding la dien giai sai ban
     -- chat du lieu va TU TAO ra duong tinh gia — mot file .txt upload chua
     -- chuoi ky tu `%2e%2e%2f` se bien thanh `../` sau mot lan unescape.
-    local rule, at = args.check(body, family == "urlencoded")
+    -- `binary` = family mang byte nhi phan => bo luat NUL. `decode` = family la
+    -- percent-encoding => moi giai ma. Hai truc doc lap; bang tra day du o
+    -- `args.check`.
+    local rule, at = args.check(body, family == "urlencoded", BINARY_FAMILY[family] == true)
 
     ctx.waf_body = {
         family = family,

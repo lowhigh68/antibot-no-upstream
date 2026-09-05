@@ -105,6 +105,25 @@ Ba chi tiết mẫu là chịu lực:
 - Wrapper **bắt buộc có `://`**. Thiếu nó thì `data:image/png;base64,…` (dạng HTML hợp lệ) bị bắt oan. Và `?file=https://x` **không** khớp vì `file` phải dính liền `://`.
 - Giải mã tối đa **3 mức** (gốc + 2 lần). `%2e%2e%2f` cần một lần, `%252e%252e%252f` cần hai. Bộ lọc chỉ nhìn chuỗi thô trượt cả hai; bộ lọc giải mã đúng một lần trượt cái thứ hai.
 
+### `args.check(s, decode, binary)` — hai trục, không phải một
+
+| Nguồn | `decode` | `binary` | Luật NUL |
+|---|---|---|---|
+| Query string | ✔ | ✘ | chạy |
+| Body `urlencoded` | ✔ | ✘ | chạy |
+| Body `json` / `xml` / `text` | ✘ | ✘ | chạy |
+| Body `multipart` / `other` | ✘ | **✔** | **bỏ** |
+
+`decode` trả lời *"chuỗi này có phải percent-encoding không"*; `binary` trả lời *"chuỗi này có phải byte nhị phân không"*. Hai câu độc lập, nên hai tham số.
+
+**`binary` sinh ra từ số liệu, không phải phỏng đoán.** Đo 2026-09-05 trên hai máy, ~10 giờ: **67/67** lượt `arg_null_byte` nằm trong **nội dung file upload** — cột `fnm` cho thấy **0/61** lượt multipart nằm trong `filename=`. Cụm kích thước 7,3 KB / 47 KB / 80 KB lặp lại trên 13 domain không liên quan: đó là ảnh và tài liệu của khách.
+
+Lý do cấu trúc: lập luận gốc của luật NUL là *"byte NUL không bao giờ hợp lệ trong **tham số**"*. Đúng với query string và trường form. Với thân multipart thì sai hoàn toàn — một phần của thân **chính là nội dung file**, và mọi định dạng nhị phân (PNG, JPEG, PDF, ZIP) chứa byte NUL theo đúng đặc tả của nó. Luật không phát hiện tấn công; nó phát hiện *"vừa có người upload file"*. Ở trọng số 50 thì mỗi ảnh sản phẩm đều +50 điểm.
+
+`arg_traversal` và `arg_php_wrapper` **vẫn chạy cho nhị phân**. Chúng là mẫu **văn bản**, không phải đặc điểm của định dạng nhị phân: xác suất `../` xuất hiện ngẫu nhiên trong 47 KB nhị phân là ~0,003 lần/file — dưới một lượt mỗi vài ngày trên dàn máy này. Đo được, không phải nguồn nhiễu.
+
+> **Cảnh báo khi đọc số liệu cũ.** `check()` trả về **một** rule_id theo thứ tự NUL → wrapper → traversal. Nên con số *"0 lượt traversal/wrapper trên body"* đo được **trước** thay đổi này **không** chứng minh chúng sạch — chúng đang bị NUL che khuất. Phải đo lại body vài ngày rồi mới kết luận về hai luật kia.
+
 **Bắn ĐỘC LẬP với luật đường dẫn**, không phải nhánh `else`. Hai nguồn bằng chứng về hai phần khác nhau của cùng một request; gộp vào chuỗi "khớp nhiều nhất một luật" sẽ làm cái thứ hai biến mất mỗi khi cái thứ nhất đã bắn. Một request mang **cả hai** thì hai tín hiệu cộng lại và mới vượt ngưỡng — đó chính là lý do phải tách.
 
 Tín hiệu riêng `waf_arg`, **không** dùng chung `waf_wp_path`: hai họ luật có bản chất FP khác hẳn nhau (đường dẫn PHP lạ là chuyện site tự viết vẫn làm; `php://` trong tham số thì không), nên phải hiệu chỉnh riêng được. Thân request tách tiếp thành `waf_body_arg` — nó chứa **nội dung người dùng soạn**, dân số FP khác hẳn query string.
@@ -397,6 +416,14 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 — **`arg_null_byte` tắt cho thân nhị phân. Số liệu ngày đầu tiên từ hai máy.**
+  - **Đo được:** 67/67 lượt `arg_null_byte` là byte NUL trong **nội dung file upload**, `fnm=0` cho cả 61 lượt multipart đo được. Cụm 7,3 KB / 47 KB / 80 KB lặp trên 13 domain không liên quan. Luật không phát hiện tấn công — nó phát hiện *"vừa có người upload file"*. Ở trọng số 50 thì mỗi ảnh sản phẩm đều +50 điểm. Cột `fnm` (thêm hôm 09-04) là thứ duy nhất phân biệt được điều này; không có nó thì chỉ thấy "65 lượt" và không có cách nào biết chúng là gì.
+  - **Sửa:** `args.check(s, decode, binary)`. `binary` bỏ luật NUL, bật cho `multipart`/`other`. Hai luật kia giữ nguyên cho mọi family.
+  - **Query string: 0 lượt** trên cả hai máy trong ~10 giờ, 43+ domain. 0 FP nhưng cũng 0 bằng chứng — `waf_arg` giữ trọng số **0** thêm một tuần. Đổi trọng số trên 43 domain vì một mẫu 10 giờ là loại quyết định cả tầng này được viết ra để tránh.
+  - **Đánh dấu WordPress đã sống:** `waf:wphost:*` = 51, `waf:wproot:*` = 3 trên máy WordPress; 0/0 trên máy code tay (đúng — không có WP host nào). Đây là xác nhận cho lỗi cosocket-ở-log-phase đã chết câm 4 tháng.
+  - **Máy code tay có giá trị đo khác hẳn:** `wp_root_unknown` = 0 (không host WP nào được đánh dấu) nhưng `dotfile_exposed` = 88/96 tổng số lượt. Bốn luật `wp_*_exec` **không** có cổng host nên scanner dò đường dẫn WordPress trên site không-WordPress vẫn làm chúng bắn — chỉ `wp_root_unknown` mới cần `is_wp_root`.
+  - **Ba thứ hỏng mà đợt đo này lộ ra**, không thuộc tầng WAF nhưng ghi lại vì cùng một gốc *"thứ nằm trong repo không tự nó tới máy chủ"*: `nginx.conf` không nằm trong đường deploy (nên `client_body_buffer_size 64k` chưa bao giờ tới máy nào); `fim.sh` thiếu bit thực thi nên cron sẽ chết câm; `/var/log/antibot` để `drwxr-xr-x` và log do `io.open` tạo ra là `-rw-rw-rw-` — 8,9 GB `antibot.log` world-writable trên hosting chia sẻ. Hai cái sau đã vá (`44edc62`, `20b2263`).
 
 - 2026-09-04 — **Chế độ quan sát trở thành quan sát thật + bốn lỗi telemetry từ bản review.**
   - **`waf_signal()` chỉ còn `waf_wp_path`.** Tín hiệu trọng số 0 (`waf_arg`, `waf_body_arg`) không còn vô hiệu cookie fast-path. Trước đó chúng đổi **luồng đi** của request mà không đổi điểm — client verified gửi `?f=../x` chạy hết pipeline rồi có thể bị tín hiệu khác đưa lên challenge, và `waf.log` ghi `rule=arg_traversal … final=challenge` như thể luật gây ra. `contract_test.lua` nay kiểm **hai chiều** theo trọng số nên hợp đồng tự bảo trì.

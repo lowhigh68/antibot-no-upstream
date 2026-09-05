@@ -177,6 +177,32 @@ check("multipart ten file traversal",
 -- doan bua — mot ket qua bia o day se lam lech moi phep dem ve sau.
 check("spill khong co arg_rule", probe("POST", MULTI, nil).arg_rule, nil)
 
+-- ── Family NHI PHAN: luat NUL phai tat ───────────────────────────────
+-- Do 2026-09-05: 67/67 luot `arg_null_byte` deu la byte NUL trong NOI DUNG
+-- file upload, `fnm=0` cho ca 61 luot multipart. Moi dinh dang nhi phan chua
+-- NUL theo dung dac ta cua no, nen luat khong phat hien tan cong — no phat hien
+-- "vua co nguoi upload file". O trong so 50 thi moi anh san pham deu +50 diem.
+local PNGPART = 'Content-Disposition: form-data; name="f"; filename="anh.jpg"\r\n'
+             .. '\r\n' .. "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR"
+
+check("multipart chua NUL -> KHONG ban",
+      probe("POST", MULTI, PNGPART).arg_rule, nil)
+
+-- Nhung urlencoded thi NUL VAN la bat thuong that: mot truong form khong bao
+-- gio chua byte NUL. Chi than nhi phan moi duoc mien.
+check("urlencoded chua NUL -> VAN ban",
+      probe("POST", URLENC, "f=x%00.jpg").arg_rule, "arg_null_byte")
+
+-- json/xml/text khong nam trong BINARY_FAMILY, nen cung van ban.
+check("json chua NUL -> VAN ban",
+      probe("POST", "application/json", '{"f":"x%00"}').arg_rule, "arg_null_byte")
+
+-- Tat NUL KHONG duoc lam tat hai luat kia. Day cung la ca chung minh con so
+-- "0 luot traversal tren body" truoc day chi la do NUL che khuat.
+check("multipart: traversal trong ten file VAN ban",
+      probe("POST", MULTI, 'filename="../../shell.php"' .. string.char(0)).arg_rule,
+      "arg_traversal")
+
 
 -- ── Cot phan tang `fnm` ─────────────────────────────────────────────
 -- KHONG phai luat: no khong chan gi, khong doi diem. No tach hai dan so ma

@@ -118,6 +118,53 @@ ncheck("f=%2e%2e%2fx", nil, "khong giai ma => khong thay, va do la DUNG voi mult
 ncheck("noi dung file: %2e%2e%2f la mot chuoi vo hai", nil,
        "chinh la FP ma tham so nay ngan chan")
 
+io.write("\nargs.check(s, decode=false, binary=true) — noi dung NHI PHAN\n")
+
+-- VI SAO CO NHANH NAY. Do 2026-09-05 tren hai may that, ~10 gio: 67/67 luot
+-- `arg_null_byte` deu nam trong NOI DUNG file upload — cot `fnm` cho thay 0/61
+-- luot multipart nam trong `filename=`. Cum kich thuoc 7,3 KB / 47 KB / 80 KB
+-- lap lai tren 13 domain khong lien quan: do la anh va tai lieu khach hang.
+--
+-- Ly do cau truc: lap luan goc cua luat NUL la "byte NUL khong bao gio hop le
+-- trong THAM SO". Dung voi query string va truong form. Voi than multipart thi
+-- SAI HOAN TOAN — mot phan cua than chinh la noi dung file, va moi dinh dang
+-- nhi phan (PNG, JPEG, PDF, ZIP) chua byte NUL theo dung dac ta cua no.
+local function bcheck(s, want, why)
+    local ok, got = pcall(args.check, s, false, true)
+    if not ok then
+        fail = fail + 1
+        io.write(string.format("  LOI  %-52s %s\n", why, tostring(got)))
+    elseif got ~= want then
+        fail = fail + 1
+        io.write(string.format("  SAI  %-52s cho=%s duoc=%s\n", why,
+                 tostring(want), tostring(got)))
+    else
+        pass = pass + 1
+    end
+end
+
+-- Header PNG that: chua byte NUL trong truong do dai chunk IHDR.
+local PNG = "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR"
+
+bcheck(PNG,                    nil, "header PNG that — PHAI IM")
+bcheck("x" .. string.char(0),  nil, "byte NUL tho trong nhi phan — PHAI IM")
+bcheck("f=x%00.jpg",           nil, "chuoi `%00` trong nhi phan — PHAI IM")
+
+-- HAI LUAT KIA VAN CHAY. Chung la mau VAN BAN, khong phai dac diem cua nhi
+-- phan: xac suat `../` xuat hien ngau nhien trong 47 KB nhi phan la ~0,003
+-- lan/file, tuc duoi mot luot moi vai ngay tren dan may nay. Do duoc.
+bcheck('filename="../../shell.php"', "arg_traversal",
+       "traversal trong ten file VAN phai ban du la multipart")
+bcheck("f=php://input", "arg_php_wrapper",
+       "wrapper VAN phai ban du la nhi phan")
+
+-- CANH BAO cho lan doc so lieu sau, ghi o day vi day la cho de quen nhat:
+-- `check()` tra ve MOT rule_id theo thu tu NUL -> wrapper -> traversal. Nen con
+-- so "0 luot traversal/wrapper tren body" do duoc TRUOC thay doi nay khong
+-- chung minh chung sach — chung dang bi NUL che khuat. Phai do lai.
+bcheck(PNG .. "../x", "arg_traversal",
+       "NUL bi tat thi traversal moi lo ra — dung cho tung bi che")
+
 io.write("\nargs.describe() — KHONG duoc lo gia tri\n")
 
 local function dcheck(qs, want, why)
