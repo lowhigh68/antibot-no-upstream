@@ -204,16 +204,21 @@ end
 --       trang. `^` la de mot than bat dau thang bang `filename=` van khop.
 --   `\s*=\s*`      khoang trang o CA HAI ben dau bang. `filename = "../x.php"`
 --       khong chuan nhung parser ben duoi chap nhan, nen ta cung phai chap nhan.
---   `"((?:[^"\]|\.)*)"`  chuoi trong nhay CO XU LY NHAY THOAT.
+--   `"((?:[^"\\]|\\.)*)"`  chuoi trong nhay CO XU LY NHAY THOAT.
 --       Ban truoc dung `[^"]*` va toi ghi trong chu thich rang "quet moi lan
 --       xuat hien nen van bat duoc o lan sau". SAI: voi
 --       `filename="abc\"../../x.php"` chi co MOT lan xuat hien, `[^"]*` dung
 --       ngay o dau nhay da thoat, va toan bo tai trong phia sau khong duoc kiem
 --       — trong khi parser multipart ben duoi van doc no la mot ten file.
---       Hai nhanh `[^"\]` va `\.` loai tru nhau o ky tu dau nen khong co
+--       Hai nhanh `[^"\\]` va `\\.` loai tru nhau o ky tu dau nen khong co
 --       backtracking cap so nhan.
+--       DAU `\` PHAI VIET DOI. Long string `[[...]]` cua Lua khong xu ly chuoi
+--       thoat, nen cai ta go la cai PCRE nhan. Mot dau `\` don le bien
+--       `[^"\]` thanh mot lop ky tu KHONG DONG (`\]` la dau `]` da thoat), lop
+--       do nuot tiep toi dau `]` sau va bo lai mot `(?:` khong dong => CA MAU
+--       LOI CU PHAP. Da xay ra that o `8dfafd2`.
 --   `([^;"\r\n]*)`  dang khong nhay, va dang ext-value cua `filename*=`.
-local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\]|\.)*)"|([^;"\r\n]*))]]
+local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\r\n]*))]]
 
 -- 32 chu khong phai 16: mot lan dang thu vien anh that co the co hon 16 phan,
 -- va tran qua thap thi co `fn_trunc` bao dong lien tuc tren luu luong lanh.
@@ -221,6 +226,10 @@ local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\]|\.)*)"|([^;"
 -- ham nay thanh o CPU.
 local MAX_FILENAMES = 32
 local MAX_FN_LEN    = 512
+
+-- Da keu chua? Mot co moi worker, khong chia se — dung y do: moi worker keu mot
+-- lan la du de thay trong error.log, va van la so lan huu han.
+local rx_broken = false
 
 -- Tra ve `rule_id, truncated`.
 --
@@ -232,8 +241,27 @@ local MAX_FN_LEN    = 512
 local function filename_rule(body, family)
     if family ~= "multipart" then return nil, nil end
 
-    local it = ngx.re.gmatch(body, RX_FILENAME, "ijo")
-    if not it then return nil, nil end
+    -- `nil` o day KHONG co nghia la "khong tim thay ten file nao" — gmatch tra
+    -- nil khi MAU KHONG BIEN DICH DUOC. Ban dau cho nay `return nil, nil`, tuc
+    -- mot mau hong hien ra thanh `fnrule=- fntr=-` tren MOI multipart: giong het
+    -- mot tang dang chay va khong thay gi. Dung dang am tinh gia da sua o
+    -- `php = false`, chi khac la lan nay no che ca bo luat.
+    --
+    -- Hai duong bao, vi mot duong khong du:
+    --   `fntr=1`  chay lien tuc, doc duoc bang wafstat muc 7, khong can ai mo
+    --             error.log. Day moi la duong duoc doc.
+    --   ngx.ERR   mot lan moi worker. Mau la HANG SO nen loi la loi luc deploy,
+    --             khong phai loi cua request — ghi moi request thi 43 domain do
+    --             error.log ma khong them mot bit thong tin nao.
+    local it, err = ngx.re.gmatch(body, RX_FILENAME, "ijo")
+    if not it then
+        if not rx_broken then
+            rx_broken = true
+            ngx.log(ngx.ERR, "[waf] RX_FILENAME khong bien dich duoc: ",
+                    err or "khong ro. fn_rule DA NGUNG SOI ten file.")
+        end
+        return nil, true   -- khong soi duoc, khong phai da soi xong
+    end
 
     local trunc, n = false, 0
     while n < MAX_FILENAMES do

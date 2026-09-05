@@ -252,6 +252,15 @@ check("fnm: spill -> nil", probe("POST", MULTI, nil).fnm, nil)
 
 local CD = 'Content-Disposition: form-data; name="f"; '
 
+-- DONG DAU TIEN, va no kiem MAU CHU KHONG KIEM HANH VI. `RX_FILENAME` la mot
+-- long string `[[...]]` khong xu ly chuoi thoat: mot dau `\` viet don le thay vi
+-- doi lam ca mau LOI CU PHAP, `ngx.re.gmatch` tra nil, va MOI dong duoi day do
+-- cung mot luc — muoi dong do noi "khong tim thay" chu khong noi "mau hong".
+-- Dong nay noi. Da xay ra that o `8dfafd2`: `[^"\]` thay vi `[^"\\]`.
+-- (`fn_trunc == false` chi dat duoc khi gmatch chay tron; mau hong tra `true`.)
+check("fn_rule: RX_FILENAME BIEN DICH DUOC",
+      probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
+
 -- CA QUYET DINH CUA CA NHOM NAY. Truoc khi co ham nay, tai trong duoi day lot
 -- sach: than multipart chay decode=false, ma gia tri `filename*=` theo RFC 5987
 -- LA percent-encoding.

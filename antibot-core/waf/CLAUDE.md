@@ -419,7 +419,10 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 | Cột | Nghĩa |
 |---|---|
 | `fnrule=- fntr=0` | Đã soi hết, không thấy gì |
-| `fnrule=- fntr=1` | **Không biết** — hết ngân sách trước khi soi xong |
+| `fnrule=- fntr=1` | **Không biết** — hết ngân sách trước khi soi xong, **hoặc mẫu không biên dịch được** |
+| `fnrule=- fntr=-` | Không áp dụng — không phải multipart, hoặc body spill |
+
+**Mẫu hỏng cũng trả `fntr=1`, có chủ ý.** `ngx.re.gmatch` trả `nil` khi *mẫu không biên dịch được*, và chỗ đó ban đầu nuốt luôn — một mẫu hỏng hiện ra thành `fnrule=- fntr=-` trên **mọi** multipart, trông y hệt một tầng đang chạy và không thấy gì. `RX_FILENAME` là hằng số nên đó là lỗi lúc deploy chứ không phải lỗi của request; vì vậy `ngx.ERR` chỉ kêu **một lần mỗi worker**, còn đường báo được đọc thật là `fntr=1` chạy liên tục trong `wafstat` mục 7. Xem nhật ký 2026-09-05.
 
 **Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp; không phân biệt hoa thường; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
 
@@ -510,6 +513,13 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 5) — **`RX_FILENAME` ở vòng 4 không biên dịch được. Cả `fn_rule` chết câm.**
+  - Long string `[[...]]` của Lua **không xử lý chuỗi thoát**: cái gõ ra là cái PCRE nhận. Vòng 4 ghi `[^"\]` với **một** dấu `\` thay vì hai. Trong lớp ký tự, `\]` là dấu `]` **đã thoát** nên lớp không đóng, nó nuốt tiếp tới dấu `]` sau (trong `[^;"\r\n]`) và bỏ lại một `(?:` không đóng ⇒ **lỗi cú pháp toàn mẫu**.
+  - Hậu quả: `ngx.re.gmatch` trả `nil`, code nuốt `err`, `fn_rule` trả `nil` cho **mọi** multipart. Cột hiện ra `fnrule=- fntr=-` — không phải "sạch", mà là "không có tầng nào chạy". Chính con đường bypass mà vòng 4 sinh ra để đóng thì vẫn mở nguyên.
+  - **Sửa:** `[^"\\]|\\.` (nhân đôi dấu `\`); không nuốt `err` nữa — `ngx.ERR` một lần mỗi worker **và** trả `fn_trunc=true` để cột `fntr` mang tín hiệu liên tục.
+  - **Test:** thêm một dòng ở **đầu** nhóm `fn_rule` kiểm *mẫu có biên dịch được không*. Mẫu hỏng làm cả mười dòng dưới đỏ cùng lúc và không dòng nào nói được nguyên nhân; dòng này nói.
+  - **Cổng đã có sẵn và sẽ bắt được:** `deploy.sh [3b]` chạy `run.sh` bằng `resty` **trước** rsync. Máy dev không có Lua nên lỗi lọt được vào git, nhưng không lọt được lên server. Đây là lý do `[3b]` chặn trước rsync chứ không phải sau.
 
 - 2026-09-05 (vòng 4) — **Bốn lỗ trong chính `fn_rule` vừa thêm.**
   - **FP thật:** `filename*=` đi qua vòng giải mã 3 mức của `args.check` trong khi RFC 5987 là percent-encoding **một lớp**. `a..%252Fb.txt` → giải 1 lần ra `a..%2Fb.txt` (tên file hợp lệ) → giải lần 2 thành `a../b.txt` và bắn. Nay giải đúng một lần rồi gọi luật với `decode=false`.
