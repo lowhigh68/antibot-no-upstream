@@ -245,5 +245,55 @@ check("fnm: multipart nhung khong luat nao ban -> nil",
       probe("POST", MULTI, "noi dung vo hai").fnm, nil)
 check("fnm: spill -> nil", probe("POST", MULTI, nil).fnm, nil)
 
+-- ── `fn_rule`: soi RIENG ten file, doc lap voi than ─────────────────
+-- `fnm` tai su dung vi tri cua luat toan than nen (a) le thuoc thu tu uu tien
+-- NUL->wrapper->traversal, (b) khong soi duoc `filename*=`. `fn_rule` chay luat
+-- len CHINH gia tri ten file nen khong dinh ca hai.
+
+local CD = 'Content-Disposition: form-data; name="f"; '
+
+-- CA QUYET DINH CUA CA NHOM NAY. Truoc khi co ham nay, tai trong duoi day lot
+-- sach: than multipart chay decode=false, ma gia tri `filename*=` theo RFC 5987
+-- LA percent-encoding.
+check("fn_rule: filename*= traversal da ma hoa",
+      probe("POST", MULTI, CD .. "filename*=UTF-8''..%2F..%2Fshell.php").fn_rule,
+      "arg_traversal")
+
+-- CAP DOI CHUNG cho viec giai ma CO PHAN BIET. Cung mot chuoi `..%2F`, khac
+-- moi dang cu phap: `filename*=` duoc giai ma, `filename=` thi KHONG. Neu giai
+-- ma bua ca hai thi mot file khach dat ten `a..%2Fb.pdf` se ban — dung dang FP
+-- ca tang nay tranh.
+check("fn_rule: filename= KHONG duoc giai ma",
+      probe("POST", MULTI, CD .. 'filename="a..%2Fb.pdf"').fn_rule, nil)
+
+check("fn_rule: traversal tho trong ten file",
+      probe("POST", MULTI, CD .. 'filename="../../shell.php"').fn_rule,
+      "arg_traversal")
+check("fn_rule: `%00` trong ten file khong nhay",
+      probe("POST", MULTI, CD .. "filename=x.php%00.jpg").fn_rule,
+      "arg_null_byte")
+check("fn_rule: khong phan biet hoa thuong",
+      probe("POST", MULTI, 'FILENAME="../x"').fn_rule, "arg_traversal")
+check("fn_rule: ten file lanh -> im",
+      probe("POST", MULTI, CD .. 'filename="anh-san-pham.jpg"').fn_rule, nil)
+
+-- Noi dung nhi phan KHONG duoc lam ban: no khong chua `filename=` nen khong
+-- vao duong nay. Day la khac biet then chot so voi `arg_rule`.
+check("fn_rule: PNG co byte NUL, ten file lanh -> im",
+      probe("POST", MULTI, CD .. 'filename="anh.jpg"\r\n\r\n'
+            .. "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR").fn_rule, nil)
+
+-- NHIEU PHAN: phai quet HET. Upload thu vien anh co hang chuc phan va tan cong
+-- thuong nam o phan cuoi, khong phai phan dau.
+check("fn_rule: quet het moi phan, khong dung o cai dau",
+      probe("POST", MULTI,
+            CD .. 'filename="ok.jpg"\r\n\r\nAAA\r\n'
+            .. 'Content-Disposition: form-data; name="b"; filename="../../s.php"').fn_rule,
+      "arg_traversal")
+
+check("fn_rule: khong phai multipart -> nil",
+      probe("POST", URLENC, 'filename="../../x"').fn_rule, nil)
+check("fn_rule: spill -> nil", probe("POST", MULTI, nil).fn_rule, nil)
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

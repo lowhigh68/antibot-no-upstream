@@ -106,6 +106,7 @@ grep -F '[waf-body]' "$LOG" | awk '
     if(f["spill"]=="1") sp+=s
     if(f["argrule"]!="-"){ ar[f["argrule"]]+=s
         if(f["fnm"]=="1") fn1+=s; else if(f["fnm"]=="0") fn0+=s }
+    if(f["fnrule"]!="-" && f["fnrule"]!="") fr[f["fnrule"]]+=s
     tot+=s
 }
 END{
@@ -115,8 +116,14 @@ END{
     printf "  spill ra file tam     : %d\n", sp+0
     print "  -- luat tham so trong THAN request --"
     for(k in ar) printf "  %-16s %8d\n", k, ar[k]
-    printf "  trong do fnm=1 (TEN FILE, nhieu kha nang that): %d\n", fn1+0
-    printf "  trong do fnm=0 (noi dung,  nhieu kha nang FP ): %d\n", fn0+0
+    printf "    trong do fnm=1 (lan khop duoc chon nam trong ten file): %d\n", fn1+0
+    printf "    trong do fnm=0 (lan khop duoc chon nam ngoai ten file): %d\n", fn0+0
+    print "  -- luat khop khi soi RIENG TEN FILE (fnrule) --"
+    print "     Doc lap voi bang tren: chay luat len chinh gia tri ten file,"
+    print "     khong le thuoc thu tu uu tien cua luat toan than. DAY moi la so"
+    print "     dem duoc cho cau: co bao nhieu request tan cong o ten file."
+    n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
+    if(n==0) print "  (khong co)"
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
 

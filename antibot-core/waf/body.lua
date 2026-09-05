@@ -150,6 +150,84 @@ local function in_filename(body, family, at)
         or head:find("filename*=", 1, true) ~= nil
 end
 
+-- Soi RIENG TEN FILE cua tung phan multipart, doc lap voi than.
+--
+-- VI SAO PHAI TACH RA. `fnm` o tren tai su dung VI TRI cua luat toan than, nen
+-- no keo theo hai khuyet tat cua cach lam do:
+--
+--   1. Le thuoc thu tu uu tien. `args.check` tra ve MOT rule_id theo thu tu
+--      NUL -> wrapper -> traversal roi dung. Mot request vua co `php://` trong
+--      NOI DUNG file vua co `../../shell.php` trong TEN FILE se cho wrapper
+--      thang, `fnm=0`, du tan cong o ten file la co that. Nen `fnm` khong dung
+--      de DEM so request co tan cong ten file.
+--
+--   2. Khong soi duoc `filename*=`. Than multipart chay `decode=false` (dung —
+--      giai ma noi dung nhi phan tu tao ra FP), nhung gia tri cua `filename*=`
+--      theo RFC 5987 LA percent-encoding. Nen `filename*=UTF-8''..%2F..%2F
+--      shell.php` lot sach.
+--
+-- Ham nay chay `args.check` len RIENG gia tri ten file. Ket qua vao `fn_rule`,
+-- KHONG dung chung voi `arg_rule`, va KHONG dat tin hieu nao trong ctx: day van
+-- la telemetry o trong so 0. Nang no len tin hieu that la quyet dinh sau, khi
+-- da co so dem.
+--
+-- ── GIAI MA CO PHAN BIET, va day la cho chiu luc ──────────────────────
+--   `filename*=`  RFC 5987 dinh nghia LA percent-encoding  => decode = true
+--   `filename=`   gia tri THO (UTF-8 hoac RFC 2047)        => decode = false
+-- Giai ma bua ca hai thi mot file ten `a..%2Fb.pdf` — hop le, khach dat ten the
+-- that — se bien thanh `a../b.pdf` va ban. Dung dang FP ma ca tang nay tranh.
+--
+-- ── Cac tinh huong da tinh den ───────────────────────────────────────
+--   · NHIEU phan: quet HET, khong dung o cai dau. Upload thu vien anh co hang
+--     chuc phan, tan cong thuong nam o phan cuoi.
+--   · Ba dang cu phap: `filename="x"`, `filename=x` (khong nhay, khong chuan
+--     nhung client that co gui), `filename*=UTF-8''x`.
+--   · Khong phan biet hoa thuong: header la case-insensitive (`Filename=`).
+--   · Nhay thoat `\"` ben trong: quet HET moi lan xuat hien nen mot ten file
+--     co `filename=\"../x\"` chen giua van bi bat o lan xuat hien thu hai.
+--   · Chan so luong (MAX_FILENAMES) va do dai (MAX_FN_LEN): mot than doc hai
+--     nhoi hang nghin `filename=` khong bien ham nay thanh o CPU.
+--   · KHONG lowercase ban sao cua than: dung co `i` cua ngx.re thay vi
+--     `body:lower()`, tiet mot lan cap phat 80 KB cho MOI multipart POST.
+--   · Nhom bat tham gia cua ngx.re tra ve `false` chu KHONG phai nil — phai
+--     kiem ca hai, neu khong `m[3]` bi doc nham thanh chuoi.
+--
+-- ── Gioi han da biet ─────────────────────────────────────────────────
+-- Quet TOAN BO than chu khong rieng dong Content-Disposition. Nen mot file van
+-- ban duoc upload MA NOI DUNG no chua chuoi `filename="../x"` (vi du mot file
+-- log, hay chinh bo luat WAF) se bi dem. Hiem, va do duoc — de nguyen roi doc
+-- so lieu, dung thu hep truoc khi biet no co that hay khong.
+local RX_FILENAME  = [[filename(\*?)=\s*(?:"([^"]*)"|([^;"\r\n]*))]]
+local MAX_FILENAMES = 16
+local MAX_FN_LEN    = 512
+
+local function filename_rule(body, family)
+    if family ~= "multipart" then return nil end
+
+    local it = ngx.re.gmatch(body, RX_FILENAME, "ijo")
+    if not it then return nil end
+
+    for _ = 1, MAX_FILENAMES do
+        local m = it()
+        if not m then break end
+
+        -- Nhom khong tham gia -> `false`, khong phai nil.
+        local v = (m[2] and m[2] ~= "" and m[2])
+               or (m[3] and m[3] ~= "" and m[3])
+               or nil
+
+        if v then
+            if #v > MAX_FN_LEN then v = v:sub(1, MAX_FN_LEN) end
+            -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau NUL
+            -- deu co nghia o day.
+            local rule = args.check(v, m[1] == "*")
+            if rule then return rule end
+        end
+    end
+
+    return nil
+end
+
 -- Chay trong `waf.run_pre`, TRUOC cua thoat tin cay — cung ly do ca tang WAF
 -- dung o do: cookie `verified` song 7200s, va danh tinh da xac minh khong noi gi
 -- ve NOI DUNG request.
@@ -210,6 +288,7 @@ function _M.probe(ctx)
             nargs    = nil,
             arg_rule = nil,
             fnm      = nil,
+            fn_rule  = nil,
         }
         return
     end
@@ -243,6 +322,10 @@ function _M.probe(ctx)
         nargs  = count_args(body, family),
         arg_rule = rule,
         fnm    = in_filename(body, family, at),
+        -- Doc lap voi `arg_rule`: soi RIENG gia tri ten file, khong le thuoc
+        -- thu tu uu tien cua luat toan than. Day moi la con so dung de dem
+        -- "co bao nhieu request tan cong o ten file".
+        fn_rule = filename_rule(body, family),
     }
 end
 

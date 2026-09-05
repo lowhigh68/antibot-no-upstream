@@ -374,15 +374,29 @@ curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [w
 >
 > Nên `fnm=0` đọc đúng là *"lần khớp được chọn nằm ngoài tên file"*. Tôi đã nói quá điều này khi báo cáo số liệu 05-09: đúng là **0/61 lần khớp được chọn** nằm trong tên file, còn *"không có tấn công tên file nào"* thì chưa bao giờ được chứng minh.
 
-**`filename*=` mới chỉ được NHẬN DIỆN, chưa được SOI.** Nói cho đúng: `in_filename` nay nhận ra dòng header có `filename*=` nên gắn `fnm=1` đúng — nhưng **chỉ khi trên dòng đó đã có một lần khớp thô nào đó**. Bản thân tải trọng
+### `fn_rule` — soi RIÊNG tên file, độc lập với thân
 
-```
-filename*=UTF-8''..%2F..%2Fshell.php
-```
+`fnm` tái sử dụng **vị trí** của luật toàn thân, nên nó kéo theo hai khuyết tật của cách làm đó:
 
-**vẫn lọt**, vì thân multipart chạy `decode=false` nên `..%2F` không được giải mã. Đừng gọi đây là "đã phủ `filename*`".
+1. **Lệ thuộc thứ tự ưu tiên.** Một request vừa có `php://` trong nội dung file vừa có `../../shell.php` trong tên file sẽ cho wrapper thắng, `fnm=0`. Nên `fnm` **không** dùng để đếm tấn công tên file.
+2. **Không soi được `filename*=`.** Thân multipart chạy `decode=false` (đúng — giải mã nội dung nhị phân tự tạo ra FP), nhưng giá trị `filename*=` theo RFC 5987 **là** percent-encoding. `filename*=UTF-8''..%2F..%2Fshell.php` lọt sạch.
 
-Không đưa nó vào vòng giải mã toàn thân — làm vậy dựng lại chính cái FP đã tránh (file `.txt` chứa chuỗi ký tự `%2e%2e%2f`). Cách đúng là **trích riêng giá trị `filename*` rồi giải mã một mình nó**; xem mục đề xuất ở cuối phần này.
+`fn_rule` chạy `args.check` lên **chính giá trị tên file**, ghi ra cột `fnrule=`. Không dùng chung với `arg_rule`, không đặt tín hiệu nào trong ctx — vẫn là telemetry ở trọng số 0.
+
+**Giải mã có phân biệt, và đây là chỗ chịu lực:**
+
+| Dạng | Là gì | `decode` |
+|---|---|---|
+| `filename*=` | RFC 5987 định nghĩa **là** percent-encoding | **true** |
+| `filename=` | Giá trị thô (UTF-8 hoặc RFC 2047) | **false** |
+
+Giải mã bừa cả hai thì một file khách đặt tên `a..%2Fb.pdf` biến thành `a../b.pdf` và bắn — đúng dạng FP cả tầng này tránh. Cặp đối chứng đó là một test.
+
+**Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp (`filename="x"`, `filename=x`, `filename*=`); không phân biệt hoa thường; nháy thoát `\"` (quét mọi lần xuất hiện nên vẫn bắt được ở lần sau); chặn số lượng 16 và độ dài 512; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
+
+**Giới hạn đã biết:** quét toàn bộ thân chứ không riêng dòng `Content-Disposition`, nên một file văn bản có **nội dung** chứa chuỗi `filename="../x"` (file log, chính bộ luật WAF) sẽ bị đếm. Hiếm, và đo được — để nguyên rồi đọc số liệu, đừng thu hẹp trước khi biết nó có thật hay không.
+
+**`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt.
 
 **`%00` trong thân nhị phân vẫn có FP nhỏ.** Giữ `%00` là đúng hơn tắt cả cụm, nhưng `args.check` quét **toàn bộ** thân chứ không riêng header — một file PDF/text upload chứa đúng ba ký tự `%00` vẫn bắn. Xác suất thấp (~0,003 lần/47 KB) nhưng khác 0. Nên khi tính chuyện bật enforcement, **chỉ coi `%00` + `fnm=1` là bằng chứng mạnh**, còn `%00` + `fnm=0` thì tiếp tục đếm chứ chưa dùng để quyết.
 
@@ -464,6 +478,13 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 3) — **`fn_rule`: soi riêng tên file, độc lập với thân.**
+  - Đóng đúng một bypass có thật: `filename*=UTF-8''..%2F..%2Fshell.php` lọt sạch vì thân multipart chạy `decode=false` trong khi giá trị RFC 5987 **là** percent-encoding.
+  - Và tách `fnm` khỏi vai trò nó không làm được: `fnm` mô tả vị trí của lần khớp **được chọn**, nên lệ thuộc thứ tự NUL → wrapper → traversal. `fn_rule` chạy luật lên **chính giá trị tên file** nên đếm được.
+  - **Giải mã có phân biệt:** `filename*=` giải mã, `filename=` không. Bừa cả hai thì `a..%2Fb.pdf` — tên file hợp lệ — biến thành `a../b.pdf` và bắn.
+  - Vẫn là telemetry, trọng số 0, không đặt tín hiệu ctx. Nâng lên tín hiệu thật là quyết định sau, khi có số đếm.
+  - **Miễn lấy mẫu** trong `run_body` — `fn_rule` không sinh dòng `[waf]` nên `[waf-body]` là nguồn duy nhất.
 
 - 2026-09-05 (vòng review thứ hai) — **`cl=-` không đồng nghĩa chunked; `vfy=` cho cả dòng body.**
   - **Đính chính quan trọng nhất:** tôi đặt tên cột `cl=` là "chunked". Sai. Nó chỉ có nghĩa *"không có header Content-Length"* — cũng vắng trong HTTP/2, HTTP/3, request không body. Dàn máy này bật H2 và có hẳn một tầng vân tay H2, nên nếu phần lớn POST là h2 không kèm Content-Length thì phép chéo `spill × cl` **không trả lời được gì**. Thêm `te=` (Transfer-Encoding, chunked thật) và `proto=`; `wafstat.sh` mục 8 chéo cả ba.

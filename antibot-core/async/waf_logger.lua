@@ -106,9 +106,15 @@ function _M.run_body(ctx)
     -- đều là thứ ta dựng bộ đo này để đếm. Chỉ lấy mẫu phần còn lại — tức phần
     -- chỉ đóng góp vào PHÂN BỐ (`blen`), mà phân bố thì lấy mẫu không làm méo.
     --
-    -- Bỏ mẫu ở đây an toàn vì mọi lượt CHẠM LUẬT đã có dòng `[waf]` riêng với
-    -- `target=BODY`; dòng `[waf-body]` không phải nguồn duy nhất của chúng.
-    local notable = b.php or b.arg_rule or b.spill
+    -- Bỏ mẫu ở đây an toàn với `arg_rule` vì mọi lượt CHẠM LUẬT đã có dòng
+    -- `[waf]` riêng với `target=BODY`; dòng `[waf-body]` không phải nguồn duy
+    -- nhất của chúng.
+    --
+    -- `fn_rule` thì KHÔNG như vậy, và đây là chỗ dễ hụt nhất: nó KHÔNG sinh
+    -- dòng `[waf]` (nó là telemetry, không tạo `waf_hits`), nên dòng
+    -- `[waf-body]` là nguồn DUY NHẤT của nó. Quên nó ở đây là vứt 19/20 lượt
+    -- tấn công tên file — đúng kiểu lệch âm thầm mà cột `smp=` sinh ra để chặn.
+    local notable = b.php or b.arg_rule or b.fn_rule or b.spill
     if not notable then
         body_seen = body_seen + 1
         if body_seen % BODY_SAMPLE ~= 0 then return end
@@ -120,7 +126,7 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s fnrule=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -184,6 +190,16 @@ function _M.run_body(ctx)
         -- dung bai viet la FP, va hai cai do phai tach duoc TRUOC khi tinh
         -- chuyen `waf_body_arg` len khoi trong so 0.
         (b.fnm == nil) and "-" or (b.fnm and "1" or "0"),
+        -- Luat khop khi soi RIENG gia tri ten file, doc lap voi than.
+        --
+        -- KHAC `fnm` va tra loi mot cau khac han:
+        --   `fnm`     vi tri cua lan khop TOAN THAN duoc chon. Le thuoc thu tu
+        --             uu tien, nen KHONG dung de dem tan cong ten file.
+        --   `fnrule`  ket qua chay luat len CHINH gia tri ten file. Day moi la
+        --             con so dem duoc.
+        -- `filename*=` duoc giai ma rieng (RFC 5987 dinh nghia la
+        -- percent-encoding); `filename=` thi khong.
+        b.fn_rule or "-",
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --
