@@ -233,11 +233,22 @@ local rx_broken = false
 
 -- Tra ve `rule_id, truncated`.
 --
--- `truncated` KHONG duoc bo qua. Cham tran — dung 32 phan, hoac mot ten file
--- dai hon 512 byte — nghia la ta KHONG SOI HET, va im lang coi do la "sach" la
--- dung loi da sua o `php = false`: bien mot khoang trong thanh mot am tinh.
--- Va no la mot duong ne tranh that: nhoi 32 chuoi `filename=` gia vao noi dung
--- file thi bo quet dung truoc khi toi header that.
+-- `truncated` KHONG duoc bo qua. Cham tran nghia la ta KHONG SOI HET, va im
+-- lang coi do la "sach" la dung loi da sua o `php = false`: bien mot khoang
+-- trong thanh mot am tinh. Va no la mot duong ne tranh that: nhoi 32 chuoi
+-- `filename=` gia vao noi dung file thi bo quet dung truoc khi toi header that.
+--
+-- LA LY DO, KHONG PHAI CO. Ban truoc tra `true` cho ca ba nguyen nhan, tuc
+-- dung nghia "khong soi het" nhung khong doc duoc: ba nguyen nhan doi ba viec
+-- khac han nhau.
+--     "rx"   mau khong bien dich duoc  -> loi luc deploy, sua ngay
+--     "len"  mot ten file > 512 byte   -> hiem, va tu no da dang ngo
+--     "n"    hon 32 phan               -> thuong la upload thu vien anh that,
+--                                         cach xu ly la nang tran
+-- Mot request co the cham ca "len" lan "n". Uu tien "len" vi no la cai bat
+-- thuong hon; "n" mot minh gan nhu luon la luu luong lanh.
+--
+-- Tra ve: `nil` khong ap dung | `false` da soi het | mot trong ba chuoi tren.
 local function filename_rule(body, family)
     if family ~= "multipart" then return nil, nil end
 
@@ -260,7 +271,7 @@ local function filename_rule(body, family)
             ngx.log(ngx.ERR, "[waf] RX_FILENAME khong bien dich duoc: ",
                     err or "khong ro. fn_rule DA NGUNG SOI ten file.")
         end
-        return nil, true   -- khong soi duoc, khong phai da soi xong
+        return nil, "rx"   -- khong soi duoc, khong phai da soi xong
     end
 
     local trunc, n = false, 0
@@ -279,7 +290,7 @@ local function filename_rule(body, family)
         if v then
             if #v > MAX_FN_LEN then
                 v = v:sub(1, MAX_FN_LEN)
-                trunc = true
+                trunc = "len"
             end
 
             -- GIAI MA DUNG MOT LAN cho `filename*=`, roi goi luat voi
@@ -343,7 +354,9 @@ local function filename_rule(body, family)
 
     -- Cham tran 32. Con phan thu 33 khong? Mot lan goi nua de biet — khong de
     -- "het ngan sach" tra ve giong "da soi het va sach".
-    if it() then trunc = true end
+    -- "len" thang "n": mot ten file dai hon 512 byte la cai bat thuong hon, con
+    -- hon 32 phan mot minh gan nhu luon la mot lan dang thu vien anh that.
+    if it() and trunc ~= "len" then trunc = "n" end
     return nil, trunc
 end
 
@@ -447,9 +460,11 @@ function _M.probe(ctx)
         -- thu tu uu tien cua luat toan than. Day moi la con so dung de dem
         -- "co bao nhieu request tan cong o ten file".
         fn_rule  = fn_rule,
-        -- `true` = KHONG soi het (cham tran 32 phan, hoac mot ten file dai hon
-        -- 512 byte). Doc kem `fn_rule`: `fn_rule=- fn_trunc=1` nghia la KHONG
-        -- BIET, khong phai sach.
+        -- LY DO khong soi het, khong phai co: `nil` khong ap dung | `false` da
+        -- soi het | `"rx"` mau hong | `"len"` ten file > 512 byte | `"n"` hon
+        -- 32 phan. Doc kem `fn_rule`: bat ky gia tri chuoi nao cung nghia la
+        -- KHONG BIET, khong phai sach — ba nguyen nhan chi khac nhau o viec
+        -- phai lam gi tiep.
         fn_trunc = fn_trunc,
     }
 end

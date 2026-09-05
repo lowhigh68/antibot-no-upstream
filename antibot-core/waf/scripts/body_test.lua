@@ -257,7 +257,7 @@ local CD = 'Content-Disposition: form-data; name="f"; '
 -- doi lam ca mau LOI CU PHAP, `ngx.re.gmatch` tra nil, va MOI dong duoi day do
 -- cung mot luc — muoi dong do noi "khong tim thay" chu khong noi "mau hong".
 -- Dong nay noi. Da xay ra that o `8dfafd2`: `[^"\]` thay vi `[^"\\]`.
--- (`fn_trunc == false` chi dat duoc khi gmatch chay tron; mau hong tra `true`.)
+-- (`fn_trunc == false` chi dat duoc khi gmatch chay tron; mau hong tra `"rx"`.)
 check("fn_rule: RX_FILENAME BIEN DICH DUOC",
       probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
 
@@ -389,22 +389,34 @@ check("fn_rule: `%2500` -> `%00` sau mot lan giai, RX_NUL_ENC VAN ban",
 check("fn_rule: `filename=` khong giai ma nen `%2500` khong thanh `%00`",
       probe("POST", MULTI, CD .. 'filename="x%2500.jpg"').fn_rule, nil)
 
-io.write("\nfn_trunc — het ngan sach KHAC voi da soi het\n")
+io.write("\nfn_trunc — het ngan sach KHAC voi da soi het, va BA nguyen nhan\n")
+
+-- `fn_trunc` la LY DO chu khong phai co. Mot co dung nghia "khong soi het"
+-- nhung khong doc duoc: ba nguyen nhan doi ba viec khac han nhau — "rx" la loi
+-- luc deploy phai sua ngay, "len" tu no da dang ngo, "n" thuong chi can nang
+-- tran. Gop lam mot thi ba ngay nua nhin con so `fntr=47` khong biet lam gi.
 
 -- Cham tran so luong. Nhoi `filename=` gia vao noi dung file de bo quet dung
 -- truoc header that la mot duong ne tranh THAT.
 local many = ""
 for i = 1, 40 do many = many .. '; filename="f' .. i .. '.jpg"' end
-check("fn_trunc: qua 32 phan -> danh dau",
-      probe("POST", MULTI, many).fn_trunc, true)
+check("fn_trunc: qua 32 phan -> \"n\"",
+      probe("POST", MULTI, many).fn_trunc, "n")
 check("fn_trunc: qua 32 phan -> fn_rule van nil (KHONG phai 'sach')",
       probe("POST", MULTI, many).fn_rule, nil)
 
 -- Cham tran do dai. Tai trong nam sau byte 512 khong duoc soi — phai bao, chu
 -- khong duoc im lang tra ve nil giong nhu da soi het.
 local long_fn = '; filename="' .. string.rep("a", 600) .. '../x"'
-check("fn_trunc: ten file dai hon 512 -> danh dau",
-      probe("POST", MULTI, long_fn).fn_trunc, true)
+check("fn_trunc: ten file dai hon 512 -> \"len\"",
+      probe("POST", MULTI, long_fn).fn_trunc, "len")
+
+-- UU TIEN khi cham CA HAI tran: "len" thang "n". Mot ten file dai hon 512 byte
+-- la cai bat thuong hon; hon 32 phan mot minh gan nhu luon la upload that.
+local both = '; filename="' .. string.rep("a", 600) .. '.jpg"'
+for i = 1, 40 do both = both .. '; filename="f' .. i .. '.jpg"' end
+check("fn_trunc: cham ca hai tran -> \"len\" thang \"n\"",
+      probe("POST", MULTI, both).fn_trunc, "len")
 
 check("fn_trunc: multipart binh thuong -> false",
       probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)

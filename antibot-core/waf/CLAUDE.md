@@ -418,11 +418,15 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 
 | Cột | Nghĩa |
 |---|---|
-| `fnrule=- fntr=0` | Đã soi hết, không thấy gì |
-| `fnrule=- fntr=1` | **Không biết** — hết ngân sách trước khi soi xong, **hoặc mẫu không biên dịch được** |
-| `fnrule=- fntr=-` | Không áp dụng — không phải multipart, hoặc body spill |
+| `fntr=-` | Không áp dụng — không phải multipart, hoặc body spill |
+| `fntr=0` | Đã soi hết, không thấy gì |
+| `fntr=rx` | **Mẫu không biên dịch được** → lỗi lúc deploy, sửa ngay |
+| `fntr=len` | Một tên file > 512 byte → hiếm, và tự nó đã đáng ngờ |
+| `fntr=n` | Hơn 32 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
 
-**Mẫu hỏng cũng trả `fntr=1`, có chủ ý.** `ngx.re.gmatch` trả `nil` khi *mẫu không biên dịch được*, và chỗ đó ban đầu nuốt luôn — một mẫu hỏng hiện ra thành `fnrule=- fntr=-` trên **mọi** multipart, trông y hệt một tầng đang chạy và không thấy gì. `RX_FILENAME` là hằng số nên đó là lỗi lúc deploy chứ không phải lỗi của request; vì vậy `ngx.ERR` chỉ kêu **một lần mỗi worker**, còn đường báo được đọc thật là `fntr=1` chạy liên tục trong `wafstat` mục 7. Xem nhật ký 2026-09-05.
+**Là lý do, không phải cờ.** Bản trước trả `true` cho cả ba nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì ba nguyên nhân đòi ba việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Một request có thể chạm cả `len` lẫn `n`; **`len` thắng**, vì nó là cái bất thường hơn còn `n` một mình gần như luôn là lưu lượng lành. Ba giá trị cuối đều là **không biết**, không phải sạch.
+
+**Mẫu hỏng cũng vào cột này, có chủ ý.** `ngx.re.gmatch` trả `nil` khi *mẫu không biên dịch được*, và chỗ đó ban đầu nuốt luôn — một mẫu hỏng hiện ra thành `fnrule=- fntr=-` trên **mọi** multipart, trông y hệt một tầng đang chạy và không thấy gì. `RX_FILENAME` là hằng số nên đó là lỗi lúc deploy chứ không phải lỗi của request; vì vậy `ngx.ERR` chỉ kêu **một lần mỗi worker**, còn đường báo được đọc thật là `fntr=rx` chạy liên tục trong `wafstat` mục 7. Xem nhật ký 2026-09-05.
 
 **Quoted-pair: soi CẢ HAI dạng, không thay thế.** Mẫu học **cú pháp** quoted-pair — nhánh `\\.` chính là lý do nó khớp được `filename="abc\"..."` — nhưng giá trị bắt ra vẫn còn nguyên dấu `\`, còn parser hạ nguồn thì bỏ nó. Cú pháp được phân tích mà ngữ nghĩa thì không:
 
@@ -441,7 +445,7 @@ Dòng thứ ba là lý do không bỏ escape một cách phá huỷ: `..\..\` l�
 **Ba điều kiện chặn — phải xử lý TRƯỚC khi nâng `fn_rule` lên trọng số > 0.** Cả ba đều vô hại ở chế độ quan sát và đều thành lỗi thật khi chặn, nên chúng được in ra ngay trong output `wafstat` mục 7, chỗ số liệu được đọc:
 
 1. **Quét toàn bộ thân, chưa giới hạn trong vùng header của từng part.** Một file văn bản có **nội dung** chứa `; filename="../x.php"` vẫn đếm. Nhiễu telemetry thì chịu được; chặn thật thì là chặn oan một lần upload hợp lệ. Cần tách part theo boundary lấy từ `Content-Type` trước.
-2. **`fn_trunc=true` không được coi là sạch.** Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc `fntr=1` như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
+2. **Mọi `fntr` khác `0` và khác `-` đều không phải sạch.** Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc chúng như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
 3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
 
 **`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt. `fn_trunc` cũng được miễn — lấy mẫu nó đi thì tỉ lệ "không soi hết" trong số liệu thấp đi 20 lần.
@@ -527,6 +531,13 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 
 ## Update log
 
+- 2026-09-05 (vòng 8) — **`fn_trunc` từ cờ thành lý do.**
+  - `true` gộp ba nguyên nhân: mẫu hỏng, hơn 32 phần, tên file > 512 byte. Đúng nghĩa "không soi hết" nhưng **không đọc được** — ba ngày nữa nhìn `fntr=47` thì không biết làm gì, trong khi ba nguyên nhân đòi ba việc khác hẳn: `rx` sửa ngay, `len` tự nó đáng ngờ, `n` chỉ cần nâng trần.
+  - Cột `fntr=` nay là `-` | `0` | `rx` | `len` | `n`. Chạm cả `len` lẫn `n` thì **`len` thắng** — nó là cái bất thường hơn, `n` một mình gần như luôn là lưu lượng lành.
+  - `wafstat` mục 7 đếm riêng từng nguyên nhân kèm việc phải làm, thay cho một con số gộp.
+  - Đổi được vì `fn_rule` **chưa từng chạy** trên production (mẫu không biên dịch từ `8dfafd2` tới `996c0d6`) — không có dữ liệu `fntr` cũ nào để giữ tương thích.
+  - Ba giới hạn còn lại (quét toàn thân, spill không soi, `%2500` bảo thủ hơn RFC) giữ nguyên: đã ghi thành điều kiện chặn ở vòng 6, và cái cuối cố ý để đo trước.
+
 - 2026-09-05 (vòng 7) — **Quoted-pair: cú pháp được phân tích, ngữ nghĩa thì không.**
   - Mẫu ở vòng 4 học nhánh `\\.` để khớp được `filename="abc\"..."`, nhưng giá trị bắt ra vẫn còn nguyên dấu `\` và đi thẳng vào `args.check`. Parser hạ nguồn bỏ dấu đó, nên `filename=".\./shell.php"` thành `../shell.php` và `filename="p\hp://input"` thành `php://input` — cả hai lọt vì dạng thô không có `..` liền nhau, không có `php://`.
   - Test `filename="abc\"../../x.php"` ở vòng 4 **không chứng minh được gì** cho lớp này: nó có sẵn `../` ở dạng thô nên bắn dù có bỏ escape hay không.
@@ -536,7 +547,7 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 
 - 2026-09-05 (vòng 6) — **Ghim mép `%2500`, và biến hai giới hạn đã biết thành điều kiện chặn.**
   - **Mép NUL:** `filename*=UTF-8''x%2500.jpg` giải một lần ra `x%00.jpg`, rồi `RX_NUL_ENC` vẫn bắn vì nó khớp `%00` dạng văn bản — tức riêng luật NUL đọc thêm một lớp và câu "giải mã đúng một lần" không thuần tuý. **Giữ hành vi, ghim bằng cặp test đối chứng** (`filename*=` bắn `arg_null_byte` / `filename=` im, vì `%2500` không chứa `%00`) để nó là quyết định chứ không phải tình cờ.
-  - **Điều kiện chặn:** quét-toàn-thân và `fntr=1` từ "giới hạn đã biết" nâng thành **ba điều kiện phải xử lý trước khi nâng trọng số**, và in thẳng vào output `wafstat` mục 7 — chỗ số liệu được đọc là chỗ chúng dễ bị quên nhất.
+  - **Điều kiện chặn:** quét-toàn-thân và `fn_trunc` từ "giới hạn đã biết" nâng thành **ba điều kiện phải xử lý trước khi nâng trọng số**, và in thẳng vào output `wafstat` mục 7 — chỗ số liệu được đọc là chỗ chúng dễ bị quên nhất.
   - Điểm "không nuốt lỗi regex" đã làm ở vòng 5.
 
 - 2026-09-05 (vòng 5) — **`RX_FILENAME` ở vòng 4 không biên dịch được. Cả `fn_rule` chết câm.**

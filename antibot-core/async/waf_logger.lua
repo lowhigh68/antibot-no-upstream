@@ -202,15 +202,18 @@ function _M.run_body(ctx)
         -- `filename*=` duoc giai ma rieng (RFC 5987 dinh nghia la
         -- percent-encoding); `filename=` thi khong.
         b.fn_rule or "-",
-        -- `1` = quet ten file KHONG HOAN TAT (cham tran 32 phan, hoac mot ten
-        -- file dai hon 512 byte). Doc kem `fnrule=`:
-        --     fnrule=- fntr=0  da soi het, khong thay gi
-        --     fnrule=- fntr=1  KHONG BIET — het ngan sach truoc khi soi xong
-        -- Hai cai do khac han nhau, va gop chung lai la bien mot khoang trong
-        -- thanh mot am tinh. Cung nguyen tac da dung cho `php=-` va `exists=-`.
-        -- Nhoi 32 chuoi `filename=` gia vao noi dung file la mot duong ne tranh
-        -- THAT, va cot nay la thu duy nhat lam no hien ra.
-        (b.fn_trunc == nil) and "-" or (b.fn_trunc and "1" or "0"),
+        -- LY DO quet ten file khong hoan tat. Doc kem `fnrule=`:
+        --     fntr=-    khong ap dung — khong phai multipart, hoac spill
+        --     fntr=0    da soi het, khong thay gi
+        --     fntr=rx   mau khong bien dich duoc -> loi luc deploy, sua ngay
+        --     fntr=len  mot ten file > 512 byte  -> hiem, tu no da dang ngo
+        --     fntr=n    hon 32 phan              -> thuong la upload that
+        -- Ba gia tri cuoi deu la KHONG BIET, khong phai sach — gop chung lai la
+        -- bien mot khoang trong thanh mot am tinh (cung nguyen tac da dung cho
+        -- `php=-` va `exists=-`). Nhung chung doi ba viec khac han nhau, nen ghi
+        -- co la dung nghia ma khong doc duoc. Nhoi 32 chuoi `filename=` gia vao
+        -- noi dung file la mot duong ne tranh THAT, va cot nay lam no hien ra.
+        (b.fn_trunc == nil) and "-" or (b.fn_trunc or "0"),
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --

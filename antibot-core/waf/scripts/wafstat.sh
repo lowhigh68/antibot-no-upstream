@@ -107,7 +107,7 @@ grep -F '[waf-body]' "$LOG" | awk '
     if(f["argrule"]!="-"){ ar[f["argrule"]]+=s
         if(f["fnm"]=="1") fn1+=s; else if(f["fnm"]=="0") fn0+=s }
     if(f["fnrule"]!="-" && f["fnrule"]!="") fr[f["fnrule"]]+=s
-    if(f["fntr"]=="1") ftr+=s
+    if(f["fntr"]!="-" && f["fntr"]!="0" && f["fntr"]!="") ftr[f["fntr"]]+=s
     tot+=s
 }
 END{
@@ -125,7 +125,14 @@ END{
     print "     dem duoc cho cau: co bao nhieu request tan cong o ten file."
     n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
     if(n==0) print "  (khong co)"
-    printf "  quet ten file KHONG hoan tat (fntr=1): %d  <- KHONG BIET, khong phai sach\n", ftr+0
+    print "  -- quet ten file KHONG hoan tat: KHONG BIET, khong phai sach --"
+    print "     Ba nguyen nhan doi ba viec khac han nhau, nen dem RIENG."
+    tt=0
+    if(ftr["rx"]>0){ printf "  rx  %8d  MAU KHONG BIEN DICH DUOC -> loi deploy, sua NGAY\n", ftr["rx"]; tt+=ftr["rx"] }
+    if(ftr["len"]>0){ printf "  len %8d  ten file > 512 byte -> hiem, tu no da dang ngo\n", ftr["len"]; tt+=ftr["len"] }
+    if(ftr["n"]>0){ printf "  n   %8d  hon 32 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
+    for(k in ftr) if(k!="rx" && k!="len" && k!="n"){ printf "  %-3s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
+    if(tt==0) print "  (khong co — moi lan quet deu hoan tat)"
     print ""
     print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
     print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"
@@ -134,9 +141,10 @@ END{
     print "      van dem. Nhieu telemetry thi chiu duoc; chan that thi la chan"
     print "      oan mot lan upload hop le. Phai tach part theo boundary lay tu"
     print "      Content-Type truoc da."
-    print "   2. fntr=1 KHONG duoc coi la sach. Tai trong o ten file thu 33 hoac"
-    print "      sau byte 512 khong duoc nhin thay. Enforcement doc fntr=1 nhu"
-    print "      \"da soi, khong thay\" la bien vung mu thanh giay thong hanh."
+    print "   2. Moi gia tri fntr khac `0` va khac `-` deu KHONG phai sach. Tai"
+    print "      trong o ten file thu 33 hoac sau byte 512 khong duoc nhin thay."
+    print "      Enforcement doc chung nhu \"da soi, khong thay\" la bien vung mu"
+    print "      thanh giay thong hanh."
     print "   3. fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
     print "      spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
     printf "  ---- uoc tinh tong POST: %d\n", tot
