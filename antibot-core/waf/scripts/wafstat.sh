@@ -127,29 +127,30 @@ END{
     if(n==0) print "  (khong co)"
     print "  -- quet ten file khong hoan tat, theo LY DO --"
     print "     `stop` la binh thuong (dung lai vi da tim thay, di kem fnrule)."
-    print "     Bon cai con lai deu la KHONG BIET, khong phai sach, va moi cai"
+    print "     Nam cai con lai deu la KHONG BIET, khong phai sach, va moi cai"
     print "     doi mot viec khac han — nen dem RIENG."
     tt=0
     if(ftr["rx"]>0){ printf "  rx    %8d  MAU KHONG BIEN DICH DUOC -> loi deploy, sua NGAY\n", ftr["rx"]; tt+=ftr["rx"] }
+    if(ftr["nb"]>0){ printf "  nb    %8d  Content-Type khong co boundary -> khong cat duoc phan nao\n", ftr["nb"]; tt+=ftr["nb"] }
+    if(ftr["hdr"]>0){ printf "  hdr   %8d  vung header > 2 KB -> bat thuong, chi soi 2 KB dau\n", ftr["hdr"]; tt+=ftr["hdr"] }
     if(ftr["len"]>0){ printf "  len   %8d  ten file > 512 byte -> hiem, tu no da dang ngo\n", ftr["len"]; tt+=ftr["len"] }
-    if(ftr["n"]>0){ printf "  n     %8d  hon 32 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
+    if(ftr["n"]>0){ printf "  n     %8d  hon 64 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
     if(ftr["spill"]>0){ printf "  spill %8d  multipart ra file tam -> KHONG soi gi ca\n", ftr["spill"]; tt+=ftr["spill"] }
     if(ftr["stop"]>0) printf "  stop  %8d  dung lai vi da tim thay (binh thuong)\n", ftr["stop"]
-    for(k in ftr) if(k!="rx" && k!="len" && k!="n" && k!="spill" && k!="stop"){ printf "  %-5s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
+    for(k in ftr) if(k!="rx" && k!="nb" && k!="hdr" && k!="len" && k!="n" && k!="spill" && k!="stop"){ printf "  %-5s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
     if(tt==0) print "  (khong co vung mu nao)"
     if(ftr["spill"]>0 && fam["multipart"]>0) printf "  => MULTIPART KHONG HE DUOC SOI: %.1f%% (%d/%d). Day la thien lech cua\n     moi ty le fnrule o tren, va no KHONG dong duoc bang client_body_buffer_size:\n     ke tan cong don them byte la vuot moi con so.\n", 100*ftr["spill"]/fam["multipart"], ftr["spill"], fam["multipart"]
     print ""
     print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
     print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"
-    print "   1. Quet TOAN BO than, chua gioi han trong vung header cua tung"
-    print "      part. Mot file van ban co NOI DUNG chua `; filename=\"../x.php\"`"
-    print "      van dem. Nhieu telemetry thi chiu duoc; chan that thi la chan"
-    print "      oan mot lan upload hop le. Phai tach part theo boundary lay tu"
-    print "      Content-Type truoc da."
-    print "   2. `rx`, `len`, `n` deu KHONG phai sach (`stop` thi binh thuong)."
-    print "      Tai trong o ten file thu 33 hoac sau byte 512 khong duoc nhin"
-    print "      thay. Enforcement doc chung nhu \"da soi, khong thay\" la bien"
-    print "      vung mu thanh giay thong hanh."
+    print "   1. (DA XU LY 05-09) Nay chi soi vung header cua tung part, cat theo"
+    print "      boundary. Vung mu con lai: multipart LONG NHAU — header cua part"
+    print "      con nam trong THAN part cha nen khong duoc soi."
+    print "   2. rx / nb / hdr / len / n / spill deu KHONG phai sach (rieng `stop`"
+    print "      thi binh thuong). Tai trong o phan thu 65, sau byte 512 cua ten"
+    print "      file, hay sau 2 KB dau cua vung header deu khong duoc nhin thay."
+    print "      Enforcement doc chung nhu \"da soi, khong thay\" la bien vung mu"
+    print "      thanh giay thong hanh."
     print "   3. fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
     print "      spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
     printf "  ---- uoc tinh tong POST: %d\n", tot

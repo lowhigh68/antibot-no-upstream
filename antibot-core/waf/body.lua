@@ -185,7 +185,7 @@ end
 --   · Khong phan biet hoa thuong: header la case-insensitive (`Filename=`).
 --   · Nhay thoat `\"` ben trong: quet HET moi lan xuat hien nen mot ten file
 --     co `filename=\"../x\"` chen giua van bi bat o lan xuat hien thu hai.
---   · Chan so luong (MAX_FILENAMES) va do dai (MAX_FN_LEN): mot than doc hai
+--   · Chan so luong (MAX_PARTS) va do dai (MAX_HDR_LEN, MAX_FN_LEN): mot than doc hai
 --     nhoi hang nghin `filename=` khong bien ham nay thanh o CPU.
 --   · KHONG lowercase ban sao cua than: dung co `i` cua ngx.re thay vi
 --     `body:lower()`, tiet mot lan cap phat 80 KB cho MOI multipart POST.
@@ -236,156 +236,222 @@ end
 --   `([^;"\r\n]*)`  dang khong nhay, va dang ext-value cua `filename*=`.
 local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\\\r\n]|\\[^\r\n])*)"|([^;"\r\n]*))]]
 
--- 32 chu khong phai 16: mot lan dang thu vien anh that co the co hon 16 phan,
--- va tran qua thap thi co `fn_trunc` bao dong lien tuc tren luu luong lanh.
--- Van co tran vi mot than doc hai nhoi hang nghin `filename=` khong duoc bien
--- ham nay thanh o CPU.
-local MAX_FILENAMES = 32
-local MAX_FN_LEN    = 512
-
 -- Da keu chua? Mot co moi worker, khong chia se — dung y do: moi worker keu mot
 -- lan la du de thay trong error.log, va van la so lan huu han.
 local rx_broken = false
 
+-- Trich `boundary` tu Content-Type. RFC 2046 cho hai dang: co nhay va khong.
+-- Doi dau phan cach `[;\s]` truoc `boundary` vi cung mot ly do da doi no truoc
+-- `filename`: thieu no thi bat ky tham so nao KET THUC bang `boundary` cung
+-- khop.
+local RX_BOUNDARY = [[(?:^|[;\s])boundary\s*=\s*(?:"([^"]*)"|([^;\s]+))]]
+
+-- BA TRAN, ba nghia KHAC nhau. Truoc day chi co mot (`MAX_FILENAMES`), va no
+-- vua dem so ten file vua lam vien chan chi phi — hai viec khac nhau gop lam
+-- mot thi khong chinh duoc cai nao ma khong lam hong cai kia.
+local MAX_PARTS   = 64     -- so phan multipart soi toi da
+local MAX_HDR_LEN = 2048   -- do dai vung header cua MOT phan
+local MAX_FN_LEN  = 512    -- do dai mot gia tri ten file
+
+local function boundary_of(ct)
+    if not ct or ct == "" then return nil end
+    local m = ngx.re.match(ct, RX_BOUNDARY, "ijo")
+    if not m then return nil end
+    return (m[1] and m[1] ~= "" and m[1])
+        or (m[2] and m[2] ~= "" and m[2])
+        or nil
+end
+
 -- Tra ve `rule_id, truncated`.
 --
--- `truncated` KHONG duoc bo qua. Cham tran nghia la ta KHONG SOI HET, va im
--- lang coi do la "sach" la dung loi da sua o `php = false`: bien mot khoang
--- trong thanh mot am tinh. Va no la mot duong ne tranh that: nhoi 32 chuoi
--- `filename=` gia vao noi dung file thi bo quet dung truoc khi toi header that.
+-- ── SOI VUNG HEADER CUA TUNG PHAN, KHONG SOI TOAN THAN ──────────────
 --
--- LA LY DO, KHONG PHAI CO. Ban truoc tra `true` cho ca ba nguyen nhan, tuc
--- dung nghia "khong soi het" nhung khong doc duoc: ba nguyen nhan doi ba viec
--- khac han nhau.
---     "rx"   mau khong bien dich duoc  -> loi luc deploy, sua ngay
---     "len"  mot ten file > 512 byte   -> hiem, va tu no da dang ngo
---     "n"    hon 32 phan               -> thuong la upload thu vien anh that,
---                                         cach xu ly la nang tran
---     "stop" dung lai vi DA TIM THAY    -> binh thuong, di kem mot `fn_rule`
--- Mot request co the cham ca "len" lan "n". Uu tien "len" vi no la cai bat
--- thuong hon; "n" mot minh gan nhu luon la luu luong lanh. `"len"` cung thang
--- `"stop"` — da cham tran do dai truoc khi tim thay thi van la co vung mu.
+-- Ban truoc chay mot `gmatch` tren TOAN BO than. Cai do khong chi gay nhieu —
+-- no lam TRAN 32 tro nen VO NGHIA, vi ngan sach bi tieu vao noi dung ma ke tan
+-- cong soan ra:
+--     Phan 1 (mot o text):  32 chuoi `filename="x.jpg"` gia
+--     Phan 2 (header that): filename="../../shell.php"
+--                           ^ het suat truoc khi toi day
+-- `fn_trunc="n"` lam no HIEN RA nhung khong lam no BI BAT. Va nang tran khong
+-- cuu duoc: ke tan cong dieu khien so luong, ta thi khong.
 --
--- Tra ve: `nil` khong ap dung | `false` da soi het | mot trong bon chuoi tren.
--- Nho `"stop"`, `false` (cot `fntr=0`) chi con dung MOT nghia: da soi het moi
--- ten file va khong luat nao ban.
-local function filename_rule(body, family)
+-- ── DANH DOI, va huong danh doi la CO CHU Y ─────────────────────────
+--
+-- Quet toan than co mot uu diem that: no KHONG PHU THUOC PARSER. Cat theo
+-- boundary thi de ra rui ro LECH PARSER — neu ta doi `\r\n` ma PHP chap nhan
+-- `\n`, ke tan cong dung `\n` va ta thay MOT phan khong lo trong khi PHP thay
+-- hai.
+--
+-- Nguyen tac thoat ra: BO QUET PHAI LA TAP CHA CUA PARSER. Cho nao khong chac
+-- thi cat NHIEU hon, dung cat it hon. Nen o day:
+--   · dau phan cach nhan `\n--B` (tuc chap ca `\r\n--B` lan `\n--B` tran)
+--   · dong trong ket thuc header nhan ca `\r\n\r\n` lan `\n\n`
+-- Cat thua chi dua ta ve dung cai nhieu dang co; cat thieu moi tao duong ne.
+--
+-- ── VUNG MU MOI no tao ra, ghi ra chu khong giau ─────────────────────
+-- Multipart LONG NHAU (`multipart/mixed` trong mot phan): header cua phan con
+-- nam trong THAN cua phan cha nen khong duoc soi. Quet toan than truoc day
+-- thay chung. Hiem trong form web, va PHP cung khong dua chung vao `$_FILES`.
+--
+-- ── Gia tri `truncated`: LA LY DO, KHONG PHAI CO ────────────────────
+--     "rx"   mau khong bien dich duoc -> loi luc deploy, sua ngay
+--     "nb"   Content-Type khong co boundary doc duoc -> khong cat duoc phan nao
+--     "hdr"  mot vung header > 2 KB   -> bat thuong, hoac than khong co dong
+--                                        trong; chi soi 2 KB dau
+--     "len"  mot ten file > 512 byte  -> hiem, va tu no da dang ngo
+--     "n"    hon 64 phan              -> upload thu vien anh that thi nang tran
+--     "stop" dung lai vi DA TIM THAY  -> binh thuong, di kem mot `fn_rule`
+--
+-- Uu tien khi cham nhieu tran: "len" > "hdr" > "n" > "stop". Xep theo do BAT
+-- THUONG, vi cot nay ton tai de noi CAN LAM GI TIEP, khong phai de dem.
+--
+-- Tra ve: `nil` khong ap dung | `false` da soi het | mot trong sau chuoi tren.
+-- `false` (cot `fntr=0`) chi con dung MOT nghia: da soi het moi vung header va
+-- khong luat nao ban.
+local function filename_rule(body, family, ct)
     if family ~= "multipart" then return nil, nil end
 
-    -- `nil` o day KHONG co nghia la "khong tim thay ten file nao" — gmatch tra
-    -- nil khi MAU KHONG BIEN DICH DUOC. Ban dau cho nay `return nil, nil`, tuc
-    -- mot mau hong hien ra thanh `fnrule=- fntr=-` tren MOI multipart: giong het
-    -- mot tang dang chay va khong thay gi. Dung dang am tinh gia da sua o
-    -- `php = false`, chi khac la lan nay no che ca bo luat.
-    --
-    -- Hai duong bao, vi mot duong khong du:
-    --   `fntr=1`  chay lien tuc, doc duoc bang wafstat muc 7, khong can ai mo
-    --             error.log. Day moi la duong duoc doc.
-    --   ngx.ERR   mot lan moi worker. Mau la HANG SO nen loi la loi luc deploy,
-    --             khong phai loi cua request — ghi moi request thi 43 domain do
-    --             error.log ma khong them mot bit thong tin nao.
-    local it, err = ngx.re.gmatch(body, RX_FILENAME, "ijo")
-    if not it then
-        if not rx_broken then
-            rx_broken = true
-            ngx.log(ngx.ERR, "[waf] RX_FILENAME khong bien dich duoc: ",
-                    err or "khong ro. fn_rule DA NGUNG SOI ten file.")
-        end
-        return nil, "rx"   -- khong soi duoc, khong phai da soi xong
+    -- Khong co boundary thi khong cat duoc phan nao. Bao ra chu KHONG lui ve
+    -- quet toan than: chay am tham mot thuat toan khac la dung cai bay ma ca
+    -- module nay dung de tranh. Va mot Content-Type multipart khong co boundary
+    -- thi PHP cung khong phan tich duoc — day la request bat thuong, khong phai
+    -- truong hop can chieu co.
+    local bnd = boundary_of(ct)
+    if not bnd then return nil, "nb" end
+
+    local delim, trunc = "--" .. bnd, false
+    local dlen = #delim
+    local pos, nparts = 1, 0
+
+    -- `worse` giu thu tu uu tien o mot cho, thay vi rai `if trunc ~= "..."`
+    -- khap noi — cach cu chi so sanh duoc voi MOT gia tri va da bo sot.
+    local RANK = { stop = 1, n = 2, hdr = 3, len = 4 }
+    local function worse(v)
+        if (RANK[v] or 0) > (RANK[trunc] or 0) then trunc = v end
     end
 
-    local trunc, n = false, 0
-    while n < MAX_FILENAMES do
-        local m = it()
-        if not m then return nil, trunc end
-        n = n + 1
-
-        -- Nhom khong tham gia -> `false`, khong phai nil.
-        -- Phai NHO da di nhanh nao: chi nhanh trong nhay moi mang quoted-pair.
-        local quoted = (m[2] and m[2] ~= "") and true or false
-        local v = (quoted and m[2])
-               or (m[3] and m[3] ~= "" and m[3])
-               or nil
-
-        if v then
-            if #v > MAX_FN_LEN then
-                v = v:sub(1, MAX_FN_LEN)
-                trunc = "len"
-            end
-
-            -- GIAI MA DUNG MOT LAN cho `filename*=`, roi goi luat voi
-            -- `decode=false`. KHONG dua no vao vong 3 muc cua `args.check`.
-            --
-            -- RFC 5987 dinh nghia ext-value la percent-encoding MOT LOP. Giai
-            -- them mot lop nua la doc nhieu hon cai ma dinh dang noi, va no tao
-            -- ra FP that: `filename*=UTF-8''a..%252Fb.txt` giai dung mot lan ra
-            -- `a..%2Fb.txt` — mot ten file hop le chua ky tu `%` — con vong thu
-            -- hai bien no thanh `a../b.txt` va ban.
-            --
-            -- Ban truoc truyen `decode = (m[1] == "*")` nen dinh dung cai bay
-            -- ma khoi chu thich ngay tren day viet ra de tranh.
-            --
-            -- MOT MEP, va no la NGOAI LE CO CHU Y chu khong phai so sot.
-            -- `filename*=UTF-8''x%2500.jpg` giai dung mot lan ra `x%00.jpg` —
-            -- ten file that chua ba KY TU `%`, `0`, `0`. `args.check(v, false)`
-            -- khong giai ma them, nhung `RX_NUL_ENC` van ban vi no khop `%00`
-            -- dang VAN BAN. Vay rieng luat NUL CO doc them mot lop, va cau
-            -- "giai ma dung mot lan" khong con thuan tuy.
-            -- Giu vay: app ha nguon giai ma lai ten file la chuyen pho bien va
-            -- lam sai, `x%00.jpg` giai them lan nua thanh `x<NUL>.jpg` — dung
-            -- cai cat chuoi ma luat NUL sinh ra de bat. Cung mot lua chon da
-            -- lam cho than nhi phan. Ghim bang test doi chung trong body_test.
-            if m[1] == "*" then v = ngx.unescape_uri(v) end
-
-            -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau NUL
-            -- deu co nghia o day.
-            local rule = args.check(v, false)
-
-            -- QUOTED-PAIR: soi THEM dang da bo dau `\`, va soi CA HAI chu khong
-            -- thay the.
-            --
-            -- Mau da hoc CU PHAP quoted-pair (nhanh `\\.` la ly do no khop duoc
-            -- `filename="abc\"..."`) nhung gia tri bat ra van con nguyen dau
-            -- `\`. Trong quoted-string, parser ha nguon bo dau do, nen:
-            --     filename=".\./shell.php"   ->  ../shell.php
-            --     filename="p\hp://input"    ->  php://input
-            -- Ca hai deu lot vi dang tho khong co `..` lien nhau, khong co
-            -- `php://`. Do la cu phap duoc phan tich ma ngu nghia thi khong.
-            --
-            -- VI SAO SOI CA HAI, khong don gian bo escape roi soi mot lan: dang
-            -- tho MOT MINH bat duoc mot lop khac.
-            --     filename="..\..\shell.php"   Windows-style, traversal THAT
-            --     tho       ..\..\shell.php    RX_TRAVERSAL `\.\.[/\\]` KHOP
-            --     bo escape ...shell.php       KHONG con khop
-            -- Bo escape mot cach pha huy la doi mot lo hong lay mot lo hong.
-            -- Ta khong biet parser ha nguon dung cach doc nao — PHP, Python,
-            -- Node moi thu mot kieu — nen soi ca hai cach doc.
-            --
-            -- Gia: mot `find` byte tho, va chi khi dang tho DA SACH. Ten file
-            -- binh thuong khong co dau `\` nen duong nay khong chay.
-            if not rule and quoted and v:find("\\", 1, true) then
-                local unq = v:gsub("\\(.)", "%1")
-                if unq ~= v then rule = args.check(unq, false) end
-            end
-
-            -- `"stop"`, KHONG phai `false`. Ham thoat ngay khi co luat dau
-            -- tien, nen luc do ta CHUA soi cac ten file phia sau. Tra `false`
-            -- o day lam `fntr=0` mang hai nghia: "da soi het va sach" va "dung
-            -- lai vi tim thay". Cai thu hai khong sai ve phan quyet — request
-            -- da bi danh dau roi — nhung no lam hong phep dem "bao nhieu lan
-            -- quet hoan tat".
-            -- Lam thanh mot GIA TRI thay vi mot quy uoc phai nho: `fntr=0` gio
-            -- chi con dung mot nghia, va no khong the bi doc nham.
-            -- `trunc or "stop"`: neu da cham `"len"` truoc do thi giu `"len"`.
-            if rule then return rule, trunc or "stop" end
+    while nparts < MAX_PARTS do
+        -- Dau phan cach phai o DAU DONG, neu khong thi `--B` nam trong noi dung
+        -- file cung cat duoc phan gia.
+        local ds
+        while true do
+            local i = body:find(delim, pos, true)
+            if not i then break end
+            if i == 1 or body:byte(i - 1) == 10 then ds = i; break end
+            pos = i + dlen
         end
+        -- Het phan that su. `trunc` giu nguyen: `false` neu chua cham tran nao,
+        -- va do la lan DUY NHAT cot `fntr=0` duoc phat ra.
+        if not ds then return nil, trunc end
+        pos = ds + dlen
+
+        -- DAU DONG KET THUC (`--B--`). No KHONG phai mot phan. Coi no la phan
+        -- thi khong tim thay dong trong nao sau no va `worse("hdr")` se ban
+        -- tren MOI than multipart LANH — mot bao dong 100% gia.
+        if body:sub(pos, pos + 1) == "--" then break end
+        nparts = nparts + 1
+
+        -- Het dong phan cach -> bat dau vung header.
+        local eol = body:find("\n", pos, true)
+        if not eol then break end
+        local hs = eol + 1
+
+        -- Het vung header = dong trong dau tien. Nhan CA HAI dang xuong dong.
+        local b1 = body:find("\n\r\n", eol, true)
+        local b2 = body:find("\n\n",   eol, true)
+        local he
+        if b1 and b2 then he = (b1 < b2) and b1 or b2 else he = b1 or b2 end
+        if not he or he - hs > MAX_HDR_LEN then
+            he = hs + MAX_HDR_LEN
+            worse("hdr")
+        end
+        if he < hs then he = hs end
+
+        local head = body:sub(hs, he)
+        local it, err = ngx.re.gmatch(head, RX_FILENAME, "ijo")
+        if not it then
+            -- Mau la HANG SO nen day la loi luc deploy, khong phai loi cua
+            -- request. Keu mot lan moi worker; duong bao duoc doc that la cot
+            -- `fntr=rx` chay lien tuc.
+            if not rx_broken then
+                rx_broken = true
+                ngx.log(ngx.ERR, "[waf] RX_FILENAME khong bien dich duoc: ",
+                        err or "khong ro. fn_rule DA NGUNG SOI ten file.")
+            end
+            return nil, "rx"
+        end
+
+        while true do
+            local m = it()
+            if not m then break end
+
+            -- Nhom khong tham gia -> `false`, khong phai nil.
+            -- Phai NHO da di nhanh nao: chi nhanh trong nhay mang quoted-pair.
+            local quoted = (m[2] and m[2] ~= "") and true or false
+            local v = (quoted and m[2])
+                   or (m[3] and m[3] ~= "" and m[3])
+                   or nil
+            if v then
+                if #v > MAX_FN_LEN then
+                    v = v:sub(1, MAX_FN_LEN)
+                    worse("len")
+                end
+
+                -- GIAI MA DUNG MOT LAN cho `filename*=`. RFC 5987 dinh nghia
+                -- ext-value la percent-encoding MOT LOP; giai them mot lop nua
+                -- tao FP that: `filename*=UTF-8''a..%252Fb.txt` giai dung mot
+                -- lan ra `a..%2Fb.txt` — ten file hop le chua ky tu `%` — con
+                -- vong thu hai bien no thanh `a../b.txt` va ban.
+                --
+                -- MEP CO CHU Y: `x%2500.jpg` giai mot lan ra `x%00.jpg`, roi
+                -- `RX_NUL_ENC` van ban vi no khop `%00` dang VAN BAN. Tuc rieng
+                -- luat NUL doc them mot lop. Giu vay — app ha nguon giai ma lai
+                -- ten file la chuyen pho bien va lam sai. Ghim bang test.
+                if m[1] == "*" then v = ngx.unescape_uri(v) end
+
+                -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau
+                -- NUL deu co nghia o day.
+                local rule = args.check(v, false)
+
+                -- QUOTED-PAIR: soi THEM dang da bo dau `\`, va soi CA HAI chu
+                -- khong thay the.
+                --     filename=".\./shell.php"  -> parser doc ra ../shell.php
+                --     filename="..\..\shell.php" -> dang THO moi khop `\.\.[/\\]`
+                -- Bo escape mot cach pha huy la doi mot lo hong lay mot lo
+                -- hong. Khong biet parser ha nguon doc kieu nao thi soi ca hai.
+                -- Gia: mot `find` byte tho, va chi khi dang tho DA SACH.
+                if not rule and quoted and v:find("\\", 1, true) then
+                    local unq = v:gsub("\\(.)", "%1")
+                    if unq ~= v then rule = args.check(unq, false) end
+                end
+
+                if rule then
+                    worse("stop")
+                    return rule, trunc
+                end
+            end
+        end
+
+        -- Vong sau tim tu DAU vung header, KHONG tu cuoi no.
+        --
+        -- Nhay toi `he` nhanh hon nhung SAI khi `he` bi cap 2 KB: cai cap do co
+        -- the nam VUOT QUA dau phan cach ke tiep, va the la mat han mot phan —
+        -- tuc cat IT hon parser, dung dieu ca ham nay dat ra de tranh. Tu `hs`
+        -- thi phep tim chi duyet lai vung header (toi da 2 KB) va khong bao gio
+        -- bo sot. `hs > ds` nen vong lap van tien len, khong quan.
+        pos = hs
     end
 
-    -- Cham tran 32. Con phan thu 33 khong? Mot lan goi nua de biet — khong de
+    -- Cham tran so phan. Con phan nua khong? Mot lan tim nua de biet — khong de
     -- "het ngan sach" tra ve giong "da soi het va sach".
-    -- "len" thang "n": mot ten file dai hon 512 byte la cai bat thuong hon, con
-    -- hon 32 phan mot minh gan nhu luon la mot lan dang thu vien anh that.
-    if it() and trunc ~= "len" then trunc = "n" end
+    if nparts >= MAX_PARTS then
+        local i = body:find(delim, pos, true)
+        while i do
+            if i == 1 or body:byte(i - 1) == 10 then worse("n"); break end
+            i = body:find(delim, i + dlen, true)
+        end
+    end
+
     return nil, trunc
 end
 
@@ -485,7 +551,7 @@ function _M.probe(ctx)
     -- percent-encoding => moi giai ma. Hai truc doc lap; bang tra day du o
     -- `args.check`.
     local rule, at = args.check(body, family == "urlencoded", BINARY_FAMILY[family] == true)
-    local fn_rule, fn_trunc = filename_rule(body, family)
+    local fn_rule, fn_trunc = filename_rule(body, family, ct)
 
     ctx.waf_body = {
         family = family,

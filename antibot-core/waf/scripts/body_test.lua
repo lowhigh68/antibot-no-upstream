@@ -245,222 +245,241 @@ check("fnm: multipart nhung khong luat nao ban -> nil",
       probe("POST", MULTI, "noi dung vo hai").fnm, nil)
 check("fnm: spill -> nil", probe("POST", MULTI, nil).fnm, nil)
 
--- ── `fn_rule`: soi RIENG ten file, doc lap voi than ─────────────────
+-- ── `fn_rule`: soi vung header cua TUNG PHAN multipart ──────────────
 -- `fnm` tai su dung vi tri cua luat toan than nen (a) le thuoc thu tu uu tien
 -- NUL->wrapper->traversal, (b) khong soi duoc `filename*=`. `fn_rule` chay luat
--- len CHINH gia tri ten file nen khong dinh ca hai.
+-- len CHINH gia tri ten file, va CHI trong vung header cua tung phan.
 
-local CD = 'Content-Disposition: form-data; name="f"; '
+local BND = "----WebKitFormBoundaryAbC123"
+local CD  = 'Content-Disposition: form-data; name="f"; '
+
+-- Dung THAN MULTIPART THAT. Ban truoc cua bo test nay truyen mot MANH header
+-- tran (`Content-Disposition: ...`) khong co dau phan cach nao — no chay duoc
+-- vi bo quet cu quet toan than, tuc bo test khong he kiem cai cau truc ma no
+-- dang khang dinh. Gio thi phai that: khong co `--BOUNDARY` thi khong co phan
+-- nao, va do la dieu DUNG.
+local function part(hdr, content)
+    return "--" .. BND .. "\r\n" .. hdr .. "\r\n\r\n" .. (content or "noi dung") .. "\r\n"
+end
+local function mp(...)
+    return table.concat({ ... }) .. "--" .. BND .. "--\r\n"
+end
 
 -- DONG DAU TIEN, va no kiem MAU CHU KHONG KIEM HANH VI. `RX_FILENAME` la mot
 -- long string `[[...]]` khong xu ly chuoi thoat: mot dau `\` viet don le thay vi
 -- doi lam ca mau LOI CU PHAP, `ngx.re.gmatch` tra nil, va MOI dong duoi day do
 -- cung mot luc — muoi dong do noi "khong tim thay" chu khong noi "mau hong".
 -- Dong nay noi. Da xay ra that o `8dfafd2`: `[^"\]` thay vi `[^"\\]`.
--- (`fn_trunc == false` chi dat duoc khi gmatch chay tron; mau hong tra `"rx"`.)
 check("fn_rule: RX_FILENAME BIEN DICH DUOC",
-      probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
+      probe("POST", MULTI, mp(part(CD .. 'filename="anh.jpg"'))).fn_trunc, false)
+
+-- CAI DAT DUOC BANG VIEC CAT THEO BOUNDARY, va la ly do lam no.
+-- Ngan sach 64 phan gio tieu vao HEADER THAT, khong tieu vao noi dung ma ke tan
+-- cong soan. Ban truoc: nhoi 32 chuoi `filename=` vao NOI DUNG phan 1 thi bo
+-- quet het suat truoc khi toi header that o phan 2.
+local pad = ""
+for i = 1, 60 do pad = pad .. '; filename="pad' .. i .. '.jpg"' end
+check("fn_rule: noi dung phan 1 KHONG duoc tieu ngan sach cua phan 2",
+      probe("POST", MULTI, mp(part('Content-Disposition: form-data; name="t"', pad),
+                              part(CD .. 'filename="../../shell.php"'))).fn_rule,
+      "arg_traversal")
+-- Va cung do, `fnm`-style nhieu bien mat: noi dung chua `filename="../x"` khong
+-- con duoc dem la mot ten file.
+check("fn_rule: `filename=` trong NOI DUNG file khong duoc dem",
+      probe("POST", MULTI, mp(part('Content-Disposition: form-data; name="t"',
+                                   '; filename="../../x.php"'))).fn_rule, nil)
 
 -- CA QUYET DINH CUA CA NHOM NAY. Truoc khi co ham nay, tai trong duoi day lot
 -- sach: than multipart chay decode=false, ma gia tri `filename*=` theo RFC 5987
 -- LA percent-encoding.
 check("fn_rule: filename*= traversal da ma hoa",
-      probe("POST", MULTI, CD .. "filename*=UTF-8''..%2F..%2Fshell.php").fn_rule,
+      probe("POST", MULTI, mp(part(CD .. "filename*=UTF-8''..%2F..%2Fshell.php"))).fn_rule,
       "arg_traversal")
 
--- CAP DOI CHUNG cho viec giai ma CO PHAN BIET. Cung mot chuoi `..%2F`, khac
--- moi dang cu phap: `filename*=` duoc giai ma, `filename=` thi KHONG. Neu giai
--- ma bua ca hai thi mot file khach dat ten `a..%2Fb.pdf` se ban — dung dang FP
--- ca tang nay tranh.
+-- CAP DOI CHUNG cho viec giai ma CO PHAN BIET. Cung chuoi `..%2F`, khac o cho
+-- co dau `*` hay khong. Bua ca hai thi `a..%2Fb.pdf` — ten file hop le — bien
+-- thanh `a../b.pdf` va ban.
 check("fn_rule: filename= KHONG duoc giai ma",
-      probe("POST", MULTI, CD .. 'filename="a..%2Fb.pdf"').fn_rule, nil)
+      probe("POST", MULTI, mp(part(CD .. 'filename="a..%2Fb.pdf"'))).fn_rule, nil)
 
 check("fn_rule: traversal tho trong ten file",
-      probe("POST", MULTI, CD .. 'filename="../../shell.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="../../shell.php"'))).fn_rule,
       "arg_traversal")
 check("fn_rule: `%00` trong ten file khong nhay",
-      probe("POST", MULTI, CD .. "filename=x.php%00.jpg").fn_rule,
+      probe("POST", MULTI, mp(part(CD .. "filename=x.php%00.jpg"))).fn_rule,
       "arg_null_byte")
 check("fn_rule: khong phan biet hoa thuong",
-      probe("POST", MULTI, 'FILENAME="../x"').fn_rule, "arg_traversal")
+      probe("POST", MULTI, mp(part('Content-Disposition: form-data; FILENAME="../x"'))).fn_rule,
+      "arg_traversal")
 check("fn_rule: ten file lanh -> im",
-      probe("POST", MULTI, CD .. 'filename="anh-san-pham.jpg"').fn_rule, nil)
+      probe("POST", MULTI, mp(part(CD .. 'filename="anh-san-pham.jpg"'))).fn_rule, nil)
 
--- Noi dung nhi phan KHONG duoc lam ban: no khong chua `filename=` nen khong
--- vao duong nay. Day la khac biet then chot so voi `arg_rule`.
+-- Noi dung nhi phan KHONG duoc lam ban: byte NUL nam trong NOI DUNG phan, con
+-- bo quet chi doc vung header. Day la khac biet then chot so voi `arg_rule`.
 check("fn_rule: PNG co byte NUL, ten file lanh -> im",
-      probe("POST", MULTI, CD .. 'filename="anh.jpg"\r\n\r\n'
-            .. "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR").fn_rule, nil)
+      probe("POST", MULTI, mp(part(CD .. 'filename="anh.jpg"',
+            "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR"))).fn_rule, nil)
 
 -- NHIEU PHAN: phai quet HET. Upload thu vien anh co hang chuc phan va tan cong
 -- thuong nam o phan cuoi, khong phai phan dau.
 check("fn_rule: quet het moi phan, khong dung o cai dau",
-      probe("POST", MULTI,
-            CD .. 'filename="ok.jpg"\r\n\r\nAAA\r\n'
-            .. 'Content-Disposition: form-data; name="b"; filename="../../s.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="ok.jpg"'),
+                              part(CD .. 'filename="../../s.php"'))).fn_rule,
       "arg_traversal")
 
 check("fn_rule: khong phai multipart -> nil",
       probe("POST", URLENC, 'filename="../../x"').fn_rule, nil)
 check("fn_rule: spill -> nil", probe("POST", MULTI, nil).fn_rule, nil)
 
--- ── Bon ca ne tranh / FP tu ban review vong 4 ───────────────────────
+-- DAU PHAN CACH phai o DAU DONG. `--BOUNDARY` nam giua noi dung file khong duoc
+-- cat ra mot phan gia — neu duoc thi ke tan cong tu che ra phan cua minh.
+check("fn_rule: `--BOUNDARY` giua dong KHONG cat duoc phan gia",
+      probe("POST", MULTI, mp(part(CD .. 'filename="anh.jpg"',
+            "xxx--" .. BND .. "\r\n" .. CD .. 'filename="../../x.php"' .. "\r\n\r\ny"))).fn_rule,
+      nil)
 
--- DAU PHAN CACH truoc `filename`. Thieu no thi bat ky chuoi nao KET THUC bang
--- `filename` deu khop.
+-- BOUNDARY KHONG DOC DUOC -> "nb", KHONG phai "sach". Lui ve quet toan than la
+-- am tham chay mot thuat toan khac; bao ra moi dung.
+check("fn_rule: Content-Type multipart nhung khong co boundary -> nb",
+      probe("POST", "multipart/form-data", mp(part(CD .. 'filename="../../x.php"'))).fn_trunc,
+      "nb")
+check("fn_rule: khong co boundary -> fn_rule nil (KHONG phai 'sach')",
+      probe("POST", "multipart/form-data", mp(part(CD .. 'filename="../../x.php"'))).fn_rule,
+      nil)
+-- Boundary dat trong nhay (RFC 2046 cho phep) van phai doc duoc.
+check("fn_rule: boundary co nhay",
+      probe("POST", 'multipart/form-data; boundary="' .. BND .. '"',
+            mp(part(CD .. 'filename="../../x.php"'))).fn_rule, "arg_traversal")
+
+-- CAT RONG TAY, khong cat chat: chap ca `\n--B` tran, khong doi `\r\n--B`.
+-- Neu ta doi `\r\n` ma parser ha nguon chap `\n` thi ke tan cong dung `\n` va ta
+-- thay MOT phan khong lo trong khi PHP thay hai.
+local lf_only = "--" .. BND .. "\n" .. CD .. 'filename="../../x.php"' .. "\n\n"
+             .. "noi dung\n--" .. BND .. "--\n"
+check("fn_rule: than dung `\\n` tran van cat duoc phan",
+      probe("POST", MULTI, lf_only).fn_rule, "arg_traversal")
+
+-- ── Cac duong ne o CHINH gia tri ten file ───────────────────────────
 check("fn_rule: `myfilename=` KHONG duoc tinh la ten file",
-      probe("POST", MULTI, 'myfilename="../../x.php"').fn_rule, nil)
-
--- Khoang trang hai ben dau bang. Khong chuan, nhung parser multipart ben duoi
--- chap nhan — nen ta cung phai chap nhan, neu khong do la mot duong ne tranh.
+      probe("POST", MULTI, mp(part('Content-Disposition: form-data; myfilename="../../x.php"'))).fn_rule,
+      nil)
 check("fn_rule: khoang trang quanh dau bang",
-      probe("POST", MULTI, CD .. 'filename = "../x.php"').fn_rule, "arg_traversal")
+      probe("POST", MULTI, mp(part(CD .. 'filename = "../x.php"'))).fn_rule, "arg_traversal")
 
 -- NHAY THOAT. Ban truoc dung `[^"]*` va toi ghi rang "quet moi lan xuat hien
 -- nen van bat duoc o lan sau" — SAI, o day chi co MOT lan xuat hien.
 check("fn_rule: nhay thoat trong ten file",
-      probe("POST", MULTI, CD .. 'filename="abc\\"../../x.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="abc\\"../../x.php"'))).fn_rule,
       "arg_traversal")
 
--- QUOTED-PAIR: mau hoc CU PHAP nhung khong ap NGU NGHIA.
---
--- Dong ngay tren KHONG chung minh duoc dieu nay: `abc\"../../x.php` co san
--- `../` o dang tho nen ban du co bo dau `\` hay khong. Bon dong duoi day moi
--- tach duoc — chung CHI ban sau khi bo quoted-pair.
+-- FP THAT do giai ma qua tay. RFC 5987 la percent-encoding MOT LOP. Giai mot
+-- lan ra `a..%2Fb.txt` — mot ten file hop le chua ky tu `%`. Giai lan hai bien
+-- no thanh `a../b.txt` va ban.
+check("fn_rule: filename*= giai ma DUNG MOT LAN",
+      probe("POST", MULTI, mp(part(CD .. "filename*=UTF-8''a..%252Fb.txt"))).fn_rule, nil)
+
+-- MEP giua "giai ma mot lan" va `RX_NUL_ENC`, va no la NGOAI LE CO CHU Y.
+-- `x%2500.jpg` giai dung mot lan ra `x%00.jpg` — ten file that chua ba KY TU
+-- `%`,`0`,`0`. `args.check(v,false)` khong giai ma them, nhung `RX_NUL_ENC` van
+-- ban vi no khop `%00` dang VAN BAN. Giu vay: app ha nguon giai ma lai ten file
+-- la chuyen pho bien va lam sai.
+check("fn_rule: `%2500` -> `%00` sau mot lan giai, RX_NUL_ENC VAN ban",
+      probe("POST", MULTI, mp(part(CD .. "filename*=UTF-8''x%2500.jpg"))).fn_rule,
+      "arg_null_byte")
+check("fn_rule: `filename=` khong giai ma nen `%2500` khong thanh `%00`",
+      probe("POST", MULTI, mp(part(CD .. 'filename="x%2500.jpg"'))).fn_rule, nil)
+
+-- QUOTED-PAIR: mau hoc CU PHAP nhung khong ap NGU NGHIA. Ba dong duoi day CHI
+-- ban sau khi bo quoted-pair — dong `abc\"...` o tren khong tach duoc lop nay vi
+-- no co san `../` o dang tho.
 check("fn_rule: dau cham da thoat  .\\./  ->  ../",
-      probe("POST", MULTI, CD .. 'filename=".\\./shell.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename=".\\./shell.php"'))).fn_rule,
       "arg_traversal")
 check("fn_rule: gach cheo da thoat  .\\.\\/  ->  ../",
-      probe("POST", MULTI, CD .. 'filename=".\\.\\/shell.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename=".\\.\\/shell.php"'))).fn_rule,
       "arg_traversal")
 check("fn_rule: chu da thoat  p\\hp://  ->  php://",
-      probe("POST", MULTI, CD .. 'filename="p\\hp://input"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="p\\hp://input"'))).fn_rule,
       "arg_php_wrapper")
 
 -- CHIEU NGUOC, va day la ly do soi CA HAI dang chu khong thay the. Bo escape
 -- mot cach pha huy thi dong nay do: `..\..\` la traversal THAT o dang tho, con
 -- sau khi bo dau `\` no thanh `...shell.php` va khong con khop.
 check("fn_rule: Windows-style  ..\\..\\  van ban o dang THO",
-      probe("POST", MULTI, CD .. 'filename="..\\..\\shell.php"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="..\\..\\shell.php"'))).fn_rule,
       "arg_traversal")
 
--- BO ESCAPE DUNG MOT LAN, doi chung kieu `%2500`. `.\\./` bo mot lan ra
--- `.\./` — sach. Lap them lan nua moi ra `../`. Dong nay do neu ai do viet
--- vong lap.
+-- BO ESCAPE DUNG MOT LAN, doi chung kieu `%2500`. `.\\./` bo mot lan ra `.\./`
+-- — sach. Lap them lan nua moi ra `../`.
 check("fn_rule: bo quoted-pair DUNG MOT LAN",
-      probe("POST", MULTI, CD .. 'filename=".\\\\./shell.php"').fn_rule, nil)
+      probe("POST", MULTI, mp(part(CD .. 'filename=".\\\\./shell.php"'))).fn_rule, nil)
 
--- FP: duong dan Windows day du (IE cu va vai client gui ca duong dan). Dang
--- tho khong co `..`, dang bo escape thanh `C:Usersmeanh-san-pham.jpg` — ca hai
--- deu sach. Neu dong nay do thi viec soi hai dang dang tu che ra tan cong.
+-- FP: duong dan Windows day du (IE cu va vai client gui ca duong dan). Dang tho
+-- khong co `..`, dang bo escape thanh `C:Usersmeanh-san-pham.jpg` — ca hai deu
+-- sach. Neu dong nay do thi viec soi hai dang dang tu che ra tan cong.
 check("fn_rule: duong dan Windows hop le -> im",
-      probe("POST", MULTI, CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"').fn_rule,
+      probe("POST", MULTI, mp(part(CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"'))).fn_rule,
       nil)
 
--- NHAY KHONG DONG AN XUYEN DONG. Ban truoc `[^"\\]` cho qua ca `\r` va `\n`,
--- nen lan khop gia bat dau o dau nhay dong tren nuot ca dong duoi cho toi dau
--- nhay MO cua header that roi dong lai o do. Gia tri bat ra vo hai, `filename=`
--- THAT da bi tieu thu nen gmatch khong con thay, va ham tra `nil, false` — tuc
--- BAO LA DA SOI SACH. Mot lan bo sot tu bao cao la hoan tat.
-local crlf_eat = '; filename="\r\n'
-              .. 'Content-Disposition: form-data; name=f; filename="../../shell.php"'
-check("fn_rule: nhay khong dong KHONG duoc an xuyen dong",
-      probe("POST", MULTI, crlf_eat).fn_rule, "arg_traversal")
--- Va dong nay la cai bat duoc ca "bao sai la sach": neu regex lai an xuyen
--- dong, fn_trunc se la `false` (fntr=0) thay vi `"stop"`.
+-- NHAY KHONG DONG. Ban truoc `[^"\\]` cho qua ca `\r` va `\n` nen lan khop gia
+-- nuot sang dong duoi toi dau nhay MO cua header that roi dong lai o do — gia
+-- tri bat ra vo hai, `filename=` THAT bi tieu thu, va ham tra `nil, false` tuc
+-- BAO LA DA SOI SACH. Gio co HAI lop chan: lop ky tu loai CR/LF, va vung header
+-- duoc cat theo boundary nen khong voi sang phan khac duoc.
+local unclosed = mp(part('Content-Disposition: form-data; name="a"; filename="'),
+                    part(CD .. 'filename="../../shell.php"'))
+check("fn_rule: nhay khong dong KHONG duoc an sang phan khac",
+      probe("POST", MULTI, unclosed).fn_rule, "arg_traversal")
 check("fn_rule: nhay khong dong -> KHONG duoc bao la da soi het",
-      probe("POST", MULTI, crlf_eat).fn_trunc, "stop")
--- Quoted-pair KHONG duoc dung de thoat mot dau xuong dong: `\\[^\r\n]` chu
--- khong phai `\\.` (trong PCRE khong co co `s`, dau `.` van khop `\r`).
-local crlf_esc = '; filename="a\\\r\n'
-              .. 'Content-Disposition: form-data; name=f; filename="../../s.php"'
-check("fn_rule: quoted-pair khong thoat duoc xuong dong",
-      probe("POST", MULTI, crlf_esc).fn_rule, "arg_traversal")
+      probe("POST", MULTI, unclosed).fn_trunc, "stop")
 
--- FP THAT do giai ma qua tay. RFC 5987 la percent-encoding MOT LOP. Giai mot
--- lan ra `a..%2Fb.txt` — mot ten file hop le chua ky tu `%`. Giai lan hai bien
--- no thanh `a../b.txt` va ban.
-check("fn_rule: filename*= giai ma DUNG MOT LAN",
-      probe("POST", MULTI, CD .. "filename*=UTF-8''a..%252Fb.txt").fn_rule, nil)
-
--- MEP giua "giai ma mot lan" va `RX_NUL_ENC`, va no la mot NGOAI LE CO CHU Y
--- chu khong phai mot ca lot.
---
--- `filename*=UTF-8''x%2500.jpg` giai dung mot lan ra `x%00.jpg` — ten file that
--- chua ba KY TU `%`, `0`, `0`. `args.check(v, false)` khong giai ma them, nhung
--- `RX_NUL_ENC` van ban vi no khop `%00` dang VAN BAN. Tuc rieng luat NUL co doc
--- them mot lop, va cap tren KHONG con la "giai ma dung mot lan" mot cach thuan
--- tuy nua.
---
--- Giu nguyen hanh vi do, co y: PHP/app ha nguon giai ma lai ten file la chuyen
--- pho bien va lam sai, `x%00.jpg` giai them mot lan la `x<NUL>.jpg` — dung cai
--- cat chuoi ma luat NUL sinh ra de bat. Mot ten file lanh chua dung chuoi `%00`
--- gan nhu khong ton tai. Day la CUNG mot lua chon da lam cho than nhi phan.
---
--- Ghim bang test de no la QUYET DINH chu khong phai tinh co.
-check("fn_rule: `%2500` -> `%00` sau mot lan giai, RX_NUL_ENC VAN ban",
-      probe("POST", MULTI, CD .. "filename*=UTF-8''x%2500.jpg").fn_rule,
-      "arg_null_byte")
-
--- DOI CHUNG: cung chuoi do, KHONG co `*` thi khong giai ma lan nao, `%2500`
--- khong chua `%00`, va khong luat nao ban. Cap doi nay chung minh viec giai ma
--- CO PHAN BIET van dung — neu ban tay `ngx.unescape_uri` cho ca hai dang thi
--- dong nay do.
-check("fn_rule: `filename=` khong giai ma nen `%2500` khong thanh `%00`",
-      probe("POST", MULTI, CD .. 'filename="x%2500.jpg"').fn_rule, nil)
-
-io.write("\nfn_trunc — het ngan sach KHAC voi da soi het, va BA nguyen nhan\n")
+io.write("\nfn_trunc — het ngan sach KHAC voi da soi het, va NAM nguyen nhan\n")
 
 -- `fn_trunc` la LY DO chu khong phai co. Mot co dung nghia "khong soi het"
--- nhung khong doc duoc: ba nguyen nhan doi ba viec khac han nhau — "rx" la loi
--- luc deploy phai sua ngay, "len" tu no da dang ngo, "n" thuong chi can nang
--- tran. Gop lam mot thi ba ngay nua nhin con so `fntr=47` khong biet lam gi.
+-- nhung khong doc duoc: nam nguyen nhan doi nam viec khac han nhau.
 
--- Cham tran so luong. Nhoi `filename=` gia vao noi dung file de bo quet dung
--- truoc header that la mot duong ne tranh THAT.
-local many = ""
-for i = 1, 40 do many = many .. '; filename="f' .. i .. '.jpg"' end
-check("fn_trunc: qua 32 phan -> \"n\"",
-      probe("POST", MULTI, many).fn_trunc, "n")
-check("fn_trunc: qua 32 phan -> fn_rule van nil (KHONG phai 'sach')",
-      probe("POST", MULTI, many).fn_rule, nil)
+-- Cham tran so phan.
+local many = {}
+for i = 1, 70 do many[i] = part(CD .. 'filename="f' .. i .. '.jpg"') end
+-- Noi thang, KHONG qua `unpack`: trong mot bieu thuc `and/or` no bi cat con
+-- MOT gia tri, nen `mp(unpack(t))` chi nhan phan tu dau.
+local many_body = table.concat(many) .. "--" .. BND .. "--\r\n"
+check("fn_trunc: qua 64 phan -> \"n\"", probe("POST", MULTI, many_body).fn_trunc, "n")
+check("fn_trunc: qua 64 phan -> fn_rule van nil (KHONG phai 'sach')",
+      probe("POST", MULTI, many_body).fn_rule, nil)
 
--- Cham tran do dai. Tai trong nam sau byte 512 khong duoc soi — phai bao, chu
--- khong duoc im lang tra ve nil giong nhu da soi het.
-local long_fn = '; filename="' .. string.rep("a", 600) .. '../x"'
+-- Cham tran do dai ten file. Tai trong sau byte 512 khong duoc soi.
 check("fn_trunc: ten file dai hon 512 -> \"len\"",
-      probe("POST", MULTI, long_fn).fn_trunc, "len")
+      probe("POST", MULTI, mp(part(CD .. 'filename="' .. string.rep("a", 600) .. '../x"'))).fn_trunc,
+      "len")
 
--- UU TIEN khi cham CA HAI tran: "len" thang "n". Mot ten file dai hon 512 byte
--- la cai bat thuong hon; hon 32 phan mot minh gan nhu luon la upload that.
-local both = '; filename="' .. string.rep("a", 600) .. '.jpg"'
-for i = 1, 40 do both = both .. '; filename="f' .. i .. '.jpg"' end
+-- Cham tran vung header: mot phan khong co dong trong, hoac header > 2 KB.
+check("fn_trunc: vung header > 2 KB -> \"hdr\"",
+      probe("POST", MULTI, mp(part('Content-Disposition: form-data; name="a"; x="'
+            .. string.rep("z", 2500) .. '"'))).fn_trunc, "hdr")
+
+-- UU TIEN khi cham nhieu tran: "len" > "hdr" > "n" > "stop".
+local both = {}
+both[1] = part(CD .. 'filename="' .. string.rep("a", 600) .. '.jpg"')
+for i = 2, 70 do both[i] = part(CD .. 'filename="f' .. i .. '.jpg"') end
+local both_body = table.concat(both) .. "--" .. BND .. "--\r\n"
 check("fn_trunc: cham ca hai tran -> \"len\" thang \"n\"",
-      probe("POST", MULTI, both).fn_trunc, "len")
+      probe("POST", MULTI, both_body).fn_trunc, "len")
 
 -- DUNG LAI VI DA TIM THAY khac "da soi het". Ham thoat o luat dau tien nen cac
 -- ten file phia sau chua he duoc soi. Khong co `"stop"` thi `fntr=0` mang hai
 -- nghia va moi phep dem "bao nhieu lan quet hoan tat" deu lech.
 check("fn_trunc: co luat ban -> \"stop\", KHONG phai false",
-      probe("POST", MULTI, CD .. 'filename="../../x.php"').fn_trunc, "stop")
--- `len` thang `stop`: cham tran do dai TRUOC khi tim thay thi van con vung mu.
-local len_then_hit = '; filename="' .. string.rep("a", 600) .. '.jpg"'
-                  .. '; filename="../../x.php"'
-check("fn_trunc: cham `len` roi moi tim thay -> \"len\" thang \"stop\"",
-      probe("POST", MULTI, len_then_hit).fn_trunc, "len")
+      probe("POST", MULTI, mp(part(CD .. 'filename="../../x.php"'))).fn_trunc, "stop")
 
 check("fn_trunc: multipart binh thuong -> false",
-      probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
+      probe("POST", MULTI, mp(part(CD .. 'filename="anh.jpg"'))).fn_trunc, false)
 
 -- SPILL LA VUNG MU, KHONG PHAI "khong ap dung". Body ra file tam thi trong do
--- CO ten file that, ta chi khong doc duoc. Gop no vao `nil` (in ra `fntr=-`)
--- la giau mot vung mu trong mot nhan vo can: dem "quet hoan tat"=count(fntr=0)
--- va "vung mu"=count(rx|len|n) thi multipart da spill khong roi vao o nao,
--- tong hai o khong bang tong multipart, va cai thieu di dung la cai bi bo qua.
+-- CO ten file that, ta chi khong doc duoc. Gop no vao `nil` (in ra `fntr=-`) la
+-- giau mot vung mu trong mot nhan vo can.
 check("fn_trunc: spill -> \"spill\", KHONG phai nil",
       probe("POST", MULTI, nil).fn_trunc, "spill")
--- Nhung spill cua request KHONG phai multipart thi dung la khong ap dung —
--- khong co ten file nao de soi.
 check("fn_trunc: spill nhung khong multipart -> nil",
       probe("POST", URLENC, nil).fn_trunc, nil)
 

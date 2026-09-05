@@ -420,10 +420,12 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 |---|---|
 | `fntr=-` | Không áp dụng — request không phải multipart |
 | `fntr=spill` | Multipart nhưng body ra file tạm → **không soi được gì cả** |
-| `fntr=0` | Đã soi hết **mọi** tên file, không luật nào bắn |
+| `fntr=0` | Đã soi hết **mọi** vùng header, không luật nào bắn |
 | `fntr=rx` | **Mẫu không biên dịch được** → lỗi lúc deploy, sửa ngay |
+| `fntr=nb` | Content-Type không có `boundary` đọc được → không cắt được phần nào |
+| `fntr=hdr` | Một vùng header > 2 KB → bất thường, chỉ soi 2 KB đầu |
 | `fntr=len` | Một tên file > 512 byte → hiếm, và tự nó đã đáng ngờ |
-| `fntr=n` | Hơn 32 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
+| `fntr=n` | Hơn 64 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
 | `fntr=stop` | Dừng lại vì **đã tìm thấy** → bình thường, luôn đi kèm một `fnrule=` |
 
 **Là lý do, không phải cờ.** Bản trước trả `true` cho cả ba nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì chúng đòi ba việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Một request có thể chạm cả `len` lẫn `n`; **`len` thắng**, vì nó là cái bất thường hơn còn `n` một mình gần như luôn là lưu lượng lành. `rx`/`len`/`n` đều là **không biết**, không phải sạch.
@@ -448,7 +450,7 @@ Dòng thứ ba là lý do không bỏ escape một cách phá huỷ: `..\..\` l�
 
 **Ba điều kiện chặn — phải xử lý TRƯỚC khi nâng `fn_rule` lên trọng số > 0.** Cả ba đều vô hại ở chế độ quan sát và đều thành lỗi thật khi chặn, nên chúng được in ra ngay trong output `wafstat` mục 7, chỗ số liệu được đọc:
 
-1. **Quét toàn bộ thân, chưa giới hạn trong vùng header của từng part.** Một file văn bản có **nội dung** chứa `; filename="../x.php"` vẫn đếm. Nhiễu telemetry thì chịu được; chặn thật thì là chặn oan một lần upload hợp lệ. Cần tách part theo boundary lấy từ `Content-Type` trước.
+1. ~~Quét toàn bộ thân~~ — **đã xử lý 05-09**, nay cắt part theo boundary và chỉ soi vùng header. Vùng mù còn lại: **multipart lồng nhau** (`multipart/mixed` trong một phần) — header của phần con nằm trong *thân* phần cha nên không được soi. Hiếm trong form web, và PHP cũng không đưa chúng vào `$_FILES`.
 2. **`rx`, `len`, `n` đều không phải sạch** (`stop` thì bình thường). Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc chúng như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
 3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ** (`fntr=spill`). Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload** — `wafstat` mục 7 in thẳng tỉ lệ đó ra. Và nó **không đóng được bằng `client_body_buffer_size`**: buffer 64 KB thì kẻ tấn công độn 65 KB, buffer 256 KB thì độn 257 KB. Đây là địa hạt của `fim.sh` (`scan_full` không có `-maxdepth` nên phủ cả `uploads/`) cộng với `wp_upload_exec` chặn thẳng việc *thực thi* — không phải bài toán tinh chỉnh buffer.
 
@@ -534,6 +536,16 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 11) — **Cắt part theo boundary. Trần 32 trước đây bị chính kẻ tấn công tiêu hộ.**
+  - **Không phải chuyện nhiễu.** Quét toàn thân làm trần `MAX_FILENAMES` **vô nghĩa**: nhồi 32 chuỗi `filename="x.jpg"` vào *nội dung* phần 1, header thật ở phần 2 không bao giờ được soi. `fn_trunc="n"` làm nó **hiện ra** nhưng không làm nó **bị bắt**, và nâng trần không cứu được vì số lượng do kẻ tấn công quyết. Đây là **âm tính giả**, kích hoạt bằng cách sắp thứ tự field trong form.
+  - **Đánh đổi, và hướng đánh đổi là có chủ ý.** Quét toàn thân có một ưu điểm thật: **không phụ thuộc parser**. Cắt theo boundary đẻ ra rủi ro lệch parser — đòi `\r\n` mà PHP chấp `\n` thì kẻ tấn công dùng `\n` và ta thấy một phần khổng lồ trong khi PHP thấy hai. Nguyên tắc: **bộ quét phải là tập cha của parser** — chỗ nào không chắc thì cắt *nhiều* hơn. Nên dấu phân cách nhận `\n--B` (chấp cả `\r\n--B` lẫn `\n--B` trần) và dòng trống nhận cả `\r\n\r\n` lẫn `\n\n`.
+  - **Rẻ hơn chứ không đắt hơn** — đính chính điều tôi viết ở vòng 4. Một `find` chuỗi thuần cho boundary, rồi PCRE chỉ chạy trên vài trăm byte header thay vì trên toàn bộ 40 MB.
+  - **Ba trần, ba nghĩa khác nhau** thay cho một `MAX_FILENAMES` vừa đếm vừa chặn chi phí: `MAX_PARTS=64`, `MAX_HDR_LEN=2048`, `MAX_FN_LEN=512`. Hai giá trị `fntr` mới: `nb` (không đọc được boundary — **báo ra chứ không lùi về quét toàn thân**, vì chạy âm thầm một thuật toán khác đúng là cái bẫy cả module này tránh) và `hdr`.
+  - **Ưu tiên khi chạm nhiều trần** gom vào một hàm `worse()` xếp `len > hdr > n > stop` — bản cũ rải `if trunc ~= "..."` khắp nơi, chỉ so được với **một** giá trị và đã bỏ sót.
+  - **Dấu đóng kết thúc `--B--` phải loại riêng.** Coi nó là một phần thì không tìm thấy dòng trống nào sau nó và `hdr` bắn trên **mọi** thân multipart lành — một báo động 100% giả.
+  - **Vòng sau tìm từ đầu vùng header, không từ cuối.** Nhảy tới cuối nhanh hơn nhưng sai khi vùng header bị cắt 2 KB: cái cắt đó có thể nằm *vượt qua* dấu phân cách kế tiếp và thế là mất hẳn một phần — tức cắt **ít** hơn parser, đúng điều cả hàm đặt ra để tránh.
+  - **Bộ test viết lại bằng thân multipart THẬT.** Bản cũ truyền một mảnh header trần không có dấu phân cách nào — nó chạy được chỉ vì bộ quét cũ quét toàn thân, tức bộ test không hề kiểm cái cấu trúc mà nó đang khẳng định.
 
 - 2026-09-05 (vòng 10) — **`fntr=spill`: vùng mù bị giấu trong một nhãn vô can.**
   - Multipart đã spill trả `fn_trunc=nil` → in ra `fntr=-` = "không áp dụng", **giống hệt** một request không phải multipart. Nhưng trong body đó **có** tên file thật, ta chỉ không đọc được. Đếm "quét hoàn tất" = `count(fntr=0)` và "vùng mù" = `count(rx|len|n)` thì multipart đã spill **không rơi vào ô nào** — tổng hai ô không bằng tổng multipart, và cái thiếu đi đúng là cái bị bỏ qua. Lần thứ tư của cùng một dạng lỗi (`php = false`, `fntr` kiểu cờ, `fntr=0` hai nghĩa).

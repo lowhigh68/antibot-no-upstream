@@ -204,12 +204,15 @@ function _M.run_body(ctx)
         b.fn_rule or "-",
         -- LY DO quet ten file khong hoan tat. Doc kem `fnrule=`:
         --     fntr=-     khong ap dung — request khong phai multipart
-        --     fntr=0     da soi het MOI ten file, khong luat nao ban
+        --     fntr=0     da soi het MOI vung header, khong luat nao ban
         --     fntr=spill multipart nhung body ra file tam -> KHONG soi gi ca
-        --     fntr=rx   mau khong bien dich duoc -> loi luc deploy, sua ngay
-        --     fntr=len  mot ten file > 512 byte  -> hiem, tu no da dang ngo
-        --     fntr=n    hon 32 phan              -> thuong la upload that
-        --     fntr=stop dung lai vi DA TIM THAY  -> binh thuong, kem `fnrule=`
+        --     fntr=nb    Content-Type khong co boundary doc duoc -> khong cat
+        --                duoc phan nao
+        --     fntr=rx    mau khong bien dich duoc -> loi luc deploy, sua ngay
+        --     fntr=hdr   mot vung header > 2 KB  -> bat thuong, chi soi 2 KB dau
+        --     fntr=len   mot ten file > 512 byte -> hiem, tu no da dang ngo
+        --     fntr=n     hon 64 phan             -> thuong la upload that
+        --     fntr=stop  dung lai vi DA TIM THAY -> binh thuong, kem `fnrule=`
         -- `stop` ton tai de `fntr=0` chi con MOT nghia. Ham thoat ngay o luat
         -- dau tien, nen khong co no thi `fnrule=X fntr=0` doc thanh "da soi
         -- het" trong khi that ra cac ten file phia sau chua he duoc soi — va
