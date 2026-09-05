@@ -164,7 +164,12 @@ io.write("\nhop dong: rule_id tra ve <-> bang RULES\n")
 -- `ngx.re`. Quen tham so nay thi phep kiem tim `return "arg_..."` trong
 -- args.lua, khong thay gi, va BAO XANH voi 0 lan kiem — dung kieu bao xanh
 -- rong ma ca file nay canh bao o dau.
-local function check_rules(file, label, rules_file)
+-- `fn` GIOI HAN pham vi quet vao dung mot ham. Bat buoc tu 05-09: `body_core`
+-- con chua `ct_family` (`return "multipart"`, `return "json"`...) va `enc`
+-- (`return "1"`, `return "0"`), nen quet ca file thi tam chuoi vo can bi bao la
+-- rule_id thieu muc RULES. Cung meo `%b()(.-)\nend` da dung cho `waf_signal`:
+-- `end` phai o cot 0 nen `end` thut vao cua vong lap ben trong khong khop.
+local function check_rules(file, label, rules_file, fn)
     local src = slurp(SRC .. file)
     if not src then bad("  SAI  khong doc duoc %s\n", file) return end
     local rules_src = src
@@ -173,9 +178,18 @@ local function check_rules(file, label, rules_file)
         if not rules_src then bad("  SAI  khong doc duoc %s\n", rules_file) return end
     end
 
+    local scope = src
+    if fn then
+        scope = src:match("local function " .. fn .. "%b()(.-)\nend")
+        if not scope then
+            bad("  SAI  %s: khong tim thay ham `%s` trong %s\n", label, fn, file)
+            return
+        end
+    end
+
     -- rule_id do `check()` tra ve: dong dang `return "xxx_yyy"`
     local seen, n = {}, 0
-    for id in src:gmatch('return%s+"([%w_]+)"') do
+    for id in scope:gmatch('return%s+"([%w_]+)"') do
         if not seen[id] then seen[id] = true; n = n + 1 end
     end
     if n == 0 then
@@ -197,7 +211,8 @@ end
 
 check_rules("waf/wp_paths.lua",  "wp_paths")
 check_rules("waf/exposed.lua",   "exposed")
-check_rules("waf/body_core.lua", "args (loi dung chung)", "waf/args.lua")
+check_rules("waf/body_core.lua", "args (loi dung chung)", "waf/args.lua",
+            "check_args_lower")
 
 -- ── 4. `args.check` phai la CHINH ham cua loi, khong phai ban sao ────
 --

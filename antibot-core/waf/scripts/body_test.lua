@@ -368,6 +368,21 @@ check("khong co than -> spill=false", empty.spill, false)
 check("khong co than -> len 0, KHONG phai -1", empty.len, 0)
 check("khong co than -> fntr=empty chu khong phai spill", empty.fn_trunc, "empty")
 
+-- BAT `ngx.log` thay vi de no chay ra stderr. Hai duong test duoi day co CHU
+-- DINH di vao nhanh loi, nen khong bat thi output cua `[3b]` co hai dong
+-- `[error]` trong nhu deploy dang hong. Bat lai thi chung thanh phep kiem: kieu
+-- gi cung phai keu, va chi keu MOT LAN moi ly do.
+local ngx_log_real = ngx and ngx.log
+local logged, capture_ok = {}, false
+if ngx then
+    -- `pcall`: neu ban OpenResty nao do khoa bang `ngx` thi bo test KHONG duoc
+    -- chet vi mot tien nghi. Khong bat duoc thi chi mat hai dong assert, con
+    -- 110 dong kia van chay.
+    capture_ok = pcall(function()
+        ngx.log = function() logged[#logged + 1] = true end
+    end)
+end
+
 -- Chua bat `thread_pool`: phai BAO chu khong am tham bo qua.
 local nothread = probe("POST", MULTI, nil, tmp)
 check("chua co thread pool -> scan=nothread", nothread.scan, "nothread")
@@ -391,6 +406,16 @@ local werr = probe("POST", MULTI, nil, tmp, function(_, _, _, path, ct)
 end)
 check("worker bao loi -> scan mang ly do", werr.scan, "spill_big")
 check("worker bao loi -> fn_rule nil", werr.fn_rule, nil)
+
+-- MOT LAN moi ly do, khong phai moi request. Mau va cau hinh la HANG SO nen loi
+-- o day la loi luc deploy; ghi moi request thi 43 domain do day error.log ma
+-- khong them mot bit thong tin nao. Duong bao duoc doc that la cot `scan=`.
+if capture_ok then
+    check("co keu ngx.ERR", #logged >= 2, true)
+    probe("POST", MULTI, nil, tmp)   -- lan hai, cung ly do `nothread`
+    check("chi keu MOT LAN moi ly do", #logged, 2)
+    ngx.log = ngx_log_real
+end
 
 os.remove(tmp)
 

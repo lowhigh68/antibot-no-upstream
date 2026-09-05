@@ -559,7 +559,19 @@ local function split(s)
     end
 end
 
-local function dec(v)      return (v == "-" or v == "") and nil or v end
+-- KHONG duoc viet `(v == "-" or v == "") and nil or v`. Do la BAY TAM GIAC cua
+-- Lua: khi dieu kien dung, `and nil` ra nil, roi `nil or v` ra... V. Bieu thuc
+-- do KHONG BAO GIO tra ve nil duoc.
+--
+-- Hau qua neu de nguyen: moi truong rong quay ve tu worker thread mang chuoi
+-- `"-"` thay vi nil. Cot log van in ra `-` nen NHIN GIONG HET, nhung trong ctx
+-- thi `arg_rule = "-"` la mot gia tri THAT — no truthy, no pha phan biet
+-- nil/false ma ca thiet ke nay dua vao, va no lam `notable` trong waf_logger
+-- dung voi MOI than da spill. Test "pack/unpack giu nil" bat duoc cho nay.
+local function dec(v)
+    if v == "-" or v == "" then return nil end
+    return v
+end
 local function dec_bool(v) if v == "1" then return true elseif v == "0" then return false end end
 local function dec_stat(v) if v == "0" then return false end return dec(v) end
 
