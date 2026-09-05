@@ -239,6 +239,29 @@ if [ -f "$NGINX_CONF_SRC" ] && [ -f "$NGINX_CONF_DST" ]; then
     fi
 fi
 
+# [4e] thread_pool: NHAC, khong tu bat.
+#
+# `waf/body.lua` soi duoc than da tran ra file tam qua `ngx.run_worker_thread`,
+# nhung `thread_pool` chi ton tai neu OpenResty build voi `--with-threads`.
+# Thieu no thi "unknown directive" -> `nginx -t` hong -> buoc [4d] o tren huy ca
+# lan deploy. Nen dong do de comment trong repo.
+#
+# KHONG tu bo dau `#` ho: lam vay thi ban da deploy khac ban trong repo, va
+# [4d] (so byte bang `cmp`) se ghi de nguoc lai o lan deploy sau — mot vong lap
+# im lang. Chi nhac; nguoi van hanh sua trong repo mot lan.
+if "$NGINX" -V 2>&1 | grep -q -- '--with-threads'; then
+    if ! grep -qE '^[[:space:]]*thread_pool[[:space:]]+antibot_waf_io' "$NGINX_CONF_DST" 2>/dev/null; then
+        echo "[4e] OpenResty co --with-threads nhung thread_pool CHUA bat."
+        echo "     Than request tran ra file tam dang KHONG duoc soi."
+        echo "     Do bao nhieu:  grep -c 'scan=nothread' /var/log/antibot/waf.log"
+        echo "     Bat: bo dau # dong 'thread_pool antibot_waf_io' trong"
+        echo "          nginx/nginx.conf CUA REPO, commit, roi chay lai deploy.sh"
+    fi
+else
+    echo "[4e] OpenResty build KHONG co --with-threads -> khong bat duoc"
+    echo "     thread_pool. Than tran ra file tam se ghi scan=nothread."
+fi
+
 echo "[5] nginx -t..."
 "$NGINX" -t
 

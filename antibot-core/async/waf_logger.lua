@@ -116,7 +116,11 @@ function _M.run_body(ctx)
     -- tấn công tên file — đúng kiểu lệch âm thầm mà cột `smp=` sinh ra để chặn.
     -- `fn_trunc` cung la notable: mot lan quet KHONG HOAN TAT la thong tin,
     -- va lay mau no di thi ty le "khong soi het" trong so lieu thap di 20 lan.
+    -- `scan ~= "ok"` cung la notable: mot lan KHONG SOI DUOC la thong tin, va
+    -- lay mau no di thi ty le "chua soi" trong so lieu thap di 20 lan — dung
+    -- luc con so do la thu quyet dinh co nen bat `thread_pool` hay khong.
     local notable = b.php or b.arg_rule or b.fn_rule or b.fn_trunc or b.spill
+                 or (b.scan and b.scan ~= "ok")
     if not notable then
         body_seen = body_seen + 1
         if body_seen % BODY_SAMPLE ~= 0 then return end
@@ -128,7 +132,7 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s fnrule=%s fntr=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -182,6 +186,20 @@ function _M.run_body(ctx)
         -- rieng nhom body khong biet vi sao khong co du lieu.
         ctx.verified and 1 or 0,
         -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
+        -- BO DO CO CHAY KHONG, va neu khong thi VI SAO.
+        --
+        -- `php=-` va `argrule=-` da noi "chua soi", nhung khong noi nguyen nhan,
+        -- va voi request KHONG phai multipart thi `fntr` cung khong mang duoc
+        -- (no la nil). Cot nay phu ca hai cho.
+        --     scan=ok            da soi
+        --     scan=empty         POST khong co than — KHONG phai spill
+        --     scan=nothread      chua bat `thread_pool` trong nginx.conf
+        --     scan=spill_thread  goi thread that bai (hang day tran, ...)
+        --     scan=spill_big     file tam vuot tran 64 MiB
+        --     scan=spill_open|read|short|seek|path   loi doc file tam
+        -- `nothread` la con so noi thang: bat `thread_pool` len thi bay nhieu
+        -- request nay duoc soi them.
+        b.scan or "-",
         -- cung `rid=` de biet cai do la than hay query string — dong `[waf]`
         -- phan biet bang cot `target=` (ARGS / BODY).
         b.arg_rule or "-",

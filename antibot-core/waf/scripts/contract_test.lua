@@ -158,17 +158,35 @@ end
 -- bo qua im lang (`if not rule then return false end`).
 io.write("\nhop dong: rule_id tra ve <-> bang RULES\n")
 
-local function check_rules(file, label)
+-- `rules_file` tach rieng vi tu 05-09 hai thu KHONG con o cung mot file:
+-- `args.lua` giu bang RULES, con `check()` da chuyen xuong `body_core.lua` —
+-- ban Lua thuan, vi ban chay trong `ngx.run_worker_thread` khong duoc dung
+-- `ngx.re`. Quen tham so nay thi phep kiem tim `return "arg_..."` trong
+-- args.lua, khong thay gi, va BAO XANH voi 0 lan kiem — dung kieu bao xanh
+-- rong ma ca file nay canh bao o dau.
+local function check_rules(file, label, rules_file)
     local src = slurp(SRC .. file)
     if not src then bad("  SAI  khong doc duoc %s\n", file) return end
+    local rules_src = src
+    if rules_file then
+        rules_src = slurp(SRC .. rules_file)
+        if not rules_src then bad("  SAI  khong doc duoc %s\n", rules_file) return end
+    end
 
     -- rule_id do `check()` tra ve: dong dang `return "xxx_yyy"`
-    local seen = {}
-    for id in src:gmatch('return%s+"([%w_]+)"') do seen[id] = true end
+    local seen, n = {}, 0
+    for id in src:gmatch('return%s+"([%w_]+)"') do
+        if not seen[id] then seen[id] = true; n = n + 1 end
+    end
+    if n == 0 then
+        bad("  SAI  %s: khong tim thay rule_id nao trong %s\n" ..
+            "       => phep kiem nay dang khong kiem gi ca\n", label, file)
+        return
+    end
 
     for id in pairs(seen) do
         -- Bang RULES khai dang `xxx_yyy = { action = ...`
-        if src:find(id .. "%s*=%s*{%s*action") then
+        if rules_src:find(id .. "%s*=%s*{%s*action") then
             pass = pass + 1
         else
             bad("  SAI  %s: `check()` tra ve `%s` nhung khong co muc trong RULES\n" ..
@@ -177,9 +195,31 @@ local function check_rules(file, label)
     end
 end
 
-check_rules("waf/wp_paths.lua", "wp_paths")
-check_rules("waf/exposed.lua",  "exposed")
-check_rules("waf/args.lua",     "args")
+check_rules("waf/wp_paths.lua",  "wp_paths")
+check_rules("waf/exposed.lua",   "exposed")
+check_rules("waf/body_core.lua", "args (loi dung chung)", "waf/args.lua")
+
+-- ── 4. `args.check` phai la CHINH ham cua loi, khong phai ban sao ────
+--
+-- Hai ban cai dat cua cung ba luat da lech that: ban `ngx.re` cu khong
+-- `lower()` lai sau moi vong giai ma, nen `%50hp%3A%2F%2Finput` giai ra
+-- `Php://input` va truot mau chu thuong — mot bypass hoan chinh cua
+-- `arg_php_wrapper`. Trung lap la BAT BUOC ve kien truc neu ai do viet lai ban
+-- `ngx.re`, nen chan ngay o day.
+io.write("\nhop dong: args.check <-> body_core.check_args\n")
+
+local args_src = slurp(SRC .. "waf/args.lua")
+if not args_src then
+    bad("  SAI  khong doc duoc waf/args.lua\n")
+elseif not args_src:find("_M%.check%s*=%s*core%.check_args") then
+    bad("  SAI  `args.lua` khong con uy quyen `check` xuong `body_core`\n" ..
+        "       => hai ban cai dat cua cung ba luat, va chung se lech\n")
+elseif args_src:find("ngx%.re%.") then
+    bad("  SAI  `args.lua` con goi `ngx.re.*`\n" ..
+        "       => ban nay khong chay duoc trong worker thread\n")
+else
+    pass = pass + 1
+end
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

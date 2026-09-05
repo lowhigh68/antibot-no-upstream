@@ -1,4 +1,5 @@
 local _M = {}
+local core = require "antibot.waf.body_core"
 
 -- Soi THAM SO, khong phai duong dan.
 --
@@ -20,46 +21,6 @@ local _M = {}
 -- ba tang tin cay. Ngay ca 1.0 x trong so 50 = 50 diem van duoi CHALLENGE(55).
 -- Nang len block hay khong la viec cua so lieu, sau vai ngay doc waf.log.
 
--- `..` theo sau bang `/` hoac `\`. Khong bat `..` tran: mot dau cham doi trong
--- ten file (`bao-cao..pdf`) hay trong so thap phan la chuyen binh thuong.
---
--- CHUOI CO NHAY, KHONG DUOC dung `[[...]]`. Mau ket thuc bang mot lop ky tu
--- `[/\\]`, nen viet `[[\.\.[/\\]]]` thi Lua doc `]]` DAU TIEN la dau dong chuoi
--- va con lai mot `]` lac => loi cu phap. Dung cai bay da ghi san cho RX_DOTFILE
--- ben exposed.lua, va van mac lai — chu thich dung khong cuu duoc gi neu nguoi
--- viet khong doc lai no.
--- Trong chuoi co nhay, moi `\` phai nhan doi: "\\." ra `\.`, "\\\\" ra `\\`.
-local RX_TRAVERSAL = "\\.\\.[/\\\\]"
-
--- Stream wrapper cua PHP. `://` la bat buoc trong mau — thieu no thi
--- `data:image/png;base64,...` (dang HTML hop le, khong co hai dau gach) se bi
--- bat oan. Co `://` thi do la dang wrapper, va dang do khong co cong dung hop le
--- nao trong mot tham so HTTP.
-local RX_WRAPPER = [[(?:php|data|expect|phar|zip|glob|file|compress\.\w+)://]]
-
--- Byte NUL. Dung de cat chuoi trong ham C ben duoi PHP (`include($x . ".php")`
--- voi `$x` ket thuc bang NUL).
---
--- TACH LAM HAI, va day khong phai chuyen hinh thuc — hai mau nay co BAN CHAT
--- KHAC HAN nhau khi gap noi dung nhi phan:
---
---   RX_NUL_RAW  `\x00`  la mot BYTE. Moi dinh dang nhi phan (PNG, JPEG, PDF,
---       ZIP) chua no lien tuc theo dung dac ta. Trong than multipart, tim byte
---       nay la tim "co file dinh kem", khong phai tim tan cong. Day la thu bi
---       `binary` tat.
---
---   RX_NUL_ENC  `%00`  la BA KY TU, tuc mot mau VAN BAN — percent-encoding chi
---       ton tai o cho co nguoi go ra: query string, ten file trong header
---       multipart, truong form dang text. Xac suat ba byte nay xuat hien ngau
---       nhien trong 47 KB nhi phan la ~0,003 lan/file, cung bac voi `../`.
---       Nen no KHONG bi tat, ke ca voi than nhi phan.
---
--- Ban dau toi gop chung lam mot mau roi tat ca cum cho multipart. Rong qua:
--- `filename="shell.php%00.jpg"` — mot mau van ban nam trong DONG HEADER, khong
--- phai trong noi dung file — cung bi tat theo. Tach ra thi cat dung cho.
-local RX_NUL_RAW = [[\x00]]
-local RX_NUL_ENC = [[%00]]
-
 local RULES = {
     arg_traversal   = { action = "signal", score = 0.75,
         why = "`../` trong tham so — LFI/doc file tuy y" },
@@ -70,97 +31,41 @@ local RULES = {
 }
 _M.RULES = RULES
 
--- SO MOT LAN LA KHONG DU. Ke tan cong ma hoa nhieu lop de vuot bo loc chi nhin
--- mot lop: `%2e%2e%2f` giai ma mot lan ra `../`, con `%252e%252e%252f` phai giai
--- HAI lan. Mot bo loc chi kiem chuoi tho se truot ca hai; mot bo loc giai ma
--- dung mot lan se truot cai thu hai.
+-- ── MOT ban cai dat, khong phai hai ─────────────────────────────────
 --
--- Duyet toi da BA muc (goc + 2 lan giai ma) va dung ngay khi khong con gi de
--- giai. Ba la du: chua thay tai trong that nao ma hoa sau hon, va can tren nay
--- chan viec mot chuoi doc hai bat CPU giai ma vo han.
-local MAX_DECODE = 3
-
--- HAI TRUC DOC LAP, khong phai mot. Nguoi goi phai tra loi hai cau khac nhau
--- ve chuoi minh dua vao:
+-- Ba mau tren truoc day duoc viet HAI LAN: mot ban `ngx.re` o day cho query
+-- string, mot ban Lua thuan trong `body_core` cho than request. Trung lap la
+-- BAT BUOC ve kien truc — `ngx.run_worker_thread` chay ham trong mot VM khong
+-- co `ngx`, nen ban doc file tam khong the dung `ngx.re`.
 --
---   `decode`  — chuoi nay CO PHAI percent-encoding khong?
---   `binary`  — chuoi nay CO PHAI byte nhi phan khong?
+-- Nhung hai ban da lech that, va lech theo huong tao lo hong: ban `ngx.re`
+-- khong `lower()` LAI sau moi vong giai ma, nen
+--     %50hp%3A%2F%2Finput   ->  giai ma ra  `Php://input`
+-- va no khong khop mau chu thuong `php://`. Mot bypass hoan chinh cua luat
+-- `arg_php_wrapper` tren duong query string.
 --
--- Bang tra cho tung nguon:
---     query string          decode=true   binary=false
---     body urlencoded       decode=true   binary=false
---     body json/xml/text    decode=false  binary=false
---     body multipart/other  decode=false  binary=TRUE
+-- Nen chieu uy quyen la NGUOC lai voi truc giac: khong phai `body_core` goi
+-- `args.lua`, ma `args.lua` goi `body_core`. Ban Lua thuan la ban chay duoc o
+-- CA HAI noi, nen no phai la ban duy nhat.
 --
--- ── `decode` ────────────────────────────────────────────────────────
--- Mac dinh true (query string luon la percent-encoded). Nguoi goi PHAI truyen
--- false cho noi dung KHONG phai percent-encoding — khong phai de tiet kiem, ma
--- de khong TU TAO duong tinh gia: mot file .txt upload chua dung chuoi ky tu
--- `%2e%2e%2f` se BIEN THANH `../` sau mot lan unescape va ban, mot FP hoan toan
--- do buoc giai ma tao ra, khong he co trong du lieu goc.
--- Tien the: giam tu toi da 9 luot regex + 2 lan cap phat chuoi 64k xuong con 3
--- luot regex + 0 cap phat cho nhom khong giai ma.
---
--- ── `binary` — DO TREN LUU LUONG THAT, khong phai phong xa ──────────
--- Bo qua luat NUL. Ly do o dung mot cau: lap luan goc cua luat la "byte NUL
--- khong bao gio hop le trong THAM SO". Cau do dung voi query string va truong
--- form. Voi than multipart thi sai hoan toan — mot phan cua than CHINH LA noi
--- dung file, va moi file nhi phan (JPEG, PNG, PDF, ZIP) chua byte NUL lien tuc
--- theo dinh nghia dinh dang.
---
--- Do 2026-09-05, hai may, ~10 gio: 67/67 luot `arg_null_byte` deu o body, va
--- cot `fnm` noi 0/61 nam trong `filename=` — tat ca nam trong NOI DUNG file.
--- Cum kich thuoc 7,3 KB / 47 KB / 80 KB lap lai tren 13 domain khong lien quan.
--- Luat khong phat hien tan cong; no phat hien "vua co nguoi upload file nhi
--- phan". O trong so 50 thi moi anh san pham upload len deu +50 diem.
---
--- `arg_traversal` va `arg_php_wrapper` VAN CHAY cho nhi phan. Xac suat chuoi
--- `../` xuat hien ngau nhien trong 47 KB nhi phan la ~0,003 lan/file; voi 203
--- multipart/ngay la duoi mot luot moi vai ngay. Do duoc, khong phai nguon nhieu.
---
--- CANH BAO cho lan doc so lieu sau: ham nay tra ve MOT rule_id theo thu tu
--- NUL -> wrapper -> traversal. Nen con so "0 luot traversal/wrapper tren body"
--- do duoc TRUOC thay doi nay KHONG chung minh chung sach — chung dang bi NUL
--- che. Phai do lai body vai ngay roi moi ket luan ve hai luat kia.
+-- Cai gia: mat JIT cua PCRE tren query string. Do duoc — query string dai vai
+-- tram byte, va ba phep `string.find` tho tren no re hon mot lan bien dich
+-- pattern. Cai KHONG do duoc la hai ngu nghia khac nhau cho cung mot ten luat.
 --
 -- ── Gia tri tra ve ─────────────────────────────────────────────────
 -- Tra ve `rule_id, from` — `from` la vi tri byte cua lan khop.
 --
 -- `from` CHI CO NGHIA KHI `decode == false`. Luc do vong lap chay dung mot luot
--- tren `s = args:lower()`, ma `lower()` giu nguyen do dai byte, nen `from` anh
--- xa 1:1 sang chuoi goc. Voi `decode == true` thi `s` co the la ban da giai ma
--- — do dai khac han — nen `from` tro vao mot chuoi khong con ton tai. Nguoi goi
--- duy nhat dung `from` la `body.lua` cho multipart, va multipart luon
--- `decode = false`.
-function _M.check(args, decode, binary)
-    if not args or args == "" then return nil end
-    if decode == nil then decode = true end
-
-    local s = args:lower()
-    for i = 1, (decode and MAX_DECODE or 1) do
-        -- Thu tu theo do CHAC CHAN giam dan, vi chi tra ve mot rule_id: NUL va
-        -- wrapper gan nhu khong the la nham lan, con `../` thi hiem khi nhung
-        -- van co the la mot URL tuong doi trong tham so redirect.
-        local from
-        -- `binary` CHI tat mau BYTE THO. Mau van ban `%00` van chay cho moi
-        -- nguon — no khong phai dac diem cua dinh dang nhi phan.
-        if not binary then
-            from = ngx.re.find(s, RX_NUL_RAW, "jo")
-            if from then return "arg_null_byte", from end
-        end
-        from = ngx.re.find(s, RX_NUL_ENC, "jo")
-        if from then return "arg_null_byte", from end
-        from = ngx.re.find(s, RX_WRAPPER,   "jo"); if from then return "arg_php_wrapper", from end
-        from = ngx.re.find(s, RX_TRAVERSAL, "jo"); if from then return "arg_traversal",   from end
-
-        if not decode or i == MAX_DECODE then break end
-        local dec = ngx.unescape_uri(s)
-        if dec == s then break end   -- da giai het, khong con lop nao
-        s = dec
-    end
-
-    return nil
-end
+-- tren ban `lower()`, ma `lower()` giu nguyen do dai byte, nen `from` anh xa
+-- 1:1 sang chuoi goc. Voi `decode == true` thi chuoi co the la ban da giai ma —
+-- do dai khac han — nen `from` tro vao mot chuoi khong con ton tai. Nguoi goi
+-- duy nhat dung `from` la `body_core.legacy_fnm` cho multipart, va multipart
+-- luon `decode = false`.
+--
+-- CANH BAO cho lan doc so lieu sau: ham nay tra ve MOT rule_id theo thu tu
+-- NUL -> wrapper -> traversal. Nen con so "0 luot traversal/wrapper tren body"
+-- do duoc TRUOC 05-09 KHONG chung minh chung sach — chung dang bi NUL che.
+_M.check = core.check_args
 
 -- Mo ta mot query string de ghi log MA KHONG ghi gia tri.
 --

@@ -16,6 +16,13 @@ if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
 end
 
+-- `args.lua` uy quyen `check` xuong `body_core` — mot ban cai dat duy nhat cho
+-- ca query string lan than request, vi ban chay trong worker thread khong duoc
+-- dung `ngx.re`. Nen phai preload lõi truoc khi nap.
+package.preload["antibot.waf.body_core"] = function()
+    return dofile(SRC .. "waf/body_core.lua")
+end
+
 local args = dofile(SRC .. "waf/args.lua")
 
 local pass, fail = 0, 0

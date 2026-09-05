@@ -419,16 +419,23 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 | Cột | Nghĩa |
 |---|---|
 | `fntr=-` | Không áp dụng — request không phải multipart |
-| `fntr=spill` | Multipart nhưng body ra file tạm → **không soi được gì cả** |
 | `fntr=0` | Đã soi hết **mọi** vùng header, không luật nào bắn |
-| `fntr=rx` | **Mẫu không biên dịch được** → lỗi lúc deploy, sửa ngay |
-| `fntr=nb` | Content-Type không có `boundary` đọc được → không cắt được phần nào |
-| `fntr=hdr` | Một vùng header > 2 KB → bất thường, chỉ soi 2 KB đầu |
-| `fntr=len` | Một tên file > 512 byte → hiếm, và tự nó đã đáng ngờ |
-| `fntr=n` | Hơn 64 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
 | `fntr=stop` | Dừng lại vì **đã tìm thấy** → bình thường, luôn đi kèm một `fnrule=` |
+| `fntr=len` | Một tên file > 512 byte. **Không phải vùng mù** — giá trị vẫn được kiểm trọn; đây là tín hiệu "dài bất thường" |
+| `fntr=empty` | POST multipart không có thân → bình thường |
+| `fntr=nb` | Content-Type không có `boundary` đọc được → không cắt được phần nào |
+| `fntr=bd` | Có boundary nhưng thân không chứa dấu phân cách nào |
+| `fntr=bdup` | Content-Type có **nhiều** boundary khác nhau → đã quét mọi candidate, nhưng không biết parser hạ nguồn chọn cái nào |
+| `fntr=bval` | Giá trị boundary không dùng được |
+| `fntr=disp` | `Content-Disposition` dạng sai |
+| `fntr=ending` | Không thấy dấu đóng kết thúc |
+| `fntr=hdr` | Một vùng header > 2 KB → chỉ soi 2 KB đầu |
+| `fntr=n` | Hơn 64 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
+| `fntr=nothread` | Thân tràn ra file tạm và `thread_pool` chưa bật → **không soi được gì cả** |
 
-**Là lý do, không phải cờ.** Bản trước trả `true` cho cả ba nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì chúng đòi ba việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Một request có thể chạm cả `len` lẫn `n`; **`len` thắng**, vì nó là cái bất thường hơn còn `n` một mình gần như luôn là lưu lượng lành. `rx`/`len`/`n` đều là **không biết**, không phải sạch.
+**Là lý do, không phải cờ.** Bản trước trả `true` cho mọi nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì chúng đòi những việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Khi chạm nhiều trần, giữ lại cái **đòi hành động lớn nhất** (`STATUS_RANK` trong `body_core.lua`), không phải cái xảy ra trước.
+
+**`len` là ngoại lệ và đây là chỗ dễ đọc nhầm nhất.** Giá trị tên file vẫn được kiểm **trọn vẹn**, không cắt. Cắt ở 512 rồi mới kiểm — cái bản trước làm — chính là để kẻ tấn công độn 512 byte cho traversal nằm ra ngoài tầm nhìn. Nên `len` báo "tên file dài bất thường", **không** báo "có chỗ chưa soi". Đừng đếm nó vào vùng mù.
 
 **`stop` tồn tại để `fntr=0` chỉ còn một nghĩa.** Hàm thoát ngay ở luật đầu tiên, nên khi `fnrule` bắn thì các tên file phía sau **chưa hề được soi**. Không có `stop` thì `fnrule=X fntr=0` đọc thành "đã soi hết" và mọi phép đếm "bao nhiêu lần quét hoàn tất" đều lệch. Đây là một **giá trị** thay cho một quy ước phải nhớ — quy ước là thứ bị quên đúng lúc đọc số liệu. `len` cũng thắng `stop`: chạm trần độ dài trước khi tìm thấy thì vẫn còn vùng mù.
 
@@ -536,6 +543,17 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 12) — **Tách lõi Lua thuần, đọc được thân đã tràn ra file tạm, và bỏ bản cài đặt trùng.** Ba file: `body_core.lua` (lõi, không `ngx`), `body_worker.lua` (chạy trong thread), `body.lua` (lớp truy cập `ngx`).
+  - **Vùng mù spill đã đóng.** `ngx.run_worker_thread` chạy Lua trong thread pool thật nên `io.open` + đọc trọn file không chặn event loop. Tôi đã nói "đừng xây" ở vòng 10 với lý do I/O chặn và log phase — cơ chế này đi vòng qua cả hai. Đây là vùng mù mà `client_body_buffer_size` **không bao giờ** đóng được (buffer 64K thì độn 65K).
+  - **Ràng buộc kéo theo:** thread VM không có API `ngx`, nên lõi phải là Lua thuần — hết `ngx.re`. Giá: `body:lower()` cấp một bản sao trọn thân (50 MiB → 100 MiB cho một lần đọc). Đó là lý do `threads=2`.
+  - **`thread_pool` để COMMENT trong `nginx.conf`.** Directive này chỉ tồn tại nếu OpenResty build với `--with-threads`; thiếu nó thì `nginx -t` hỏng → bước `[4d]` huỷ cả lần deploy. Không đánh cược với 43 domain để đổi lấy một tính năng đang ở trọng số 0. Cột `scan=nothread` nói chính xác bao nhiêu request đang thiếu; bước `[4e]` nhắc khi build có hỗ trợ.
+  - **Cột `scan=` mới.** `php=-`/`argrule=-` nói "chưa soi" nhưng không nói *vì sao*, và với request không phải multipart thì `fntr` không mang được. Được miễn lấy mẫu.
+  - **Parser thật thay regex.** `parse_parameters` xử lý quoted-string, quoted-pair, header folding, và giới hạn đúng vào tham số của `Content-Disposition`. Bắt được ba lớp regex không bắt: `name="x; filename=../../y"` (dấu `;` trong nháy không phải cú pháp), `X-Debug: filename=...` (header khác), và **nhiều `boundary`** trong một Content-Type — hợp lệ về cú pháp, parser khác nhau chọn khác nhau, nên quét mọi candidate và vẫn báo `bdup`.
+  - **Sửa hai lỗi của vòng 11:** (a) đúng 64 phần + dấu đóng bị gắn `n` vì `--B--` cũng khớp `find(delim)` và cũng đứng đầu dòng — nay kiểm `close` trước trần; (b) POST multipart **thân rỗng** bị gắn `fntr=spill` vì nhánh đó gộp cả spill lẫn rỗng nhưng nhãn cứng là `"spill"` — nay `empty`.
+  - **`len` không còn cắt.** Kiểm trọn giá trị, chỉ gắn cờ. Bản trước cắt ở 512 rồi mới kiểm — độn 512 byte là che được traversal.
+  - **Một bản cài đặt, không phải hai.** `args.check` nay uỷ quyền xuống `body_core.check_args`. Hai bản đã lệch **thật**: bản `ngx.re` không `lower()` lại sau mỗi vòng giải mã, nên `%50hp%3A%2F%2Finput` giải ra `Php://input` và trượt mẫu chữ thường — một bypass hoàn chỉnh của `arg_php_wrapper` trên đường query string. Chiều uỷ quyền là ngược trực giác (`args` gọi `body_core`) vì bản Lua thuần là bản chạy được ở **cả hai** nơi. `contract_test` mục 4 chặn việc viết lại.
+  - **Vùng mù mới, ghi ra chứ không giấu:** multipart **lồng nhau** — header phần con nằm trong thân phần cha. Và một **quyết định** cần biết mình đang chọn: `--Bxyz` không được coi là dấu phân cách (đúng RFC, chặn nội dung file tự chế ra phần); nếu có parser hạ nguồn khớp boundary theo tiền tố thì ta cắt *ít* hơn nó. Chưa kiểm được PHP xử lý ra sao.
 
 - 2026-09-05 (vòng 11) — **Cắt part theo boundary. Trần 32 trước đây bị chính kẻ tấn công tiêu hộ.**
   - **Không phải chuyện nhiễu.** Quét toàn thân làm trần `MAX_FILENAMES` **vô nghĩa**: nhồi 32 chuỗi `filename="x.jpg"` vào *nội dung* phần 1, header thật ở phần 2 không bao giờ được soi. `fn_trunc="n"` làm nó **hiện ra** nhưng không làm nó **bị bắt**, và nâng trần không cứu được vì số lượng do kẻ tấn công quyết. Đây là **âm tính giả**, kích hoạt bằng cách sắp thứ tự field trong form.

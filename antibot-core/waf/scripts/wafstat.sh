@@ -108,6 +108,7 @@ grep -F '[waf-body]' "$LOG" | awk '
         if(f["fnm"]=="1") fn1+=s; else if(f["fnm"]=="0") fn0+=s }
     if(f["fnrule"]!="-" && f["fnrule"]!="") fr[f["fnrule"]]+=s
     if(f["fntr"]!="-" && f["fntr"]!="0" && f["fntr"]!="") ftr[f["fntr"]]+=s
+    if(f["scan"]!="" && f["scan"]!="-") sc[f["scan"]]+=s
     tot+=s
 }
 END{
@@ -125,34 +126,47 @@ END{
     print "     dem duoc cho cau: co bao nhieu request tan cong o ten file."
     n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
     if(n==0) print "  (khong co)"
+    print "  -- BO DO CO CHAY KHONG (scan=) --"
+    print "     `ok` la da soi. Moi gia tri khac la KHONG SOI DUOC, va `php=-`"
+    print "     `argrule=-` cua chung KHONG phai am tinh."
+    sn=0
+    if(sc["ok"]>0) printf "  ok           %8d\n", sc["ok"]
+    if(sc["empty"]>0) printf "  empty        %8d  POST khong co than (KHONG phai spill)\n", sc["empty"]
+    if(sc["nothread"]>0){ printf "  nothread     %8d  chua bat thread_pool -> than tran ra file tam KHONG duoc soi\n", sc["nothread"]; sn+=sc["nothread"] }
+    for(k in sc) if(k!="ok" && k!="empty" && k!="nothread"){ printf "  %-12s %8d  loi doc than\n", k, sc[k]; sn+=sc[k] }
+    if(sn>0 && tot>0) printf "  => %.1f%% POST khong duoc soi. Neu phan lon la `nothread`: bo dau # dong\n     `thread_pool antibot_waf_io` trong nginx/nginx.conf va deploy lai.\n", 100*sn/tot
+    print ""
     print "  -- quet ten file khong hoan tat, theo LY DO --"
-    print "     `stop` la binh thuong (dung lai vi da tim thay, di kem fnrule)."
-    print "     Nam cai con lai deu la KHONG BIET, khong phai sach, va moi cai"
-    print "     doi mot viec khac han — nen dem RIENG."
+    print "     `stop` va `empty` la binh thuong. Cac gia tri khac deu la KHONG BIET,"
+    print "     khong phai sach, va moi cai doi mot viec khac han — nen dem RIENG."
+    print "     `len` la NGOAI LE: ten file van duoc kiem TRON, no chi bao dai bat thuong."
     tt=0
-    if(ftr["rx"]>0){ printf "  rx    %8d  MAU KHONG BIEN DICH DUOC -> loi deploy, sua NGAY\n", ftr["rx"]; tt+=ftr["rx"] }
-    if(ftr["nb"]>0){ printf "  nb    %8d  Content-Type khong co boundary -> khong cat duoc phan nao\n", ftr["nb"]; tt+=ftr["nb"] }
-    if(ftr["hdr"]>0){ printf "  hdr   %8d  vung header > 2 KB -> bat thuong, chi soi 2 KB dau\n", ftr["hdr"]; tt+=ftr["hdr"] }
-    if(ftr["len"]>0){ printf "  len   %8d  ten file > 512 byte -> hiem, tu no da dang ngo\n", ftr["len"]; tt+=ftr["len"] }
-    if(ftr["n"]>0){ printf "  n     %8d  hon 64 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
-    if(ftr["spill"]>0){ printf "  spill %8d  multipart ra file tam -> KHONG soi gi ca\n", ftr["spill"]; tt+=ftr["spill"] }
-    if(ftr["stop"]>0) printf "  stop  %8d  dung lai vi da tim thay (binh thuong)\n", ftr["stop"]
-    for(k in ftr) if(k!="rx" && k!="nb" && k!="hdr" && k!="len" && k!="n" && k!="spill" && k!="stop"){ printf "  %-5s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
+    if(ftr["nb"]>0){    printf "  nb       %6d  Content-Type khong co boundary -> khong cat duoc phan nao\n", ftr["nb"];    tt+=ftr["nb"] }
+    if(ftr["hdr"]>0){   printf "  hdr      %6d  vung header > 2 KB -> chi soi 2 KB dau\n", ftr["hdr"];   tt+=ftr["hdr"] }
+    if(ftr["n"]>0){     printf "  n        %6d  hon 64 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
+    if(ftr["bd"]>0){    printf "  bd       %6d  co boundary nhung than khong co dau phan cach nao\n", ftr["bd"];    tt+=ftr["bd"] }
+    if(ftr["bdup"]>0){  printf "  bdup     %6d  Content-Type co NHIEU boundary -> khong ro parser chon cai nao\n", ftr["bdup"];  tt+=ftr["bdup"] }
+    if(ftr["bval"]>0){  printf "  bval     %6d  gia tri boundary khong dung duoc\n", ftr["bval"];  tt+=ftr["bval"] }
+    if(ftr["disp"]>0){  printf "  disp     %6d  Content-Disposition dang sai\n", ftr["disp"];  tt+=ftr["disp"] }
+    if(ftr["ending"]>0){printf "  ending   %6d  khong thay dau dong ket thuc\n", ftr["ending"]; tt+=ftr["ending"] }
+    if(ftr["nothread"]>0){ printf "  nothread %6d  chua bat thread_pool -> than tran ra file tam KHONG duoc soi\n", ftr["nothread"]; tt+=ftr["nothread"] }
+    if(ftr["len"]>0)  printf "  len      %6d  ten file > 512 byte (da kiem TRON, day la tin hieu chu khong phai vung mu)\n", ftr["len"]
+    if(ftr["empty"]>0) printf "  empty    %6d  POST multipart khong co than (binh thuong)\n", ftr["empty"]
+    if(ftr["stop"]>0)  printf "  stop     %6d  dung lai vi da tim thay (binh thuong)\n", ftr["stop"]
+    for(k in ftr) if(k!="nb" && k!="hdr" && k!="n" && k!="bd" && k!="bdup" && k!="bval" && k!="disp" && k!="ending" && k!="nothread" && k!="len" && k!="empty" && k!="stop"){ printf "  %-8s %6d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
     if(tt==0) print "  (khong co vung mu nao)"
-    if(ftr["spill"]>0 && fam["multipart"]>0) printf "  => MULTIPART KHONG HE DUOC SOI: %.1f%% (%d/%d). Day la thien lech cua\n     moi ty le fnrule o tren, va no KHONG dong duoc bang client_body_buffer_size:\n     ke tan cong don them byte la vuot moi con so.\n", 100*ftr["spill"]/fam["multipart"], ftr["spill"], fam["multipart"]
     print ""
     print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
     print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"
-    print "   1. (DA XU LY 05-09) Nay chi soi vung header cua tung part, cat theo"
-    print "      boundary. Vung mu con lai: multipart LONG NHAU — header cua part"
-    print "      con nam trong THAN part cha nen khong duoc soi."
-    print "   2. rx / nb / hdr / len / n / spill deu KHONG phai sach (rieng `stop`"
-    print "      thi binh thuong). Tai trong o phan thu 65, sau byte 512 cua ten"
-    print "      file, hay sau 2 KB dau cua vung header deu khong duoc nhin thay."
-    print "      Enforcement doc chung nhu \"da soi, khong thay\" la bien vung mu"
-    print "      thanh giay thong hanh."
-    print "   3. fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
-    print "      spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
+    print "   1. (DA XU LY 05-09) Nay chi soi vung header cua tung phan, cat theo"
+    print "      boundary. Vung mu con lai: multipart LONG NHAU — header cua phan"
+    print "      con nam trong THAN phan cha nen khong duoc soi."
+    print "   2. nb / hdr / n / bd / bdup / bval / disp / ending / nothread deu"
+    print "      KHONG phai sach. Enforcement doc chung nhu \"da soi, khong thay\""
+    print "      la bien vung mu thanh giay thong hanh."
+    print "   3. (DA XU LY 05-09) Than tran ra file tam duoc soi trong thread"
+    print "      pool — NEU `thread_pool` da bat. Chua bat thi xem dong"
+    print "      `nothread` o tren; do la phan luu luong con thieu."
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
 
