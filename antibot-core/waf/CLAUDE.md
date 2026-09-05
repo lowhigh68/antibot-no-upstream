@@ -392,11 +392,43 @@ curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [w
 
 Giải mã bừa cả hai thì một file khách đặt tên `a..%2Fb.pdf` biến thành `a../b.pdf` và bắn — đúng dạng FP cả tầng này tránh. Cặp đối chứng đó là một test.
 
-**Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp (`filename="x"`, `filename=x`, `filename*=`); không phân biệt hoa thường; nháy thoát `\"` (quét mọi lần xuất hiện nên vẫn bắt được ở lần sau); chặn số lượng 16 và độ dài 512; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
+**Mẫu, và từng mảnh của nó là một ca đã bị bắt hụt:**
 
-**Giới hạn đã biết:** quét toàn bộ thân chứ không riêng dòng `Content-Disposition`, nên một file văn bản có **nội dung** chứa chuỗi `filename="../x"` (file log, chính bộ luật WAF) sẽ bị đếm. Hiếm, và đo được — để nguyên rồi đọc số liệu, đừng thu hẹp trước khi biết nó có thật hay không.
+```
+(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\]|\.)*)"|([^;"\r\n]*))
+```
 
-**`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt.
+| Mảnh | Bịt gì |
+|---|---|
+| `(?:^\|[;\s])` | Thiếu nó thì `myfilename="../x"` — **bất kỳ** chuỗi nào kết thúc bằng `filename` — cũng khớp |
+| `\s*=\s*` | `filename = "../x.php"` — không chuẩn nhưng parser bên dưới chấp nhận, nên đó là một đường né tránh |
+| `"((?:[^"\]\|\.)*)"` | Nháy thoát. Bản trước dùng `[^"]*` và tôi ghi rằng *"quét mọi lần xuất hiện nên vẫn bắt được ở lần sau"* — **sai**: với `filename="abc\"../../x.php"` chỉ có **một** lần xuất hiện, `[^"]*` dừng ở dấu nháy đã thoát, và toàn bộ tải trọng phía sau không được kiểm |
+
+**Giải mã `filename*=` đúng MỘT lần**, rồi gọi luật với `decode=false`. RFC 5987 định nghĩa ext-value là percent-encoding **một lớp**; giải thêm lớp nữa tạo FP thật:
+
+```
+filename*=UTF-8''a..%252Fb.txt
+  giải 1 lần → a..%2Fb.txt     ← tên file hợp lệ chứa ký tự `%`
+  giải 2 lần → a../b.txt       ← bắn
+```
+
+Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức của `args.check` — đúng cái bẫy mà cả khối chú thích này viết ra để tránh.
+
+**`fn_trunc` — hết ngân sách khác với đã soi hết.** Chặn 32 phần và 512 byte mỗi tên file là cần, nhưng chạm trần rồi trả `nil` im lặng là biến một khoảng trống thành một âm tính. Và đó là một đường né tránh **thật**: nhồi 32 chuỗi `filename=` giả vào nội dung file thì bộ quét dừng trước header thật.
+
+| Cột | Nghĩa |
+|---|---|
+| `fnrule=- fntr=0` | Đã soi hết, không thấy gì |
+| `fnrule=- fntr=1` | **Không biết** — hết ngân sách trước khi soi xong |
+
+**Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp; không phân biệt hoa thường; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
+
+**Hai giới hạn còn lại, ghi ra chứ không vá:**
+
+- Quét toàn bộ thân chứ không riêng vùng header của từng part. Một file văn bản có **nội dung** chứa `filename="../x"` sẽ bị đếm. Bật enforcement thì phải giới hạn vào vùng header thật.
+- **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
+
+**`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt. `fn_trunc` cũng được miễn — lấy mẫu nó đi thì tỉ lệ "không soi hết" trong số liệu thấp đi 20 lần.
 
 **`%00` trong thân nhị phân vẫn có FP nhỏ.** Giữ `%00` là đúng hơn tắt cả cụm, nhưng `args.check` quét **toàn bộ** thân chứ không riêng header — một file PDF/text upload chứa đúng ba ký tự `%00` vẫn bắn. Xác suất thấp (~0,003 lần/47 KB) nhưng khác 0. Nên khi tính chuyện bật enforcement, **chỉ coi `%00` + `fnm=1` là bằng chứng mạnh**, còn `%00` + `fnm=0` thì tiếp tục đếm chứ chưa dùng để quyết.
 
@@ -478,6 +510,12 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 4) — **Bốn lỗ trong chính `fn_rule` vừa thêm.**
+  - **FP thật:** `filename*=` đi qua vòng giải mã 3 mức của `args.check` trong khi RFC 5987 là percent-encoding **một lớp**. `a..%252Fb.txt` → giải 1 lần ra `a..%2Fb.txt` (tên file hợp lệ) → giải lần 2 thành `a../b.txt` và bắn. Nay giải đúng một lần rồi gọi luật với `decode=false`.
+  - **Ba đường né tránh trong mẫu:** thiếu dấu phân cách trước `filename` (`myfilename="../x"` cũng khớp); không nhận khoảng trắng quanh `=`; `[^"]*` dừng ở nháy đã thoát nên `filename="abc\"../../x.php"` không được kiểm — và mitigation tôi ghi trong chú thích ("quét mọi lần xuất hiện") **sai**, vì ca đó chỉ có một lần xuất hiện.
+  - **`fn_trunc`:** chạm trần 32 phần hoặc 512 byte nay báo ra thay vì im lặng trả `nil`. Nhồi 32 `filename=` giả vào nội dung file là đường né tránh thật.
+  - **Ghi rõ `fn_rule` không bao gồm body spill** — upload lớn spill nhiều hơn nên tỉ lệ này không suy rộng được.
 
 - 2026-09-05 (vòng 3) — **`fn_rule`: soi riêng tên file, độc lập với thân.**
   - Đóng đúng một bypass có thật: `filename*=UTF-8''..%2F..%2Fshell.php` lọt sạch vì thân multipart chạy `decode=false` trong khi giá trị RFC 5987 **là** percent-encoding.

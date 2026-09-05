@@ -107,6 +107,7 @@ grep -F '[waf-body]' "$LOG" | awk '
     if(f["argrule"]!="-"){ ar[f["argrule"]]+=s
         if(f["fnm"]=="1") fn1+=s; else if(f["fnm"]=="0") fn0+=s }
     if(f["fnrule"]!="-" && f["fnrule"]!="") fr[f["fnrule"]]+=s
+    if(f["fntr"]=="1") ftr+=s
     tot+=s
 }
 END{
@@ -124,6 +125,9 @@ END{
     print "     dem duoc cho cau: co bao nhieu request tan cong o ten file."
     n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
     if(n==0) print "  (khong co)"
+    printf "  quet ten file KHONG hoan tat (fntr=1): %d  <- KHONG BIET, khong phai sach\n", ftr+0
+    print "  LUU Y: fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
+    print "         spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
 

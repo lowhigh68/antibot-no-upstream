@@ -295,5 +295,51 @@ check("fn_rule: khong phai multipart -> nil",
       probe("POST", URLENC, 'filename="../../x"').fn_rule, nil)
 check("fn_rule: spill -> nil", probe("POST", MULTI, nil).fn_rule, nil)
 
+-- ── Bon ca ne tranh / FP tu ban review vong 4 ───────────────────────
+
+-- DAU PHAN CACH truoc `filename`. Thieu no thi bat ky chuoi nao KET THUC bang
+-- `filename` deu khop.
+check("fn_rule: `myfilename=` KHONG duoc tinh la ten file",
+      probe("POST", MULTI, 'myfilename="../../x.php"').fn_rule, nil)
+
+-- Khoang trang hai ben dau bang. Khong chuan, nhung parser multipart ben duoi
+-- chap nhan — nen ta cung phai chap nhan, neu khong do la mot duong ne tranh.
+check("fn_rule: khoang trang quanh dau bang",
+      probe("POST", MULTI, CD .. 'filename = "../x.php"').fn_rule, "arg_traversal")
+
+-- NHAY THOAT. Ban truoc dung `[^"]*` va toi ghi rang "quet moi lan xuat hien
+-- nen van bat duoc o lan sau" — SAI, o day chi co MOT lan xuat hien.
+check("fn_rule: nhay thoat trong ten file",
+      probe("POST", MULTI, CD .. 'filename="abc\\"../../x.php"').fn_rule,
+      "arg_traversal")
+
+-- FP THAT do giai ma qua tay. RFC 5987 la percent-encoding MOT LOP. Giai mot
+-- lan ra `a..%2Fb.txt` — mot ten file hop le chua ky tu `%`. Giai lan hai bien
+-- no thanh `a../b.txt` va ban.
+check("fn_rule: filename*= giai ma DUNG MOT LAN",
+      probe("POST", MULTI, CD .. "filename*=UTF-8''a..%252Fb.txt").fn_rule, nil)
+
+io.write("\nfn_trunc — het ngan sach KHAC voi da soi het\n")
+
+-- Cham tran so luong. Nhoi `filename=` gia vao noi dung file de bo quet dung
+-- truoc header that la mot duong ne tranh THAT.
+local many = ""
+for i = 1, 40 do many = many .. '; filename="f' .. i .. '.jpg"' end
+check("fn_trunc: qua 32 phan -> danh dau",
+      probe("POST", MULTI, many).fn_trunc, true)
+check("fn_trunc: qua 32 phan -> fn_rule van nil (KHONG phai 'sach')",
+      probe("POST", MULTI, many).fn_rule, nil)
+
+-- Cham tran do dai. Tai trong nam sau byte 512 khong duoc soi — phai bao, chu
+-- khong duoc im lang tra ve nil giong nhu da soi het.
+local long_fn = '; filename="' .. string.rep("a", 600) .. '../x"'
+check("fn_trunc: ten file dai hon 512 -> danh dau",
+      probe("POST", MULTI, long_fn).fn_trunc, true)
+
+check("fn_trunc: multipart binh thuong -> false",
+      probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
+check("fn_trunc: khong phai multipart -> nil",
+      probe("POST", URLENC, "a=1").fn_trunc, nil)
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

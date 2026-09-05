@@ -197,19 +197,49 @@ end
 -- ban duoc upload MA NOI DUNG no chua chuoi `filename="../x"` (vi du mot file
 -- log, hay chinh bo luat WAF) se bi dem. Hiem, va do duoc — de nguyen roi doc
 -- so lieu, dung thu hep truoc khi biet no co that hay khong.
-local RX_FILENAME  = [[filename(\*?)=\s*(?:"([^"]*)"|([^;"\r\n]*))]]
-local MAX_FILENAMES = 16
+-- ── Mau, va tung manh cua no la mot ca da bi bat hut ────────────────
+--   `(?:^|[;\s])`  DAU PHAN CACH truoc `filename`. Thieu no thi
+--       `myfilename="../x"` — bat ky chuoi nao KET THUC bang `filename` — cung
+--       khop. Trong header multipart, `filename` luon di sau `;` hoac khoang
+--       trang. `^` la de mot than bat dau thang bang `filename=` van khop.
+--   `\s*=\s*`      khoang trang o CA HAI ben dau bang. `filename = "../x.php"`
+--       khong chuan nhung parser ben duoi chap nhan, nen ta cung phai chap nhan.
+--   `"((?:[^"\]|\.)*)"`  chuoi trong nhay CO XU LY NHAY THOAT.
+--       Ban truoc dung `[^"]*` va toi ghi trong chu thich rang "quet moi lan
+--       xuat hien nen van bat duoc o lan sau". SAI: voi
+--       `filename="abc\"../../x.php"` chi co MOT lan xuat hien, `[^"]*` dung
+--       ngay o dau nhay da thoat, va toan bo tai trong phia sau khong duoc kiem
+--       — trong khi parser multipart ben duoi van doc no la mot ten file.
+--       Hai nhanh `[^"\]` va `\.` loai tru nhau o ky tu dau nen khong co
+--       backtracking cap so nhan.
+--   `([^;"\r\n]*)`  dang khong nhay, va dang ext-value cua `filename*=`.
+local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\]|\.)*)"|([^;"\r\n]*))]]
+
+-- 32 chu khong phai 16: mot lan dang thu vien anh that co the co hon 16 phan,
+-- va tran qua thap thi co `fn_trunc` bao dong lien tuc tren luu luong lanh.
+-- Van co tran vi mot than doc hai nhoi hang nghin `filename=` khong duoc bien
+-- ham nay thanh o CPU.
+local MAX_FILENAMES = 32
 local MAX_FN_LEN    = 512
 
+-- Tra ve `rule_id, truncated`.
+--
+-- `truncated` KHONG duoc bo qua. Cham tran — dung 32 phan, hoac mot ten file
+-- dai hon 512 byte — nghia la ta KHONG SOI HET, va im lang coi do la "sach" la
+-- dung loi da sua o `php = false`: bien mot khoang trong thanh mot am tinh.
+-- Va no la mot duong ne tranh that: nhoi 32 chuoi `filename=` gia vao noi dung
+-- file thi bo quet dung truoc khi toi header that.
 local function filename_rule(body, family)
-    if family ~= "multipart" then return nil end
+    if family ~= "multipart" then return nil, nil end
 
     local it = ngx.re.gmatch(body, RX_FILENAME, "ijo")
-    if not it then return nil end
+    if not it then return nil, nil end
 
-    for _ = 1, MAX_FILENAMES do
+    local trunc, n = false, 0
+    while n < MAX_FILENAMES do
         local m = it()
-        if not m then break end
+        if not m then return nil, trunc end
+        n = n + 1
 
         -- Nhom khong tham gia -> `false`, khong phai nil.
         local v = (m[2] and m[2] ~= "" and m[2])
@@ -217,15 +247,35 @@ local function filename_rule(body, family)
                or nil
 
         if v then
-            if #v > MAX_FN_LEN then v = v:sub(1, MAX_FN_LEN) end
+            if #v > MAX_FN_LEN then
+                v = v:sub(1, MAX_FN_LEN)
+                trunc = true
+            end
+
+            -- GIAI MA DUNG MOT LAN cho `filename*=`, roi goi luat voi
+            -- `decode=false`. KHONG dua no vao vong 3 muc cua `args.check`.
+            --
+            -- RFC 5987 dinh nghia ext-value la percent-encoding MOT LOP. Giai
+            -- them mot lop nua la doc nhieu hon cai ma dinh dang noi, va no tao
+            -- ra FP that: `filename*=UTF-8''a..%252Fb.txt` giai dung mot lan ra
+            -- `a..%2Fb.txt` — mot ten file hop le chua ky tu `%` — con vong thu
+            -- hai bien no thanh `a../b.txt` va ban.
+            --
+            -- Ban truoc truyen `decode = (m[1] == "*")` nen dinh dung cai bay
+            -- ma khoi chu thich ngay tren day viet ra de tranh.
+            if m[1] == "*" then v = ngx.unescape_uri(v) end
+
             -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau NUL
             -- deu co nghia o day.
-            local rule = args.check(v, m[1] == "*")
-            if rule then return rule end
+            local rule = args.check(v, false)
+            if rule then return rule, trunc end
         end
     end
 
-    return nil
+    -- Cham tran 32. Con phan thu 33 khong? Mot lan goi nua de biet — khong de
+    -- "het ngan sach" tra ve giong "da soi het va sach".
+    if it() then trunc = true end
+    return nil, trunc
 end
 
 -- Chay trong `waf.run_pre`, TRUOC cua thoat tin cay — cung ly do ca tang WAF
@@ -289,6 +339,7 @@ function _M.probe(ctx)
             arg_rule = nil,
             fnm      = nil,
             fn_rule  = nil,
+            fn_trunc = nil,
         }
         return
     end
@@ -312,6 +363,7 @@ function _M.probe(ctx)
     -- percent-encoding => moi giai ma. Hai truc doc lap; bang tra day du o
     -- `args.check`.
     local rule, at = args.check(body, family == "urlencoded", BINARY_FAMILY[family] == true)
+    local fn_rule, fn_trunc = filename_rule(body, family)
 
     ctx.waf_body = {
         family = family,
@@ -325,7 +377,11 @@ function _M.probe(ctx)
         -- Doc lap voi `arg_rule`: soi RIENG gia tri ten file, khong le thuoc
         -- thu tu uu tien cua luat toan than. Day moi la con so dung de dem
         -- "co bao nhieu request tan cong o ten file".
-        fn_rule = filename_rule(body, family),
+        fn_rule  = fn_rule,
+        -- `true` = KHONG soi het (cham tran 32 phan, hoac mot ten file dai hon
+        -- 512 byte). Doc kem `fn_rule`: `fn_rule=- fn_trunc=1` nghia la KHONG
+        -- BIET, khong phai sach.
+        fn_trunc = fn_trunc,
     }
 end
 

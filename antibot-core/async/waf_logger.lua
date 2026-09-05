@@ -114,7 +114,9 @@ function _M.run_body(ctx)
     -- dòng `[waf]` (nó là telemetry, không tạo `waf_hits`), nên dòng
     -- `[waf-body]` là nguồn DUY NHẤT của nó. Quên nó ở đây là vứt 19/20 lượt
     -- tấn công tên file — đúng kiểu lệch âm thầm mà cột `smp=` sinh ra để chặn.
-    local notable = b.php or b.arg_rule or b.fn_rule or b.spill
+    -- `fn_trunc` cung la notable: mot lan quet KHONG HOAN TAT la thong tin,
+    -- va lay mau no di thi ty le "khong soi het" trong so lieu thap di 20 lan.
+    local notable = b.php or b.arg_rule or b.fn_rule or b.fn_trunc or b.spill
     if not notable then
         body_seen = body_seen + 1
         if body_seen % BODY_SAMPLE ~= 0 then return end
@@ -126,7 +128,7 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s fnrule=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s fnrule=%s fntr=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -200,6 +202,15 @@ function _M.run_body(ctx)
         -- `filename*=` duoc giai ma rieng (RFC 5987 dinh nghia la
         -- percent-encoding); `filename=` thi khong.
         b.fn_rule or "-",
+        -- `1` = quet ten file KHONG HOAN TAT (cham tran 32 phan, hoac mot ten
+        -- file dai hon 512 byte). Doc kem `fnrule=`:
+        --     fnrule=- fntr=0  da soi het, khong thay gi
+        --     fnrule=- fntr=1  KHONG BIET — het ngan sach truoc khi soi xong
+        -- Hai cai do khac han nhau, va gop chung lai la bien mot khoang trong
+        -- thanh mot am tinh. Cung nguyen tac da dung cho `php=-` va `exists=-`.
+        -- Nhoi 32 chuoi `filename=` gia vao noi dung file la mot duong ne tranh
+        -- THAT, va cot nay la thu duy nhat lam no hien ra.
+        (b.fn_trunc == nil) and "-" or (b.fn_trunc and "1" or "0"),
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --
