@@ -322,6 +322,41 @@ check("fn_rule: nhay thoat trong ten file",
       probe("POST", MULTI, CD .. 'filename="abc\\"../../x.php"').fn_rule,
       "arg_traversal")
 
+-- QUOTED-PAIR: mau hoc CU PHAP nhung khong ap NGU NGHIA.
+--
+-- Dong ngay tren KHONG chung minh duoc dieu nay: `abc\"../../x.php` co san
+-- `../` o dang tho nen ban du co bo dau `\` hay khong. Bon dong duoi day moi
+-- tach duoc — chung CHI ban sau khi bo quoted-pair.
+check("fn_rule: dau cham da thoat  .\\./  ->  ../",
+      probe("POST", MULTI, CD .. 'filename=".\\./shell.php"').fn_rule,
+      "arg_traversal")
+check("fn_rule: gach cheo da thoat  .\\.\\/  ->  ../",
+      probe("POST", MULTI, CD .. 'filename=".\\.\\/shell.php"').fn_rule,
+      "arg_traversal")
+check("fn_rule: chu da thoat  p\\hp://  ->  php://",
+      probe("POST", MULTI, CD .. 'filename="p\\hp://input"').fn_rule,
+      "arg_php_wrapper")
+
+-- CHIEU NGUOC, va day la ly do soi CA HAI dang chu khong thay the. Bo escape
+-- mot cach pha huy thi dong nay do: `..\..\` la traversal THAT o dang tho, con
+-- sau khi bo dau `\` no thanh `...shell.php` va khong con khop.
+check("fn_rule: Windows-style  ..\\..\\  van ban o dang THO",
+      probe("POST", MULTI, CD .. 'filename="..\\..\\shell.php"').fn_rule,
+      "arg_traversal")
+
+-- BO ESCAPE DUNG MOT LAN, doi chung kieu `%2500`. `.\\./` bo mot lan ra
+-- `.\./` — sach. Lap them lan nua moi ra `../`. Dong nay do neu ai do viet
+-- vong lap.
+check("fn_rule: bo quoted-pair DUNG MOT LAN",
+      probe("POST", MULTI, CD .. 'filename=".\\\\./shell.php"').fn_rule, nil)
+
+-- FP: duong dan Windows day du (IE cu va vai client gui ca duong dan). Dang
+-- tho khong co `..`, dang bo escape thanh `C:Usersmeanh-san-pham.jpg` — ca hai
+-- deu sach. Neu dong nay do thi viec soi hai dang dang tu che ra tan cong.
+check("fn_rule: duong dan Windows hop le -> im",
+      probe("POST", MULTI, CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"').fn_rule,
+      nil)
+
 -- FP THAT do giai ma qua tay. RFC 5987 la percent-encoding MOT LOP. Giai mot
 -- lan ra `a..%2Fb.txt` — mot ten file hop le chua ky tu `%`. Giai lan hai bien
 -- no thanh `a../b.txt` va ban.

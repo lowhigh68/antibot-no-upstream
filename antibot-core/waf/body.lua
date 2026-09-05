@@ -270,7 +270,9 @@ local function filename_rule(body, family)
         n = n + 1
 
         -- Nhom khong tham gia -> `false`, khong phai nil.
-        local v = (m[2] and m[2] ~= "" and m[2])
+        -- Phai NHO da di nhanh nao: chi nhanh trong nhay moi mang quoted-pair.
+        local quoted = (m[2] and m[2] ~= "") and true or false
+        local v = (quoted and m[2])
                or (m[3] and m[3] ~= "" and m[3])
                or nil
 
@@ -307,6 +309,34 @@ local function filename_rule(body, family)
             -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau NUL
             -- deu co nghia o day.
             local rule = args.check(v, false)
+
+            -- QUOTED-PAIR: soi THEM dang da bo dau `\`, va soi CA HAI chu khong
+            -- thay the.
+            --
+            -- Mau da hoc CU PHAP quoted-pair (nhanh `\\.` la ly do no khop duoc
+            -- `filename="abc\"..."`) nhung gia tri bat ra van con nguyen dau
+            -- `\`. Trong quoted-string, parser ha nguon bo dau do, nen:
+            --     filename=".\./shell.php"   ->  ../shell.php
+            --     filename="p\hp://input"    ->  php://input
+            -- Ca hai deu lot vi dang tho khong co `..` lien nhau, khong co
+            -- `php://`. Do la cu phap duoc phan tich ma ngu nghia thi khong.
+            --
+            -- VI SAO SOI CA HAI, khong don gian bo escape roi soi mot lan: dang
+            -- tho MOT MINH bat duoc mot lop khac.
+            --     filename="..\..\shell.php"   Windows-style, traversal THAT
+            --     tho       ..\..\shell.php    RX_TRAVERSAL `\.\.[/\\]` KHOP
+            --     bo escape ...shell.php       KHONG con khop
+            -- Bo escape mot cach pha huy la doi mot lo hong lay mot lo hong.
+            -- Ta khong biet parser ha nguon dung cach doc nao — PHP, Python,
+            -- Node moi thu mot kieu — nen soi ca hai cach doc.
+            --
+            -- Gia: mot `find` byte tho, va chi khi dang tho DA SACH. Ten file
+            -- binh thuong khong co dau `\` nen duong nay khong chay.
+            if not rule and quoted and v:find("\\", 1, true) then
+                local unq = v:gsub("\\(.)", "%1")
+                if unq ~= v then rule = args.check(unq, false) end
+            end
+
             if rule then return rule, trunc end
         end
     end

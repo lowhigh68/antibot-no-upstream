@@ -424,7 +424,17 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 
 **Mẫu hỏng cũng trả `fntr=1`, có chủ ý.** `ngx.re.gmatch` trả `nil` khi *mẫu không biên dịch được*, và chỗ đó ban đầu nuốt luôn — một mẫu hỏng hiện ra thành `fnrule=- fntr=-` trên **mọi** multipart, trông y hệt một tầng đang chạy và không thấy gì. `RX_FILENAME` là hằng số nên đó là lỗi lúc deploy chứ không phải lỗi của request; vì vậy `ngx.ERR` chỉ kêu **một lần mỗi worker**, còn đường báo được đọc thật là `fntr=1` chạy liên tục trong `wafstat` mục 7. Xem nhật ký 2026-09-05.
 
-**Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp; không phân biệt hoa thường; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
+**Quoted-pair: soi CẢ HAI dạng, không thay thế.** Mẫu học **cú pháp** quoted-pair — nhánh `\\.` chính là lý do nó khớp được `filename="abc\"..."` — nhưng giá trị bắt ra vẫn còn nguyên dấu `\`, còn parser hạ nguồn thì bỏ nó. Cú pháp được phân tích mà ngữ nghĩa thì không:
+
+| Gửi lên | Dạng thô (luật nhìn thấy) | Sau khi bỏ quoted-pair | Ai bắt |
+|---|---|---|---|
+| `filename=".\./shell.php"` | `.\./shell.php` — không có `..` | `../shell.php` | chỉ dạng đã bỏ escape |
+| `filename="p\hp://input"` | `p\hp://input` — không có `php://` | `php://input` | chỉ dạng đã bỏ escape |
+| `filename="..\..\shell.php"` | `..\..\shell.php` — **khớp** `\.\.[/\\]` | `...shell.php` — không khớp | chỉ **dạng thô** |
+
+Dòng thứ ba là lý do không bỏ escape một cách phá huỷ: `..\..\` là traversal Windows **thật**, và bỏ dấu `\` làm nó biến mất. Đổi một lỗ hổng lấy một lỗ hổng. Ta không biết parser hạ nguồn đọc kiểu nào — PHP, Python, Node mỗi thứ một kiểu — nên chạy luật trên cả hai cách đọc. Giá: một `find` byte thô, và chỉ khi dạng thô **đã sạch**; tên file bình thường không có dấu `\` nên đường này không chạy. Bỏ escape **đúng một lần** (`.\\./` ra `.\./`, sạch — lặp thêm mới ra `../`), ghim bằng test đối chứng cùng kiểu `%2500`.
+
+**Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp; không phân biệt hoa thường; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`; đường dẫn Windows đầy đủ (`C:\Users\me\anh.jpg`) sạch ở **cả hai** dạng.
 
 **Một ngoại lệ có chủ ý ở `filename*=`.** `filename*=UTF-8''x%2500.jpg` giải đúng một lần ra `x%00.jpg` — tên file thật chứa ba **ký tự** `%`, `0`, `0`. `args.check(v, false)` không giải mã thêm, nhưng `RX_NUL_ENC` vẫn bắn vì nó khớp `%00` dạng **văn bản**. Vậy riêng luật NUL **có** đọc thêm một lớp, và câu "giải mã đúng một lần" không còn thuần tuý — nói ra để không ai đọc nó như một bảo đảm. Giữ vậy: app hạ nguồn giải mã lại tên file là chuyện phổ biến và làm sai, `x%00.jpg` giải thêm lần nữa thành `x<NUL>.jpg` — đúng cái cắt chuỗi mà luật NUL sinh ra để bắt. Cùng một lựa chọn đã làm cho thân nhị phân. Ghim bằng cặp test đối chứng `%2500` (`filename*=` bắn / `filename=` im).
 
@@ -516,6 +526,13 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 7) — **Quoted-pair: cú pháp được phân tích, ngữ nghĩa thì không.**
+  - Mẫu ở vòng 4 học nhánh `\\.` để khớp được `filename="abc\"..."`, nhưng giá trị bắt ra vẫn còn nguyên dấu `\` và đi thẳng vào `args.check`. Parser hạ nguồn bỏ dấu đó, nên `filename=".\./shell.php"` thành `../shell.php` và `filename="p\hp://input"` thành `php://input` — cả hai lọt vì dạng thô không có `..` liền nhau, không có `php://`.
+  - Test `filename="abc\"../../x.php"` ở vòng 4 **không chứng minh được gì** cho lớp này: nó có sẵn `../` ở dạng thô nên bắn dù có bỏ escape hay không.
+  - **Soi cả hai dạng, không thay thế.** Bỏ escape một cách phá huỷ đổi một lỗ hổng lấy một lỗ hổng: `..\..\shell.php` là traversal Windows thật khớp `\.\.[/\\]` ở dạng thô, và thành `...shell.php` — không khớp — sau khi bỏ dấu `\`. Không biết parser hạ nguồn đọc kiểu nào thì chạy luật trên cả hai cách đọc.
+  - Giá bằng gần 0: một `find` byte thô, chỉ chạy khi dạng thô đã sạch **và** tên file có dấu `\`.
+  - Sáu test mới: dấu chấm/gạch chéo/chữ đã thoát (chỉ bắn sau khi bỏ escape), Windows-style (chỉ bắn ở dạng thô), bỏ escape đúng một lần, và đường dẫn Windows hợp lệ phải im ở cả hai dạng.
 
 - 2026-09-05 (vòng 6) — **Ghim mép `%2500`, và biến hai giới hạn đã biết thành điều kiện chặn.**
   - **Mép NUL:** `filename*=UTF-8''x%2500.jpg` giải một lần ra `x%00.jpg`, rồi `RX_NUL_ENC` vẫn bắn vì nó khớp `%00` dạng văn bản — tức riêng luật NUL đọc thêm một lớp và câu "giải mã đúng một lần" không thuần tuý. **Giữ hành vi, ghim bằng cặp test đối chứng** (`filename*=` bắn `arg_null_byte` / `filename=` im, vì `%2500` không chứa `%00`) để nó là quyết định chứ không phải tình cờ.
