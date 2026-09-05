@@ -40,12 +40,15 @@ grep -F '[waf]' "$LOG" | awk '
 
 echo
 echo "=== 2. Luat THAM SO chia theo richness  [CAU HOI QUYET DINH] ==="
-echo "    auth = richness>=0.5 = phien dang nhap that => nhieu kha nang FP"
+echo "    AUTH = richness>=0.5 = phien dang nhap that => nhieu kha nang FP"
+echo "    thoat-fastpath = client verified, thoat truoc classifier => THIEU du lieu,"
+echo "                     dem RIENG chu khong gop vao khong-ro"
 grep -F '[waf]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
 f["target"]=="ARGS" || f["target"]=="BODY" {
     r=f["richness"]
-    tier = (r=="-") ? "khong-ro" : ((r+0>=0.5) ? "AUTH" : "an-danh")
+    if (r=="-") tier = (f["vfy"]=="1") ? "thoat-fastpath" : "khong-ro"
+    else tier = (r+0>=0.5) ? "AUTH" : "an-danh"
     print f["target"], f["rule"], tier
 }' | sort | uniq -c | sort -rn
 

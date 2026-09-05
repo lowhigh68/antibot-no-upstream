@@ -37,10 +37,28 @@ local RX_TRAVERSAL = "\\.\\.[/\\\\]"
 -- nao trong mot tham so HTTP.
 local RX_WRAPPER = [[(?:php|data|expect|phar|zip|glob|file|compress\.\w+)://]]
 
--- Byte NUL, ca dang ma hoa lan dang tho. Dung de cat chuoi trong ham C ben duoi
--- PHP (`include($x . ".php")` voi `$x` ket thuc bang NUL). Khong bao gio hop le
--- trong query string.
-local RX_NULLBYTE = [[%00|\x00]]
+-- Byte NUL. Dung de cat chuoi trong ham C ben duoi PHP (`include($x . ".php")`
+-- voi `$x` ket thuc bang NUL).
+--
+-- TACH LAM HAI, va day khong phai chuyen hinh thuc — hai mau nay co BAN CHAT
+-- KHAC HAN nhau khi gap noi dung nhi phan:
+--
+--   RX_NUL_RAW  `\x00`  la mot BYTE. Moi dinh dang nhi phan (PNG, JPEG, PDF,
+--       ZIP) chua no lien tuc theo dung dac ta. Trong than multipart, tim byte
+--       nay la tim "co file dinh kem", khong phai tim tan cong. Day la thu bi
+--       `binary` tat.
+--
+--   RX_NUL_ENC  `%00`  la BA KY TU, tuc mot mau VAN BAN — percent-encoding chi
+--       ton tai o cho co nguoi go ra: query string, ten file trong header
+--       multipart, truong form dang text. Xac suat ba byte nay xuat hien ngau
+--       nhien trong 47 KB nhi phan la ~0,003 lan/file, cung bac voi `../`.
+--       Nen no KHONG bi tat, ke ca voi than nhi phan.
+--
+-- Ban dau toi gop chung lam mot mau roi tat ca cum cho multipart. Rong qua:
+-- `filename="shell.php%00.jpg"` — mot mau van ban nam trong DONG HEADER, khong
+-- phai trong noi dung file — cung bi tat theo. Tach ra thi cat dung cho.
+local RX_NUL_RAW = [[\x00]]
+local RX_NUL_ENC = [[%00]]
 
 local RULES = {
     arg_traversal   = { action = "signal", score = 0.75,
@@ -124,10 +142,14 @@ function _M.check(args, decode, binary)
         -- wrapper gan nhu khong the la nham lan, con `../` thi hiem khi nhung
         -- van co the la mot URL tuong doi trong tham so redirect.
         local from
+        -- `binary` CHI tat mau BYTE THO. Mau van ban `%00` van chay cho moi
+        -- nguon — no khong phai dac diem cua dinh dang nhi phan.
         if not binary then
-            from = ngx.re.find(s, RX_NULLBYTE, "jo")
+            from = ngx.re.find(s, RX_NUL_RAW, "jo")
             if from then return "arg_null_byte", from end
         end
+        from = ngx.re.find(s, RX_NUL_ENC, "jo")
+        if from then return "arg_null_byte", from end
         from = ngx.re.find(s, RX_WRAPPER,   "jo"); if from then return "arg_php_wrapper", from end
         from = ngx.re.find(s, RX_TRAVERSAL, "jo"); if from then return "arg_traversal",   from end
 

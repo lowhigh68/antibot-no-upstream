@@ -188,6 +188,20 @@ local PNGPART = 'Content-Disposition: form-data; name="f"; filename="anh.jpg"\r\
 check("multipart chua NUL -> KHONG ban",
       probe("POST", MULTI, PNGPART).arg_rule, nil)
 
+-- Nhung `%00` DANG CHUOI thi van phai ban, ke ca trong multipart: no la mau
+-- VAN BAN nam o dong header, khong phai byte cua dinh dang nhi phan.
+check("multipart: `%00` trong ten file VAN ban",
+      probe("POST", MULTI,
+            'Content-Disposition: form-data; name="f"; filename="shell.php%00.jpg"').arg_rule,
+      "arg_null_byte")
+
+-- `filename*=` (RFC 5987). `find("filename=")` KHONG khop chuoi nay vi co dau
+-- `*` chen giua — mot cho nup neu ai do coi `fnm` la luat thay vi cot do.
+check("fnm: nhan ca `filename*=` cua RFC 5987",
+      probe("POST", MULTI,
+            "content-disposition: form-data; name=\"f\"; filename*=utf-8''x../y").fnm,
+      true)
+
 -- Nhung urlencoded thi NUL VAN la bat thuong that: mot truong form khong bao
 -- gio chua byte NUL. Chi than nhi phan moi duoc mien.
 check("urlencoded chua NUL -> VAN ban",

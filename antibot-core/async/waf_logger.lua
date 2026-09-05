@@ -268,7 +268,7 @@ function _M.run(ctx)
         fh:write(string.format(
             "[%s] [waf] ts=%d rid=%s id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
-            .. " richness=%s wpauth=%d status=%d exists=%s final=%s fim=%s\n",
+            .. " richness=%s wpauth=%d vfy=%d status=%d exists=%s final=%s fim=%s\n",
             stamp,
             now,
             req_id(),
@@ -285,6 +285,23 @@ function _M.run(ctx)
             class,
             richness,
             wpauth,
+            -- Client co cookie `verified` con han hay khong.
+            --
+            -- Cot nay danh dau DONG THIEU DU LIEU, khong phai them mot dac
+            -- diem. Tu `f69b896`, tin hieu WAF trong so 0 khong con pha
+            -- fast-path — dung y do — nen mot client verified cham luat se
+            -- THOAT NGAY sau `check_verified_cookie`, truoc ca classifier va
+            -- `session_richness`. Dong log cua no ra `class=- richness=- final=-`.
+            --
+            -- Ba dau `-` do trong y het truong hop "khong biet vi ly do khac"
+            -- (block o access phase, ban o cua). Gop chung lai thi so lieu bong
+            -- cua nhom verified khong dung de mo phong "neu bat trong so thi
+            -- chuyen gi xay ra" — ma do la muc dich duy nhat cua che do bong.
+            --
+            -- `vfy=1` + ba dau `-` = thieu vi thoat fast-path, DEM RIENG.
+            -- `vfy=0` + ba dau `-` = thieu vi ly do khac.
+            -- Khong bia ra gia tri, chi noi ro vi sao khong co.
+            ctx.verified and 1 or 0,
             status,
             exists_for(h.target),
             final,

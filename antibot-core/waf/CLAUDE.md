@@ -116,6 +116,9 @@ Ba chi tiết mẫu là chịu lực:
 
 `decode` trả lời *"chuỗi này có phải percent-encoding không"*; `binary` trả lời *"chuỗi này có phải byte nhị phân không"*. Hai câu độc lập, nên hai tham số.
 
+**Chỉ mẫu BYTE THÔ bị tắt.** `RX_NUL_RAW` là `\x00` — một **byte**, mà mọi định dạng nhị phân chứa nó theo đúng đặc tả. `RX_NUL_ENC` là `%00` — **ba ký tự**, tức một mẫu **văn bản**: percent-encoding chỉ tồn tại ở chỗ có người gõ ra (query string, tên file trong header multipart, trường form dạng text). Nó **không** bị tắt, kể cả với thân nhị phân.
+
+Bản đầu gộp hai mẫu làm một rồi tắt cả cụm. Rộng quá: `filename="shell.php%00.jpg"` là mẫu văn bản nằm ở **dòng header**, không phải trong nội dung file, và nó bị tắt theo. Xác suất ba byte `%`,`0`,`0` xuất hiện ngẫu nhiên trong 47 KB nhị phân là ~0,003 lần/file — cùng bậc với `../`, tức đo được chứ không phải nguồn nhiễu.
 **`binary` sinh ra từ số liệu, không phải phỏng đoán.** Đo 2026-09-05 trên hai máy, ~10 giờ: **67/67** lượt `arg_null_byte` nằm trong **nội dung file upload** — cột `fnm` cho thấy **0/61** lượt multipart nằm trong `filename=`. Cụm kích thước 7,3 KB / 47 KB / 80 KB lặp lại trên 13 domain không liên quan: đó là ảnh và tài liệu của khách.
 
 Lý do cấu trúc: lập luận gốc của luật NUL là *"byte NUL không bao giờ hợp lệ trong **tham số**"*. Đúng với query string và trường form. Với thân multipart thì sai hoàn toàn — một phần của thân **chính là nội dung file**, và mọi định dạng nhị phân (PNG, JPEG, PDF, ZIP) chứa byte NUL theo đúng đặc tả của nó. Luật không phát hiện tấn công; nó phát hiện *"vừa có người upload file"*. Ở trọng số 50 thì mỗi ảnh sản phẩm đều +50 điểm.
@@ -365,7 +368,23 @@ curl -s -X POST -d 'x=<?php' https://<host>/ -o /dev/null   # ép một dòng [w
 curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [waf] target=ARGS
 ```
 
-**`fnm=` là cột phân tầng, không phải luật.** Trên thân multipart, `argrule` đang gộp hai dân số ngược nhau: `../` trong **tên file** (gần như chắc chắn là tấn công) và `../` trong **nội dung** file/bài viết (gần như chắc chắn là FP). `fnm=1` nghĩa là chỗ khớp nằm cùng dòng với một `filename=`; `fnm=0` là nằm chỗ khác; `fnm=-` là không áp dụng (không phải multipart, hoặc không luật nào bắn).
+**`fnm=` là cột phân tầng, không phải luật.** Trên thân multipart, `argrule` đang gộp hai dân số ngược nhau: `../` trong **tên file** (gần như chắc chắn là tấn công) và `../` trong **nội dung** file/bài viết (gần như chắc chắn là FP). `fnm=1` nghĩa là chỗ khớp nằm cùng dòng với một `filename=` hoặc `filename*=`; `fnm=0` là nằm chỗ khác; `fnm=-` là không áp dụng.
+
+> **Đính chính 2026-09-05 — đọc trước khi dùng con số này.** `fnm` mô tả **vị trí của lần khớp được chọn**, không phải *"request này có tấn công ở tên file hay không"*. `args.check` trả về **một** rule_id theo thứ tự NUL → wrapper → traversal rồi dừng. Một request vừa có `php://` trong **nội dung** file vừa có `../../shell.php` trong **tên file** sẽ cho wrapper thắng, `fnm=0`, dù tấn công ở tên file là có thật.
+>
+> Nên `fnm=0` đọc đúng là *"lần khớp được chọn nằm ngoài tên file"*. Tôi đã nói quá điều này khi báo cáo số liệu 05-09: đúng là **0/61 lần khớp được chọn** nằm trong tên file, còn *"không có tấn công tên file nào"* thì chưa bao giờ được chứng minh.
+
+**Giới hạn còn lại của `filename*=`:** giá trị của nó là percent-encoding (`filename*=UTF-8''..%2F..%2Fx.php`), mà thân multipart chạy với `decode=false`, nên `..%2F` trong đó **không** được phát hiện. Không đưa nó vào vòng giải mã toàn thân — làm vậy dựng lại chính cái FP đã tránh. Muốn bịt thì phải tách riêng giá trị `filename*` và giải mã **một mình** nó; việc đó chỉ đáng làm khi filename traversal được nâng lên thành tín hiệu thật.
+
+**`vfy=` đánh dấu dòng THIẾU dữ liệu, không phải thêm một đặc điểm.** Từ `f69b896`, tín hiệu WAF trọng số 0 không còn phá fast-path — đúng ý đồ — nên một client verified chạm luật thoát ngay sau `check_verified_cookie`, trước cả classifier và `session_richness`. Dòng log của nó ra `class=- richness=- final=-`, trông y hệt trường hợp *"không biết vì lý do khác"* (block ở access phase, ban ở cửa).
+
+| | Nghĩa |
+|---|---|
+| `vfy=1` + ba dấu `-` | Thiếu vì thoát fast-path — **đếm riêng** |
+| `vfy=0` + ba dấu `-` | Thiếu vì lý do khác |
+
+Gộp chung thì số liệu bóng của nhóm verified không dùng để mô phỏng *"nếu bật trọng số thì chuyện gì xảy ra"* — mà đó là mục đích duy nhất của chế độ bóng. `wafstat.sh` mục 2 tách hàng `thoat-fastpath` ra riêng.
+
 
 
 **`cl=` là Content-Length của header**, không phải độ dài đọc được; `-` nghĩa là chunked. Nó tồn tại để trả lời đúng một câu — câu đang chặn việc đặt `client_body_buffer_size`.

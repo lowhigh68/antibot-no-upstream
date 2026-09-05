@@ -83,12 +83,23 @@ local function count_args(body, family)
     return n
 end
 
--- Lan khop co nam TRONG mot `filename=` cua multipart khong.
+-- Lan khop DUOC CHON co nam trong mot `filename=` cua multipart khong.
 --
 -- COT PHAN TANG, KHONG PHAI LUAT. No khong chan gi, khong doi diem — no tra
 -- loi mot cau hoi ma phan bo hien tai KHONG tra loi duoc: trong so lan
 -- `arg_rule` ban tren than multipart, bao nhieu la ten file (gan nhu chac chan
 -- la tan cong) va bao nhieu la NOI DUNG file/bai viet (gan nhu chac chan la FP).
+--
+-- ĐINH CHINH 2026-09-05, doc ky truoc khi dung con so nay:
+--   `fnm` mo ta VI TRI CUA LAN KHOP DUOC CHON, khong phai "request nay co tan
+--   cong o ten file hay khong". `args.check` tra ve MOT rule_id theo thu tu
+--   NUL -> wrapper -> traversal roi dung lai. Mot request vua co `php://` trong
+--   NOI DUNG file vua co `../../shell.php` trong TEN FILE se cho wrapper thang,
+--   `fnm=0`, du tan cong o ten file la co that.
+--   Nen `fnm=0` doc dung la "lan khop duoc chon nam ngoai ten file", KHONG
+--   phai "khong co tan cong ten file". Toi da noi qua dieu nay khi bao cao so
+--   lieu 05-09: dung la 0/61 lan khop DUOC CHON nam trong ten file, con "khong
+--   co tan cong ten file nao" thi chua bao gio duoc chung minh.
 --
 -- Vi sao them cot thay vi thu hep luat ngay. Thu hep bay gio la ra ket luan
 -- roi moi di tim du lieu ung ho no: se khong bao gio biet noi dung tu do ban
@@ -104,6 +115,18 @@ end
 -- mot dong trong. Nen phep kiem dung la "cung dong", khong phai mot cua so
 -- nhin-lui tuy y — cua so thi phai chon do rong, ma moi lua chon deu sai voi
 -- mot header du dai.
+--
+-- BAT CA `filename*=` (RFC 5987, dang `filename*=UTF-8''..%2F..%2Fx.php`).
+-- `find("filename=")` KHONG khop chuoi do vi co dau `*` chen giua — mot cho
+-- nup neu ai do coi day la luat thay vi cot do.
+--
+-- GIOI HAN CON LAI, ghi ro de khong ai tuong da phu: gia tri cua `filename*=`
+-- la percent-encoding, ma than multipart chay voi `decode=false`, nen
+-- `..%2F..%2F` trong do KHONG duoc phat hien. Va nay khong vao vong giai ma
+-- toan than: lam vay se dung lai chinh cai FP da tranh (mot file .txt chua
+-- chuoi ky tu `%2e%2e%2f`). Muon bit thi phai tach rieng gia tri `filename*`
+-- va giai ma MOT MINH no — viec do chi dang lam khi filename traversal duoc
+-- nang len thanh tin hieu that.
 --
 -- Chi chay khi `arg_rule` DA ban, tuc gan nhu khong bao gio. Chi phi tren luu
 -- luong thuong bang 0.
@@ -122,7 +145,9 @@ local function in_filename(body, family, at)
         p = i + 1
     end
 
-    return body:sub(bol + 1, at - 1):lower():find("filename=", 1, true) ~= nil
+    local head = body:sub(bol + 1, at - 1):lower()
+    return head:find("filename=", 1, true) ~= nil
+        or head:find("filename*=", 1, true) ~= nil
 end
 
 -- Chay trong `waf.run_pre`, TRUOC cua thoat tin cay — cung ly do ca tang WAF

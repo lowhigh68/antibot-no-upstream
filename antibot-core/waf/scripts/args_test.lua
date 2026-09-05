@@ -148,7 +148,17 @@ local PNG = "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR"
 
 bcheck(PNG,                    nil, "header PNG that — PHAI IM")
 bcheck("x" .. string.char(0),  nil, "byte NUL tho trong nhi phan — PHAI IM")
-bcheck("f=x%00.jpg",           nil, "chuoi `%00` trong nhi phan — PHAI IM")
+
+-- CHUOI `%00` VAN PHAI BAN, ke ca voi nhi phan. `binary` chi tat mau BYTE THO.
+-- Ban dau toi gop hai mau lam mot roi tat ca cum — rong qua:
+-- `filename="shell.php%00.jpg"` la mot mau VAN BAN nam trong DONG HEADER, khong
+-- phai trong noi dung file, va no bi tat theo. Ba byte `%`,`0`,`0` xuat hien
+-- ngau nhien trong 47 KB nhi phan voi xac suat ~0,003 lan/file — cung bac voi
+-- `../`, tuc do duoc chu khong phai nguon nhieu.
+bcheck("f=x%00.jpg", "arg_null_byte",
+       "chuoi `%00` VAN phai ban du la nhi phan")
+bcheck('filename="shell.php%00.jpg"', "arg_null_byte",
+       "cat chuoi trong ten file multipart — dung cho tung bi tat oan")
 
 -- HAI LUAT KIA VAN CHAY. Chung la mau VAN BAN, khong phai dac diem cua nhi
 -- phan: xac suat `../` xuat hien ngau nhien trong 47 KB nhi phan la ~0,003

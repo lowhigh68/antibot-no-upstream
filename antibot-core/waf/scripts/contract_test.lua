@@ -113,6 +113,29 @@ else
     end
 end
 
+-- ── 1b. CHIEU NGUOC: moi `ctx.waf_*` trong guard phai co trong DEFAULT_WEIGHTS
+--
+-- Vong lap o tren duyet danh sach TEN LAY TU compute.lua, nen no khong bao gio
+-- nhin thay mot cai ten CHI ton tai trong `waf_signal()`. Ai do them thang
+-- `ctx.waf_new_signal` vao guard ma quen dang ky trong DEFAULT_WEIGHTS thi:
+--   - guard tra ve truthy => pha fast-path
+--   - `compute.lua` khong co trong so => 0 diem
+-- Tuc mot tin hieu doi LUONG DI cua request nhung khong doi diem, va khong co
+-- gi bao. Dung dang loi da phai sua o `f69b896`, chi khac chieu.
+io.write("\nhop dong: chieu nguoc — guard -> DEFAULT_WEIGHTS\n")
+
+if guard then
+    for nm in guard:gmatch("ctx%.(waf_[%w_]+)") do
+        if compute:find("\n%s*" .. nm .. "%s*=%s*%d") then
+            pass = pass + 1
+        else
+            bad("  SAI  `ctx.%s` co trong waf_signal() nhung KHONG co trong " ..
+                "DEFAULT_WEIGHTS\n       => pha fast-path ma khong dong gop " ..
+                "diem nao\n", nm)
+        end
+    end
+end
+
 -- ── 2. Moi tin hieu `waf_*` phai co nhanh trong `get_signal` ─────────
 --
 -- Dang ky trong DEFAULT_WEIGHTS ma quen `get_signal` thi trong so co that nhung
