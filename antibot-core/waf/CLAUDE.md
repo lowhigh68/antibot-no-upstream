@@ -374,7 +374,17 @@ curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [w
 >
 > Nên `fnm=0` đọc đúng là *"lần khớp được chọn nằm ngoài tên file"*. Tôi đã nói quá điều này khi báo cáo số liệu 05-09: đúng là **0/61 lần khớp được chọn** nằm trong tên file, còn *"không có tấn công tên file nào"* thì chưa bao giờ được chứng minh.
 
-**Giới hạn còn lại của `filename*=`:** giá trị của nó là percent-encoding (`filename*=UTF-8''..%2F..%2Fx.php`), mà thân multipart chạy với `decode=false`, nên `..%2F` trong đó **không** được phát hiện. Không đưa nó vào vòng giải mã toàn thân — làm vậy dựng lại chính cái FP đã tránh. Muốn bịt thì phải tách riêng giá trị `filename*` và giải mã **một mình** nó; việc đó chỉ đáng làm khi filename traversal được nâng lên thành tín hiệu thật.
+**`filename*=` mới chỉ được NHẬN DIỆN, chưa được SOI.** Nói cho đúng: `in_filename` nay nhận ra dòng header có `filename*=` nên gắn `fnm=1` đúng — nhưng **chỉ khi trên dòng đó đã có một lần khớp thô nào đó**. Bản thân tải trọng
+
+```
+filename*=UTF-8''..%2F..%2Fshell.php
+```
+
+**vẫn lọt**, vì thân multipart chạy `decode=false` nên `..%2F` không được giải mã. Đừng gọi đây là "đã phủ `filename*`".
+
+Không đưa nó vào vòng giải mã toàn thân — làm vậy dựng lại chính cái FP đã tránh (file `.txt` chứa chuỗi ký tự `%2e%2e%2f`). Cách đúng là **trích riêng giá trị `filename*` rồi giải mã một mình nó**; xem mục đề xuất ở cuối phần này.
+
+**`%00` trong thân nhị phân vẫn có FP nhỏ.** Giữ `%00` là đúng hơn tắt cả cụm, nhưng `args.check` quét **toàn bộ** thân chứ không riêng header — một file PDF/text upload chứa đúng ba ký tự `%00` vẫn bắn. Xác suất thấp (~0,003 lần/47 KB) nhưng khác 0. Nên khi tính chuyện bật enforcement, **chỉ coi `%00` + `fnm=1` là bằng chứng mạnh**, còn `%00` + `fnm=0` thì tiếp tục đếm chứ chưa dùng để quyết.
 
 **`vfy=` đánh dấu dòng THIẾU dữ liệu, không phải thêm một đặc điểm.** Từ `f69b896`, tín hiệu WAF trọng số 0 không còn phá fast-path — đúng ý đồ — nên một client verified chạm luật thoát ngay sau `check_verified_cookie`, trước cả classifier và `session_richness`. Dòng log của nó ra `class=- richness=- final=-`, trông y hệt trường hợp *"không biết vì lý do khác"* (block ở access phase, ban ở cửa).
 
@@ -387,14 +397,25 @@ Gộp chung thì số liệu bóng của nhóm verified không dùng để mô p
 
 
 
-**`cl=` là Content-Length của header**, không phải độ dài đọc được; `-` nghĩa là chunked. Nó tồn tại để trả lời đúng một câu — câu đang chặn việc đặt `client_body_buffer_size`.
+**`cl=` `te=` `proto=` đi với nhau — một mình không cột nào trả lời được.**
 
-Số liệu 2026-09-05 **không khớp** với mô hình: `spill` = 12,5% nhưng có 12 body **lớn hơn 64 KB** (tới 80.649 byte) vẫn đọc được vào bộ nhớ. Với buffer mặc định 16k thì nhóm sau phải rơi ra file tạm hết.
+| Cột | Là gì |
+|---|---|
+| `cl=` | Giá trị header `Content-Length`. `-` = **không có header đó**, chỉ vậy thôi |
+| `te=` | `Transfer-Encoding` — đây mới là chunked **thật** |
+| `proto=` | `1.1` / `2.0` / `3.0` |
 
-Giả thuyết **chưa kiểm**: `ngx.req.read_body()` đặt `r->request_body_in_single_buf`, nên với request **có** Content-Length nginx cấp một buffer vừa cỡ body và bỏ qua directive; chỉ request **chunked** mới rơi về buffer đó và mới spill. Khớp với phép đo 02-09 (387 POST multipart báo `cl=0`).
+> **Đính chính 2026-09-05.** Bản đầu tôi ghi `cl=- = chunked`. Sai, và sai theo hướng làm hỏng chính phép đo: header này còn vắng trong HTTP/2 (body đi bằng DATA frame), HTTP/3, request không có body, và vài client không gửi. Dàn máy này bật H2 và có hẳn một tầng vân tay H2 — nếu phần lớn POST là h2 không kèm Content-Length thì phép chéo "spill × cl" không nói lên gì.
 
-Đúng thì ô `spill=1 cl=co` trong mục 8 của `wafstat.sh` phải gần bằng 0, và nâng buffer chỉ có tác dụng với nhóm chunked — vẫn đáng làm, nhưng con số phải chọn theo phân bố **của nhóm đó**. `client_body_buffer_size` trong `nginx/nginx.conf` đang bị **chú thích lại** cho tới khi có câu trả lời.
-Đây là dữ liệu phải có **trước** khi quyết định nâng `waf_body_arg` lên khỏi 0 — thu hẹp luật trước khi đo là ra kết luận rồi mới đi tìm dữ liệu ủng hộ nó.
+Câu hỏi thật là **nginx có biết trước độ dài body không**: biết thì nó cấp buffer đúng cỡ và bỏ qua `client_body_buffer_size`; không biết thì rơi về buffer đó và spill.
+
+| | nginx biết trước? |
+|---|---|
+| HTTP/1.1 + `Content-Length` | có |
+| HTTP/1.1 + `Transfer-Encoding: chunked` | không |
+| HTTP/2 | tuỳ client có gửi `Content-Length` |
+
+`wafstat.sh` mục 8 chéo `spill` với ba cột này. `client_body_buffer_size` trong `nginx/nginx.conf` đang bị **chú thích lại** cho tới khi bảng đó có số.
 
 ### Ba cột phải đọc cùng nhau
 
@@ -443,6 +464,12 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng review thứ hai) — **`cl=-` không đồng nghĩa chunked; `vfy=` cho cả dòng body.**
+  - **Đính chính quan trọng nhất:** tôi đặt tên cột `cl=` là "chunked". Sai. Nó chỉ có nghĩa *"không có header Content-Length"* — cũng vắng trong HTTP/2, HTTP/3, request không body. Dàn máy này bật H2 và có hẳn một tầng vân tay H2, nên nếu phần lớn POST là h2 không kèm Content-Length thì phép chéo `spill × cl` **không trả lời được gì**. Thêm `te=` (Transfer-Encoding, chunked thật) và `proto=`; `wafstat.sh` mục 8 chéo cả ba.
+  - **`vfy=` cũng vào dòng `[waf-body]`.** Một POST có `php=1` mà không luật nào bắn chỉ sinh dòng `[waf-body]`, không sinh `[waf]` — nên riêng nhóm body không biết `class=- richness=-` là do thoát fast-path hay lý do khác.
+  - **Nói lại cho đúng về `filename*=`:** mới chỉ **nhận diện** (gắn `fnm=1` đúng khi trên dòng đó đã có một lần khớp thô), **chưa soi**. `filename*=UTF-8''..%2F..%2Fshell.php` vẫn lọt vì thân multipart chạy `decode=false`.
+  - **`%00` trong thân nhị phân còn FP nhỏ:** `args.check` quét toàn bộ thân chứ không riêng header. Khi tính chuyện enforcement, chỉ coi `%00` + `fnm=1` là bằng chứng mạnh.
 
 - 2026-09-05 — **`arg_null_byte` tắt cho thân nhị phân. Số liệu ngày đầu tiên từ hai máy.**
   - **Đo được:** 67/67 lượt `arg_null_byte` là byte NUL trong **nội dung file upload**, `fnm=0` cho cả 61 lượt multipart đo được. Cụm 7,3 KB / 47 KB / 80 KB lặp trên 13 domain không liên quan. Luật không phát hiện tấn công — nó phát hiện *"vừa có người upload file"*. Ở trọng số 50 thì mỗi ảnh sản phẩm đều +50 điểm. Cột `fnm` (thêm hôm 09-04) là thứ duy nhất phân biệt được điều này; không có nó thì chỉ thấy "65 lượt" và không có cách nào biết chúng là gì.

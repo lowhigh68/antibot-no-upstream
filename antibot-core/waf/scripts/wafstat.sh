@@ -121,23 +121,41 @@ END{
 }'
 
 echo
-echo "=== 8. spill x Content-Length  [CAU HOI VE client_body_buffer_size] ==="
-echo "    Gia thuyet: ngx.req.read_body() dat request_body_in_single_buf, nen"
-echo "    request CO Content-Length duoc cap buffer vua co body va KHONG BAO GIO"
-echo "    spill; chi CHUNKED (cl=-) moi roi ve client_body_buffer_size."
-echo "    Dung => o 'spill=1 cl=co' phai gan bang 0."
+echo "=== 8. spill x cach nginx biet do dai body  [CAU HOI VE BUFFER] ==="
+echo "    Cau hoi: nginx co BIET TRUOC do dai body khong. Biet thi no cap dung co"
+echo "    va bo qua client_body_buffer_size; khong biet thi roi ve buffer va spill."
+echo "    LUU Y: cl=- KHONG dong nghia chunked — header do con vang trong HTTP/2,"
+echo "    HTTP/3, request khong body. Vi vay phai doc kem proto= va te=."
 grep -F '[waf-body]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
 {
     s = (f["smp"]=="") ? 1 : f["smp"]+0
-    sp = (f["spill"]=="1") ? "spill=1" : "spill=0"
-    cl = (f["cl"]=="-" || f["cl"]=="") ? "cl=- (chunked)" : "cl=co"
-    c[sp "  " cl] += s
-    tot += s
+    p  = f["proto"]; cl = f["cl"]; te = f["te"]
+    has_cl = (cl != "-" && cl != "")
+    chunk  = (te ~ /chunked/)
+    if (p ~ /^1/)      mode = has_cl ? "h1 + Content-Length" : (chunk ? "h1 + chunked" : "h1 + khong ro")
+    else if (p ~ /^2/) mode = has_cl ? "h2 + Content-Length" : "h2 + khong co CL"
+    else if (p ~ /^3/) mode = has_cl ? "h3 + Content-Length" : "h3 + khong co CL"
+    else               mode = "proto khac (" p ")"
+    key = ((f["spill"]=="1") ? "spill=1  " : "spill=0  ") mode
+    c[key] += s; tot += s
+    if (f["spill"]=="1") spt += s
 }
 END{
-    n=split("spill=1  cl=- (chunked)|spill=1  cl=co|spill=0  cl=- (chunked)|spill=0  cl=co", ord, "|")
-    for(j=1;j<=n;j++){ k=ord[j]
-        printf "  %-26s %8d  (%5.1f%%)\n", k, (k in c)?c[k]:0, tot?100*((k in c)?c[k]:0)/tot:0 }
-    printf "  ---- uoc tinh tong POST: %d\n", tot
+    # THU TU CO DINH thay vi `asorti`: asorti la mo rong cua gawk, con mawk
+    # (mac dinh tren Debian/Ubuntu) khong co — se bao loi tren dung may can doc.
+    m = split("h1 + Content-Length|h1 + chunked|h1 + khong ro|" \
+              "h2 + Content-Length|h2 + khong co CL|" \
+              "h3 + Content-Length|h3 + khong co CL", md, "|")
+    for (sp=1; sp>=0; sp--) {
+        pre = (sp ? "spill=1  " : "spill=0  ")
+        for (j=1;j<=m;j++) {
+            k = pre md[j]
+            if (k in c) { printf "  %-32s %8d  (%5.1f%%)\n", k, c[k], 100*c[k]/tot; seen[k]=1 }
+        }
+    }
+    # Bat ky to hop nao khong nam trong bang tren — in ra chu khong nuot.
+    for (k in c) if (!(k in seen)) printf "  %-32s %8d  (%5.1f%%)  <- ngoai bang\n", k, c[k], 100*c[k]/tot
+    printf "  ---- uoc tinh tong POST: %d, trong do spill: %d (%.1f%%)\n",
+           tot, spt+0, tot?100*(spt+0)/tot:0
 }'

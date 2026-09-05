@@ -119,8 +119,8 @@ function _M.run_body(ctx)
 
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
-        .. " ct=%s cl=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
-        .. " argrule=%s fnm=%s smp=%d\n",
+        .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
+        .. " class=%s richness=%s vfy=%d argrule=%s fnm=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -130,25 +130,33 @@ function _M.run_body(ctx)
         scrub(ngx.req.get_method(), 10),
         scrub(ngx.var.uri, 120),
         b.family,
-        -- Content-Length CUA HEADER, khong phai do dai doc duoc. `-` = chunked
-        -- (khong co header nay).
+        -- BA COT NAY DI VOI NHAU. Mot minh khong cot nao tra loi duoc cau hoi
+        -- dang chan viec dat `client_body_buffer_size`.
         --
-        -- Cot nay ton tai de tra loi DUNG MOT cau, va la cau dang chan viec dat
-        -- `client_body_buffer_size`: spill co tuong quan voi chunked khong.
+        -- `cl=`  gia tri header Content-Length. `-` nghia la KHONG CO HEADER DO
+        --        — chi vay thoi. DINH CHINH: ban truoc toi ghi `cl=- = chunked`.
+        --        Sai, va sai theo huong lam hong chinh phep do: header nay con
+        --        vang trong HTTP/2 (body di bang DATA frame), HTTP/3, request
+        --        khong co body, va vai client khong gui. Dan may nay bat H2 va
+        --        co han mot tang van tay H2 — neu phan lon POST la h2 khong kem
+        --        Content-Length thi phep cheo "spill x cl" khong noi len gi.
+        -- `te=`  co header `Transfer-Encoding: chunked` hay khong. Day moi la
+        --        chunked THAT.
+        -- `proto=` 1.1 / 2.0 / 3.0. Quyet dinh nginx doc body bang duong nao.
         --
-        -- Do 2026-09-05 khong khop voi mo hinh: spill 12,5% nhung co 12 body
-        -- LON HON 64 KB (toi 80.649 byte) van doc duoc vao bo nho. Voi buffer
-        -- mac dinh 16k thi nhom sau phai roi ra file tam het.
+        -- Cau hoi: nginx co BIET TRUOC do dai body khong. Biet thi no cap dung
+        -- co va bo qua directive; khong biet thi roi ve buffer va spill.
+        --   HTTP/1.1 + Content-Length      -> biet
+        --   HTTP/1.1 + Transfer-Encoding   -> khong biet
+        --   HTTP/2                         -> tuy client co gui Content-Length
         --
-        -- Gia thuyet CHUA KIEM: `ngx.req.read_body()` dat
-        -- `r->request_body_in_single_buf`, nen voi request CO Content-Length
-        -- nginx cap mot buffer vua co body va bo qua directive; chi request
-        -- CHUNKED moi roi ve buffer do va moi spill. Neu dung thi
-        -- `spill=1` phai gan nhu luon di kem `cl=-`.
-        --
-        -- Doc bang: dem chao (spill, cl co/khong) tren vai ngay. Dung suy luan
-        -- tu ma nguon nginx — dung kieu do da bi bac bo sau lan trong du an nay.
+        -- Doc bang phep cheo o muc 8 cua `wafstat.sh`. Dung suy luan tu ma nguon
+        -- nginx — kieu suy luan do da bi bac bo sau lan trong du an nay.
         ngx.var.http_content_length or "-",
+        -- Header do CLIENT dat, co the chua khoang trang ("chunked, gzip") — phai
+        -- scrub, neu khong mot dong log bi tach truong sai.
+        scrub(ngx.var.http_transfer_encoding, 24),
+        ((ngx.var.server_protocol or "-"):gsub("^HTTP/", "")),
         b.len,
         b.spill and 1 or 0,
         -- `-` chứ không phải `0` khi không đọc được body. "Chưa soi" khác hẳn
@@ -158,6 +166,13 @@ function _M.run_body(ctx)
         b.nargs and tostring(b.nargs) or "-",
         ctx.req_class or "-",
         ctx.session_richness and string.format("%.2f", ctx.session_richness) or "-",
+        -- Cung ly do voi cot `vfy=` ben dong `[waf]`: danh dau DONG THIEU DU
+        -- LIEU. Mot POST co `php=1` nhung khong luat nao ban chi sinh dong
+        -- `[waf-body]`, khong sinh dong `[waf]`. Neu client do co cookie
+        -- verified thi no thoat truoc classifier va `session_richness`, nen
+        -- `class=- richness=-` — trong y het truong hop khac. Thieu cot nay thi
+        -- rieng nhom body khong biet vi sao khong co du lieu.
+        ctx.verified and 1 or 0,
         -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
         -- cung `rid=` de biet cai do la than hay query string — dong `[waf]`
         -- phan biet bang cot `target=` (ARGS / BODY).
