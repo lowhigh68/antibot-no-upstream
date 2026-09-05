@@ -426,10 +426,13 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 
 **Đã tính đến:** nhiều phần (quét hết, tấn công thường ở phần cuối); ba dạng cú pháp; không phân biệt hoa thường; dùng cờ `i` của `ngx.re` thay vì `body:lower()` để khỏi cấp phát thêm 80 KB mỗi POST; nhóm không tham gia của `ngx.re` trả `false` chứ không phải `nil`.
 
-**Hai giới hạn còn lại, ghi ra chứ không vá:**
+**Một ngoại lệ có chủ ý ở `filename*=`.** `filename*=UTF-8''x%2500.jpg` giải đúng một lần ra `x%00.jpg` — tên file thật chứa ba **ký tự** `%`, `0`, `0`. `args.check(v, false)` không giải mã thêm, nhưng `RX_NUL_ENC` vẫn bắn vì nó khớp `%00` dạng **văn bản**. Vậy riêng luật NUL **có** đọc thêm một lớp, và câu "giải mã đúng một lần" không còn thuần tuý — nói ra để không ai đọc nó như một bảo đảm. Giữ vậy: app hạ nguồn giải mã lại tên file là chuyện phổ biến và làm sai, `x%00.jpg` giải thêm lần nữa thành `x<NUL>.jpg` — đúng cái cắt chuỗi mà luật NUL sinh ra để bắt. Cùng một lựa chọn đã làm cho thân nhị phân. Ghim bằng cặp test đối chứng `%2500` (`filename*=` bắn / `filename=` im).
 
-- Quét toàn bộ thân chứ không riêng vùng header của từng part. Một file văn bản có **nội dung** chứa `filename="../x"` sẽ bị đếm. Bật enforcement thì phải giới hạn vào vùng header thật.
-- **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
+**Ba điều kiện chặn — phải xử lý TRƯỚC khi nâng `fn_rule` lên trọng số > 0.** Cả ba đều vô hại ở chế độ quan sát và đều thành lỗi thật khi chặn, nên chúng được in ra ngay trong output `wafstat` mục 7, chỗ số liệu được đọc:
+
+1. **Quét toàn bộ thân, chưa giới hạn trong vùng header của từng part.** Một file văn bản có **nội dung** chứa `; filename="../x.php"` vẫn đếm. Nhiễu telemetry thì chịu được; chặn thật thì là chặn oan một lần upload hợp lệ. Cần tách part theo boundary lấy từ `Content-Type` trước.
+2. **`fn_trunc=true` không được coi là sạch.** Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc `fntr=1` như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
+3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
 
 **`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt. `fn_trunc` cũng được miễn — lấy mẫu nó đi thì tỉ lệ "không soi hết" trong số liệu thấp đi 20 lần.
 
@@ -513,6 +516,11 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 6) — **Ghim mép `%2500`, và biến hai giới hạn đã biết thành điều kiện chặn.**
+  - **Mép NUL:** `filename*=UTF-8''x%2500.jpg` giải một lần ra `x%00.jpg`, rồi `RX_NUL_ENC` vẫn bắn vì nó khớp `%00` dạng văn bản — tức riêng luật NUL đọc thêm một lớp và câu "giải mã đúng một lần" không thuần tuý. **Giữ hành vi, ghim bằng cặp test đối chứng** (`filename*=` bắn `arg_null_byte` / `filename=` im, vì `%2500` không chứa `%00`) để nó là quyết định chứ không phải tình cờ.
+  - **Điều kiện chặn:** quét-toàn-thân và `fntr=1` từ "giới hạn đã biết" nâng thành **ba điều kiện phải xử lý trước khi nâng trọng số**, và in thẳng vào output `wafstat` mục 7 — chỗ số liệu được đọc là chỗ chúng dễ bị quên nhất.
+  - Điểm "không nuốt lỗi regex" đã làm ở vòng 5.
 
 - 2026-09-05 (vòng 5) — **`RX_FILENAME` ở vòng 4 không biên dịch được. Cả `fn_rule` chết câm.**
   - Long string `[[...]]` của Lua **không xử lý chuỗi thoát**: cái gõ ra là cái PCRE nhận. Vòng 4 ghi `[^"\]` với **một** dấu `\` thay vì hai. Trong lớp ký tự, `\]` là dấu `]` **đã thoát** nên lớp không đóng, nó nuốt tiếp tới dấu `]` sau (trong `[^;"\r\n]`) và bỏ lại một `(?:` không đóng ⇒ **lỗi cú pháp toàn mẫu**.

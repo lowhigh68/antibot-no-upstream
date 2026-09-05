@@ -126,8 +126,19 @@ END{
     n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
     if(n==0) print "  (khong co)"
     printf "  quet ten file KHONG hoan tat (fntr=1): %d  <- KHONG BIET, khong phai sach\n", ftr+0
-    print "  LUU Y: fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
-    print "         spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
+    print ""
+    print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
+    print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"
+    print "   1. Quet TOAN BO than, chua gioi han trong vung header cua tung"
+    print "      part. Mot file van ban co NOI DUNG chua `; filename=\"../x.php\"`"
+    print "      van dem. Nhieu telemetry thi chiu duoc; chan that thi la chan"
+    print "      oan mot lan upload hop le. Phai tach part theo boundary lay tu"
+    print "      Content-Type truoc da."
+    print "   2. fntr=1 KHONG duoc coi la sach. Tai trong o ten file thu 33 hoac"
+    print "      sau byte 512 khong duoc nhin thay. Enforcement doc fntr=1 nhu"
+    print "      \"da soi, khong thay\" la bien vung mu thanh giay thong hanh."
+    print "   3. fn_rule chi tinh tren multipart CON TRONG BO NHO. Upload lon"
+    print "      spill nhieu hon, nen dung suy rong ty le nay ra toan bo upload."
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
 

@@ -291,6 +291,17 @@ local function filename_rule(body, family)
             --
             -- Ban truoc truyen `decode = (m[1] == "*")` nen dinh dung cai bay
             -- ma khoi chu thich ngay tren day viet ra de tranh.
+            --
+            -- MOT MEP, va no la NGOAI LE CO CHU Y chu khong phai so sot.
+            -- `filename*=UTF-8''x%2500.jpg` giai dung mot lan ra `x%00.jpg` —
+            -- ten file that chua ba KY TU `%`, `0`, `0`. `args.check(v, false)`
+            -- khong giai ma them, nhung `RX_NUL_ENC` van ban vi no khop `%00`
+            -- dang VAN BAN. Vay rieng luat NUL CO doc them mot lop, va cau
+            -- "giai ma dung mot lan" khong con thuan tuy.
+            -- Giu vay: app ha nguon giai ma lai ten file la chuyen pho bien va
+            -- lam sai, `x%00.jpg` giai them lan nua thanh `x<NUL>.jpg` — dung
+            -- cai cat chuoi ma luat NUL sinh ra de bat. Cung mot lua chon da
+            -- lam cho than nhi phan. Ghim bang test doi chung trong body_test.
             if m[1] == "*" then v = ngx.unescape_uri(v) end
 
             -- `binary` de mac dinh false: ten file la VAN BAN, ca hai mau NUL

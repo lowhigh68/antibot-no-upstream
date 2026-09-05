@@ -328,6 +328,32 @@ check("fn_rule: nhay thoat trong ten file",
 check("fn_rule: filename*= giai ma DUNG MOT LAN",
       probe("POST", MULTI, CD .. "filename*=UTF-8''a..%252Fb.txt").fn_rule, nil)
 
+-- MEP giua "giai ma mot lan" va `RX_NUL_ENC`, va no la mot NGOAI LE CO CHU Y
+-- chu khong phai mot ca lot.
+--
+-- `filename*=UTF-8''x%2500.jpg` giai dung mot lan ra `x%00.jpg` — ten file that
+-- chua ba KY TU `%`, `0`, `0`. `args.check(v, false)` khong giai ma them, nhung
+-- `RX_NUL_ENC` van ban vi no khop `%00` dang VAN BAN. Tuc rieng luat NUL co doc
+-- them mot lop, va cap tren KHONG con la "giai ma dung mot lan" mot cach thuan
+-- tuy nua.
+--
+-- Giu nguyen hanh vi do, co y: PHP/app ha nguon giai ma lai ten file la chuyen
+-- pho bien va lam sai, `x%00.jpg` giai them mot lan la `x<NUL>.jpg` — dung cai
+-- cat chuoi ma luat NUL sinh ra de bat. Mot ten file lanh chua dung chuoi `%00`
+-- gan nhu khong ton tai. Day la CUNG mot lua chon da lam cho than nhi phan.
+--
+-- Ghim bang test de no la QUYET DINH chu khong phai tinh co.
+check("fn_rule: `%2500` -> `%00` sau mot lan giai, RX_NUL_ENC VAN ban",
+      probe("POST", MULTI, CD .. "filename*=UTF-8''x%2500.jpg").fn_rule,
+      "arg_null_byte")
+
+-- DOI CHUNG: cung chuoi do, KHONG co `*` thi khong giai ma lan nao, `%2500`
+-- khong chua `%00`, va khong luat nao ban. Cap doi nay chung minh viec giai ma
+-- CO PHAN BIET van dung — neu ban tay `ngx.unescape_uri` cho ca hai dang thi
+-- dong nay do.
+check("fn_rule: `filename=` khong giai ma nen `%2500` khong thanh `%00`",
+      probe("POST", MULTI, CD .. 'filename="x%2500.jpg"').fn_rule, nil)
+
 io.write("\nfn_trunc — het ngan sach KHAC voi da soi het\n")
 
 -- Cham tran so luong. Nhoi `filename=` gia vao noi dung file de bo quet dung
