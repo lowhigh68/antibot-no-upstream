@@ -119,7 +119,7 @@ function _M.run_body(ctx)
 
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
-        .. " ct=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
+        .. " ct=%s cl=%s blen=%d spill=%d php=%s nargs=%s class=%s richness=%s"
         .. " argrule=%s fnm=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
@@ -130,6 +130,25 @@ function _M.run_body(ctx)
         scrub(ngx.req.get_method(), 10),
         scrub(ngx.var.uri, 120),
         b.family,
+        -- Content-Length CUA HEADER, khong phai do dai doc duoc. `-` = chunked
+        -- (khong co header nay).
+        --
+        -- Cot nay ton tai de tra loi DUNG MOT cau, va la cau dang chan viec dat
+        -- `client_body_buffer_size`: spill co tuong quan voi chunked khong.
+        --
+        -- Do 2026-09-05 khong khop voi mo hinh: spill 12,5% nhung co 12 body
+        -- LON HON 64 KB (toi 80.649 byte) van doc duoc vao bo nho. Voi buffer
+        -- mac dinh 16k thi nhom sau phai roi ra file tam het.
+        --
+        -- Gia thuyet CHUA KIEM: `ngx.req.read_body()` dat
+        -- `r->request_body_in_single_buf`, nen voi request CO Content-Length
+        -- nginx cap mot buffer vua co body va bo qua directive; chi request
+        -- CHUNKED moi roi ve buffer do va moi spill. Neu dung thi
+        -- `spill=1` phai gan nhu luon di kem `cl=-`.
+        --
+        -- Doc bang: dem chao (spill, cl co/khong) tren vai ngay. Dung suy luan
+        -- tu ma nguon nginx — dung kieu do da bi bac bo sau lan trong du an nay.
+        ngx.var.http_content_length or "-",
         b.len,
         b.spill and 1 or 0,
         -- `-` chứ không phải `0` khi không đọc được body. "Chưa soi" khác hẳn

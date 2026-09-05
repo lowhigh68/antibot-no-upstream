@@ -367,6 +367,14 @@ curl -s 'https://<host>/?f=../x' -o /dev/null               # ép một dòng [w
 
 **`fnm=` là cột phân tầng, không phải luật.** Trên thân multipart, `argrule` đang gộp hai dân số ngược nhau: `../` trong **tên file** (gần như chắc chắn là tấn công) và `../` trong **nội dung** file/bài viết (gần như chắc chắn là FP). `fnm=1` nghĩa là chỗ khớp nằm cùng dòng với một `filename=`; `fnm=0` là nằm chỗ khác; `fnm=-` là không áp dụng (không phải multipart, hoặc không luật nào bắn).
 
+
+**`cl=` là Content-Length của header**, không phải độ dài đọc được; `-` nghĩa là chunked. Nó tồn tại để trả lời đúng một câu — câu đang chặn việc đặt `client_body_buffer_size`.
+
+Số liệu 2026-09-05 **không khớp** với mô hình: `spill` = 12,5% nhưng có 12 body **lớn hơn 64 KB** (tới 80.649 byte) vẫn đọc được vào bộ nhớ. Với buffer mặc định 16k thì nhóm sau phải rơi ra file tạm hết.
+
+Giả thuyết **chưa kiểm**: `ngx.req.read_body()` đặt `r->request_body_in_single_buf`, nên với request **có** Content-Length nginx cấp một buffer vừa cỡ body và bỏ qua directive; chỉ request **chunked** mới rơi về buffer đó và mới spill. Khớp với phép đo 02-09 (387 POST multipart báo `cl=0`).
+
+Đúng thì ô `spill=1 cl=co` trong mục 8 của `wafstat.sh` phải gần bằng 0, và nâng buffer chỉ có tác dụng với nhóm chunked — vẫn đáng làm, nhưng con số phải chọn theo phân bố **của nhóm đó**. `client_body_buffer_size` trong `nginx/nginx.conf` đang bị **chú thích lại** cho tới khi có câu trả lời.
 Đây là dữ liệu phải có **trước** khi quyết định nâng `waf_body_arg` lên khỏi 0 — thu hẹp luật trước khi đo là ra kết luận rồi mới đi tìm dữ liệu ủng hộ nó.
 
 ### Ba cột phải đọc cùng nhau

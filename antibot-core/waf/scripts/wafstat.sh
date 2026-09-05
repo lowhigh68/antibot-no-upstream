@@ -116,3 +116,25 @@ END{
     printf "  trong do fnm=0 (noi dung,  nhieu kha nang FP ): %d\n", fn0+0
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
+
+echo
+echo "=== 8. spill x Content-Length  [CAU HOI VE client_body_buffer_size] ==="
+echo "    Gia thuyet: ngx.req.read_body() dat request_body_in_single_buf, nen"
+echo "    request CO Content-Length duoc cap buffer vua co body va KHONG BAO GIO"
+echo "    spill; chi CHUNKED (cl=-) moi roi ve client_body_buffer_size."
+echo "    Dung => o 'spill=1 cl=co' phai gan bang 0."
+grep -F '[waf-body]' "$LOG" | awk '
+{delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
+{
+    s = (f["smp"]=="") ? 1 : f["smp"]+0
+    sp = (f["spill"]=="1") ? "spill=1" : "spill=0"
+    cl = (f["cl"]=="-" || f["cl"]=="") ? "cl=- (chunked)" : "cl=co"
+    c[sp "  " cl] += s
+    tot += s
+}
+END{
+    n=split("spill=1  cl=- (chunked)|spill=1  cl=co|spill=0  cl=- (chunked)|spill=0  cl=co", ord, "|")
+    for(j=1;j<=n;j++){ k=ord[j]
+        printf "  %-26s %8d  (%5.1f%%)\n", k, (k in c)?c[k]:0, tot?100*((k in c)?c[k]:0)/tot:0 }
+    printf "  ---- uoc tinh tong POST: %d\n", tot
+}'

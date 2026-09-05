@@ -197,6 +197,48 @@ if [ -d /var/log/antibot ]; then
          -exec chmod 0640 {} + 2>/dev/null || :
 fi
 
+# nginx.conf — dong bo tu repo, CO SAO LUU VA TU LUI LAI.
+#
+# Vi sao them buoc nay. Do 2026-09-05: repo va may chu lech dung mot dong
+# (`client_body_buffer_size`) suot ba ngay ma khong ai biet, vi `deploy.sh` chi
+# rsync `antibot-core/`. Toi them directive do vao repo va tuong no tu toi may
+# chu. Cung loai voi bit thuc thi cua `fim.sh` va cau hinh logrotate: THU NAM
+# TRONG REPO KHONG TU NO TOI MAY CHU.
+#
+# KHAC `antibot-core/`: mot nginx.conf hong lam nginx KHONG KHOI DONG LAI DUOC.
+# Nen buoc nay tu kiem va tu lui, khong dua vao buoc [5]:
+#   1. In diff ra truoc — nguoi van hanh thay minh sap thay gi
+#   2. Sao luu ban dang chay kem dau thoi gian
+#   3. Chep, roi `nginx -t` NGAY
+#   4. Hong thi khoi phuc ban sao luu va HUY deploy
+# Chua reload nen ngay ca luc file tren dia sai, worker dang chay van giu cau
+# hinh cu — cua so nguy hiem bang khong.
+#
+# CANH BAO: buoc nay GHI DE. Neu ai do sua nginx.conf thang tren may chu (vi du
+# `nginx/CF/install.sh` chen mot dong `include cloudflare-realip.conf;`) thi sua
+# do bi xoa. Muon giu thi phai dua vao repo. Ban sao luu o `/root/` la duong lui.
+NGINX_CONF_SRC="$REPO_DIR/nginx/nginx.conf"
+NGINX_CONF_DST="/usr/local/openresty/nginx/conf/nginx.conf"
+if [ -f "$NGINX_CONF_SRC" ] && [ -f "$NGINX_CONF_DST" ]; then
+    if ! cmp -s "$NGINX_CONF_SRC" "$NGINX_CONF_DST"; then
+        echo "[4d] nginx.conf lech — thay doi sap ap dung:"
+        diff "$NGINX_CONF_DST" "$NGINX_CONF_SRC" | sed 's/^/     /' || :
+        BAK="/root/nginx.conf.$(date +%Y%m%d-%H%M%S).bak"
+        cp -p "$NGINX_CONF_DST" "$BAK"
+        cp "$NGINX_CONF_SRC" "$NGINX_CONF_DST"
+        if "$NGINX" -t >/dev/null 2>&1; then
+            echo "[4d] da cap nhat nginx.conf (sao luu: $BAK)"
+        else
+            cp -p "$BAK" "$NGINX_CONF_DST"
+            echo "[4d] nginx.conf MOI KHONG QUA nginx -t — da khoi phuc ban cu."
+            "$NGINX" -t || :
+            echo "HUY: cay antibot-core da sync nhung nginx.conf giu nguyen."
+            echo "     Sua nginx/nginx.conf trong repo roi chay lai."
+            exit 1
+        fi
+    fi
+fi
+
 echo "[5] nginx -t..."
 "$NGINX" -t
 
