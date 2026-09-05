@@ -419,12 +419,15 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 | Cột | Nghĩa |
 |---|---|
 | `fntr=-` | Không áp dụng — không phải multipart, hoặc body spill |
-| `fntr=0` | Đã soi hết, không thấy gì |
+| `fntr=0` | Đã soi hết **mọi** tên file, không luật nào bắn |
 | `fntr=rx` | **Mẫu không biên dịch được** → lỗi lúc deploy, sửa ngay |
 | `fntr=len` | Một tên file > 512 byte → hiếm, và tự nó đã đáng ngờ |
 | `fntr=n` | Hơn 32 phần → thường là upload thư viện ảnh thật, cách xử lý là nâng trần |
+| `fntr=stop` | Dừng lại vì **đã tìm thấy** → bình thường, luôn đi kèm một `fnrule=` |
 
-**Là lý do, không phải cờ.** Bản trước trả `true` cho cả ba nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì ba nguyên nhân đòi ba việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Một request có thể chạm cả `len` lẫn `n`; **`len` thắng**, vì nó là cái bất thường hơn còn `n` một mình gần như luôn là lưu lượng lành. Ba giá trị cuối đều là **không biết**, không phải sạch.
+**Là lý do, không phải cờ.** Bản trước trả `true` cho cả ba nguyên nhân: đúng nghĩa "không soi hết" nhưng không đọc được, vì chúng đòi ba việc khác hẳn nhau — đọc `fntr=47` sau ba ngày thì không biết làm gì với nó. Một request có thể chạm cả `len` lẫn `n`; **`len` thắng**, vì nó là cái bất thường hơn còn `n` một mình gần như luôn là lưu lượng lành. `rx`/`len`/`n` đều là **không biết**, không phải sạch.
+
+**`stop` tồn tại để `fntr=0` chỉ còn một nghĩa.** Hàm thoát ngay ở luật đầu tiên, nên khi `fnrule` bắn thì các tên file phía sau **chưa hề được soi**. Không có `stop` thì `fnrule=X fntr=0` đọc thành "đã soi hết" và mọi phép đếm "bao nhiêu lần quét hoàn tất" đều lệch. Đây là một **giá trị** thay cho một quy ước phải nhớ — quy ước là thứ bị quên đúng lúc đọc số liệu. `len` cũng thắng `stop`: chạm trần độ dài trước khi tìm thấy thì vẫn còn vùng mù.
 
 **Mẫu hỏng cũng vào cột này, có chủ ý.** `ngx.re.gmatch` trả `nil` khi *mẫu không biên dịch được*, và chỗ đó ban đầu nuốt luôn — một mẫu hỏng hiện ra thành `fnrule=- fntr=-` trên **mọi** multipart, trông y hệt một tầng đang chạy và không thấy gì. `RX_FILENAME` là hằng số nên đó là lỗi lúc deploy chứ không phải lỗi của request; vì vậy `ngx.ERR` chỉ kêu **một lần mỗi worker**, còn đường báo được đọc thật là `fntr=rx` chạy liên tục trong `wafstat` mục 7. Xem nhật ký 2026-09-05.
 
@@ -445,7 +448,7 @@ Dòng thứ ba là lý do không bỏ escape một cách phá huỷ: `..\..\` l�
 **Ba điều kiện chặn — phải xử lý TRƯỚC khi nâng `fn_rule` lên trọng số > 0.** Cả ba đều vô hại ở chế độ quan sát và đều thành lỗi thật khi chặn, nên chúng được in ra ngay trong output `wafstat` mục 7, chỗ số liệu được đọc:
 
 1. **Quét toàn bộ thân, chưa giới hạn trong vùng header của từng part.** Một file văn bản có **nội dung** chứa `; filename="../x.php"` vẫn đếm. Nhiễu telemetry thì chịu được; chặn thật thì là chặn oan một lần upload hợp lệ. Cần tách part theo boundary lấy từ `Content-Type` trước.
-2. **Mọi `fntr` khác `0` và khác `-` đều không phải sạch.** Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc chúng như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
+2. **`rx`, `len`, `n` đều không phải sạch** (`stop` thì bình thường). Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc chúng như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
 3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
 
 **`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt. `fn_trunc` cũng được miễn — lấy mẫu nó đi thì tỉ lệ "không soi hết" trong số liệu thấp đi 20 lần.
@@ -530,6 +533,17 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 9) — **Nháy không đóng ăn xuyên dòng, và `fntr=0` mang hai nghĩa.**
+  - **Bỏ sót tự báo cáo là hoàn tất.** `[^"\\]` cho qua cả `\r` và `\n`, nên một `filename="` không đóng nuốt sang dòng dưới tới dấu nháy **mở** của header thật rồi đóng lại ở đó:
+    ```
+    ; filename="
+    Content-Disposition: form-data; name=f; filename="../../shell.php"
+    ```
+    Giá trị bắt ra là một đoạn header vô hại, `filename=` thật **đã bị tiêu thụ** nên `gmatch` không còn thấy, và hàm trả `nil, false` — tức báo là **đã soi sạch**. Dạng lỗi nặng nhất trong module này: không phải một lần bỏ sót, mà một lần bỏ sót tự nhận là hoàn tất.
+  - **Sửa:** `[^"\\\r\n]` và `\\[^\r\n]`. Dùng `[^\r\n]` chứ không phải `.` vì trong PCRE không có cờ `s`, dấu `.` vẫn khớp `\r`. Tên file thật không thể chứa CR/LF — header multipart kết thúc ở CRLF theo định nghĩa — nên loại chúng không mất gì. **Chưa dứt điểm:** một nội dung file có cả `filename="..."` trên *một* dòng vẫn đếm; đó là điều kiện chặn số 1.
+  - **`fntr=0` mang hai nghĩa.** Hàm thoát ngay ở luật đầu tiên, nên `fnrule=X fntr=0` thật ra là "dừng lại vì tìm thấy", không phải "đã soi hết". Thêm giá trị `stop` thay vì một quy ước phải nhớ — quy ước là thứ bị quên đúng lúc đọc số liệu. `len` thắng `stop`.
+  - Sáu test mới: ăn xuyên dòng (cả `fn_rule` lẫn `fn_trunc`), quoted-pair không thoát được xuống dòng, `stop`, và `len` thắng `stop`.
 
 - 2026-09-05 (vòng 8) — **`fn_trunc` từ cờ thành lý do.**
   - `true` gộp ba nguyên nhân: mẫu hỏng, hơn 32 phần, tên file > 512 byte. Đúng nghĩa "không soi hết" nhưng **không đọc được** — ba ngày nữa nhìn `fntr=47` thì không biết làm gì, trong khi ba nguyên nhân đòi ba việc khác hẳn: `rx` sửa ngay, `len` tự nó đáng ngờ, `n` chỉ cần nâng trần.

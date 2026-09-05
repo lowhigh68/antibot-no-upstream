@@ -217,8 +217,24 @@ end
 --       `[^"\]` thanh mot lop ky tu KHONG DONG (`\]` la dau `]` da thoat), lop
 --       do nuot tiep toi dau `]` sau va bo lai mot `(?:` khong dong => CA MAU
 --       LOI CU PHAP. Da xay ra that o `8dfafd2`.
+--       LOI CU PHAP. Da xay ra that o `8dfafd2`.
+--       LOP KY TU PHAI LOAI CA CR/LF, va ban truoc thi khong. `[^"\\]` cho qua
+--       `\r` va `\n`, nen mot dau nhay KHONG DONG an xuyen dong:
+--           ; filename="
+--           Content-Disposition: form-data; name=f; filename="../../shell.php"
+--       Lan khop gia bat dau o dau nhay dong tren, nuot ca dong duoi cho toi
+--       dau nhay MO cua header that, roi dong lai o do. Ket qua: gia tri bat ra
+--       la mot doan header vo hai, `filename=` THAT da bi tieu thu nen gmatch
+--       khong con thay no, va ham tra `nil, false` — tuc bao la DA SOI SACH.
+--       Do la mot lan bo sot TU BAO CAO LA HOAN TAT, dung dang loi nang nhat
+--       trong ca module nay.
+--       `\\[^\r\n]` (thay vi `\\.`) vi trong PCRE khong co co `s`, dau `.` van
+--       khop `\r`. Ten file that khong the chua CR/LF: header multipart ket
+--       thuc o CRLF theo dinh nghia, nen loai chung khong mat gi.
+--       Chua dut diem — mot noi dung file co ca `filename="..."` tren MOT dong
+--       van dem. Cai do la dieu kien chan so 1, phai tach part theo boundary.
 --   `([^;"\r\n]*)`  dang khong nhay, va dang ext-value cua `filename*=`.
-local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\r\n]*))]]
+local RX_FILENAME  = [[(?:^|[;\s])filename(\*?)\s*=\s*(?:"((?:[^"\\\r\n]|\\[^\r\n])*)"|([^;"\r\n]*))]]
 
 -- 32 chu khong phai 16: mot lan dang thu vien anh that co the co hon 16 phan,
 -- va tran qua thap thi co `fn_trunc` bao dong lien tuc tren luu luong lanh.
@@ -245,10 +261,14 @@ local rx_broken = false
 --     "len"  mot ten file > 512 byte   -> hiem, va tu no da dang ngo
 --     "n"    hon 32 phan               -> thuong la upload thu vien anh that,
 --                                         cach xu ly la nang tran
+--     "stop" dung lai vi DA TIM THAY    -> binh thuong, di kem mot `fn_rule`
 -- Mot request co the cham ca "len" lan "n". Uu tien "len" vi no la cai bat
--- thuong hon; "n" mot minh gan nhu luon la luu luong lanh.
+-- thuong hon; "n" mot minh gan nhu luon la luu luong lanh. `"len"` cung thang
+-- `"stop"` — da cham tran do dai truoc khi tim thay thi van la co vung mu.
 --
--- Tra ve: `nil` khong ap dung | `false` da soi het | mot trong ba chuoi tren.
+-- Tra ve: `nil` khong ap dung | `false` da soi het | mot trong bon chuoi tren.
+-- Nho `"stop"`, `false` (cot `fntr=0`) chi con dung MOT nghia: da soi het moi
+-- ten file va khong luat nao ban.
 local function filename_rule(body, family)
     if family ~= "multipart" then return nil, nil end
 
@@ -348,7 +368,16 @@ local function filename_rule(body, family)
                 if unq ~= v then rule = args.check(unq, false) end
             end
 
-            if rule then return rule, trunc end
+            -- `"stop"`, KHONG phai `false`. Ham thoat ngay khi co luat dau
+            -- tien, nen luc do ta CHUA soi cac ten file phia sau. Tra `false`
+            -- o day lam `fntr=0` mang hai nghia: "da soi het va sach" va "dung
+            -- lai vi tim thay". Cai thu hai khong sai ve phan quyet — request
+            -- da bi danh dau roi — nhung no lam hong phep dem "bao nhieu lan
+            -- quet hoan tat".
+            -- Lam thanh mot GIA TRI thay vi mot quy uoc phai nho: `fntr=0` gio
+            -- chi con dung mot nghia, va no khong the bi doc nham.
+            -- `trunc or "stop"`: neu da cham `"len"` truoc do thi giu `"len"`.
+            if rule then return rule, trunc or "stop" end
         end
     end
 

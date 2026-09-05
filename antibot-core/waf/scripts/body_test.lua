@@ -357,6 +357,26 @@ check("fn_rule: duong dan Windows hop le -> im",
       probe("POST", MULTI, CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"').fn_rule,
       nil)
 
+-- NHAY KHONG DONG AN XUYEN DONG. Ban truoc `[^"\\]` cho qua ca `\r` va `\n`,
+-- nen lan khop gia bat dau o dau nhay dong tren nuot ca dong duoi cho toi dau
+-- nhay MO cua header that roi dong lai o do. Gia tri bat ra vo hai, `filename=`
+-- THAT da bi tieu thu nen gmatch khong con thay, va ham tra `nil, false` — tuc
+-- BAO LA DA SOI SACH. Mot lan bo sot tu bao cao la hoan tat.
+local crlf_eat = '; filename="\r\n'
+              .. 'Content-Disposition: form-data; name=f; filename="../../shell.php"'
+check("fn_rule: nhay khong dong KHONG duoc an xuyen dong",
+      probe("POST", MULTI, crlf_eat).fn_rule, "arg_traversal")
+-- Va dong nay la cai bat duoc ca "bao sai la sach": neu regex lai an xuyen
+-- dong, fn_trunc se la `false` (fntr=0) thay vi `"stop"`.
+check("fn_rule: nhay khong dong -> KHONG duoc bao la da soi het",
+      probe("POST", MULTI, crlf_eat).fn_trunc, "stop")
+-- Quoted-pair KHONG duoc dung de thoat mot dau xuong dong: `\\[^\r\n]` chu
+-- khong phai `\\.` (trong PCRE khong co co `s`, dau `.` van khop `\r`).
+local crlf_esc = '; filename="a\\\r\n'
+              .. 'Content-Disposition: form-data; name=f; filename="../../s.php"'
+check("fn_rule: quoted-pair khong thoat duoc xuong dong",
+      probe("POST", MULTI, crlf_esc).fn_rule, "arg_traversal")
+
 -- FP THAT do giai ma qua tay. RFC 5987 la percent-encoding MOT LOP. Giai mot
 -- lan ra `a..%2Fb.txt` — mot ten file hop le chua ky tu `%`. Giai lan hai bien
 -- no thanh `a../b.txt` va ban.
@@ -417,6 +437,17 @@ local both = '; filename="' .. string.rep("a", 600) .. '.jpg"'
 for i = 1, 40 do both = both .. '; filename="f' .. i .. '.jpg"' end
 check("fn_trunc: cham ca hai tran -> \"len\" thang \"n\"",
       probe("POST", MULTI, both).fn_trunc, "len")
+
+-- DUNG LAI VI DA TIM THAY khac "da soi het". Ham thoat o luat dau tien nen cac
+-- ten file phia sau chua he duoc soi. Khong co `"stop"` thi `fntr=0` mang hai
+-- nghia va moi phep dem "bao nhieu lan quet hoan tat" deu lech.
+check("fn_trunc: co luat ban -> \"stop\", KHONG phai false",
+      probe("POST", MULTI, CD .. 'filename="../../x.php"').fn_trunc, "stop")
+-- `len` thang `stop`: cham tran do dai TRUOC khi tim thay thi van con vung mu.
+local len_then_hit = '; filename="' .. string.rep("a", 600) .. '.jpg"'
+                  .. '; filename="../../x.php"'
+check("fn_trunc: cham `len` roi moi tim thay -> \"len\" thang \"stop\"",
+      probe("POST", MULTI, len_then_hit).fn_trunc, "len")
 
 check("fn_trunc: multipart binh thuong -> false",
       probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)

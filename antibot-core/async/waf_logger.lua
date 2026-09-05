@@ -204,11 +204,16 @@ function _M.run_body(ctx)
         b.fn_rule or "-",
         -- LY DO quet ten file khong hoan tat. Doc kem `fnrule=`:
         --     fntr=-    khong ap dung — khong phai multipart, hoac spill
-        --     fntr=0    da soi het, khong thay gi
+        --     fntr=0    da soi het MOI ten file, khong luat nao ban
         --     fntr=rx   mau khong bien dich duoc -> loi luc deploy, sua ngay
         --     fntr=len  mot ten file > 512 byte  -> hiem, tu no da dang ngo
         --     fntr=n    hon 32 phan              -> thuong la upload that
-        -- Ba gia tri cuoi deu la KHONG BIET, khong phai sach — gop chung lai la
+        --     fntr=stop dung lai vi DA TIM THAY  -> binh thuong, kem `fnrule=`
+        -- `stop` ton tai de `fntr=0` chi con MOT nghia. Ham thoat ngay o luat
+        -- dau tien, nen khong co no thi `fnrule=X fntr=0` doc thanh "da soi
+        -- het" trong khi that ra cac ten file phia sau chua he duoc soi — va
+        -- moi phep dem "bao nhieu lan quet hoan tat" deu lech.
+        -- Ba gia tri rx/len/n deu la KHONG BIET, khong phai sach — gop lai la
         -- bien mot khoang trong thanh mot am tinh (cung nguyen tac da dung cho
         -- `php=-` va `exists=-`). Nhung chung doi ba viec khac han nhau, nen ghi
         -- co la dung nghia ma khong doc duoc. Nhoi 32 chuoi `filename=` gia vao
