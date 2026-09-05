@@ -450,7 +450,18 @@ function _M.probe(ctx)
             arg_rule = nil,
             fnm      = nil,
             fn_rule  = nil,
-            fn_trunc = nil,
+            -- `"spill"`, KHONG phai `nil`. `nil` in ra `fntr=-` = "khong ap
+            -- dung", va no dung voi request khong phai multipart. Voi multipart
+            -- DA SPILL thi khong ap dung la sai: co ten file that o trong do,
+            -- ta chi khong doc duoc. Gop hai thu vao mot dau `-` la giau mot
+            -- VUNG MU trong mot nhan vo can — lan thu tu cua cung dang loi
+            -- (`php = false`, `fntr` kieu co, `fntr=0` mang hai nghia).
+            --
+            -- Hau qua cu the neu de `nil`: ai do dem "so lan quet hoan tat" =
+            -- count(fntr=0) va "so vung mu" = count(rx|len|n) thi multipart da
+            -- spill khong roi vao O NAO CA — tong hai o khong bang tong so
+            -- multipart, va cai thieu di dung la cai bi bo qua.
+            fn_trunc = (family == "multipart") and "spill" or nil,
         }
         return
     end

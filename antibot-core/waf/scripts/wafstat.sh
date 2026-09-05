@@ -127,15 +127,17 @@ END{
     if(n==0) print "  (khong co)"
     print "  -- quet ten file khong hoan tat, theo LY DO --"
     print "     `stop` la binh thuong (dung lai vi da tim thay, di kem fnrule)."
-    print "     Ba cai con lai la KHONG BIET, khong phai sach, va doi ba viec"
-    print "     khac han nhau — nen dem RIENG."
+    print "     Bon cai con lai deu la KHONG BIET, khong phai sach, va moi cai"
+    print "     doi mot viec khac han — nen dem RIENG."
     tt=0
-    if(ftr["rx"]>0){ printf "  rx   %8d  MAU KHONG BIEN DICH DUOC -> loi deploy, sua NGAY\n", ftr["rx"]; tt+=ftr["rx"] }
-    if(ftr["len"]>0){ printf "  len  %8d  ten file > 512 byte -> hiem, tu no da dang ngo\n", ftr["len"]; tt+=ftr["len"] }
-    if(ftr["n"]>0){ printf "  n    %8d  hon 32 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
-    if(ftr["stop"]>0) printf "  stop %8d  dung lai vi da tim thay (binh thuong)\n", ftr["stop"]
-    for(k in ftr) if(k!="rx" && k!="len" && k!="n" && k!="stop"){ printf "  %-4s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
+    if(ftr["rx"]>0){ printf "  rx    %8d  MAU KHONG BIEN DICH DUOC -> loi deploy, sua NGAY\n", ftr["rx"]; tt+=ftr["rx"] }
+    if(ftr["len"]>0){ printf "  len   %8d  ten file > 512 byte -> hiem, tu no da dang ngo\n", ftr["len"]; tt+=ftr["len"] }
+    if(ftr["n"]>0){ printf "  n     %8d  hon 32 phan -> thuong la upload that, cach xu ly la nang tran\n", ftr["n"]; tt+=ftr["n"] }
+    if(ftr["spill"]>0){ printf "  spill %8d  multipart ra file tam -> KHONG soi gi ca\n", ftr["spill"]; tt+=ftr["spill"] }
+    if(ftr["stop"]>0) printf "  stop  %8d  dung lai vi da tim thay (binh thuong)\n", ftr["stop"]
+    for(k in ftr) if(k!="rx" && k!="len" && k!="n" && k!="spill" && k!="stop"){ printf "  %-5s %8d  (ngoai bang)\n", k, ftr[k]; tt+=ftr[k] }
     if(tt==0) print "  (khong co vung mu nao)"
+    if(ftr["spill"]>0 && fam["multipart"]>0) printf "  => MULTIPART KHONG HE DUOC SOI: %.1f%% (%d/%d). Day la thien lech cua\n     moi ty le fnrule o tren, va no KHONG dong duoc bang client_body_buffer_size:\n     ke tan cong don them byte la vuot moi con so.\n", 100*ftr["spill"]/fam["multipart"], ftr["spill"], fam["multipart"]
     print ""
     print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
     print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"

@@ -451,6 +451,19 @@ check("fn_trunc: cham `len` roi moi tim thay -> \"len\" thang \"stop\"",
 
 check("fn_trunc: multipart binh thuong -> false",
       probe("POST", MULTI, CD .. 'filename="anh.jpg"').fn_trunc, false)
+
+-- SPILL LA VUNG MU, KHONG PHAI "khong ap dung". Body ra file tam thi trong do
+-- CO ten file that, ta chi khong doc duoc. Gop no vao `nil` (in ra `fntr=-`)
+-- la giau mot vung mu trong mot nhan vo can: dem "quet hoan tat"=count(fntr=0)
+-- va "vung mu"=count(rx|len|n) thi multipart da spill khong roi vao o nao,
+-- tong hai o khong bang tong multipart, va cai thieu di dung la cai bi bo qua.
+check("fn_trunc: spill -> \"spill\", KHONG phai nil",
+      probe("POST", MULTI, nil).fn_trunc, "spill")
+-- Nhung spill cua request KHONG phai multipart thi dung la khong ap dung —
+-- khong co ten file nao de soi.
+check("fn_trunc: spill nhung khong multipart -> nil",
+      probe("POST", URLENC, nil).fn_trunc, nil)
+
 check("fn_trunc: khong phai multipart -> nil",
       probe("POST", URLENC, "a=1").fn_trunc, nil)
 

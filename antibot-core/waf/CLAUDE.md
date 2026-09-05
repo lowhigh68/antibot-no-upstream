@@ -418,7 +418,8 @@ Bản trước truyền `decode = (m[1] == "*")` nên rơi vào vòng 3 mức c�
 
 | Cột | Nghĩa |
 |---|---|
-| `fntr=-` | Không áp dụng — không phải multipart, hoặc body spill |
+| `fntr=-` | Không áp dụng — request không phải multipart |
+| `fntr=spill` | Multipart nhưng body ra file tạm → **không soi được gì cả** |
 | `fntr=0` | Đã soi hết **mọi** tên file, không luật nào bắn |
 | `fntr=rx` | **Mẫu không biên dịch được** → lỗi lúc deploy, sửa ngay |
 | `fntr=len` | Một tên file > 512 byte → hiếm, và tự nó đã đáng ngờ |
@@ -449,7 +450,7 @@ Dòng thứ ba là lý do không bỏ escape một cách phá huỷ: `..\..\` l�
 
 1. **Quét toàn bộ thân, chưa giới hạn trong vùng header của từng part.** Một file văn bản có **nội dung** chứa `; filename="../x.php"` vẫn đếm. Nhiễu telemetry thì chịu được; chặn thật thì là chặn oan một lần upload hợp lệ. Cần tách part theo boundary lấy từ `Content-Type` trước.
 2. **`rx`, `len`, `n` đều không phải sạch** (`stop` thì bình thường). Tải trọng ở tên file thứ 33 hoặc sau byte 512 không được nhìn thấy. Enforcement đọc chúng như "đã soi, không thấy" là biến vùng mù thành giấy thông hành — hoặc nâng trần cho đường chặn, hoặc coi chính việc chạm trần là một tín hiệu riêng.
-3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ.** Body spill ra file tạm cho `fn_rule=nil`. Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload**.
+3. **`fn_rule` chỉ tính trên multipart còn trong bộ nhớ** (`fntr=spill`). Upload lớn spill nhiều hơn, nên **đừng suy rộng tỉ lệ này ra toàn bộ lưu lượng upload** — `wafstat` mục 7 in thẳng tỉ lệ đó ra. Và nó **không đóng được bằng `client_body_buffer_size`**: buffer 64 KB thì kẻ tấn công độn 65 KB, buffer 256 KB thì độn 257 KB. Đây là địa hạt của `fim.sh` (`scan_full` không có `-maxdepth` nên phủ cả `uploads/`) cộng với `wp_upload_exec` chặn thẳng việc *thực thi* — không phải bài toán tinh chỉnh buffer.
 
 **`fn_rule` được miễn lấy mẫu** trong `waf_logger.run_body`. Bắt buộc: nó **không** sinh dòng `[waf]` (không tạo `waf_hits`), nên dòng `[waf-body]` là nguồn duy nhất của nó — quên là vứt 19/20 lượt. `fn_trunc` cũng được miễn — lấy mẫu nó đi thì tỉ lệ "không soi hết" trong số liệu thấp đi 20 lần.
 
@@ -533,6 +534,11 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+
+- 2026-09-05 (vòng 10) — **`fntr=spill`: vùng mù bị giấu trong một nhãn vô can.**
+  - Multipart đã spill trả `fn_trunc=nil` → in ra `fntr=-` = "không áp dụng", **giống hệt** một request không phải multipart. Nhưng trong body đó **có** tên file thật, ta chỉ không đọc được. Đếm "quét hoàn tất" = `count(fntr=0)` và "vùng mù" = `count(rx|len|n)` thì multipart đã spill **không rơi vào ô nào** — tổng hai ô không bằng tổng multipart, và cái thiếu đi đúng là cái bị bỏ qua. Lần thứ tư của cùng một dạng lỗi (`php = false`, `fntr` kiểu cờ, `fntr=0` hai nghĩa).
+  - `wafstat` mục 7 in thẳng **tỉ lệ multipart không hề được soi**, kèm câu không đóng được bằng buffer.
+  - **Không xây đọc file tạm.** Access phase là I/O chặn; log phase thì `io.open` được phép nhưng *file tạm còn tồn tại ở log phase hay không là chưa kiểm* — đúng loại giả định đã giết `wp_paths.mark()`. Và kể cả làm được thì không đáng: lỗ này thuộc `fim.sh` + `wp_upload_exec`, không phải của bộ đọc body.
 
 - 2026-09-05 (vòng 9) — **Nháy không đóng ăn xuyên dòng, và `fntr=0` mang hai nghĩa.**
   - **Bỏ sót tự báo cáo là hoàn tất.** `[^"\\]` cho qua cả `\r` và `\n`, nên một `filename="` không đóng nuốt sang dòng dưới tới dấu nháy **mở** của header thật rồi đóng lại ở đó:

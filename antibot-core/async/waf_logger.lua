@@ -203,8 +203,9 @@ function _M.run_body(ctx)
         -- percent-encoding); `filename=` thi khong.
         b.fn_rule or "-",
         -- LY DO quet ten file khong hoan tat. Doc kem `fnrule=`:
-        --     fntr=-    khong ap dung — khong phai multipart, hoac spill
-        --     fntr=0    da soi het MOI ten file, khong luat nao ban
+        --     fntr=-     khong ap dung — request khong phai multipart
+        --     fntr=0     da soi het MOI ten file, khong luat nao ban
+        --     fntr=spill multipart nhung body ra file tam -> KHONG soi gi ca
         --     fntr=rx   mau khong bien dich duoc -> loi luc deploy, sua ngay
         --     fntr=len  mot ten file > 512 byte  -> hiem, tu no da dang ngo
         --     fntr=n    hon 32 phan              -> thuong la upload that
