@@ -544,6 +544,12 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 
 ## Update log
 
+- 2026-09-05 (vòng 13) — **`thread_pool` bật. Vùng mù spill đóng thật, không còn là "đã viết nhưng chưa chạy".**
+  - `nginx -V` trên cloud168-101 có `--with-threads` → bỏ dấu `#`. Đây là **thay đổi chức năng đầu tiên của `nginx.conf` kể từ 24-05** (`2784a93`); mọi lần đụng file này giữa hai mốc đó đều là chú thích.
+  - **Cổng `[2b]` mới, chặn TRƯỚC rsync.** Điều kiện này khác mọi cổng khác ở chỗ nó phụ thuộc **bản build của từng máy**, không phải nội dung repo. Để `nginx -t` ở `[4d]` bắt thì cây `antibot-core` **đã** sync xong, nginx.conf bị khôi phục, script `exit 1` và không reload — máy đó chạy code cũ với cây mới trên đĩa, một trạng thái nửa vời. Chặn sớm thì không động gì cả.
+  - Máy nào build thiếu: thêm dấu `#` vào dòng đó trong repo. Code tự báo `scan=nothread`, không hỏng gì.
+  - Kiểm sau vài giờ: `grep -o 'scan=[^ ]*' /var/log/antibot/waf.log | sort | uniq -c` — `nothread` phải về 0.
+
 - 2026-09-05 (vòng 12) — **Tách lõi Lua thuần, đọc được thân đã tràn ra file tạm, và bỏ bản cài đặt trùng.** Ba file: `body_core.lua` (lõi, không `ngx`), `body_worker.lua` (chạy trong thread), `body.lua` (lớp truy cập `ngx`).
   - **Vùng mù spill đã đóng.** `ngx.run_worker_thread` chạy Lua trong thread pool thật nên `io.open` + đọc trọn file không chặn event loop. Tôi đã nói "đừng xây" ở vòng 10 với lý do I/O chặn và log phase — cơ chế này đi vòng qua cả hai. Đây là vùng mù mà `client_body_buffer_size` **không bao giờ** đóng được (buffer 64K thì độn 65K).
   - **Ràng buộc kéo theo:** thread VM không có API `ngx`, nên lõi phải là Lua thuần — hết `ngx.re`. Giá: `body:lower()` cấp một bản sao trọn thân (50 MiB → 100 MiB cho một lần đọc). Đó là lý do `threads=2`.

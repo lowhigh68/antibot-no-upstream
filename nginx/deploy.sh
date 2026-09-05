@@ -116,6 +116,33 @@ if [ $sh_fail -ne 0 ]; then
 fi
 echo "    OK"
 
+# [2b] `thread_pool` doi OpenResty build voi `--with-threads`.
+#
+# CHAN O DAY, TRUOC RSYNC, chu khong de `nginx -t` o [4d] bat. Neu de toi do
+# thi cay antibot-core DA sync xong, nginx.conf bi khoi phuc, script exit 1 va
+# KHONG reload — may do chay code cu voi cay moi tren dia, mot trang thai nua
+# voi. Chan som thi khong dong gi ca.
+#
+# Dieu kien nay khac moi cong khac o cho no phu thuoc BAN BUILD cua tung may,
+# khong phai noi dung repo. cloud168-101 co (xac nhan 05-09); may nao khong co
+# thi hoac build lai OpenResty, hoac them dau `#` vao dong do trong repo —
+# code tu bao `scan=nothread`, khong hong gi.
+if grep -qE '^[[:space:]]*thread_pool[[:space:]]+antibot_waf_io' "$REPO_DIR/nginx/nginx.conf"; then
+    echo "[2b] Kiem --with-threads..."
+    if "$NGINX" -V 2>&1 | grep -q -- '--with-threads'; then
+        echo "    OK"
+    else
+        echo "    OpenResty tren may nay build KHONG co --with-threads."
+        echo "    nginx.conf trong repo lai co 'thread_pool antibot_waf_io' dang bat"
+        echo "    => nginx -t se bao 'unknown directive'."
+        echo "HUY: KHONG sync, cay dang chay giu nguyen."
+        echo "     Cach xu ly: them dau # vao dong thread_pool trong"
+        echo "     nginx/nginx.conf CUA REPO. Than tran ra file tam se khong duoc"
+        echo "     soi, va cot scan=nothread trong waf.log noi ro bao nhieu."
+        exit 1
+    fi
+fi
+
 # goodbot.json hong = goodbot_seed bo qua toan bo registry -> moi bot xin
 # tut xuong duong attest hoac bi cham diem. Im lang, kho lan ra.
 if [ -x "$RESTY" ] && [ -f "$SOURCE_DIR/core/data/goodbot.json" ]; then
@@ -239,7 +266,7 @@ if [ -f "$NGINX_CONF_SRC" ] && [ -f "$NGINX_CONF_DST" ]; then
     fi
 fi
 
-# [4e] thread_pool: NHAC, khong tu bat.
+# [4e] Trang thai duong doc file tam, de doc log biet dang o che do nao.
 #
 # `waf/body.lua` soi duoc than da tran ra file tam qua `ngx.run_worker_thread`,
 # nhung `thread_pool` chi ton tai neu OpenResty build voi `--with-threads`.
@@ -249,17 +276,14 @@ fi
 # KHONG tu bo dau `#` ho: lam vay thi ban da deploy khac ban trong repo, va
 # [4d] (so byte bang `cmp`) se ghi de nguoc lai o lan deploy sau — mot vong lap
 # im lang. Chi nhac; nguoi van hanh sua trong repo mot lan.
-if "$NGINX" -V 2>&1 | grep -q -- '--with-threads'; then
-    if ! grep -qE '^[[:space:]]*thread_pool[[:space:]]+antibot_waf_io' "$NGINX_CONF_DST" 2>/dev/null; then
-        echo "[4e] OpenResty co --with-threads nhung thread_pool CHUA bat."
-        echo "     Than request tran ra file tam dang KHONG duoc soi."
-        echo "     Do bao nhieu:  grep -c 'scan=nothread' /var/log/antibot/waf.log"
-        echo "     Bat: bo dau # dong 'thread_pool antibot_waf_io' trong"
-        echo "          nginx/nginx.conf CUA REPO, commit, roi chay lai deploy.sh"
-    fi
+# [4e] Bao trang thai cua duong doc file tam, de doc log biet dang o che do nao.
+# Dieu kien build da duoc chan o [2b]; day chi la mot dong trang thai.
+if grep -qE '^[[:space:]]*thread_pool[[:space:]]+antibot_waf_io' "$NGINX_CONF_DST" 2>/dev/null; then
+    echo "[4e] thread_pool BAT — than tran ra file tam duoc soi trong thread pool."
+    echo "     Kiem sau vai gio: grep -o 'scan=[^ ]*' /var/log/antibot/waf.log | sort | uniq -c"
+    echo "     Mong doi: scan=nothread ve 0, va scan=ok tang len."
 else
-    echo "[4e] OpenResty build KHONG co --with-threads -> khong bat duoc"
-    echo "     thread_pool. Than tran ra file tam se ghi scan=nothread."
+    echo "[4e] thread_pool TAT — than tran ra file tam KHONG duoc soi (scan=nothread)."
 fi
 
 echo "[5] nginx -t..."

@@ -28,11 +28,12 @@ local _M = {}
 -- Pool nho de chan so lan doc 50 MiB dong thoi. Hang day tran thi bao
 -- `scan=spill_thread` — KHONG BAO GIO lui ve `io.open` chan tren event loop.
 --
--- CHUA BAT MAC DINH. `thread_pool` chi ton tai neu OpenResty build voi
--- `--with-threads`; thieu no thi `nginx -t` HONG va buoc [4d] cua deploy.sh huy
--- ca lan deploy. Nen dong do de comment trong nginx.conf; xem huong dan o day.
--- Khi chua bat, moi than spill ghi `scan=nothread` — han che HIEN RA trong so
--- lieu chu khong am tham.
+-- DA BAT tu 05-09 (cloud168-101 co `--with-threads`). Dieu kien build duoc
+-- kiem o buoc `[2b]` cua deploy.sh — TRUOC rsync, de mot may build thieu bi tu
+-- choi som chu khong hong nua chung.
+--
+-- Tat lai chi can them dau `#` trong nginx.conf: code tu bao `scan=nothread`,
+-- khong hong gi. Han che HIEN RA trong so lieu chu khong am tham.
 local THREAD_POOL   = "antibot_waf_io"
 local WORKER_MODULE = "antibot.waf.body_worker"
 
