@@ -5,9 +5,23 @@ local _M = {}
 -- Thêm compound rule: Chrome UA + no H2 + no Sec-Fetch → penalty mạnh hơn.
 -- api_callback class được loại trừ (server callback hợp lệ không có H2).
 
+-- "Chrome CHỨ KHÔNG PHẢI Edge". Loại `Edg/` là CÓ CHỦ Ý và đúng cho các luật
+-- về TLS/H2: Edge có lịch trình phát hành và stack mạng riêng, không được đem
+-- kỳ vọng của Chrome ra áp.
 local function ua_is_chrome(ua)
     return ua and ua:find("Chrome/", 1, true) ~= nil
               and ua:find("Edg/",    1, true) == nil
+end
+
+-- "Thuộc HỌ Chromium" — Chrome, Edge, Opera, Brave, Samsung Internet, Cốc Cốc…
+-- Tất cả đều mang `Chrome/` trong UA và đều gửi `Sec-CH-UA`.
+--
+-- Tách riêng khỏi `ua_is_chrome` vì luật `ch_ua` bên dưới hỏi một câu KHÁC HẲN:
+-- không phải "có phải Chrome không" mà là "có gửi header chỉ-Chromium-mới-gửi
+-- trong khi UA không nhận mình là Chromium không". Dùng nhầm hàm ở đó biến
+-- toàn bộ người dùng Edge thành kẻ giả mạo — xem chú thích tại luật.
+local function ua_is_chromium(ua)
+    return ua and ua:find("Chrome/", 1, true) ~= nil
 end
 local function ua_is_firefox(ua)
     return ua and ua:find("Firefox/", 1, true) ~= nil
@@ -97,9 +111,26 @@ function _M.run(ctx)
     -- RANH GIỚI SỞ HỮU, giữ đúng khi thêm luật mới:
     --   h2_bot_confidence = những gì tầng H2 QUAN SÁT được
     --   mismatch          = MÂU THUẪN giữa điều UA tự nhận và điều các tầng thấy
+    -- Ý ĐỊNH của luật: client gửi `Sec-CH-UA` — header CHỈ họ Chromium gửi —
+    -- trong khi UA không nhận mình là Chromium ⇒ mâu thuẫn ⇒ giả mạo UA.
+    --
+    -- LỖI ĐÃ SỬA (2026-09-06): vế phủ định dùng `ua_is_chrome`, mà hàm đó CỐ Ý
+    -- LOẠI Edge (`Edg/`). Edge thì:
+    --   • là Chromium ⇒ **có** gửi `Sec-CH-UA` ⇒ `has_ch_ua = true`
+    --   • bị `ua_is_chrome` trả false ⇒ `not ua_is_chrome(ua)` = true
+    -- ⇒ **mọi người dùng Edge trên HTTP/2 ăn +0,3 × 55 = +16,5 điểm.**
+    --
+    -- Đúng hình dạng con bug `KNOWN_PATTERNS.mpsa` vừa sửa cho Firefox: một
+    -- hàm phụ viết cho mục đích này bị đem dùng ở luật hỏi câu khác. Và Edge
+    -- còn chịu thiệt kép — `ua_is_modern_browser` cũng loại nó, nên nó thoát
+    -- `no_h2_no_secfetch`/`headless_ent`/`tls12` (ba luật bắt bot thật) mà lại
+    -- dính đúng luật chống giả mạo.
+    --
+    -- CHƯA SỬA phần `ua_is_modern_browser` bỏ sót Edge: vá chỗ đó là BẬT ba
+    -- luật kia cho cả một họ trình duyệt, tức đổi chiều ngược lại. Cần đo trước.
     if ctx.h2_header_profile then
         local ch = ctx.h2_header_profile.client_hints
-        if ch and ch.has_ch_ua and not ua_is_chrome(ua) then
+        if ch and ch.has_ch_ua and not ua_is_chromium(ua) then
             score = score + 0.3
             hit[#hit + 1] = "ch_ua"
         end
