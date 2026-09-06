@@ -570,7 +570,16 @@ function _M.run(ctx)
         tostring(ctx.tls13),
         tostring(ctx.h2_is_h2),
         tostring(ctx.ja3 or "-"),
-        tostring(ctx.ja3_partial or false),
+        -- BA trạng thái, không phải hai. `tostring(ctx.ja3_partial or false)`
+        -- làm `nil` sập thành `false`, mà `ja3.lua` đặt `ja3_partial = nil` ở
+        -- CẢ BỐN nhánh không tính được JA3. Nên `ja3p=false` đã có nghĩa
+        -- "JA3 đầy đủ" với người đọc, trong khi thực tế nó là "chưa từng có
+        -- JA3" — và số JA3 đầy đủ trên toàn đàn máy là 0.
+        --   true  = có JA3, thiếu cipher list (đánh đổi kiến trúc, xem ja3.lua)
+        --   false = có JA3 ĐẦY ĐỦ
+        --   -     = KHÔNG có JA3 (resource class, bridge miss, capture hỏng)
+        -- Cùng con `false`-vs-`nil` đã cắn ở `waf/body.lua` (`php = false`).
+        (ctx.ja3_partial == nil) and "-" or tostring(ctx.ja3_partial),
         ctx.score or 0,
         ctx.effective_score or 0,
         tostring(ctx.score_multiplier or 1.0),

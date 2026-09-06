@@ -13,10 +13,22 @@ Compute JA3/JA3S/H2 fingerprints from data captured during SSL handshake (stored
 | `tls/init.lua` | Calls `ja3.run(ctx)` + `ja3s.run(ctx)` |
 | `tls/ja3.lua` | `capture()` runs in `ssl_client_hello_by_lua_block` — parses ClientHello extensions, stores in `lua_shared_dict antibot_tls` keyed by md5(client_random). `run(ctx)` reads from dict at access phase, computes JA3 hash, sets `ctx.ja3`, `ctx.ja3_raw`, `ctx.ja3_partial` (true when no cipher list — constant in no-stream arch), `ctx.tls13` |
 | `tls/ja3s.lua` | `capture()` runs in `ssl_certificate_by_lua_block` — captures negotiated cipher + version. `run(ctx)` sets `ctx.ja3s`, `ctx.ja3s_raw`, `ctx.tls_cipher` |
-| `tls/ja3_stream.lua` | Stream preread cipher capture — only works if `stream{}` block configured (this project does NOT use stream → always returns nil → ja3_partial = true) |
+| ~~`tls/ja3_stream.lua`~~ | **ĐÃ XOÁ 2026-09-06.** Đọc ClientHello ở tầng `stream{}` preread, mà repo này không có `stream{}` (`grep -rn 'preread\|^stream' nginx/` → rỗng) ⇒ luôn trả nil. Giữ lại chỉ tạo cảm giác cipher list "có đường lấy" |
 | `http2/init.lua` | Inspects HTTP/2 settings/headers → `ctx.h2_sig`, `ctx.h2_order`, `ctx.h2_bot_confidence` |
 
 ## Cross-phase bridge — RELAY 2 NHỊP
+
+> **MÂU THUẪN CHƯA GIẢI, ghi 2026-09-06.** Câu "`ngx.ctx` does NOT persist" bên
+> dưới **mâu thuẫn với chính code trong thư mục này**: `ja3s.capture()` ghi
+> `ngx.ctx.tls_ja3s` ở `ssl_certificate_by_lua`, rồi `ja3s.run(ctx)` đọc lại nó ở
+> access phase ([`tls/ja3s.lua`](tls/ja3s.lua)). Một trong hai điều phải sai:
+> hoặc `ngx.ctx` CÓ đi xuyên phase (⇒ câu này sai, và cầu shared-dict theo IP là
+> phức tạp thừa), hoặc nó KHÔNG (⇒ `ja3s` chết từ đầu). **Không ai phát hiện được
+> vì không module nào tiêu thụ `ctx.ja3s`** — xem mục Update log.
+> Lưu ý riêng cho HTTP/2: một kết nối TLS chở NHIỀU request, mà `ngx.ctx` là
+> per-REQUEST; nên kể cả khi nó đi xuyên phase, chưa chắc đã tới được request
+> thứ hai trở đi. Phải đo bằng request thật, không suy luận.
+
 `ssl_client_hello_by_lua` → `ssl_certificate_by_lua` → `access_by_lua` are SEPARATE Lua VMs. `ngx.ctx` does NOT persist. Bridge = `lua_shared_dict antibot_tls`.
 
 **`get_client_random()` trả 32 byte 0 ở phase ClientHello** (đo 2026-07-31) — OpenSSL chưa nạp. Không dùng nó làm khoá ở phase đó được. `ngx.var` cũng bị disable ở phase đó. Nên:
@@ -53,6 +65,28 @@ Khoá tạm theo IP chỉ sống giữa hai callback của **cùng một handsha
 - Modules MUST export both `_M.capture` and `_M.run` — replacing with no-op breaks transport pipeline (`attempt to call nil`)
 
 ## Update log
+- 2026-09-06 — **Đo JA3 trên 5 máy. Xoá `ja3_stream.lua`. Sửa cột `ja3p=` đang nói dối.**
+  - **Cột `ja3p=` KHÔNG đọc được như xưa nay vẫn đọc.** `async/logger.lua` viết `tostring(ctx.ja3_partial or false)`, mà `ja3.lua` đặt `ja3_partial = nil` ở **cả bốn** nhánh không tính được JA3 ⇒ `nil` sập thành `false` ⇒ **`ja3p=false` trông như "JA3 đầy đủ" nhưng thật ra là "chưa từng có JA3"**. Vì `is_partial` luôn true khi tính được, **số JA3 đầy đủ trên toàn đàn máy đúng bằng 0** — trong khi log hiển thị 26–99% "false". Nay ba trạng thái tách bạch: `true` = thiếu cipher, `false` = đầy đủ, `-` = không có JA3. Cùng con `false`-vs-`nil` đã cắn ở `waf/body.lua` (`php = false`).
+  - **`ja3_stream.lua` ĐÃ XOÁ.** Không có `stream{}` / `preread` ở đâu trong repo, và file tự CLAUDE.md của nó đã ghi "always returns nil". Giữ lại chỉ tạo cảm giác cipher list có đường lấy. `is_partial = true` viết thẳng, hành vi **không đổi**.
+  - **`get_client_hello_ciphers()` CÓ trên cả 5 máy** (OpenResty 1.29.2.3 / 1.31.1.1, lua-resty-core 0.1.33 / 0.1.34). Nghĩa là lấy được cipher NGAY trong `ssl_client_hello_by_lua`, **không đụng tới mô hình OpenResty→Apache**. Đánh đổi "no-stream" là thật và có chủ ý, nhưng nó **không còn buộc** JA3 phải partial.
+    - **CHƯA BẬT — bật là thay đổi chính sách, không phải sửa lỗi.** `ja3_db.lua` và `ja3_allowlist.lua` đều gác `ja3_partial`, nên chúng **chưa từng chạy một lần nào**. Có cipher ⇒ `is_partial=false` ⇒ **cả hai bật cùng lúc trên toàn đàn máy**, mà `ja3_allowlist_miss` nặng **50**. Thêm nữa hash JA3 đổi ⇒ `fp_light` đổi một lượt ⇒ `sess:` mồ côi, `ban:` hết khớp, counter reset (đã cảnh báo ở `antibot-core/CLAUDE.md` 2026-07-31). Cần đo phân phối trên người dùng đã verified trước, và bật ở chế độ quan sát.
+  - **`lua-resty-core >= 0.1.25` trên cả 5 máy** ⇒ `get_client_hello_ext_present` trả **mảng**, thứ tự extension được giữ. Nhánh cảnh báo "ext_present is hash — order lost" trong `ja3.lua` **không hoạt động** (và nó ghi ở `ngx.WARN` nên vô hình dưới `error_log` mức `error`).
+  - **JA3 chũn KHÔNG phải vấn đề của đàn máy này** — giả thuyết "Chromium randomize thứ tự extension làm `fp_light` chũn" **bị dữ liệu bác bỏ**:
+
+    | Máy | 1 JA3 duy nhất | ≥5 JA3 | TB/client | max |
+    |---|---|---|---|---|
+    | cloud171-96 | 97,9% | 0,0% | 1,03 | 15 |
+    | cloud183-139 | 96,5% | 0,2% | 1,06 | 125 |
+    | cloud168-101 | 96,8% | 0,9% | 1,14 | 160 |
+    | cloud28-246 | 95,7% | 1,2% | 1,26 | 457 |
+    | cloud186-126 | 89,8% | 4,5% | **1,68** | 374 |
+
+    Cùng client + cùng phút mà vẫn nhiều JA3: 0,7–3,0%. `max` hàng trăm gần như chắc chắn là **artefact của hàm định danh**, không phải JA3 bất ổn: `id = md5(ip+ua)` nên sau CGNAT, hàng trăm điện thoại cùng UA Chrome bị gộp thành **một** `id`, mỗi máy một JA3. cloud186-126 cao gấp rưỡi phần còn lại — nếu muốn đụng tới đây thì đo riêng máy đó trước.
+  - **`ja3s` sinh hằng số `d8eada1de0f744e8f2d11cc5ea02451d` = MD5("0,0,")** (đã tự tính lại để xác nhận). Hai lỗi API, cả hai xác nhận bằng bộ dò trên máy thật:
+    - `ssl.get_tls1_version()` trả **số** `0x0303`, mà `VER_MAP` tra bằng khoá **chuỗi** `"TLSv1.2"` ⇒ `version = 0`. Tên biến là `ver_str` — ý định ban đầu là `get_tls1_version_str()`, và hàm đó **có tồn tại**.
+    - `ngx.ssl.get_cipher_name` **KHÔNG TỒN TẠI** (bộ dò xác nhận trên cả 5 máy) ⇒ `cipher_id = 0`. Phải dùng `ngx.var.ssl_cipher`.
+    - **Tác động hôm nay bằng 0 vì không module nào tiêu thụ `ctx.ja3s`.** Đó cũng chính là lý do nó sống được lâu như vậy — cùng loại với `canvas_change` (xem `memory/project_dead_signals.md`).
+  - **CẢNH BÁO cho ai định dọn `ja3s`:** `ja3s.capture()` là **nơi chở `ja3.relay()`** — nhịp 2 của cầu JA3, đặt ở đó có chủ ý để khỏi sửa 99 per-domain conf. **Xoá `ja3s` là JA3 chết theo.** Một bản review bên ngoài đã đề xuất "dừng dùng JA3S" làm bước ĐẦU TIÊN của lộ trình; làm đúng thế là mất JA3 toàn đàn máy.
 - 2026-08-01 — **`http2/signature.lua`: nhánh "không có H2" trả 0 thay vì +0.15.** Không có H2 thì tầng H2 **không quan sát được gì** → `h2_bot_confidence = 0`. Mâu thuẫn "UA khai trình duyệt mà không có H2" là mâu thuẫn **giữa các tầng**, thuộc `intelligence/correlation/consistency_check.lua` và đã tính ở đó — trước đây cộng cả hai nơi mà hai signal cùng weight 55. Cùng đợt còn gỡ `h2_bot_pattern`/`h2_tls_mismatch` khỏi `mismatch` (chúng là quan sát thô của tầng H2, `signature.lua` đã tính +0.40/+0.25). **Ranh giới sở hữu:** `h2_bot_confidence` = quan sát của tầng H2; `mismatch` = mâu thuẫn UA↔tầng. Đo trước khi sửa: `block → challenge` 54/171, `block → allow` **0**. Chi tiết ở `intelligence/CLAUDE.md` 2026-08-01 (3).
 - 2026-07-31 (4) — **Đường cứu cho handshake NỐI LẠI PHIÊN (promote ở access phase).**
   - Sau relay 2 nhịp, JA3 đã per-client thật (phân bố hàng chục hash, hash phổ biến nhất chỉ 16%) nhưng phủ chỉ ~14%. Phân rã miss: **`dict_miss` 143/173**, `no_bridge_key` 30 mà **27 là `scheme=http`** (cổng 80, không có TLS — đúng thiết kế), `zero client_random` = **0**.

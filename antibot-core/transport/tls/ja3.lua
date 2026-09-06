@@ -430,21 +430,28 @@ function _M.run(ctx)
         return
     end
 
-    local client_ip   = ngx.var.remote_addr
-    local client_port = ngx.var.remote_port
-
-    local ciphers    = nil
+    -- ── VÌ SAO KHÔNG CÓ CIPHER LIST, VÀ VÌ SAO ĐÓ LÀ CHỦ ĐỘNG ──────────
+    --
+    -- `ja3_stream.lua` ĐÃ BỊ XOÁ (2026-09-06). Nó đọc ClientHello ở tầng
+    -- `stream{}` preread, mà kiến trúc này KHÔNG có `stream{}`: OpenResty kết
+    -- thúc TLS/HTTP rồi `proxy_pass` sang Apache, nên `$remote_addr` là IP thật
+    -- của khách. Thêm một tầng stream đọc rồi chuyển tiếp lại ClientHello vừa
+    -- có thể phá bắt tay, vừa làm rối định tuyến — đó là đánh đổi kiến trúc CÓ
+    -- CHỦ Ý, không phải chỗ bị bỏ sót.
+    --
+    -- Hệ quả đo được: `is_partial` LUÔN true ⇒ số JA3 đầy đủ trên toàn đàn máy
+    -- là **0**. `intelligence/threat/ja3_db.lua` và `ja3_allowlist.lua` đều gác
+    -- `ja3_partial` nên chúng chưa từng chạy — đó là fail-safe đúng.
+    --
+    -- CÒN MỘT ĐƯỜNG KHÁC, KHÔNG ĐỤNG TỚI KIẾN TRÚC:
+    -- `ngx.ssl.clienthello.get_client_hello_ciphers()` lấy được cipher NGAY
+    -- trong `ssl_client_hello_by_lua`. Đo 2026-09-06 trên cả 5 máy
+    -- (OpenResty 1.29.2.3 / 1.31.1.1, lua-resty-core 0.1.33 / 0.1.34): API này
+    -- **CÓ**. Chưa dùng vì bật nó là một thay đổi CHÍNH SÁCH chứ không phải sửa
+    -- lỗi — xem `transport/CLAUDE.md` mục 2026-09-06.
+    local ciphers    = {}
     local cipher_src = "none"
-    if client_ip and client_port then
-        local ok2, stream_mod = pcall(require, "antibot.transport.tls.ja3_stream")
-        if ok2 and stream_mod then
-            ciphers = stream_mod.get_ciphers_for_request(client_ip, client_port)
-            if ciphers then cipher_src = "stream_preread" end
-        end
-    end
-
-    local is_partial = not ciphers or #ciphers == 0
-    if is_partial then ciphers = {} end
+    local is_partial = true
 
     local tls_version = 0x0303
     local ja3_str  = build_ja3_str(tls_version, ciphers,
