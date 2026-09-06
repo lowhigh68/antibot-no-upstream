@@ -522,12 +522,20 @@ function _M.run(ctx)
     --   grep -oP 'mm=\K\S+' antibot.log | tr ',' '\n' | sort | uniq -c | sort -rn
     --   grep -oP 'mm=\S*tls12\S*' antibot.log | wc -l     # nhánh mới sống
     --   grep 'mm=' antibot.log | grep -oP 'h2bc=\K\S+' | sort | uniq -c
+    --
+    -- ĐIỀU KIỆN LÀ **HOẶC**, không phải chỉ `mm_rules`. Trước đây `h2bc=` chỉ
+    -- được ghi khi có ít nhất một nhánh `mismatch` bắn — nên một client chỉ
+    -- dính `h2_tls_mismatch` (ví dụ webhook Go: `pseudo_header` kỳ vọng sai
+    -- phiên bản TLS) KHÔNG để lại một dấu vết nào trong antibot.log, dù nó
+    -- đang ăn 13,75 điểm. Cột đo mà tắt đúng lúc cần đo thì không phải cột đo.
+    -- `mm=-` khi không có nhánh nào, để phân rã bằng awk vẫn chạy.
     local mm_str = ""
-    if ctx.mm_rules and ctx.mm_rules ~= "" then
+    local h2bc   = tonumber(ctx.h2_bot_confidence) or 0
+    if (ctx.mm_rules and ctx.mm_rules ~= "") or h2bc > 0 then
         mm_str = string.format(" mm=%s mm_raw=%.2f h2bc=%.2f",
-            ctx.mm_rules,
+            (ctx.mm_rules and ctx.mm_rules ~= "") and ctx.mm_rules or "-",
             ctx.mm_raw or 0,
-            ctx.h2_bot_confidence or 0)
+            h2bc)
     end
 
     -- Dấu WAF: CHỈ để nối sang waf.log, không phải để đọc ở đây. Chi tiết đầy
