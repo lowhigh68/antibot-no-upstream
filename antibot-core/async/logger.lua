@@ -557,6 +557,41 @@ function _M.run(ctx)
         beacon_state = ctx.beacon_received and "1" or "0"
     end
 
+    -- ── TELEMETRY ĐO CHURN `fp_light` (2026-09-07) — CHỈ ĐẾM, không chấm điểm ──
+    --
+    -- Câu hỏi: `h2_sig` có mang dữ liệu THEO-TỪNG-REQUEST không, khiến
+    -- `fp_light = md5(ip|ua|asn|ja3|h2_sig)` đổi giữa hai request của CÙNG một
+    -- client? Nếu có thì `sess:<fp_light>` bị cắt vụn và `sess_len` không bao
+    -- giờ lớn lên được.
+    --
+    -- VÌ SAO ĐO TRONG PHẠM VI MỘT KẾT NỐI: cùng `conn` thì chắc chắn cùng
+    -- client tại thời điểm đó. Không phải giả định gì về identity ⇒ tránh được
+    -- bẫy CGNAT và `identity = md5(ip+ua_norm)` gộp cả văn phòng làm một
+    -- (xem `core/CLAUDE.md` 2026-07-21).
+    --
+    -- PHÉP ĐO TRƯỚC ĐÓ (do_fpchurn, so `session_richness` giữa H2 và H1) KHÔNG
+    -- LIÊN QUAN tới câu hỏi này — không phải "bằng chứng yếu", mà là không có
+    -- đường nhân quả: `core/session_richness.lua` tính từ cookie của CHÍNH
+    -- request cộng `richness:max:<identity>`, khoá theo **identity**. Nó không
+    -- thể phản ứng với churn `fp_light` theo chiều nào cả. Trường đọc
+    -- `sess:<fp_light>` là `ctx.sess_len` (`detection/session/session_load.lua`),
+    -- nên nó mới là cột đúng.
+    --
+    -- Bỏ qua request không có `fp_light` (class `resource` skip tầng
+    -- fingerprint): không có fp_light thì không có gì để nói về churn fp_light.
+    --
+    -- TẠM THỜI. Gỡ sau khi kết luận — mỗi dòng tốn ~50 byte.
+    local churn_str = ""
+    if ctx.fp_light then
+        churn_str = string.format(" fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d",
+            tostring(ctx.fp_light):sub(1, 8),
+            ctx.h2_sig and tostring(ctx.h2_sig):sub(1, 8) or "-",
+            tostring(ngx.worker.pid()),
+            tostring(ngx.var.connection or "-"),
+            tostring(ngx.var.connection_requests or "-"),
+            tonumber(ctx.sess_len) or 0)
+    end
+
     -- Build structured log line — all fields on one line, space-separated key=value.
     -- richness ∈ [0,1] = ctx.session_richness, trust proxy (cookie payload +
     -- auth header). Log mỗi request để debug/audit; volume control qua daily
@@ -567,7 +602,7 @@ function _M.run(ctx)
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -621,7 +656,8 @@ function _M.run(ctx)
         xf_str,
         sc_str,
         mm_str,
-        waf_str
+        waf_str,
+        churn_str
     )
 
     write_log_line(line)
