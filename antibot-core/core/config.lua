@@ -74,13 +74,24 @@ _M.thresholds = {
 --                                     đó đúng là ca 30 điểm oan.
 --             Và trong antibot.log: `ja3c=` phải có số, `ja3p=` vẫn `true`.
 --
---   "on"    — dùng cipher thật. `ja3_partial=false` ⇒ `ja3_db` và
---             `ja3_allowlist` bắt đầu chạy (trước nay chưa từng chạy), và
+--   "on"    — dùng cipher thật. `ja3_partial=false` ⇒ `ja3_allowlist` bắt đầu
+--             chạy (trước nay chưa từng chạy — `ja3_db` đã bị xoá vì không ai
+--             đọc đầu ra của nó), và
 --             **hash JA3 đổi ⇒ `fp_light` đổi một lượt** ⇒ `sess:` mồ côi,
 --             `ban:` hết khớp, counter reset. Reload vào giờ thấp điểm.
 --             Theo dõi `j3m=` trong antibot.log: đó là `ja3_allowlist_miss`.
 --             Trình duyệt thật phải ra 0.00. Thấy 0.60 hàng loạt = quay lại
 --             "probe" ngay.
+--
+-- HAI CHỐT ĐÃ ĐẶT SẴN cho ca "30 điểm oan", nên nấc "on" không còn là cú nhảy
+-- niềm tin (2026-09-06):
+--   1. `parse_ciphers` trả thêm `valid`. Chuỗi lẻ byte, phần tử bảng không
+--      phải số nguyên 0..65535, hoặc kiểu trả về lạ ⇒ VỨT CẢ DANH SÁCH thay
+--      vì cứu vớt phần đọc được. Đầu vào hỏng không còn thành "JA3 đầy đủ".
+--   2. `ja3.lua` chỉ bỏ cờ `partial` khi bắt được ≥ `MIN_PLAUSIBLE_CIPHERS`
+--      (= 5, đúng bằng ngưỡng phạt bên `ja3_allowlist`). Dưới ngưỡng thì giữ
+--      `partial` (0 điểm) và ghi `[ja3] cipher_too_few` ở mức ERR.
+-- Cả hai đều rơi về đúng hành vi nấc "off" khi có nghi ngờ.
 _M.tls = {
     ja3_cipher = "off",
 }
@@ -101,7 +112,6 @@ _M.endpoint_sensitivity = {
 }
 
 _M.ttl = {
-    geo              = 3600,
     asn              = 3600,
     fp               = 86400,
     fp_quality       = 86400,
@@ -123,8 +133,6 @@ _M.ttl = {
     dns              = 600,
     rep_ip           = 900,
     rep_asn          = 3600,
-    rep_ja3          = 3600,
-    rep_h2           = 3600,
     -- 60 → 300. Cửa sổ này KHÔNG còn phải chứa thời gian giải PoW (bộ giải
     -- đồng bộ mới xong trong ~3 lát 30ms, kể cả khi tab chạy nền), mà phải
     -- chứa: tải trang + thiết bị yếu + khách chuyển sang app khác rồi quay lại

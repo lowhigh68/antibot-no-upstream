@@ -657,6 +657,97 @@ else
             "          khong thay duoc ja3_allowlist_miss khi len `on`\n")
     end
 end
+-- ── 10. parse_ciphers: CHAY THAT, khong tim chuoi ───────────────────
+--
+-- Muc 9 tim chuoi trong ma nguon. Dau file nay da ghi ro dieu do khong chung
+-- minh duoc gi — mot phep so sanh nam trong khoi chu thich van lam no xanh.
+-- Voi thang cipher, mau xanh gia dat hon o moi cho khac: bat nac "on" doi
+-- chinh sach cham diem cua CA DAN MAY trong mot lan reload.
+--
+-- Nen muc nay NAP module va GOI HAM. `ja3.lua` khong dung `ngx` nao o muc
+-- top-level va `require` config duoc boc pcall, nen `loadfile` chay duoc kho
+-- ma khong can ha tang gi.
+io.write("\nhanh vi: parse_ciphers (chay that)\n")
+
+local ja3_chunk = loadfile(SRC .. "transport/tls/ja3.lua")
+if not ja3_chunk then
+    bad("  SAI  khong nap duoc transport/tls/ja3.lua\n")
+else
+    local ok_load, ja3_mod = pcall(ja3_chunk)
+    local pc = ok_load and type(ja3_mod) == "table" and ja3_mod._parse_ciphers
+    if not pc then
+        bad("  SAI  ja3.lua khong lo `_parse_ciphers` (muc 10 khong chay duoc)\n")
+    else
+        -- Moi ca: {nhan, dau vao, so cipher mong doi, `valid` mong doi}
+        local cases = {
+            -- Bang so hop le: 5 suite that cua mot ClientHello TLS 1.3.
+            { "bang so hop le",
+              { 4865, 4866, 4867, 49195, 49199 }, 5, true },
+            -- Chuoi byte: 0x1301 0x1302 = TLS_AES_128/256_GCM_SHA384.
+            { "chuoi byte chan",
+              "\19\1\19\2", 2, true },
+            -- GREASE (0x0a0a) phai bi loai, phan con lai giu nguyen.
+            { "GREASE bi loai",
+              { 0x0a0a, 4865, 4866 }, 2, true },
+            -- DO DAI LE = doc lech khung 2 byte. Phai VUT CA DANH SACH.
+            { "chuoi byte le -> khong hop le",
+              "\19\1\19", 0, false },
+            -- Mot phan tu khong phai so = hieu sai kieu tra ve. Vut ca danh sach.
+            { "bang co phan tu rac -> khong hop le",
+              { 4865, "rac" }, 0, false },
+            -- Ngoai 0..65535 = khong phai cipher id.
+            { "so ngoai khoang -> khong hop le",
+              { 4865, 70000 }, 0, false },
+            -- API tra nil (khong ton tai / loi da nuot).
+            { "nil -> khong hop le",
+              nil, 0, false },
+        }
+
+        for _, c in ipairs(cases) do
+            local label, input, want_n, want_valid = c[1], c[2], c[3], c[4]
+            local ok_call, out, shape, valid = pcall(pc, input)
+            if not ok_call then
+                bad("  SAI  parse_ciphers nem loi voi ca `%s`: %s\n",
+                    label, tostring(out))
+            elseif #out ~= want_n then
+                bad("  SAI  `%s`: mong %d cipher, nhan %d (shape=%s)\n",
+                    label, want_n, #out, tostring(shape))
+            elseif valid ~= want_valid then
+                bad("  SAI  `%s`: mong valid=%s, nhan %s (shape=%s)\n",
+                    label, tostring(want_valid), tostring(valid),
+                    tostring(shape))
+            else
+                pass = pass + 1
+            end
+        end
+
+        -- 10b. SAN PHAI KHOP VOI NGUONG PHAT O PHIA BEN KIA.
+        --
+        -- `ja3.lua` chi bo co `partial` khi so cipher >= MIN_PLAUSIBLE_CIPHERS.
+        -- `ja3_allowlist.lua` phat 0.6 (x trong so 50 = 30 diem) khi
+        -- `cipher_count < 5`. Neu san tut xuong duoi 5 thi moi danh sach nam
+        -- giua hai con so do duoc cong bo la "JA3 day du" roi an 30 diem oan —
+        -- dung con duong ma san nay sinh ra de chan.
+        local min = ja3_mod._MIN_PLAUSIBLE_CIPHERS
+        local allow_src = slurp(SRC .. "intelligence/threat/ja3_allowlist.lua")
+        -- Bat MA THAT (`if cipher_count < N then`), khong bat chu thich — dung cai
+    -- bay ma chinh dau file nay canh bao.
+    local pen = allow_src and allow_src:match("if%s+cipher_count%s*<%s*(%d+)%s+then")
+        if type(min) ~= "number" then
+            bad("  SAI  ja3.lua khong lo `_MIN_PLAUSIBLE_CIPHERS`\n")
+        elseif not pen then
+            bad("  SAI  khong tim thay nguong `cipher_count < N` trong ja3_allowlist.lua\n")
+        elseif min < tonumber(pen) then
+            bad("  SAI  san %d < nguong phat %s\n" ..
+                "       => danh sach %d..%d cipher se duoc cong bo la JA3 day\n" ..
+                "          du roi an 0.6 x 50 = 30 diem oan\n",
+                min, pen, min, tonumber(pen) - 1)
+        else
+            pass = pass + 1
+        end
+    end
+end
+
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

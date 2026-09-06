@@ -149,26 +149,59 @@ end
 -- `ja3_allowlist` chấm `cipher_count < 5 → 0.6` ⇒ **30 điểm oan cho tất cả**.
 -- Nên xử lý CẢ HAI, và trả về kèm nhãn hình dạng để nấc `probe` in ra sự thật
 -- thay vì để ai đó suy luận.
+--
+-- TRẢ VỀ THÊM `valid`, và đó là điểm cốt yếu. Bản trước fail-soft: chuỗi lẻ
+-- byte thì bỏ byte cuối, phần tử bảng hỏng thì bỏ phần tử — rồi vẫn công bố
+-- kết quả như một cipher list bình thường. Nghĩa là **đầu vào hỏng có thể
+-- thành "JA3 đầy đủ"**: chỉ cần sót lại 1 cipher là `is_partial=false`, và
+-- `ja3_allowlist` thấy `cipher_count < 5` nên chấm 0.6 × trọng số 50 =
+-- **30 điểm** cho một client mà ta chỉ đơn giản là đọc hỏng.
+--
+-- Fail-soft đúng chỗ là "mất JA3", KHÔNG phải "JA3 sai được tin". Nên khi
+-- không chắc, ta trả `valid=false` và phía gọi vứt cả danh sách — hành vi y
+-- hệt nấc "off", tức đúng cái fail-safe đã chạy suốt từ trước tới nay.
 local function parse_ciphers(raw)
     if type(raw) == "table" then
         local out = {}
         for _, v in ipairs(raw) do
             local n = tonumber(v)
-            if n and not is_grease(n) then out[#out + 1] = n end
+            -- Một phần tử không phải số nguyên trong 0..65535 nghĩa là ta đang
+            -- hiểu sai kiểu trả về — bỏ RIÊNG nó đi là tự lừa mình.
+            if not n or n ~= math.floor(n) or n < 0 or n > 65535 then
+                return {}, "table_bad", false
+            end
+            if not is_grease(n) then out[#out + 1] = n end
         end
-        return out, "table"
+        return out, "table", true
     end
     if type(raw) == "string" then
+        -- Độ dài LẺ = ta đọc lệch khung 2 byte, không phải "thừa một byte".
+        -- Bản trước bỏ byte cuối rồi đọc tiếp, tức công bố một dãy đã lệch.
+        if #raw % 2 ~= 0 then
+            return {}, "string_odd", false
+        end
         local out = {}
-        -- Bỏ byte lẻ cuối nếu có: thà thiếu một cipher còn hơn đọc lệch cả dãy.
         for i = 1, #raw - 1, 2 do
             local n = raw:byte(i) * 256 + raw:byte(i + 1)
             if not is_grease(n) then out[#out + 1] = n end
         end
-        return out, "string"
+        return out, "string", true
     end
-    return {}, type(raw)
+    return {}, type(raw), false
 end
+
+-- Số cipher tối thiểu để một danh sách được coi là ĐỌC ĐƯỢC.
+--
+-- KHÔNG phải con số tuỳ ý: nó PHẢI ≥ ngưỡng `cipher_count < 5` trong
+-- `intelligence/threat/ja3_allowlist.lua`. Dưới ngưỡng đó allowlist chấm 0.6 ×
+-- trọng số 50 = 30 điểm. Nói cách khác, mọi danh sách mà ta công bố là "đầy
+-- đủ" nhưng lại ngắn hơn 5 đều tự động thành 30 điểm phạt — nên thà giữ
+-- `partial` (0 điểm) còn hơn.
+--
+-- Không có ClientHello THẬT nào của trình duyệt dưới 5 cipher; TLS 1.3 tối
+-- thiểu đã 3 suite bắt buộc cộng các suite 1.2 để tương thích ngược.
+-- `contract_test` mục 10b ghim hai con số này không lệch nhau.
+local MIN_PLAUSIBLE_CIPHERS = 5
 
 local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers)
     local function join(t)
@@ -252,8 +285,38 @@ function _M.capture_unsafe()
         return
     end
 
+    -- ── `tls13` PHẢI CÓ NGHĨA LÀ TLS 1.3, KHÔNG PHẢI "CÓ EXTENSION 43" ──
+    --
+    -- Bản trước: `is_tls13 = (extension 0x002b tồn tại)`. Extension đó là
+    -- `supported_versions` — nó CHỨA danh sách phiên bản, và sự tồn tại của nó
+    -- chỉ nói "client biết cú pháp TLS 1.3", không nói "client đề nghị 1.3".
+    --
+    -- Vì sao phải đúng: `intelligence/correlation/consistency_check.lua` đọc
+    -- `ctx.tls13 == false` như "client đi TLS 1.2" và cộng 0.35 (nhánh `tls12`,
+    -- 19,25 điểm), còn `transport/http2/pseudo_header.lua` so nó với bảng
+    -- `KNOWN_PATTERNS`. Hai chỗ đó diễn giải trường này như PHIÊN BẢN THẬT.
+    --
+    -- Thân extension: 1 byte độ dài danh sách, rồi từng phiên bản 2 byte
+    -- big-endian. 0x0304 = TLS 1.3. GREASE nằm lẫn trong danh sách và bị bỏ
+    -- qua tự nhiên vì ta chỉ tìm đúng một giá trị.
+    --
+    -- ẢNH HƯỞNG THỰC TẾ GẦN BẰNG KHÔNG, và đó là chủ ý: client gửi extension
+    -- 43 mà không liệt 0x0304 là hợp lệ nhưng gần như không tồn tại. Đây là
+    -- sửa cho trường ĐÚNG NGHĨA, không phải để đổi số liệu.
     local sv_data  = ssl_clt.get_client_hello_ext(0x002b)
-    local is_tls13 = sv_data ~= nil and sv_data ~= ""
+    local is_tls13 = false
+    if sv_data and #sv_data >= 3 then
+        local list_len = sv_data:byte(1)
+        local bound    = math.min(1 + list_len, #sv_data)
+        local i        = 2
+        while i + 1 <= bound do
+            if sv_data:byte(i) == 0x03 and sv_data:byte(i + 1) == 0x04 then
+                is_tls13 = true
+                break
+            end
+            i = i + 2
+        end
+    end
 
     local extensions = {}
     if type(ssl_clt.get_client_hello_ext_present) == "function" then
@@ -266,7 +329,7 @@ function _M.capture_unsafe()
                     end
                 end
             else
-                ngx.log(ngx.WARN, "[ja3] ext_present is hash — order lost, ",
+                ngx.log(ngx.ERR,  "[ja3] ext_present is hash — order lost, ",
                         "upgrade lua-resty-core >= 0.1.25")
                 for etype in pairs(ext_present) do
                     if type(etype) == "number" and not is_grease(etype) then
@@ -275,11 +338,11 @@ function _M.capture_unsafe()
                 end
             end
         elseif not ok2 then
-            ngx.log(ngx.WARN, "[ja3] get_client_hello_ext_present error: ",
+            ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present error: ",
                     tostring(ext_present))
         end
     else
-        ngx.log(ngx.WARN, "[ja3] get_client_hello_ext_present unavailable, ",
+        ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present unavailable, ",
                 "upgrade lua-resty-core >= 0.1.25")
     end
 
@@ -297,22 +360,34 @@ function _M.capture_unsafe()
     -- lỗi Lua ở phase `ssl_client_hello` không phải là "mất JA3" mà là **huỷ
     -- bắt tay TLS** (sự cố 2026-04-22). Hỏng ở đây phải rơi về danh sách rỗng,
     -- tức đúng hành vi của nấc "off", chứ không được lan ra ngoài.
-    local ciphers, shape = {}, "skipped"
+    local ciphers, shape, valid = {}, "skipped", true
     if CIPHER_MODE ~= "off"
        and type(ssl_clt.get_client_hello_ciphers) == "function" then
         local ok3, raw = pcall(ssl_clt.get_client_hello_ciphers)
         if ok3 then
-            ciphers, shape = parse_ciphers(raw)
+            ciphers, shape, valid = parse_ciphers(raw)
         else
-            shape = "error"
+            shape, valid = "error", false
             ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers loi (da nuot): ",
                     tostring(raw))
         end
+
+        -- ĐỌC HỎNG THÌ KHÔNG GHI GÌ CẢ, thay vì ghi một dãy đã lệch.
+        -- Đây là chỗ chặn duy nhất cần thiết: `run()` chỉ thấy payload đã qua
+        -- cửa này, nên không phải mang thêm cờ `valid` qua shared dict (tức
+        -- không phải đổi định dạng payload lần thứ hai).
+        if not valid then
+            ciphers = {}
+            ngx.log(ngx.ERR, "[ja3] cipher_invalid shape=", shape,
+                    " → bo ca danh sach, giu partial")
+        end
+
         -- Lấy mẫu 1/200 ở mức ERR — đây là DÒNG DUY NHẤT nói cho ta biết API
         -- thật sự trả về cái gì. Không có nó thì việc lên nấc "on" là đoán.
         if _cap_n % 200 == 1 then
             ngx.log(ngx.ERR, "[ja3] cipher_probe mode=", CIPHER_MODE,
-                    " shape=", shape, " n=", #ciphers,
+                    " shape=", shape, " valid=", tostring(valid),
+                    " n=", #ciphers,
                     " first=", tostring(ciphers[1]),
                     " last=", tostring(ciphers[#ciphers]))
         end
@@ -527,9 +602,23 @@ function _M.run(ctx)
 
     ctx.ja3_cipher_n = #captured
 
-    if CIPHER_MODE == "on" and #captured > 0 then
+    -- SÀN `MIN_PLAUSIBLE_CIPHERS`, không phải `> 0`.
+    --
+    -- `> 0` là ngưỡng sai vì nó không hỏi "đọc có đúng không" mà hỏi "có đọc
+    -- được gì không". Một danh sách 1–4 cipher lọt qua `> 0` sẽ được công bố là
+    -- JA3 ĐẦY ĐỦ, rồi `ja3_allowlist` chấm ngay `cipher_count < 5 → 0.6` ×
+    -- trọng số 50 = **30 điểm** — cho một client mà lỗi duy nhất là ta đọc hụt.
+    --
+    -- Giữ `partial` thì `ja3_allowlist` thoát sớm ở cổng `ctx.ja3_partial` và
+    -- cộng 0 điểm. Hai đường đều là "mất thông tin", nhưng một đường mất im
+    -- lặng còn đường kia phạt oan.
+    if CIPHER_MODE == "on" and #captured >= MIN_PLAUSIBLE_CIPHERS then
         ciphers    = captured
         is_partial = false
+    elseif CIPHER_MODE == "on" and #captured > 0 then
+        ngx.log(ngx.ERR, "[ja3] cipher_too_few n=", #captured,
+                " min=", MIN_PLAUSIBLE_CIPHERS, " → giu partial ip=",
+                ctx.ip or "?")
     end
 
     local tls_version = 0x0303
@@ -555,5 +644,17 @@ function _M.run(ctx)
         " #exts=", #data.extensions,
         " #curves=", #data.curves)
 end
+
+-- ── LOI RA CHO KIEM THU, KHONG PHAI API ──────────────────────────────
+--
+-- `contract_test` muc 10 goi thang hai thu nay. Ly do phai lo chung ra: cac
+-- muc kiem khac cua bo test do TIM CHUOI trong ma nguon, ma chinh dau file
+-- contract_test da ghi "BAO XANH => khong chung minh duoc gi ca". Voi thang
+-- cipher thi mau xanh do KHONG DU: bat nac "on" la doi chinh sach cham diem
+-- tren toan dan may, nen cho nay phai co phep kiem CHAY THAT ham.
+--
+-- Khong module nao trong san pham duoc goi hai truong nay.
+_M._parse_ciphers        = parse_ciphers
+_M._MIN_PLAUSIBLE_CIPHERS = MIN_PLAUSIBLE_CIPHERS
 
 return _M
