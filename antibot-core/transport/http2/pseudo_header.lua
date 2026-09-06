@@ -35,16 +35,33 @@ local KNOWN_PATTERNS = {
     --
     -- Vi sao la `nil` chu khong phai `true`: Go cho phep dat MaxVersion, con
     -- co ban Go cu; tu thu tu pseudo-header KHONG suy ra duoc phien ban TLS,
-    -- va nhanh kiem ben duoi da bo qua `nil` dung nhu vay.
-    amps = { clients = "go_http2",                      tls13 = nil   },
-    mpsa = { clients = "firefox,curl,python,java,node", tls13 = nil   },
-}
-
+-- `find(s, 1, true)` là PLAIN find: đối số thứ ba `true` tắt hẳn bộ so khớp
+-- mẫu, nên `%` trong chuỗi KHÔNG còn là ký tự thoát mà là một ký tự `%` thật.
+--
+-- Ba dòng dưới đây từng viết `Go%-http%-client/`, `Apache%-HttpClient` và
+-- `node%-fetch` — cú pháp thoát của Lua pattern, đặt vào một phép tìm plain.
+-- Kết quả: chúng đi tìm chuỗi có ký tự `%` bên trong, thứ không UA nào có, nên
+-- **ba nhánh này chưa bao giờ khớp**.
+--
+-- Hệ quả đo được (do_after.sh 2026-09-06, cloud168-101): mọi client Go rơi
+-- xuống `return nil, "ua_unknown"` ⇒ `ctx.h2_order = nil` ⇒ `signature.lua`
+-- cộng +0.1. Cột `h2bc=` trên dòng UA Go chỉ có 0.10 và 0.50 (= 0.4 bot_pattern
+-- + 0.1 order-nil) — KHÔNG có số hạng 0.25 nào.
+--
+-- Nên `d5e5e18` (sửa `amps.tls13` = nil) KHÔNG hề đổi hành vi production như
+-- tôi đã tuyên bố: nhánh `amps` chưa từng với tới được. Nó là điều kiện CẦN
+-- cho lần sửa này chứ không phải một bản vá độc lập — nếu sửa `find` mà chưa
+-- sửa bảng thì mọi client Go lập tức ăn +0,25 × 55 = 13,75 điểm, tức BẬT một
+-- FP thay vì tắt.
+--
+-- Đúng hình dạng con bug lặp đi lặp lại trong repo này: một giá trị đi qua ranh
+-- giới mà hai bên hiểu khác nhau về nghĩa của nó.
 local function infer_from_ua(ua)
     if not ua or ua == "" then return nil, "no_ua" end
 
     if ua:find("Chrome/", 1, true) and not ua:find("Edg/", 1, true) then
         return "masp", "ua_chrome"
+    end
     end
     if ua:find("Edg/", 1, true) then
         return "masp", "ua_edge"
@@ -55,7 +72,7 @@ local function infer_from_ua(ua)
     if ua:find("Safari/", 1, true) and not ua:find("Chrome/", 1, true) then
         return "mspa", "ua_safari"
     end
-    if ua:find("Go%-http%-client/", 1, true) then
+    if ua:find("Go-http-client/", 1, true) then
         return "amps", "ua_go"
     end
     if ua:find("curl/", 1, true) then
@@ -66,10 +83,10 @@ local function infer_from_ua(ua)
         return "mpsa", "ua_python"
     end
     if ua:find("Java/", 1, true) or ua:find("okhttp/", 1, true)
-    or ua:find("Apache%-HttpClient", 1, true) then
+    or ua:find("Apache-HttpClient", 1, true) then
         return "mpsa", "ua_java"
     end
-    if ua:find("node%-fetch", 1, true) or ua:find("axios/", 1, true) then
+    if ua:find("node-fetch", 1, true) or ua:find("axios/", 1, true) then
         return "mpsa", "ua_node"
     end
 

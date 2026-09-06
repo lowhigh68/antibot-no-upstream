@@ -13,7 +13,6 @@ function _M.run(ctx)
     raw = raw + norm(ctx.ua_cluster,  C.ua_count_normalize_max)  * 0.3
     raw = raw + norm(ctx.ip_cluster,  C.ip_count_normalize_max)  * 0.3
     raw = raw + norm(ctx.uri_cluster, C.uri_count_normalize_max) * 0.2
-    raw = raw + norm(ctx.tls_cluster, C.tls_count_normalize_max) * 0.1
     raw = raw + ((ctx.swarm == true) and 0.1 or 0.0)
 
     if ctx.baseline_ua and (ctx.subnet_diversity or 99) < C.subnet_diversity_nat_max then

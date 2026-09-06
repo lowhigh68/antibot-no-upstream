@@ -65,7 +65,6 @@ function _M.init(ctx)
     ctx.ua_cluster     = 0
     ctx.ip_cluster     = 0
     ctx.uri_cluster    = 0
-    ctx.tls_cluster    = 0
     ctx.swarm          = false
     ctx.anomaly_score  = 0.0
     ctx.bot_score      = 0.0

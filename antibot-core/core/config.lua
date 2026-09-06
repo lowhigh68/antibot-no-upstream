@@ -533,7 +533,6 @@ _M.cluster = {
     ua_count_normalize_max     = 500,
     ip_count_normalize_max     = 200,
     uri_count_normalize_max    = 100,
-    tls_count_normalize_max    = 300,
 }
 
 -- Shared-session-key guard. `sess:<fp_light>` là khoá của session+graph, mà
