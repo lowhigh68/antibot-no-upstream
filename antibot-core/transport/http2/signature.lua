@@ -76,10 +76,9 @@ function _M.run(ctx)
     ctx.h2_sig_method     = "inferred"
     ctx.h2_bot_confidence = h2_bot_confidence(ctx)
 
-    if ctx.h2_bot_confidence > 0 then
-        ctx.signals = ctx.signals or {}
-        ctx.signals["h2_bot_confidence"] = ctx.h2_bot_confidence
-    end
+    -- Ghi vào `ctx.signals` ĐÃ GỠ (2026-09-06): bảng đó do `signal_merge.lua`
+    -- dựng ra và **không nơi nào đọc**; module ấy đã bị xoá. `compute.lua` lấy
+    -- `h2_bot_confidence` thẳng từ `ctx.h2_bot_confidence` qua `get_signal()`.
 
     ngx.log(ngx.DEBUG,
         "[h2_sig] sig=", ctx.h2_sig or "nil",

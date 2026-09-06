@@ -9,10 +9,11 @@ Convert dozens of individual signals (each [0,1]) into a single weighted score [
 
 | File | Role |
 |---|---|
-| `init.lua` | Orchestrator: `compute.run(ctx)` → `signal_merge.run(ctx)` → `context_vector.run(ctx)` → `threat/*.run(ctx)` |
-| `scoring/compute.lua` | Walks `DEFAULT_WEIGHTS` table, calls `get_signal(name, ctx)` per signal, sums weighted contributions into `ctx.score`. Records `ctx.top_signals` (3 highest with contribution_pct) |
-| `scoring/signal_merge.lua` | Normalizes signal sources into common shape `{name, field, type}` for compute |
-| `scoring/context_vector.lua` | Build per-context dampening (resource gets lower base on every signal) |
+| `init.lua` | Orchestrator: `threat.run(ctx)` → `correlation.run(ctx)` → `scoring.run(ctx)` |
+| `scoring/compute.lua` | **Nơi DUY NHẤT dựng `ctx.score`.** Walks `DEFAULT_WEIGHTS`, calls `get_signal(name, ctx)` per signal, sums weighted contributions. Records `ctx.top_signals` (3 highest with contribution_pct) |
+| ~~`scoring/signal_merge.lua`~~ | **ĐÃ XOÁ 2026-09-06** — ghi `ctx.signals`, không nơi nào đọc |
+| ~~`scoring/context_vector.lua`~~ | **ĐÃ XOÁ 2026-09-06** — ghi `ctx.context_multipliers` + `ctx.is_api_request`, không nơi nào đọc |
+| ~~`threat/ja3_db.lua`~~ | **ĐÃ XOÁ 2026-09-06** — đọc `rep:ja3:` (không ai ghi) → `ctx.ja3_rep` (không có trong `DEFAULT_WEIGHTS`) |
 | `threat/*.lua` | Specialized threat assessments (compound rules, attack-chain detection) — emit `ctx.corr_score`, `ctx.corr_rules`, `ctx.mismatch` |
 
 ## DEFAULT_WEIGHTS (compute.lua excerpt)
@@ -66,6 +67,16 @@ enforcement.engine.run           → effective_score, decide action
 - `top_signals` array: keep at 3 entries, used by explain.lua + antibot.log
 
 ## Update log
+- 2026-09-06 — **Dọn cụm tín hiệu chết: 4 module xoá, 2 tín hiệu gỡ khỏi bảng trọng số. Không đổi hành vi.**
+  - **Nguyên tắc dùng để quyết:** một tín hiệu chỉ là "chết" khi **không nơi nào đọc đầu ra của nó**, chứng minh bằng grep toàn cây. Bốn thứ dưới đây đều thoả, và đều tốn CPU/Redis mỗi request để không đổi lấy gì.
+  - **`scoring/signal_merge.lua` + `scoring/context_vector.lua` XOÁ.** Chạy trên MỌI request đã chấm điểm, dựng `ctx.signals` / `ctx.context_multipliers` / `ctx.is_api_request` — cả ba **chỉ được ghi**. `compute.lua` đi thẳng từ `DEFAULT_WEIGHTS` + `get_signal()`, không chạm tới. **Một tầng chết che một tầng chết:** chúng là hai nơi duy nhất đọc `ja3_rep`, khiến tín hiệu đó trông như "có người dùng".
+  - **`threat/ja3_db.lua` XOÁ.** Chết ba lần: `rep:ja3:` không nơi nào GHI; `ja3_rep` không có trong `DEFAULT_WEIGHTS`; hai chỗ đọc nó cũng chết. Nó gác `ja3_partial` nên hôm nay chưa từng chạm Redis — nhưng lên nấc `cfg.tls.ja3_cipher = "on"` thì thành một `GET` mỗi request cho giá trị không ai đọc.
+  - **`async/adaptive_weight.lua` XOÁ.** Chữ ký `run(ctx, feedback)`, dòng đầu `if not feedback then return end`, mà chỗ gọi duy nhất (`init.lua`) **không truyền `feedback`** ⇒ thoát ngay, mọi lần, từ đầu. Và kể cả chạy, nó ghi `model:weight` mà `compute.lua` không đọc. Gỡ đi bớt **một `ngx.timer.at` mỗi request non-resource**. Kéo theo `cfg.weights` (19 mục, đã lệch so với `DEFAULT_WEIGHTS` 32 mục — cùng loại trùng lặp với `_M.thresholds`) và `cfg.ttl.model_weight`.
+  - **`canvas_change` GỠ khỏi `DEFAULT_WEIGHTS` + `get_signal` + bộ đếm ghi.** Trọng số cũ **50** — cao thứ nhì bảng — nhưng vĩnh viễn 0: ghi `fp:canvas_change:<identity>`, đọc `fp:canvas_change:<ctx.ip>`.
+    - **Không sửa bằng cách nối đúng khoá.** Nối phía đọc sang `identity` là **bật** một tín hiệu 50 điểm lên đúng nhóm vừa GIẢI XONG PoW; mà `identity = md5(ip+ua)` nên sau CGNAT hai điện thoại cùng UA Chrome dùng chung identity với hai canvas khác nhau ⇒ đánh dấu ⇒ quy tội tập thể, đúng thứ `ip_shared` sinh ra để chống. Nối phía ghi sang `ip` còn tệ hơn.
+    - Ý tưởng chỉ sống lại khi có định danh THEO THIẾT BỊ thật — mà thứ đó lại dựa vào chính canvas (`build_device_id`), nên vòng tròn. `fp:canvas:<id>` (không có `_change`) **giữ nguyên**: nuôi `build_device_id` → `verified:device:`.
+  - **`transport/tls/ja3s.lua` giữ file nhưng bỏ hết phần JA3S** — nó sinh hằng số MD5("0,0,") và không ai tiêu thụ. ⚠️ **Không được xoá file**: `_M.capture()` là nơi duy nhất gọi `ja3.relay()` (nhịp 2 của cầu JA3) và được 99 per-domain conf tham chiếu. Xem `transport/CLAUDE.md`.
+  - **Kiểm chứng:** grep toàn cây cho 11 định danh liên quan ⇒ 0 tham chiếu mã còn lại. `contract_test` mục 0 (`loadfile` mọi file `.lua`) là cổng bắt lỗi cú pháp trước deploy.
 - 2026-08-01 (3) — **Gỡ double-count GIỮA `mismatch` và `h2_bot_confidence`. Ranh giới sở hữu bằng chứng.**
   - **Ba chỗ trùng, cả hai signal đều weight 55:** `h2_bot_pattern` (h2bc +0.40 = 22đ ⊕ mismatch +0.30 = 16,5đ → **38,5đ**), `h2_tls_mismatch` (13,75 ⊕ 13,75 → **27,5đ**), Chrome/FF không H2 (h2bc +0.15 ⊕ luật no_h2 của mismatch → **22÷27,5đ**).
   - **RANH GIỚI, giữ đúng khi thêm luật mới:** `h2_bot_confidence` = *những gì tầng H2 QUAN SÁT được*; `mismatch` = *MÂU THUẪN giữa điều UA tự nhận và điều các tầng thấy*. Theo đó: gỡ `h2_bot_pattern` + `h2_tls_mismatch` khỏi `consistency_check`, gỡ nhánh `+0.15` (không có H2) khỏi `signature.lua` — không có H2 thì tầng H2 chẳng quan sát được gì.

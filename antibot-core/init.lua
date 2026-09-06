@@ -21,7 +21,6 @@ local res_ip_counter     = require "antibot.l7.rate.res_ip_counter"
 local intelligence_layer = require "antibot.intelligence"
 local enforcement_layer  = require "antibot.enforcement"
 local risk_update        = require "antibot.async.risk_update"
-local adaptive_weight    = require "antibot.async.adaptive_weight"
 local intel_reporter     = require "antibot.async.intel_reporter"
 local logger             = require "antibot.async.logger"
 local waf_layer          = require "antibot.waf"
@@ -240,9 +239,13 @@ function _M.log()
         ngx.timer.at(0, function()
             risk_update.run(ctx)
         end)
-        ngx.timer.at(0, function()
-            adaptive_weight.run(ctx)
-        end)
+        -- `adaptive_weight.run(ctx)` ĐÃ GỠ (2026-09-06). Chết hai lần:
+        --   1. Chữ ký là `run(ctx, feedback)` và dòng đầu là
+        --      `if not feedback then return end`. Chỗ gọi DUY NHẤT là dòng này,
+        --      và nó **không truyền `feedback`** ⇒ thoát ngay, mọi lần, từ đầu.
+        --   2. Kể cả nếu chạy, nó ghi `model:weight` trong Redis — mà
+        --      `compute.lua` dùng thẳng `DEFAULT_WEIGHTS`, không đọc khoá đó.
+        -- Gỡ đi bớt được MỘT `ngx.timer.at` cho mỗi request non-resource.
     end
 
     -- Intel reporter: propagate confirmed blocks to Central Redis.

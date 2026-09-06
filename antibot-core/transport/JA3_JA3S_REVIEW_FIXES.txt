@@ -1,0 +1,362 @@
+REVIEW LAYER TRANSPORT - JA3 / JA3S
+Ngày review: 2026-09-06
+
+Phạm vi đã đọc:
+- antibot-core/transport/init.lua
+- antibot-core/transport/tls/init.lua
+- antibot-core/transport/tls/ja3.lua
+- antibot-core/transport/tls/ja3s.lua
+- antibot-core/transport/tls/ja3_stream.lua
+- toàn bộ antibot-core/transport/http2/*.lua
+- hook TLS trong nginx/da_to_openresty*.sh và nginx/CF/da_to_openresty_CF.sh
+- các consumer JA3 trong fingerprint, cluster, threat và scoring
+
+KẾT LUẬN NGẮN
+
+Ý tưởng đặt thu thập ClientHello tại ssl_client_hello_by_lua và fail-open bằng
+pcall là đúng. Tuy nhiên ở phiên bản hiện tại:
+
+1. JA3 luôn là JA3 partial vì không lấy cipher suite.
+2. JA3S trên OpenResty chuẩn gần như chắc chắn là hash hằng của chuỗi "0,0,".
+3. Bridge theo IP có nguy cơ gán nhầm ClientHello giữa các kết nối chung NAT,
+   trong khi OpenResty hiện tại đã cho phép dùng ngx.ctx xuyên từ SSL phase sang
+   các phase sau.
+4. JA3S không dùng extension thật của ServerHello và chưa có consumer nào dùng
+   nó để phân loại bot.
+
+Vì vậy JA3/JA3S hiện chưa đạt vai trò "một trong các tín hiệu quan trọng nhất".
+JA3 chỉ đang đóng vai trò telemetry/cluster chất lượng thấp; JA3 reputation và
+allowlist tự bỏ qua nó. JA3S hiện không có giá trị phân biệt.
+
+======================================================================
+P0 - PHẢI SỬA TRƯỚC KHI DÙNG JA3/JA3S ĐỂ RA QUYẾT ĐỊNH
+======================================================================
+
+[P0-1] Lấy cipher suite JA3 sai kiến trúc, khiến mọi JA3 đều partial
+
+Bằng chứng:
+- ja3.lua:212-251 lấy extensions/curves/point formats nhưng không gọi
+  ngx.ssl.clienthello.get_client_hello_ciphers().
+- ja3.lua:436-447 chỉ lấy cipher từ ja3_stream.get_ciphers_for_request().
+- Không có stream{} hay preread_by_lua gọi ja3_stream.preread() trong repo.
+- ja3.lua:446 vì thế luôn đặt is_partial=true.
+- ja3_db.lua:7 và ja3_allowlist.lua:82 bỏ qua mọi JA3 partial.
+
+Ảnh hưởng:
+- rep:ja3, ja3:allow và ja3:block không hoạt động trên traffic hiện tại.
+- Phân tích cấu trúc cipher trong ja3_allowlist không bao giờ chạy.
+- Hash partial không tương thích với database JA3 chuẩn.
+
+Hướng sửa:
+- Gọi trực tiếp ssl_clt.get_client_hello_ciphers() ngay trong
+  ssl_client_hello_by_lua. API này trả đúng danh sách cipher từ ClientHello và
+  đã loại GREASE.
+- Serialize ciphers cùng extensions, groups và point formats trong một payload.
+- Chỉ đặt ctx.ja3 khi đủ dữ liệu chuẩn; nếu API lỗi thì đặt quality/partial rõ
+  ràng và tuyệt đối không tra database chuẩn bằng hash partial.
+- Sau khi rollout ổn định, bỏ đường phụ thuộc ja3_stream khỏi JA3 HTTP.
+
+[P0-2] Không được kích hoạt ja3_stream.preread() theo cách hiện tại
+
+Bằng chứng:
+- ja3_stream.lua:35-53 và 130-170 dùng request_socket:receive().
+- Trong stream preread, receive() tiêu thụ byte; handler phía sau không còn nhìn
+  thấy các byte TLS đã đọc. Nếu nối module này trước TLS termination/proxy, nó có
+  thể làm hỏng bắt tay TLS.
+- Parser chỉ đọc một TLS record đầu tiên; ClientHello hợp lệ có thể bị phân mảnh
+  qua nhiều record.
+- MAX_RECORD_LEN=16383, trong khi giới hạn plaintext record TLS là 16384 byte.
+
+Hướng sửa:
+- Lựa chọn tốt nhất ở kiến trúc HTTP hiện tại: không dùng stream preread; dùng
+  get_client_hello_ciphers() như P0-1.
+- Nếu về sau thật sự cần stream parser, phải dùng peek() không tiêu thụ dữ liệu,
+  ráp đủ handshake qua nhiều TLS record, kiểm tra handshake length độc lập với
+  record length, đặt giới hạn tổng kích thước/timeout, rồi test forwarding.
+
+[P0-3] Bridge ClientHello theo IP có race/collision và thực ra không cần thiết
+
+Bằng chứng:
+- ja3.lua:74-87 tạo khóa tạm chỉ từ raw_client_addr, không có source port hay
+  định danh connection.
+- ja3.lua:252-253 dùng set(), nên hai handshake đồng thời từ cùng NAT/proxy có
+  thể ghi đè payload của nhau.
+- TTL 5 giây không loại bỏ race; độ dài cửa sổ không quan trọng bằng việc hai
+  callback có thể xen kẽ.
+- OpenResty từ 1.19.3.1 đã chia sẻ ngx.ctx giữa các SSL_* phase và phase sau.
+- Chính code JA3S tại ja3s.lua:129-143 đang dựa vào cơ chế ngx.ctx này, trái với
+  nhận định tại ja3.lua:6 rằng ngx.ctx không persist.
+- TLS_KEY_TTL=300 không bảo đảm cho một HTTP/2 connection hoạt động lâu hơn 5
+  phút; sau khi key hết hạn, request tiếp theo có thể mất JA3.
+
+Ảnh hưởng:
+- Có thể gán JA3 của client A cho client B sau CGNAT, reverse proxy hoặc traffic
+  đồng thời lớn.
+- Sai fingerprint kéo theo sai fp_light, cluster và consistency.
+- Tăng shared-dict I/O trên mỗi handshake/request mà vẫn có miss/eviction.
+
+Hướng sửa:
+- Trong ssl_client_hello_by_lua, ghi payload đầy đủ vào ngx.ctx, ví dụ một field
+  connection-scoped riêng; đọc trực tiếp field đó ở access phase.
+- Kiểm chứng bằng integration test trên đúng OpenResty production: TLS 1.2/1.3,
+  HTTP/1.1 keepalive, HTTP/2 nhiều request, session resumption.
+- Chỉ giữ shared-dict fallback nếu phải hỗ trợ OpenResty cũ hơn 1.19.3.1. Nếu
+  buộc giữ, không dùng IP đơn độc làm correlation key.
+- Nếu vẫn giữ relay tạm thời: kiểm tra kết quả shared:set trước khi delete temp;
+  đường promote cũng phải delete temp sau khi lấy thành công.
+
+[P0-4] JA3S hiện tạo hash hằng "d8eada1de0f744e8f2d11cc5ea02451d"
+
+Bằng chứng:
+- ja3s.lua:18 gọi ngx.ssl.get_tls1_version(). API chính thức trả số 0x0303 hoặc
+  0x0304, nhưng code lại tra VER_MAP bằng khóa chuỗi "TLSv1.2"/"TLSv1.3".
+  Do đó version trở thành 0.
+- ngx.ssl chuẩn không có hàm get_cipher_name(); điều kiện ở ja3s.lua:31 trả nil,
+  làm cipher_id=0.
+- extensions của version 0 là rỗng.
+- Chuỗi cuối là "0,0," và MD5 của nó là
+  d8eada1de0f744e8f2d11cc5ea02451d cho mọi connection.
+
+Hướng sửa:
+- Nếu chỉ cần negotiated TLS profile, lấy sau handshake trong access phase:
+  ngx.ssl.get_tls1_version() (giữ kiểu số) và ngx.var.ssl_cipher. Đổi tên signal
+  thành tls_negotiated_profile, không gọi nó là JA3S.
+- Không tiếp tục dùng CIPHER_MAP nhỏ và fallback cipher_id=0. Nếu cần ID, dùng
+  mapping IANA/OpenSSL đầy đủ, versioned và test unknown; unknown phải làm profile
+  invalid/partial, không được âm thầm dồn về 0.
+
+[P0-5] Extension JA3S đang được bịa ra, không lấy từ ServerHello thật
+
+Bằng chứng:
+- ja3s.lua:63-71 tự thêm 65281 và 23 cho mọi TLS 1.2.
+- TLS 1.3 lại tạo danh sách rỗng, dù ServerHello TLS 1.3 thông thường có các
+  extension như supported_versions và key_share; resumption có thể thêm
+  pre_shared_key.
+- JA3S chuẩn phải dùng version, cipher và danh sách extension thực sự xuất hiện
+  trong ServerHello theo đúng thứ tự.
+
+Ảnh hưởng:
+- Hash không tương thích JA3S chuẩn, không so được với pcap/Zeek/database.
+- Dễ collision và tạo cảm giác sai rằng WAF đã quan sát ServerHello.
+
+Hướng sửa:
+- Nếu bắt buộc có JA3S chuẩn, phải thu actual ServerHello bằng native/OpenSSL
+  message callback, module có khả năng xuất ServerHello, hoặc passive capture;
+  sau đó đối chiếu hash với công cụ độc lập.
+- Nếu không bổ sung được nguồn ServerHello thật, bỏ field ja3s hoặc đổi tên rõ
+  thành server_negotiation_profile. Không publish/store nó như JA3S.
+
+======================================================================
+P1 - SỬA ĐỂ TRÁNH FP/FN VÀ LÀM TÍN HIỆU ỔN ĐỊNH
+======================================================================
+
+[P1-1] ctx.tls13 đang mang sai nghĩa
+
+Bằng chứng:
+- ja3.lua:212-213 coi chỉ cần có extension 43 (supported_versions) là TLS 1.3.
+- Một client có extension 43 nhưng chỉ quảng cáo TLS 1.2 vẫn bị đánh dấu true.
+- Đây là khả năng client quảng cáo, không phải phiên bản đã negotiate.
+
+Hướng sửa:
+- Dùng ssl_clt.get_supported_versions() và chỉ đặt
+  client_supports_tls13=true khi danh sách có 0x0304.
+- Ở access phase lấy negotiated version riêng bằng ngx.ssl.get_tls1_version()
+  hoặc ngx.var.ssl_protocol.
+- Đổi consumer H2/consistency dùng đúng field: capability và negotiated version
+  là hai tín hiệu khác nhau; sự chênh lệch có thể là downgrade/proxy.
+
+[P1-2] Partial JA3 bị bỏ qua ở threat nhưng vẫn đi vào fingerprint và cluster
+
+Bằng chứng:
+- ja3_db/ja3_allowlist bỏ qua partial.
+- build_light.lua vẫn đưa ctx.ja3 vào fp_light mà không kiểm ja3_partial.
+- tls_cluster.lua vẫn đếm mọi ctx.ja3 mà không kiểm ja3_partial.
+
+Ảnh hưởng:
+- Cùng một browser có thể đổi fp_light giữa các TLS connection.
+- Một hash không chuẩn vẫn tác động cluster_score.
+
+Hướng sửa:
+- Trước khi P0-1 hoàn tất: chỉ đưa JA3 complete vào security identity, database
+  và TLS cluster; partial giữ làm telemetry riêng.
+- Sau P0-1 vẫn giữ quality gate để fail-open an toàn khi API/capture lỗi.
+
+[P1-3] Extension order làm JA3 của Chromium hiện đại không ổn định
+
+Bằng chứng:
+- JA3 chuẩn giữ nguyên thứ tự extension.
+- Chromium hiện đại randomize thứ tự extension giữa các connection.
+
+Hướng sửa:
+- Giữ hai fingerprint khác mục đích:
+  a) ja3_classic: đúng thứ tự, dùng tương thích JA3 database chuẩn.
+  b) tls_client_normalized: sort bản sao extensions/ciphers hoặc triển khai một
+     fingerprint hiện đại có đặc tả rõ, dùng cho clustering/identity nội bộ.
+- Không sort trực tiếp ja3_classic vì sẽ làm mất tương thích database JA3.
+- Luôn lưu version/quality/schema để thay đổi thuật toán không trộn key cũ/mới.
+
+[P1-4] Cloudflare/reverse proxy làm JA3 tại origin không còn là JA3 người dùng
+
+Bằng chứng:
+- ssl_client_hello_by_lua chạy trên TLS connection tới OpenResty.
+- Với domain đi qua Cloudflare, ClientHello đó do Cloudflare edge gửi tới origin;
+  CF-Connecting-IP chỉ xuất hiện sau đó ở HTTP header.
+- nginx/CF/da_to_openresty_CF.sh vẫn bật cùng hook JA3.
+
+Ảnh hưởng:
+- Nhiều người dùng khác nhau cùng mang fingerprint Cloudflare.
+- fp_light/cluster có thể bị collapse hoặc gắn nhãn sai cho end-user.
+- Đường fallback trong access dùng binary_remote_addr đã qua real_ip, còn capture
+  dùng raw_client_addr của Cloudflare, nên hai khóa IP còn có thể không khớp.
+
+Hướng sửa:
+- Gắn source cho fingerprint: direct_client hoặc trusted_proxy.
+- Không dùng origin JA3 để nhận dạng end-user khi nguồn TCP là Cloudflare/proxy.
+- Chỉ nhận tín hiệu TLS do proxy/CDN chuyển tiếp khi source IP được allowlist và
+  header đã được edge ghi đè; không tin header do Internet client tự gửi.
+- Tách namespace/baseline direct và proxied, không học chung reputation.
+
+[P1-5] JA3S chưa được nối vào bất kỳ quyết định nào
+
+Bằng chứng:
+- Ngoài ja3s.lua và khởi tạo ctx, không thấy ctx.ja3s được logger, reputation,
+  correlation, scoring hoặc enforcement tiêu thụ.
+
+Hướng sửa:
+- Sau khi có dữ liệu hợp lệ, dùng cặp client_fingerprint + negotiated_profile
+  để kiểm tra consistency, không dùng JA3S đơn lẻ như device identity.
+- Baseline phải theo domain/server TLS config; thay cipher/certificate/OpenSSL có
+  thể làm profile đổi hàng loạt.
+- Bắt đầu ở observe-only, đo phân phối trên verified users trước khi thêm điểm.
+
+[P1-6] API failure có thể biến thành fingerprint hợp lệ giả
+
+Bằng chứng:
+- Lỗi/missing get_client_hello_ext_present có thể để extensions={} nhưng code
+  vẫn serialize và hash.
+- Parser groups/point formats trả {} cho cả "extension không tồn tại" lẫn dữ liệu
+  malformed, không giữ error reason.
+
+Hướng sửa:
+- Tách trạng thái absent hợp lệ, unsupported API, malformed và runtime error.
+- Chỉ phát hành ja3_classic khi các trường bắt buộc đã được thu đúng.
+- Lưu capture_quality/capture_error; fail-open request nhưng fail-closed việc gắn
+  nhãn fingerprint chuẩn.
+
+======================================================================
+P2 - ĐỘ CHÍNH XÁC, QUAN SÁT VÀ CÁC LỖI LIÊN QUAN TRONG TRANSPORT
+======================================================================
+
+[P2-1] tls_cluster đếm request, không đếm client/connection
+
+Một HTTP/2 client tải nhiều resource làm INCR cùng JA3 rất nhanh. Nên đếm distinct
+identity/IP bucket hoặc connection trong cửa sổ, không dùng raw request count như
+số lượng client cùng fingerprint.
+
+[P2-2] Log thành công đang dùng mức ERR
+
+capture_ok, relay_ok và promote được log ở ERR để né cấu hình per-domain đang lọc
+WARN. Việc này làm error log lẫn sự kiện thành công. Nên sửa generator Nginx để
+chỉ định level phù hợp/đưa metric vào kênh telemetry riêng; ERR chỉ cho lỗi thật.
+Giữ sampled counters cho capture_ok, full/partial/miss/collision/eviction.
+
+[P2-3] Các module HTTP/2 đang mang tên mạnh hơn dữ liệu thực sự quan sát
+
+- pseudo_header.lua chủ yếu suy pseudo-header order từ UA, không đọc wire order.
+- hpack_sequence.lua phân loại HTTP header, không quan sát HPACK sequence.
+- window_size.lua phân loại request size, không đọc SETTINGS/WINDOW_UPDATE.
+- frame_pattern.lua suy hành vi từ header, không đọc frame pattern.
+
+Do đó không nên coi h2_sig hiện tại là network-stack fingerprint độc lập. Nó có
+tương quan vòng với UA/header và có thể bị spoof.
+
+[P2-4] Header X-H2-Pseudo-Order có thể bị client giả mạo
+
+pseudo_header.lua:81-89 gọi header này là trusted nhưng code không chứng minh nó
+đến từ internal proxy. Edge phải luôn strip/overwrite header từ client và chỉ bật
+nhánh này cho source proxy đã xác thực.
+
+[P2-5] KNOWN_PATTERNS có key Lua trùng nhau
+
+pseudo_header.lua khai báo mpsa bốn lần; Lua chỉ giữ giá trị cuối cùng. Firefox,
+Python và Java bị ghi đè bởi curl_h2. Hơn nữa một order không thể map duy nhất tới
+một client. Nên map order -> tập candidate/capability hoặc bỏ suy luận client từ
+order nếu không có quan sát wire thật.
+
+[P2-6] Nhánh force_refresh không thể chạy
+
+frame_pattern.lua kiểm cc:find("max-age=0") trước cc == "max-age=0", nên trường
+hợp exact đã bị return "max_age_0" và "force_refresh" là dead branch.
+
+======================================================================
+THỨ TỰ TRIỂN KHAI ĐỀ XUẤT
+======================================================================
+
+1. Dừng sử dụng/publish JA3S hiện tại; thêm metric để xác nhận hash
+   d8eada1de0f744e8f2d11cc5ea02451d đang chiếm gần 100%.
+2. Sửa JA3 capture lấy ciphers trực tiếp từ ngx.ssl.clienthello và truyền payload
+   qua ngx.ctx; giữ shared bridge sau feature flag trong một đợt rollout.
+3. Tách client_supports_tls13 khỏi negotiated_tls_version.
+4. Quality-gate mọi consumer; không cho partial vào fp_light/tls_cluster/DB.
+5. Tách direct traffic khỏi Cloudflare/proxy traffic.
+6. Thêm normalized fingerprint cho identity/cluster, giữ classic JA3 cho DB.
+7. Chỉ triển khai JA3S chuẩn nếu có nguồn actual ServerHello; nếu không, dùng
+   negotiated profile với tên đúng bản chất.
+8. Sửa các vấn đề HTTP/2 liên quan trước khi dùng JA3 + H2 như cặp tín hiệu mạnh.
+
+======================================================================
+TEST NGHIỆM THU TỐI THIỂU
+======================================================================
+
+A. Unit/vector test
+- Dùng ClientHello fixture cố định có expected raw JA3 và MD5 từ implementation
+  độc lập/reference.
+- Test GREASE ở cipher/extensions/groups.
+- Test extension/group malformed, missing extension, API unavailable.
+- Test supported_versions có và không có 0x0304.
+
+B. Integration trên đúng OpenResty production
+- TLS 1.2 và 1.3; curl/OpenSSL/Chrome/Firefox/Safari hoặc fixture tương đương.
+- HTTP/1.1 keepalive và HTTP/2 nhiều request trên cùng connection.
+- TLS session resumption.
+- Nhiều handshake đồng thời cùng source IP/NAT.
+- Connection HTTP/2 sống lâu hơn 300 giây.
+- Reload worker trong khi có connection cũ.
+
+C. So sánh trên wire
+- So ja3_raw/hash với Wireshark/Zeek/reference cho cùng ClientHello.
+- Nếu triển khai JA3S chuẩn, so actual ServerHello extension order và hash.
+
+D. Proxy/CDN
+- Test direct origin và qua Cloudflare; chứng minh source được gắn đúng và dữ
+  liệu origin TLS không bị gán cho end-user.
+- Test client tự gửi X-H2-Pseudo-Order; edge phải strip/overwrite.
+
+E. Chỉ số rollout
+- full_ja3_rate trên successful direct TLS phải gần 100%; partial/miss có reason.
+- Không có dominant constant do lỗi pipeline.
+- Không có JA3 partial trong DB lookup, fp_light hoặc tls_cluster.
+- Không có lỗi Lua làm hỏng TLS handshake; mọi capture tiếp tục fail-open.
+
+======================================================================
+NGUYÊN TẮC SỬ DỤNG TÍN HIỆU
+======================================================================
+
+JA3 có giá trị nhưng có thể bị giả mạo bởi client điều khiển TLS stack. Nó không
+phải định danh hay bằng chứng xác thực. Nên kết hợp với negotiated TLS profile,
+HTTP/2 quan sát thật, UA/header consistency, session behavior, IP/ASN và tín hiệu
+challenge. Không cho JA3 allowlist tạo bypass tuyệt đối.
+
+Nguồn đối chiếu chính:
+- OpenResty ngx.ssl.clienthello:
+  https://github.com/openresty/lua-resty-core/blob/master/lib/ngx/ssl/clienthello.md
+- OpenResty ngx.ssl:
+  https://github.com/openresty/lua-resty-core/blob/master/lib/ngx/ssl.md
+- OpenResty 1.19.3.x changelog (ngx.ctx giữa SSL_* và phase sau):
+  https://openresty.org/en/changelog-1019003.html
+- OpenResty stream-lua preread socket semantics:
+  https://github.com/openresty/stream-lua-nginx-module/blob/master/README.md
+- Salesforce JA3/JA3S reference:
+  https://github.com/salesforce/ja3
+- JA4 technical background về extension-order randomization:
+  https://github.com/FoxIO-LLC/ja4

@@ -44,7 +44,23 @@ local DEFAULT_WEIGHTS = {
 
     entropy_inv         = 35,
 
-    canvas_change       = 50,
+    -- `canvas_change` ĐÃ GỠ (2026-09-06). Trọng số cũ 50 — cao thứ nhì bảng —
+    -- nhưng vĩnh viễn bằng 0: `verify_token.lua` GHI `fp:canvas_change:<identity>`
+    -- còn `get_signal` ĐỌC `fp:canvas_change:<ctx.ip>`. Hai khoá không bao giờ
+    -- khớp (identity là md5(ip+ua), ip là dạng chấm).
+    --
+    -- VÀ KHÔNG SỬA ĐƯỢC BẰNG CÁCH NỐI ĐÚNG KHOÁ. Nối phía đọc sang `identity`
+    -- là bật một tín hiệu 50 điểm (một lần đánh dấu = 17,5đ; từ ba lần = 50đ)
+    -- lên đúng nhóm vừa GIẢI XONG PoW — tức vừa tự chứng minh là trình duyệt
+    -- thật. Mà `identity = md5(ip+ua)`: sau CGNAT, hai điện thoại khác nhau
+    -- cùng UA Chrome dùng CHUNG một identity với hai canvas khác nhau ⇒ đánh
+    -- dấu ⇒ đúng kiểu quy tội tập thể mà `ip_shared` sinh ra để chống.
+    -- Nối phía ghi sang `ip` thì còn tệ hơn: mọi IP dùng chung bị đánh dấu.
+    --
+    -- Ý tưởng chỉ sống lại được khi có định danh THEO THIẾT BỊ thật — mà thứ
+    -- đó lại đang dựa vào chính canvas (`build_device_id`), nên vòng tròn.
+    -- `fp:canvas:<id>` (không có `_change`) GIỮ NGUYÊN: nó nuôi
+    -- `build_device_id` → `verified:device:` ở đường lùi của whitelist.
     -- `fast_solve` ĐÃ GỠ (cùng lúc trang challenge bỏ WebCrypto). Nó đo `sm`
     -- do client tự khai và đánh dấu khi `< 50ms` — ngưỡng đó chỉ đúng với bộ
     -- giải cũ, vốn đi qua một Promise + `setTimeout(0)` MỖI LẦN BĂM nên không
@@ -217,14 +233,6 @@ local function get_signal(name, ctx)
         return math.max(0.0, 1.0 - e)
     end
 
-    if name == "canvas_change" then
-        if not ctx.ip or ctx.ip == "" then return 0.0 end
-        local v = pool.safe_get("fp:canvas_change:" .. ctx.ip)
-        local changes = tonumber(v) or 0
-
-        return math.min(1.0, changes * 0.5)
-    end
-
     if name == "resource_starved" then
         return ctx.resource_starved and 1.0 or 0.0
     end
@@ -294,7 +302,7 @@ function _M.run(ctx)
         local src = SIGNAL_SOURCE[name]
         if src and skip[src] then goto continue end
 
-        if (name == "canvas_change" or name == "resource_starved")
+        if name == "resource_starved"
            and (ctx.req_class == "api_callback"
 	   	or ctx.req_class == "resource") then
             goto continue

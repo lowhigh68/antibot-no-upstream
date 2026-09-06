@@ -85,31 +85,6 @@ _M.tls = {
     ja3_cipher = "off",
 }
 
-_M.weights = {
-    rate_flag        = 25,
-    burst_flag       = 35,
-    slow             = 50,
-    behavior_score   = 30,
-    session_flag     = 20,
-    graph_score      = 30,
-    cluster_score    = 25,
-    anomaly_score    = 35,
-    bot_score        = 45,
-    h2_bot_confidence= 55,
-    ip_rep           = 45,
-    asn_rep          = 35,
-    ja3_rep          = 35,
-    h2_rep           = 35,
-    ip_score         = 20,
-    entropy_inv      = 25,
-    corr_score       = 45,
-    mismatch         = 55,
-    risk             = 30,
-    ja3_allowlist_miss = 50,
-    fp_degraded_pen  = 15,
-    correlated_boost = 15,
-    corr_rule_weight = 50,
-}
 
 _M.signal_threshold = 0.7
 
@@ -161,7 +136,6 @@ _M.ttl = {
     explain          = 3600,
     antibot_tls      = 10,
     whitelist_cache  = 60,
-    model_weight     = 0,
 }
 
 _M.rate = {

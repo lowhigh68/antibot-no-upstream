@@ -36,9 +36,16 @@ local function check_canvas_consistency(red, id, ip, canvas_hash)
     local fp_key   = "fp:canvas:" .. id
     local existing = red:get(fp_key)
     if existing == ngx.null then existing = nil end
+    -- Bộ đếm `fp:canvas_change:` ĐÃ GỠ (2026-09-06) cùng với tín hiệu
+    -- `canvas_change` trong `compute.lua` — nó ghi theo `identity` còn bên đọc
+    -- tra theo `ip`, nên vĩnh viễn bằng 0, và nối đúng khoá lại tạo FP trên
+    -- CGNAT (xem chú thích ở `DEFAULT_WEIGHTS`).
+    --
+    -- Nhánh `else` bên dưới thì GIỮ: `fp:canvas:<id>` nuôi `build_device_id`
+    -- → `verified:device:` ở đường lùi của whitelist, và chính hàm này đọc lại
+    -- nó ở nhánh gửi-lại-an-toàn. Cố ý KHÔNG làm mới khoá khi canvas lệch:
+    -- giá trị đã lưu phải giữ nguyên để còn so được ở lần sau.
     if existing and existing ~= "" and existing ~= canvas_hash then
-        red:incr("fp:canvas_change:" .. id)
-        red:expire("fp:canvas_change:" .. id, 3600)
         ngx.log(ngx.INFO, "[verify] canvas_inconsistency id=", id:sub(1,8))
     else
         red:setex(fp_key, cfg.ttl.fp or 86400, canvas_hash)

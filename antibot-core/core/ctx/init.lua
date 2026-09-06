@@ -29,8 +29,6 @@ function _M.init(ctx)
     ctx.ja3_partial    = nil
     ctx.ja3_cipher_src = nil
     ctx.tls_version    = nil
-    ctx.ja3s           = nil
-    ctx.tls_cipher     = nil
 
     ctx.h2_sig         = nil
     ctx.h2_order       = nil
@@ -52,7 +50,6 @@ function _M.init(ctx)
 
     ctx.ip_rep         = 0.0
     ctx.asn_rep        = 0.0
-    ctx.ja3_rep        = 0.0
     ctx.h2_rep         = 0.0
 
     ctx.rate_flag      = false
