@@ -581,15 +581,39 @@ function _M.run(ctx)
     -- fingerprint): không có fp_light thì không có gì để nói về churn fp_light.
     --
     -- TẠM THỜI. Gỡ sau khi kết luận — mỗi dòng tốn ~50 byte.
+    -- `peer=` LÀ CỘT BẮT BUỘC CỦA PHÉP ĐO NÀY, không phải phụ liệu.
+    -- Toàn bộ lập luận "cùng conn ⇒ cùng client" SỤP ĐỔ khi có reverse proxy
+    -- ở giữa: một kết nối HTTP/2 từ edge Cloudflare tới origin chở request
+    -- của NHIỀU người dùng cuối. Khi đó `fpl` khác nhau trong cùng `conn` là
+    -- chuyện đương nhiên, không phải churn — tức nhiễu theo chiều TẠO RA
+    -- churn giả, đúng chiều làm ta kết luận sai.
+    --
+    -- `$realip_remote_addr` giữ nguyên nguồn TCP thật kể cả sau khi module
+    -- realip ghi đè `$remote_addr` (chính `nginx/CF/cloudflare-realip.conf`
+    -- ghi rõ ngữ nghĩa này). So nó với `ctx.ip`:
+    --   "-"  = trùng ⇒ khách nối THẲNG ⇒ dòng này dùng được để kết luận
+    --   <ip> = khác ⇒ qua proxy ⇒ PHẢI LOẠI khỏi phép đo, và còn cho biết
+    --          proxy nào để tra tiếp
+    --   "?"  = biến không có (module realip không nạp) ⇒ không kết luận được
+    -- Cách này tổng quát hơn cờ riêng cho Cloudflare: đúng với mọi reverse
+    -- proxy, và đúng cả khi realip đang tắt.
     local churn_str = ""
     if ctx.fp_light then
-        churn_str = string.format(" fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d",
+        local peer = ngx.var.realip_remote_addr
+        local peer_s
+        if not peer or peer == "" then      peer_s = "?"
+        elseif peer == (ctx.ip or "") then  peer_s = "-"
+        else                                peer_s = peer end
+
+        churn_str = string.format(
+            " fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d peer=%s",
             tostring(ctx.fp_light):sub(1, 8),
             ctx.h2_sig and tostring(ctx.h2_sig):sub(1, 8) or "-",
             tostring(ngx.worker.pid()),
             tostring(ngx.var.connection or "-"),
             tostring(ngx.var.connection_requests or "-"),
-            tonumber(ctx.sess_len) or 0)
+            tonumber(ctx.sess_len) or 0,
+            peer_s)
     end
 
     -- Build structured log line — all fields on one line, space-separated key=value.

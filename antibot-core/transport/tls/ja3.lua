@@ -117,7 +117,13 @@ end
 -- sự thật về client, và JA3 vốn mã hoá sự vắng mặt đó bằng trường rỗng.
 -- Chỉ "khai báo rồi cắt ngắn" mới là hỏng.
 local function parse_supported_groups(ext_data)
-    if not ext_data or #ext_data == 0 then return {}, true end
+    -- VẮNG HẲN và CÓ MẶT NHƯNG THÂN RỖNG là hai chuyện khác nhau. Vắng =
+    -- sự thật về client, JA3 mã hoá bằng trường rỗng. Thân 0 byte thì RFC 8422
+    -- cấm (bắt buộc 2 byte độ dài) ⇒ đó là khung hỏng, phải báo `ok=false`.
+    -- Gộp hai cái làm một khiến một ClientHello dị dạng sinh ra ĐÚNG chuỗi JA3
+    -- của client hợp lệ không gửi extension — một va chạm bắt chước được.
+    if not ext_data then return {}, true end
+    if #ext_data == 0 then return {}, false end
     if #ext_data < 2 then return {}, false end
     local curves = {}
     local len, pos = u16(ext_data, 1)
@@ -136,7 +142,10 @@ local function parse_supported_groups(ext_data)
 end
 
 local function parse_ec_point_formats(ext_data)
-    if not ext_data or #ext_data == 0 then return {}, true end
+    -- Cùng lý do với `parse_supported_groups`: RFC 4492 bắt buộc 1 byte độ
+    -- dài, nên thân 0 byte là khung hỏng chứ không phải "không gửi".
+    if not ext_data then return {}, true end
+    if #ext_data == 0 then return {}, false end
     local fmts = {}
     local flen = ext_data:byte(1)
     if not flen then return {}, false end
@@ -245,9 +254,14 @@ end
 -- consistency_check.lua` nhánh `tls12` gác đúng bằng `ctx.tls13_offered ==
 -- false` và cộng +0.35 × 55 = **19,25 điểm**. Cả nỗ lực dựng trạng thái thứ ba
 -- ở `serialize` (ghi `"?"`) bị hàm này nuốt mất ngay khi đọc lại.
+-- DANH SÁCH TRẮNG, không phải danh sách đen: chỉ "1" và "0" mới là câu trả
+-- lời; MỌI thứ khác — "?", "", nil, rác do payload cắt ngắn — đều là "không
+-- biết". Viết kiểu `if s == "?" then return nil end; return s == "1"` thì rác
+-- vẫn sập thành `false`, tức lặp lại đúng con bug đang sửa ở một cửa khác.
 local function decode_tls13(s)
-    if s == "?" then return nil end
-    return s == "1"
+    if s == "1" then return true  end
+    if s == "0" then return false end
+    return nil
 end
 
 local function deserialize(val)
@@ -349,9 +363,19 @@ function _M.capture_unsafe()
     --   true  = có 0x0304
     local sv_data  = ssl_clt.get_client_hello_ext(0x002b)
     local is_tls13
-    if not sv_data or #sv_data == 0 then
+    if not sv_data then
         -- Vắng hẳn extension 43 = client không biết/không chào TLS 1.3.
+        -- Đây là SỰ THẬT về client, nên `false` là đúng.
         is_tls13 = false
+    elseif #sv_data == 0 then
+        -- CÓ extension 43 nhưng thân 0 byte. RFC 8446 bắt buộc 1 byte độ dài,
+        -- nên đây là khung hỏng — ta KHÔNG BIẾT client chào gì. Trước đây rơi
+        -- chung nhánh với "vắng hẳn" ⇒ thành `false` ⇒ nhánh `tls12` của
+        -- `consistency_check` cộng +0,35 × 55 = **19,25 điểm** cho một client
+        -- mà lỗi duy nhất là ta đọc không nổi. Đúng con bug `"?"` → `false`
+        -- vừa sửa ở `decode_tls13`, chỉ khác cửa vào.
+        is_tls13 = nil
+        ngx.log(ngx.ERR, "[ja3] supported_versions than rong -> tls13=nil")
     else
         local list_len = sv_data:byte(1)
         -- RFC 8446: 1 byte độ dài, rồi ĐÚNG list_len byte phiên bản (mỗi
@@ -769,5 +793,13 @@ end
 -- Khong module nao trong san pham duoc goi hai truong nay.
 _M._parse_ciphers        = parse_ciphers
 _M._MIN_PLAUSIBLE_CIPHERS = MIN_PLAUSIBLE_CIPHERS
+
+-- Cùng lý do, cho trạng thái BA NGÔI của `tls13`. Bug `"?"` → `false` sống
+-- được vì test chỉ TÌM CHUỖI trong mã nguồn: một phép so sánh sai vẫn cho
+-- mẫu xanh. Round-trip `serialize` → `deserialize` là thứ duy nhất bắt được.
+_M._serialize            = serialize
+_M._deserialize          = deserialize
+_M._parse_groups         = parse_supported_groups
+_M._parse_pt_fmts        = parse_ec_point_formats
 
 return _M

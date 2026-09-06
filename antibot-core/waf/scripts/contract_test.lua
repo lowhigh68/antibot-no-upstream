@@ -745,6 +745,93 @@ else
         else
             pass = pass + 1
         end
+
+        -- ── 10c. TRI-STATE `tls13`: round-trip serialize -> deserialize ──
+        --
+        -- Bug that, 2026-09-07:
+        --     is_tls13 = (parts[1] == "?") and nil or (parts[1] == "1")
+        -- Trong Lua `x and nil or y` KHONG BAO GIO tra ve duoc nil — ve giua
+        -- bang nil nen `and` cho nil, roi thang sang ve `or` => "?" thanh
+        -- **false**. Ma `false` co nghia "client chao TLS 1.2", va
+        -- `consistency_check` nhanh `tls12` cong +0.35 x 55 = 19,25 diem cho
+        -- moi client ma loi duy nhat la TA doc khong noi.
+        --
+        -- Muc 9 (tim chuoi) KHONG bat duoc: chuoi "?" van nam trong ma nguon
+        -- nen mau van xanh. Chi round-trip that moi bat.
+        local ser, deser = ja3_mod._serialize, ja3_mod._deserialize
+        if type(ser) ~= "function" or type(deser) ~= "function" then
+            bad("  SAI  ja3.lua khong lo `_serialize`/`_deserialize`\n")
+        else
+            local rt = {
+                { "true  -> 1 -> true",  true,  true  },
+                { "false -> 0 -> false", false, false },
+                { "nil   -> ? -> nil",   nil,   nil   },
+            }
+            for i = 1, 3 do
+                local c = rt[i]
+                local label, input, want = c[1], c[2], c[3]
+                local ok_s, payload = pcall(ser, input, {}, {}, {}, {}, true)
+                if not ok_s then
+                    bad("  SAI  serialize nem loi voi `%s`: %s\n",
+                        label, tostring(payload))
+                else
+                    local ok_d, out = pcall(deser, payload)
+                    if not ok_d or type(out) ~= "table" then
+                        bad("  SAI  deserialize hong voi `%s`\n", label)
+                    elseif out.is_tls13 ~= want then
+                        bad("  SAI  `%s`: mong %s, nhan %s (payload=%q)\n",
+                            label, tostring(want), tostring(out.is_tls13),
+                            payload)
+                    else
+                        pass = pass + 1
+                    end
+                end
+            end
+
+            -- Nua con lai cua cung mot bug: sua "?" ma van de RAC roi vao
+            -- `false` thi cua cong diem oan chua dong. Rac phai ra nil.
+            for _, junk in ipairs({ "x", "", "01", "true", "?!" }) do
+                local out = deser(junk .. "|||||1")
+                if out and out.is_tls13 ~= nil then
+                    bad("  SAI  rac %q giai ma thanh %s, phai la nil\n",
+                        junk, tostring(out.is_tls13))
+                else
+                    pass = pass + 1
+                end
+            end
+        end
+
+        -- ── 10d. Extension VANG khac extension CO MA THAN RONG ───────────
+        --
+        -- Vang = su that ve client, JA3 ma hoa bang truong rong => ok=true.
+        -- Than 0 byte = khung hong (RFC 8422 doi 2 byte do dai, RFC 4492 doi
+        -- 1 byte) => ok=false. Gop hai cai lam mot thi mot ClientHello di dang
+        -- sinh ra DUNG chuoi JA3 cua client hop le khong gui extension — mot
+        -- va cham bat chuoc duoc.
+        local pg, pf = ja3_mod._parse_groups, ja3_mod._parse_pt_fmts
+        if type(pg) ~= "function" or type(pf) ~= "function" then
+            bad("  SAI  ja3.lua khong lo `_parse_groups`/`_parse_pt_fmts`\n")
+        else
+            local ec = {
+                { "supported_groups VANG        -> ok",   pg, nil, true  },
+                { "supported_groups than rong   -> hong", pg, "",  false },
+                { "ec_point_formats VANG        -> ok",   pf, nil, true  },
+                { "ec_point_formats than rong   -> hong", pf, "",  false },
+            }
+            for i = 1, 4 do
+                local c = ec[i]
+                local label, fn, input, want = c[1], c[2], c[3], c[4]
+                local ok_call, _, okflag = pcall(fn, input)
+                if not ok_call then
+                    bad("  SAI  `%s` nem loi\n", label)
+                elseif okflag ~= want then
+                    bad("  SAI  `%s`: mong ok=%s, nhan %s\n",
+                        label, tostring(want), tostring(okflag))
+                else
+                    pass = pass + 1
+                end
+            end
+        end
     end
 end
 
