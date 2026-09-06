@@ -35,6 +35,11 @@ local KNOWN_PATTERNS = {
     --
     -- Vi sao la `nil` chu khong phai `true`: Go cho phep dat MaxVersion, con
     -- co ban Go cu; tu thu tu pseudo-header KHONG suy ra duoc phien ban TLS,
+    -- va nhanh kiem ben duoi da bo qua `nil` dung nhu vay.
+    amps = { clients = "go_http2",                      tls13 = nil   },
+    mpsa = { clients = "firefox,curl,python,java,node", tls13 = nil   },
+}
+
 -- `find(s, 1, true)` là PLAIN find: đối số thứ ba `true` tắt hẳn bộ so khớp
 -- mẫu, nên `%` trong chuỗi KHÔNG còn là ký tự thoát mà là một ký tự `%` thật.
 --
@@ -61,7 +66,6 @@ local function infer_from_ua(ua)
 
     if ua:find("Chrome/", 1, true) and not ua:find("Edg/", 1, true) then
         return "masp", "ua_chrome"
-    end
     end
     if ua:find("Edg/", 1, true) then
         return "masp", "ua_edge"
