@@ -424,7 +424,6 @@ function _M.run(ctx)
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
-        ctx.ja3_cipher_src = nil
         ctx.tls_version    = nil
         ctx.tls13          = nil
         return
@@ -484,7 +483,6 @@ function _M.run(ctx)
         ctx.ja3            = nil
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
-        ctx.ja3_cipher_src = nil
         ctx.tls_version    = nil
         ctx.tls13          = nil
         return
@@ -525,17 +523,13 @@ function _M.run(ctx)
     -- thấy API có lấy được cipher hay không và lấy được bao nhiêu.
     local captured   = data.ciphers or {}
     local ciphers    = {}
-    local cipher_src = "none"
     local is_partial = true
 
     ctx.ja3_cipher_n = #captured
 
     if CIPHER_MODE == "on" and #captured > 0 then
         ciphers    = captured
-        cipher_src = "clienthello"
         is_partial = false
-    elseif #captured > 0 then
-        cipher_src = "probe_only"
     end
 
     local tls_version = 0x0303
@@ -546,7 +540,6 @@ function _M.run(ctx)
     ctx.ja3            = ja3_hash
     ctx.ja3_raw        = ja3_str
     ctx.ja3_partial    = is_partial
-    ctx.ja3_cipher_src = cipher_src
     ctx.tls_version    = tls_version
     ctx.tls13          = data.is_tls13
 

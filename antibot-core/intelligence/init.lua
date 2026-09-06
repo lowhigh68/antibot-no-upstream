@@ -3,7 +3,7 @@ local _M = {}
 -- NOTE: the old `intelligence.ip` layer (ip_score.lua) used to overwrite
 -- ctx.ip_score = ctx.ip_risk, but ran BEFORE ip_reputation populated ip_risk →
 -- it silently zeroed ip_score. Removed: IP-type scoring is disabled at source
--- (core/fingerprint/ip_classify.lua) and per-IP reputation is handled by ip_rep/
+-- (core/ctx/init.lua pins ctx.ip_score = 0.0) and per-IP reputation is handled by ip_rep/
 -- ip_risk/ext_rep directly. Reviving this layer would double-count ip_risk.
 local threat_layer  = require "antibot.intelligence.threat"
 local corr_layer    = require "antibot.intelligence.correlation"

@@ -27,7 +27,6 @@ function _M.init(ctx)
     ctx.ja3            = nil
     ctx.ja3_raw        = nil
     ctx.ja3_partial    = nil
-    ctx.ja3_cipher_src = nil
     ctx.tls_version    = nil
 
     ctx.h2_sig         = nil
@@ -41,8 +40,11 @@ function _M.init(ctx)
     ctx.fp_degraded    = false
 
     ctx.asn            = nil
-    ctx.ip_net_type    = "unknown"   -- coarse label only (ip_classify), NOT scored
-    ctx.ip_score       = 0.0         -- IP-type scoring intentionally disabled (see ip_classify.lua)
+    -- IP-type scoring bi VO HIEU CO CHU Y (DC egress = nguoi that: iCloud
+    -- Private Relay, proxy bao mat doanh nghiep, cloud VPN). `ip_classify.lua`
+    -- da bi xoa 2026-09-06 nen DAY LA NOI DUY NHAT dat gia tri; ba noi doc no
+    -- (compute weight 25, cross_layer_rules, l7/rate/adaptive_limit) deu nhan 0.
+    ctx.ip_score       = 0.0
     ctx.ip_shared      = false       -- Tier 1 (lenient): distinct-UA/IP high → dampen per-IP reputation
     ctx.ip_shared_verified = false   -- Tier 2 (strict): shared AND real cookied users → IP-ban immunity
     ctx.ip_real_users  = 0           -- distinct cookie-bearing identities on IP (ip_tour)
@@ -50,11 +52,9 @@ function _M.init(ctx)
 
     ctx.ip_rep         = 0.0
     ctx.asn_rep        = 0.0
-    ctx.h2_rep         = 0.0
 
     ctx.rate_flag      = false
     ctx.burst_flag     = false
-    ctx.slow           = false
     ctx.rate           = 0
     ctx.burst          = 0
 
@@ -62,7 +62,6 @@ function _M.init(ctx)
     ctx.sess_len       = 0
     ctx.session_flag   = 0.0
     ctx.graph_flag     = 0.0
-    ctx.graph_score    = 0.0
     ctx.ua_cluster     = 0
     ctx.ip_cluster     = 0
     ctx.uri_cluster    = 0
@@ -74,7 +73,6 @@ function _M.init(ctx)
     ctx.baseline_ua    = false
     ctx.entropy        = 0.35
     ctx.subnet_diversity = 0
-    ctx.geo            = nil
 
     ctx.whitelisted      = false
     ctx.good_bot_claimed = false
@@ -96,7 +94,6 @@ function _M.init(ctx)
     ctx.top_signals      = {}
     ctx.monitor_flag     = false
 
-    ctx.corr_score     = 0.0
     ctx.corr_rules     = {}
     ctx.mismatch       = 0.0
 

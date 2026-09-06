@@ -129,7 +129,7 @@ _M.RULES = RULES
 -- Cách nhận biết không cần khai báo: thấy bất kỳ đường dẫn riêng của WP nào
 -- trên host đó thì đánh dấu. Tự học, không cấu hình, không danh sách domain.
 local WP_HOST_TTL_REDIS  = 2592000   -- 30 ngày, làm mới mỗi lần thấy
-local WP_HOST_TTL_SHARED = 300       -- cùng mức với ip_classify.lua
+local WP_HOST_TTL_SHARED = 300
 local shared_cache = ngx.shared.antibot_cache
 
 -- ĐÁNH DẤU CHẠY Ở LOG PHASE, KHÔNG PHẢI ACCESS PHASE.
@@ -140,7 +140,7 @@ local shared_cache = ngx.shared.antibot_cache
 --      bắn `wp_root_unknown`, đúng cỗ máy FP mà cổng này sinh ra để tránh.
 --   2. `host` lấy từ `ngx.var.host` nên Host header bịa cũng tạo được key Redis
 --      TTL 30 ngày ⇒ nguyên thủy ghi không giới hạn, giá một request.
---   3. Key rác chèn vào shdict `antibot_cache` (dùng chung với ip_classify)
+--   3. Key rác chèn vào shdict `antibot_cache` (dùng chung toàn hệ)
 --      ⇒ đẩy LRU, bán kính nổ vượt ra ngoài WAF.
 --
 -- Cổng mới: chỉ đánh dấu khi đường dẫn WordPress đó là thứ CÓ THẬT trên đĩa.

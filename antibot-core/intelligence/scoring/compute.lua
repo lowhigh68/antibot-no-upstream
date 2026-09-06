@@ -159,7 +159,10 @@ local DEFAULT_WEIGHTS = {
     waf_body_arg        = 0,
 
     fp_degraded_pen     = 0,
-    correlated_boost    = 15,
+    -- `correlated_boost = 15` DA BI GO (2026-09-06): vong lap cham diem co mot
+    -- nhanh `if name == "correlated_boost" then goto continue end` VO DIEU KIEN,
+    -- nen trong so nay chua bao gio cong mot diem nao. Diem tu tuong quan di
+    -- qua `corr_rule_weight` ngay duoi, tinh tren tung rule.
     corr_rule_weight    = 50,
 }
 
@@ -315,10 +318,6 @@ function _M.run(ctx)
                 total     = total     + weight
                 pos_total = pos_total + weight
             end
-            goto continue
-        end
-
-        if name == "correlated_boost" then
             goto continue
         end
 
