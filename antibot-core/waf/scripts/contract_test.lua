@@ -236,5 +236,61 @@ else
     pass = pass + 1
 end
 
+-- ── 5. Trang challenge <-> endpoint /antibot/verify ─────────────────
+--
+-- BO TEST NAY RA DOI VI MOT LOI DA SONG RAT LAU MA MOI NUA DEU "DUNG".
+--
+-- `challenge/init.lua` gui ket qua PoW bang `fetch()`. `verify_token.lua` tra
+-- ve mot TRANG HTML co `window.location.replace(dest)`. Doc rieng tung file thi
+-- khong file nao sai. Nhung `fetch` VUT than phan hoi, nen trang do khong bao
+-- gio chay: `localStorage` khong duoc ghi, va client roi xuong duong lui
+-- `document.referrer` — TRONG voi khach vao lan dau (go URL, bookmark, quet QR,
+-- mo tu app) — nen moi lien ket sau bi nem ve `/`.
+--
+-- Do la dung MOT LOAI loi da lap lai suot: mot GIA TRI di qua RANH GIOI va hai
+-- ben hieu khac nhau. `php = false` vs nil. `fntr` co vs ly do. `dec()` tra
+-- `"-"` vs nil qua ranh gioi thread. Mau regex viet trong long string vs cai
+-- PCRE nhan. Hai ban cai dat cua `args.check`.
+--
+-- Nen phep kiem dung KHONG phai la them test cho tung nua, ma la GHIM HOP DONG
+-- giua chung. Bon phep duoi day la hop dong do.
+io.write("\nhop dong: trang challenge <-> /antibot/verify\n")
+
+local ch = slurp(SRC .. "enforcement/challenge/init.lua")
+local vt = slurp(SRC .. "enforcement/challenge/verify_token.lua")
+
+if not ch or not vt then
+    bad("  SAI  khong doc duoc challenge/init.lua hoac verify_token.lua\n")
+else
+    -- 5a. Client phai GUI dich den. Thieu no thi may chu chi con Referer, va
+    --     Referer trong voi dung nhom khach vao lan dau.
+    if ch:find("'dest'", 1, true) then pass = pass + 1 else
+        bad("  SAI  trang challenge khong gui truong `dest`\n" ..
+            "       => may chu phai doan dich bang Referer, va Referer TRONG\n" ..
+            "          voi khach vao lan dau => moi lien ket sau ve `/`\n")
+    end
+
+    -- 5b. May chu phai tra thu ma `fetch` DOC DUOC.
+    if vt:find("application/json", 1, true) then pass = pass + 1 else
+        bad("  SAI  /antibot/verify khong tra JSON\n" ..
+            "       => client dung `fetch`, than phan hoi bi vut. Mot trang\n" ..
+            "          HTML tu chuyen huong o day KHONG BAO GIO chay.\n")
+    end
+
+    -- 5c. Client phai DOC cai do.
+    if ch:find("r.json()", 1, true) then pass = pass + 1 else
+        bad("  SAI  trang challenge khong doc JSON tra ve\n" ..
+            "       => dich den dung nam o may chu ma khong toi duoc client\n")
+    end
+
+    -- 5d. Dich den la du lieu do CLIENT gui, nen phai duoc kiem. Mot gia tri
+    --     tu do dat vao `Location:` la open redirect; lot `\r\n` la header
+    --     injection.
+    if vt:find("safe_dest", 1, true) then pass = pass + 1 else
+        bad("  SAI  verify_token khong kiem `dest` truoc khi dung\n" ..
+            "       => open redirect, va header injection neu lot CR/LF\n")
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

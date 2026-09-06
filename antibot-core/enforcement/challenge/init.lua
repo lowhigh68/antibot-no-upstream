@@ -120,11 +120,25 @@ function _M.challenge_html(ctx)
   // Build URLSearchParams payload once PoW is solved.
   function buildBody(solveMs, env) {
     var body = new URLSearchParams();
+    // `dest` — ĐÍCH ĐẾN THẬT, gửi tường minh.
+    //
+    // Trang này ĐANG Ở chính URL mà khách yêu cầu (challenge được trả về THAY
+    // CHO trang đó, không phải chuyển hướng tới đây). Nên `location` ở đây là
+    // nguồn sự thật duy nhất về nơi cần quay lại.
+    //
+    // Trước đây đích được suy ra từ referrer, và referrer TRỐNG với đúng nhóm
+    // khách vào lần đầu: gõ URL, bookmark, quét QR, mở từ app, click quảng cáo
+    // có `rel=noreferrer`. Họ bị ném về `/`.
+    //
+    // Chỉ gửi ĐƯỜNG DẪN, không gửi cả URL — máy chủ tự dựng lại. `origin` do
+    // client gửi thì không có giá trị gì mà máy chủ chưa biết, còn nhận nó vào
+    // là mở một open redirect.
     var fields = [
       ['token', token], ['n', String(n)], ['fp', fp],
       ['cv', env.cv],   ['pt', env.pt],   ['hw', env.hw],
       ['dp', env.dp],   ['cd', env.cd],   ['st', env.st],
-      ['sm', solveMs]
+      ['sm', solveMs],
+      ['dest', location.pathname + location.search]
     ];
     fields.forEach(function(p){ body.append(p[0], p[1]); });
     return body;
@@ -155,7 +169,24 @@ function _M.challenge_html(ctx)
         window.location.href = loc;
         return;
       }
-      if (r.ok || r.status === 302 || r.status === 200) {
+      // 200 + JSON — ĐƯỜNG CHẠY THẬT. Máy chủ trả `{"ok":true,"dest":"/..."}`
+      // vì đây là một `fetch`, không phải một lần điều hướng: thân phản hồi
+      // phải là thứ ĐỌC ĐƯỢC, không phải một trang HTML tự chuyển hướng.
+      //
+      // Bản trước máy chủ trả HTML kèm `window.location.replace(dest)`, và
+      // `fetch` vứt thân đi. Đích đúng có sẵn ở máy chủ mà không tới được đây,
+      // nên client rơi xuống `returnUrl` = referrer — trống với khách vào lần
+      // đầu — và mọi liên kết sâu bị ném về `/`.
+      if (r.ok) {
+        r.json().then(function(d) {
+          window.location.replace((d && d.dest) ? d.dest : returnUrl);
+        }).catch(function() {
+          // Máy chủ cũ còn trả HTML: vẫn đi tiếp bằng đường lùi.
+          window.location.replace(returnUrl);
+        });
+        return;
+      }
+      if (r.status === 302) {
         window.location.href = returnUrl;
         return;
       }

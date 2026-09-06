@@ -27,17 +27,9 @@ local function sha256_hex(data)
     return table.concat(hex)
 end
 
-local function hmac_sha256_hex(key, data)
-    local md     = ffi.new("unsigned char[32]")
-    local md_len = ffi.new("unsigned int[1]", 32)
-    local ok, result = pcall(function()
-        return C.HMAC(C.EVP_sha256(), key, #key, data, #data, md, md_len)
-    end)
-    if not ok or result == nil then return nil end
-    local hex = {}
-    for i = 0, 31 do hex[i+1] = string.format("%02x", md[i]) end
-    return table.concat(hex)
-end
+-- `hmac_sha256_hex` đã bị gỡ cùng `issue_ls_token` — nó không còn nơi dùng.
+-- Khai báo `HMAC`/`EVP_sha256` trong `ffi.cdef` ở trên giữ nguyên: nó vô hại,
+-- và `issue_token.lua` vẫn khai báo y hệt cho phần phát token.
 
 local function check_canvas_consistency(red, id, ip, canvas_hash)
     if not canvas_hash or canvas_hash == "" or canvas_hash == "err" then return end
@@ -144,17 +136,46 @@ local function build_device_id(ua, canvas_hash)
     return ngx.md5("device_canvas|" .. ua .. "|" .. canvas_hash)
 end
 
--- Issue localStorage token để persistent restore qua sessions.
-local function issue_ls_token(id)
-    local secret = cfg.pow.challenge_secret
-    local ts     = tostring(ngx.time())
-    local data   = id .. "|" .. ts
-    local sig    = hmac_sha256_hex(secret, data)
-    if not sig then return nil end
-    return id .. "|" .. ts .. "|" .. sig
+-- ĐÍCH ĐẾN SAU KHI VERIFY — chỉ nhận ĐƯỜNG DẪN, không nhận URL.
+--
+-- Trang challenge gửi `location.pathname + location.search` của chính nó. Đó là
+-- dữ liệu do CLIENT gửi, nên phải kiểm — một giá trị tự do đặt vào `Location:`
+-- là open redirect, và nếu lọt `\r\n` thì là header injection.
+--
+-- Bốn phép kiểm, mỗi phép bịt một thứ khác nhau:
+--   phải bắt đầu bằng `/`          — chặn `https://evil/`
+--   ký tự thứ hai không là `/`|`\` — `//evil` và `/\evil` là URL TUYỆT ĐỐI với
+--                                    trình duyệt, đây là dạng bị quên nhiều nhất
+--   không `\r` `\n` `\0`           — header injection
+--   dài tối đa 512                 — không cho nhồi
+--
+-- KHÔNG lọc theo danh sách ký tự cho phép: đường dẫn tiếng Việt có dấu là bình
+-- thường trên đàn máy này, và một danh sách trắng ASCII sẽ ném chúng về `/`.
+local MAX_DEST_LEN = 512
+local function safe_dest(s)
+    if type(s) ~= "string" or s == "" or #s > MAX_DEST_LEN then return nil end
+    if s:sub(1, 1) ~= "/" then return nil end
+    local c2 = s:sub(2, 2)
+    if c2 == "/" or c2 == "\\" then return nil end
+    if s:find("\r", 1, true) or s:find("\n", 1, true)
+       or s:find("\0", 1, true) then return nil end
+    return s
 end
 
-local function grant_verified(ctx, id, verified_ttl, canvas_hash)
+-- Referer là ĐƯỜNG LÙI cho những trang challenge cũ còn trong bộ nhớ trình
+-- duyệt lúc triển khai — chúng chưa gửi `dest`. Cắt lấy phần đường dẫn rồi cho
+-- qua đúng bộ kiểm ở trên, chứ không tin nguyên URL.
+local function dest_from_referer(ref)
+    if not ref or ref == "" then return nil end
+    return safe_dest(ref:match("^https?://[^/]+(/[^%s]*)$"))
+end
+
+-- Chuỗi JSON. `safe_dest` đã loại ký tự điều khiển nên chỉ còn `"` và `\`.
+local function json_str(s)
+    return '"' .. s:gsub('[\\"]', "\\%0") .. '"'
+end
+
+local function grant_verified(ctx, id, verified_ttl, canvas_hash, dest_arg)
     -- Key 1: cookie key (primary)
     pool.safe_set("verified:" .. id, "1", verified_ttl)
 
@@ -202,34 +223,49 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash)
     end
     ngx.header["Set-Cookie"] = cookie_flags
 
-    -- Issue localStorage token cho persistent restore
-    local ls_token = issue_ls_token(id)
     ctx.verified = true
     ngx.log(ngx.INFO, "[verify] passed id=", id:sub(1,8),
             " ip=", ctx.ip or "?",
             " device_id=", device_id and device_id:sub(1,8) or "nil")
 
-    local referer = ngx.var.http_referer
-    local dest    = (referer and referer ~= "") and referer or "/"
+    -- ── ĐÁP LẠI MỘT `fetch`, KHÔNG PHẢI MỘT LẦN ĐIỀU HƯỚNG ──────────
+    --
+    -- Đây là chỗ hai nửa của tầng challenge từng nói hai ngôn ngữ khác nhau, và
+    -- đó mới là lỗi — không phải một dòng nào sai.
+    --
+    -- Bản cũ trả về một TRANG HTML: `<meta refresh>` + `localStorage.setItem`
+    -- + `window.location.replace(dest)`. Trang đó chỉ chạy nếu trình duyệt
+    -- ĐIỀU HƯỚNG tới nó. Nhưng `challenge/init.lua` gửi bằng `fetch()`, và
+    -- fetch VỨT thân phản hồi. Hậu quả dây chuyền:
+    --   1. `localStorage.setItem('ab_token')` KHÔNG BAO GIỜ chạy — và cũng
+    --      không nơi nào đọc `ab_token`, không nơi nào gửi nó lên lại. Một
+    --      tính năng chết hoàn toàn.
+    --   2. `window.location.replace(dest)` không chạy, nên client rơi xuống
+    --      nhánh `window.location.href = returnUrl`, với
+    --      `returnUrl = document.referrer || '/'`.
+    --   3. Khách VÀO LẦN ĐẦU (gõ URL, bookmark, quét QR, mở từ app, click
+    --      quảng cáo có `rel=noreferrer`) KHÔNG CÓ referrer → về thẳng `/`.
+    --      Mọi liên kết sâu đều mất sau lần verify đầu tiên.
+    --
+    -- Và mỉa mai: máy chủ BIẾT đích đúng (nó nằm trong `dest`), rồi vứt đi vì
+    -- client không đọc được câu trả lời.
+    --
+    -- Vì `issue_ls_token` luôn trả về giá trị (HMAC không hỏng), nhánh HTML là
+    -- nhánh CHẠY THẬT, còn nhánh 302 đúng đắn thì không bao giờ tới. Tức một
+    -- tính năng chết đã ép luồng đi vào đúng nhánh hỏng.
+    --
+    -- Nay trả về JSON — dạng mà một `fetch` ĐỌC ĐƯỢC. Giữ lại nhánh 302 thì
+    -- cũng chạy, nhưng fetch tự đi theo redirect và TẢI TRANG ĐÍCH một lần vô
+    -- ích trước khi trình duyệt điều hướng tới nó lần nữa.
+    local dest = safe_dest(dest_arg)
+              or dest_from_referer(ngx.var.http_referer)
+              or "/"
 
-    if ls_token then
-        ngx.status = 200
-        ngx.header["Content-Type"] = "text/html; charset=utf-8"
-        ngx.header["Cache-Control"] = "no-store"
-        ngx.say(string.format([[<!doctype html><html><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=%s">
-</head><body>
-<script>
-try{localStorage.setItem('ab_token',%q);}catch(e){}
-window.location.replace(%q);
-</script>
-</body></html>]], dest, ls_token, dest))
-        ngx.exit(200)
-    else
-        ngx.header["Location"] = dest
-        ngx.exit(302)
-    end
+    ngx.status = 200
+    ngx.header["Content-Type"]  = "application/json; charset=utf-8"
+    ngx.header["Cache-Control"] = "no-store"
+    ngx.say('{"ok":true,"dest":' .. json_str(dest) .. '}')
+    ngx.exit(200)
 end
 
 function _M.run(ctx)
@@ -289,7 +325,7 @@ function _M.run(ctx)
             -- consume_label → mọi verify đi lối này đều không sinh nhãn
             -- ground-truth. Cần thấy được tỷ lệ của nó.
             ngx.log(ngx.ERR, "[verify] retry_already_verified id=", id:sub(1,8))
-            grant_verified(ctx, id, cfg.ttl.verified or 7200, canvas_raw or "")
+            grant_verified(ctx, id, cfg.ttl.verified or 7200, canvas_raw or "", args and args.dest)
             return true
         end
 
@@ -307,7 +343,7 @@ function _M.run(ctx)
     consume_label(red, id, ctx)
     pool.put(red)
 
-    grant_verified(ctx, id, verified_ttl, canvas_hash)
+    grant_verified(ctx, id, verified_ttl, canvas_hash, args and args.dest)
     return true
 end
 
