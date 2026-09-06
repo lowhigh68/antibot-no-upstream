@@ -93,7 +93,7 @@ _M.thresholds = {
 --      `partial` (0 điểm) và ghi `[ja3] cipher_too_few` ở mức ERR.
 -- Cả hai đều rơi về đúng hành vi nấc "off" khi có nghi ngờ.
 _M.tls = {
-    ja3_cipher = "off",
+    ja3_cipher = "probe",
 }
 
 
