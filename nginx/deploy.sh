@@ -292,6 +292,18 @@ echo "[5] nginx -t..."
 if [ $DO_RELOAD -eq 1 ]; then
     echo "[6] Reload..."
     "$NGINX" -s reload
+    # MOC THOI GIAN DEPLOY, ghi SAU khi reload thanh cong.
+    #
+    # Cac script do TRUOC/SAU tung lay mtime cua mot file trong cay da deploy
+    # lam moc. Sai: buoc [4] dung `rsync -a`, ma `-a` BAO TOAN mtime NGUON, nen
+    # mtime dich la luc `git pull` ghi file do — con mot file KHONG doi trong
+    # lan pull nay thi mtime cua no la cua lan pull TRUOC. Moc lech mot cach im
+    # lang, va phep so sanh TRUOC/SAU thanh vo nghia ma van in ra so rat dep.
+    #
+    # File nay chi mang mot thu: thoi diem reload.
+    mkdir -p /var/log/antibot
+    date +%s > /var/log/antibot/.deploy_ts
+    echo "    moc deploy -> /var/log/antibot/.deploy_ts"
 else
     echo "[6] Bo qua reload (--no-reload)"
 fi

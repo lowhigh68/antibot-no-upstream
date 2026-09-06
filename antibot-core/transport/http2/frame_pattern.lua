@@ -42,15 +42,12 @@ local function has_upgrade_insecure()
     return ngx.var.http_upgrade_insecure_requests == "1"
 end
 
-local function get_request_timing()
-    local rt = tonumber(ngx.var.request_time)
-    if not rt then return nil end
-    return {
-        request_time_ms = math.floor(rt * 1000),
-        is_too_fast = rt < 0.005,
-        is_too_slow = rt > 10,
-    }
-end
+-- `get_request_timing()` DA BI XOA (2026-09-06). Chet HAI lan, y het
+-- `l7/slow/slow_detect.lua` vua go:
+--   1. `h2_behavior_profile.timing` khong noi nao doc
+--   2. no doc `ngx.var.request_time` o ACCESS phase — luc do request chua xu
+--      ly xong nen gia tri gan 0 => `is_too_fast` LUON true, `is_too_slow`
+--      LUON false. Ke ca co nguoi doc thi hai co do van vo nghia.
 
 function _M.run(ctx)
     if not ctx.h2_is_h2 then return end
@@ -58,18 +55,12 @@ function _M.run(ctx)
     local cache_class = classify_cache_control()
     local nav_class   = classify_navigation()
     local has_uir     = has_upgrade_insecure()
-    local timing      = get_request_timing()
 
-    ctx.h2_behavior_profile = {
-        cache_control      = cache_class,
-        navigation         = nav_class,
-        upgrade_insecure   = has_uir,
-        timing             = timing,
-        signal = string.format("%s.%s.%s",
-            cache_class,
-            nav_class,
-            has_uir and "uir" or "nuir")
-    }
+    -- Bang nay TUNG co 5 truong; bon trong so do (`cache_control`,
+    -- `upgrade_insecure`, `timing`, `signal`) khong noi nao doc. Ba bien cuc bo
+    -- o tren VAN duoc dung — cho nhanh `h2_bot_pattern` ngay duoi — nen chung
+    -- o lai; chi cai bang thi thu gon con dung truong co nguoi doc.
+    ctx.h2_behavior_profile = { navigation = nav_class }
 
     if nav_class == "no_context"
     and cache_class == "missing"

@@ -122,8 +122,10 @@ local function parse_supported_groups(ext_data)
     local curves = {}
     local len, pos = u16(ext_data, 1)
     if not len then return {}, false end
-    -- Khai báo `len` byte danh sách nhưng chỉ có `#ext_data - 2` byte đứng sau.
-    if len % 2 ~= 0 or pos + len - 1 > #ext_data then return {}, false end
+    -- Theo RFC 8422 thân extension DÀI ĐÚNG BẰNG 2 + len. Kiểm `==`, không
+    -- phải `>`: byte THỪA cũng là dấu hiệu ta đang đọc sai khung, y như byte
+    -- THIẾU. Chấp nhận phần dư là quay lại đúng lối fail-soft vừa bỏ.
+    if len % 2 ~= 0 or 2 + len ~= #ext_data then return {}, false end
     local bound = pos + len - 1
     while pos + 1 <= bound do
         local g; g, pos = u16(ext_data, pos)
@@ -138,7 +140,8 @@ local function parse_ec_point_formats(ext_data)
     local fmts = {}
     local flen = ext_data:byte(1)
     if not flen then return {}, false end
-    if 1 + flen > #ext_data then return {}, false end
+    -- RFC 4492: thân dài ĐÚNG BẰNG 1 + flen. Cùng lý do với supported_groups.
+    if 1 + flen ~= #ext_data then return {}, false end
     for i = 2, 1 + flen do fmts[#fmts + 1] = ext_data:byte(i) end
     return fmts, true
 end
@@ -226,7 +229,7 @@ local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers, ext_ok)
     -- 4 trường, nên các bản ghi cũ còn nằm trong shared dict lúc reload không
     -- bị hỏng. Thêm vào giữa là gãy hết.
     return string.format("%s|%s|%s|%s|%s|%s",
-        is_tls13 and "1" or "0",
+        (is_tls13 == nil) and "?" or (is_tls13 and "1" or "0"),
         join(extensions),
         join(curves),
         join(pt_fmts),
@@ -254,7 +257,9 @@ local function deserialize(val)
     end
 
     return {
-        is_tls13   = parts[1] == "1",
+        -- "?" = capture khong doc duoc supported_versions. Payload cu chi co
+        -- "1"/"0" nen khong bi anh huong.
+        is_tls13   = (parts[1] == "?") and nil or (parts[1] == "1"),
         extensions = split_nums(parts[2]),
         curves     = split_nums(parts[3]),
         pt_fmts    = split_nums(parts[4]),
@@ -321,18 +326,35 @@ function _M.capture_unsafe()
     -- ẢNH HƯỞNG THỰC TẾ GẦN BẰNG KHÔNG, và đó là chủ ý: client gửi extension
     -- 43 mà không liệt 0x0304 là hợp lệ nhưng gần như không tồn tại. Đây là
     -- sửa cho trường ĐÚNG NGHĨA, không phải để đổi số liệu.
+    -- BA TRẠNG THÁI, không phải hai. `false` phải có nghĩa "client KHÔNG chào
+    -- TLS 1.3" — một SỰ THẬT — chứ không được kiêm luôn nghĩa "đọc hỏng".
+    -- Vì `consistency_check` đọc `ctx.tls13_offered == false` rồi cộng 0.35
+    -- (nhánh `tls12`, 19,25 điểm): gộp hai nghĩa vào một giá trị là biến một
+    -- lỗi ĐỌC thành một hình PHẠT, đúng con đường đã bịt ở trục cipher.
+    --   nil   = không đọc được (thân dị dạng)  → mọi luật bỏ qua
+    --   false = có đọc được, và KHÔNG có 0x0304 (kể cả khi vắng hẳn ext 43)
+    --   true  = có 0x0304
     local sv_data  = ssl_clt.get_client_hello_ext(0x002b)
-    local is_tls13 = false
-    if sv_data and #sv_data >= 3 then
+    local is_tls13
+    if not sv_data or #sv_data == 0 then
+        -- Vắng hẳn extension 43 = client không biết/không chào TLS 1.3.
+        is_tls13 = false
+    else
         local list_len = sv_data:byte(1)
-        local bound    = math.min(1 + list_len, #sv_data)
-        local i        = 2
-        while i + 1 <= bound do
-            if sv_data:byte(i) == 0x03 and sv_data:byte(i + 1) == 0x04 then
-                is_tls13 = true
-                break
+        -- RFC 8446: 1 byte độ dài, rồi ĐÚNG list_len byte phiên bản (mỗi
+        -- phiên bản 2 byte). Lệch một byte là đọc sai khung, không phải thừa.
+        if not list_len or list_len % 2 ~= 0 or 1 + list_len ~= #sv_data then
+            is_tls13 = nil
+            ngx.log(ngx.ERR, "[ja3] supported_versions di dang len=", #sv_data,
+                    " khai bao=", tostring(list_len), " -> tls13=nil")
+        else
+            is_tls13 = false
+            for i = 2, list_len, 2 do
+                if sv_data:byte(i) == 0x03 and sv_data:byte(i + 1) == 0x04 then
+                    is_tls13 = true
+                    break
+                end
             end
-            i = i + 2
         end
     end
 
@@ -358,12 +380,22 @@ function _M.capture_unsafe()
         local ok2, ext_present = pcall(ssl_clt.get_client_hello_ext_present)
         if ok2 and type(ext_present) == "table" then
             if ext_present[1] ~= nil then
+                -- MỘT phần tử sai kiểu là HỎNG CẢ DANH SÁCH, không phải "bỏ
+                -- riêng nó". Cùng triết lý với `parse_ciphers`: bỏ lẻ tẻ rồi
+                -- công bố phần còn lại chính là công bố một thứ tự đã thiếu
+                -- mục — mà JA3 mã hoá extension THEO THỨ TỰ.
+                ext_ok = true
                 for _, etype in ipairs(ext_present) do
-                    if type(etype) == "number" and not is_grease(etype) then
+                    if type(etype) ~= "number" then
+                        ext_ok = false
+                        ngx.log(ngx.ERR, "[ja3] ext_present co phan tu khong ",
+                                "phai so: ", type(etype))
+                        break
+                    end
+                    if not is_grease(etype) then
                         extensions[#extensions + 1] = etype
                     end
                 end
-                ext_ok = true
             else
                 -- Bảng băm: `pairs()` KHÔNG bảo đảm thứ tự. Vẫn thu thập để
                 -- nấc `probe` đếm được, nhưng KHÔNG bao giờ gọi đây là JA3

@@ -40,23 +40,14 @@ local function observe_sec_fetch()
     return { present = false }
 end
 
+-- Chi con `has_ch_ua`. Ba truong kia (`has_ch_mobile`, `has_ch_platform`,
+-- `ch_ua_value`) chi-ghi, va `ch_ua_value` con mang NGUYEN gia tri header do
+-- client gui — mot chuoi tu do nam trong ctx ma khong ai dung.
+-- `observe_content_type()` cung xoa: doc them mot `ngx.var` va chay mot phep
+-- so khop chuoi cho mot truong khong noi nao doc.
 local function observe_client_hints()
-    local ch_ua     = ngx.var.http_sec_ch_ua
-    local ch_mobile = ngx.var.http_sec_ch_ua_mobile
-    local ch_plat   = ngx.var.http_sec_ch_ua_platform
-    return {
-        has_ch_ua       = ch_ua ~= nil and ch_ua ~= "",
-        has_ch_mobile   = ch_mobile ~= nil,
-        has_ch_platform = ch_plat ~= nil and ch_plat ~= "",
-        ch_ua_value     = ch_ua,
-    }
-end
-
-local function observe_content_type()
-    local ct = ngx.var.http_content_type
-    if not ct then return nil end
-    if ct == ct:lower() then return "lowercase" end
-    return "mixed_case"
+    local ch_ua = ngx.var.http_sec_ch_ua
+    return { has_ch_ua = ch_ua ~= nil and ch_ua ~= "" }
 end
 
 function _M.run(ctx)
@@ -70,10 +61,9 @@ function _M.run(ctx)
         accept_type      = classify_accept(ac),
         sec_fetch        = observe_sec_fetch(),
         client_hints     = observe_client_hints(),
-        content_type     = observe_content_type(),
-        has_referer      = ngx.var.http_referer ~= nil and ngx.var.http_referer ~= "",
-        has_origin       = ngx.var.http_origin  ~= nil and ngx.var.http_origin  ~= "",
-        ua_len           = #(ctx.ua or ""),
+        -- `content_type`, `has_referer`, `has_origin`, `ua_len` DA BI GO
+        -- (2026-09-06): chi-ghi. Rieng `observe_content_type()` con doc them
+        -- mot `ngx.var` va chay mot chuoi so khop cho khong ai.
     }
 
     local sf = ctx.h2_header_profile.sec_fetch.present
