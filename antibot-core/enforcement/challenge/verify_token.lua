@@ -80,19 +80,23 @@ end
 -- mang nghĩa fingerprint (`fp:canvas:`, `fp:fast_solve:`).
 local FP_CAND_TTL = 604800   -- 7 ngày: đủ tích luỹ qua nhiều đợt hiệu chỉnh
 
-local function consume_label(red, id, ctx, solve_ms)
-    local raw, gerr = red:get("label:" .. id)
+-- Nhãn khoá theo LẦN thách đố (`label:<cid>`), không theo danh tính. Trước
+-- đây là `label:<identity>` nên hai tab thì tab sau ghi đè nhãn của tab trước
+-- và mẫu ground-truth bị gán sai bối cảnh. `id` chỉ còn dùng để ghi log.
+local function consume_label(red, cid, id, ctx, solve_ms)
+    local raw, gerr = red:get("label:" .. cid)
     if not raw or raw == ngx.null then
         -- KHÔNG được im lặng: đây là đường thoát duy nhất khiến toàn bộ nguồn
         -- ground-truth không sinh dữ liệu, và im lặng thì không phân biệt được
-        -- "chưa ai giải" với "hook không chạy". `label:` dùng chung TTL 60s với
-        -- `nonce:`, mà nonce vừa được xoá thành công ở trên ⇒ label PHẢI còn.
-        -- Nếu dòng này xuất hiện đều đặn thì khoá lệch hoặc kết nối Redis lỗi.
+        -- "chưa ai giải" với "hook không chạy". `label:<cid>` dùng chung TTL
+        -- với `chal:<cid>` và được ghi trong cùng một lượt, mà `chal` vừa được
+        -- xoá thành công ở trên ⇒ label PHẢI còn. Nếu dòng này xuất hiện đều
+        -- đặn thì khoá lệch hoặc kết nối Redis lỗi.
         ngx.log(ngx.ERR, "[fp_sample] no_label id=", id:sub(1, 8),
                 " err=", tostring(gerr))
         return
     end
-    red:del("label:" .. id)
+    red:del("label:" .. cid)
 
     local f = {}
     for seg in (raw .. "|"):gmatch("([^|]*)|") do f[#f + 1] = seg end
@@ -303,19 +307,72 @@ local function refuse(ctx, status, reason)
     return false
 end
 
+-- `ngx.req.get_post_args()` trả về một **BẢNG** khi một tên xuất hiện nhiều
+-- lần. Bản trước dùng thẳng `args.token`, nên `token=a&token=b` khiến
+-- `token .. n_str` ném lỗi Lua ⇒ 500. Một người lạ gửi được lỗi 500 chỉ bằng
+-- cách lặp tên tham số. Hàm này cũng chặn luôn việc nhồi: mọi trường ở đây đều
+-- có độ dài biết trước.
+local function arg_str(args, name, maxlen)
+    local v = args and args[name]
+    if type(v) == "table" then v = v[1] end
+    if type(v) ~= "string" or v == "" or #v > maxlen then return nil end
+    return v
+end
+
+-- So sánh không phụ thuộc nội dung. Ở đây cả hai vế đều là md5 hex nên độ dài
+-- là hằng và công khai; vòng lặp chỉ để không rò rỉ vị trí ký tự lệch đầu tiên.
+local bit = require "bit"
+local function const_eq(a, b)
+    if type(a) ~= "string" or type(b) ~= "string" or #a ~= #b then
+        return false
+    end
+    local diff = 0
+    for i = 1, #a do
+        diff = bit.bor(diff, bit.bxor(a:byte(i), b:byte(i)))
+    end
+    return diff == 0
+end
+
+-- ── VÌ SAO PHẢI ĐỌC TRẠNG THÁI, KHÔNG CHỈ KIỂM PoW ──────────────────────
+--
+-- Bản trước chỉ kiểm `sha256(token .. n)` có tiền tố đúng, rồi xoá
+-- `nonce:<identity>`. Nó KHÔNG kiểm token có phải do máy chủ phát ra hay
+-- không. Hậu quả nặng hơn "token giả được":
+--
+--   1. Bot tự chọn MỘT token cố định.
+--   2. Tìm `n` hợp lệ ĐÚNG MỘT LẦN (~4096 lần băm).
+--   3. Lưu cặp (token, n).
+--   4. Từ đó về sau, mọi thách đố — mọi danh tính, mọi tên miền trong đàn máy
+--      — chỉ cần gửi lại đúng cặp đó.
+--
+-- Tức PoW **tính trước được và dùng lại được**: mục tiêu "mỗi lần thách đố
+-- phải trả một chi phí mới" biến mất hoàn toàn. Hôm nay thiệt hại thực tế nhỏ
+-- vì `difficulty="000"` vốn chỉ tốn ~10ms; nhưng đúng vì thế, sửa chỗ này là
+-- ĐIỀU KIỆN CẦN để `difficulty` còn là một cái núm có ý nghĩa.
+--
+-- Nay verifier đọc `chal:<challenge_id>` và kiểm đủ năm điều: bản ghi có tồn
+-- tại, danh tính khớp, md5 token khớp (so sánh không phụ thuộc nội dung), PoW
+-- đúng theo **độ khó đã phát** (không phải độ khó hiện hành — sửa config giữa
+-- chừng không được làm hỏng các thách đố đang bay), và tiêu thụ NGUYÊN TỬ bằng
+-- `DEL` phải trả về 1.
 function _M.run(ctx)
     ngx.req.read_body()
-    local args   = ngx.req.get_post_args()
-    local token  = args and args.token
-    local n_str  = args and args.n
-    local fp_arg = args and args.fp
+    local args = ngx.req.get_post_args()
 
-    if not token or not n_str then
-        ngx.log(ngx.ERR, "[verify] missing token/n ip=", ctx.ip)
+    local token = arg_str(args, "token", 128)
+    local n_str = arg_str(args, "n",     16)
+    local cid   = arg_str(args, "c",     64)
+
+    if not token or not n_str or not cid then
+        ngx.log(ngx.ERR, "[verify] missing token/n/c ip=", ctx.ip)
+        return refuse(ctx, 400, "verify_missing_args")
+    end
+    if not n_str:match("^%d+$") then
+        ngx.log(ngx.ERR, "[verify] n khong phai so ip=", ctx.ip)
         return refuse(ctx, 400, "verify_missing_args")
     end
 
-    local id = fp_arg or ngx.var.cookie_antibot_fp or nil
+    local id = arg_str(args, "fp", 64) or ngx.var.cookie_antibot_fp
     if not id or id == "" then
         ngx.log(ngx.ERR, "[verify] missing identity ip=", ctx.ip)
         return refuse(ctx, 400, "verify_missing_id")
@@ -324,51 +381,91 @@ function _M.run(ctx)
     ctx.identity = id
     ctx.fp_light = id
 
-    local difficulty = cfg.pow.difficulty
-    local pow_hash   = sha256_hex(token .. n_str)
-
-    if not pow_hash or pow_hash:sub(1, #difficulty) ~= difficulty then
-        ngx.log(ngx.ERR, "[verify] PoW failed id=", id:sub(1,8))
-        pool.safe_incr("viol:" .. id, cfg.ttl.violation)
-        return refuse(ctx, 403, "verify_pow_failed")
-    end
-
     local red, err = pool.get()
     if not red then
         ngx.log(ngx.ERR, "[verify] redis unavailable: ", tostring(err))
         return refuse(ctx, 500, "verify_redis_down")
     end
 
-    local deleted = red:del("nonce:" .. id)
+    -- Trả kết nối TRƯỚC khi thoát, ở MỌI nhánh. Gói lại một chỗ để không có
+    -- nhánh nào quên — rò kết nối ở đây thì cạn pool và hỏng cả site.
+    local function deny(status, reason)
+        pool.put(red)
+        return refuse(ctx, status, reason)
+    end
 
-    if deleted == 0 then
+    -- Gửi lại an toàn: client đã verified nhưng phản hồi không tới nơi (mất
+    -- mạng, app vào nền) nên nó thử lại. Bản ghi thách đố đã bị tiêu thụ, và
+    -- đó là điều ĐÚNG — không được coi là tấn công.
+    local function retry_if_verified(why)
         local already = red:get("verified:" .. id)
         if already == ngx.null then already = nil end
-
-        if already == "1" then
-            -- Safe retry — đọc canvas từ Redis (đã lưu lần verify trước)
-            local canvas_raw = red:get("fp:canvas:" .. id)
-            if canvas_raw == ngx.null then canvas_raw = nil end
-            pool.put(red)
-            -- ERR chứ không INFO: đây là nhánh return SỚM, KHÔNG chạm
-            -- consume_label → mọi verify đi lối này đều không sinh nhãn
-            -- ground-truth. Cần thấy được tỷ lệ của nó.
-            ngx.log(ngx.ERR, "[verify] retry_already_verified id=", id:sub(1,8))
-            grant_verified(ctx, id, cfg.ttl.verified or 7200, canvas_raw or "", args and args.dest)
-            return true
-        end
-
+        if already ~= "1" then return false end
+        local canvas_raw = red:get("fp:canvas:" .. id)
+        if canvas_raw == ngx.null then canvas_raw = nil end
         pool.put(red)
-        ngx.log(ngx.ERR, "[verify] nonce not found (replay?) id=", id:sub(1,8))
-        return refuse(ctx, 403, "verify_nonce_missing")
+        -- ERR chứ không INFO: đây là nhánh return SỚM, KHÔNG chạm
+        -- consume_label → mọi verify đi lối này đều không sinh nhãn
+        -- ground-truth. Cần thấy được tỷ lệ của nó.
+        ngx.log(ngx.ERR, "[verify] retry_already_verified id=", id:sub(1,8),
+                " why=", why)
+        grant_verified(ctx, id, cfg.ttl.verified or 7200,
+                       canvas_raw or "", args and args.dest)
+        return true
+    end
+
+    local rec = red:get("chal:" .. cid)
+    if rec == ngx.null then rec = nil end
+    if not rec then
+        if retry_if_verified("no_state") then return true end
+        ngx.log(ngx.ERR, "[verify] chal not found id=", id:sub(1,8),
+                " cid=", cid:sub(1, 8))
+        return deny(403, "verify_challenge_unknown")
+    end
+
+    local r_id, r_tok, r_diff = rec:match("^([^|]*)|([^|]*)|([^|]*)|")
+    if not r_id or r_id == "" or r_tok == "" or r_diff == "" then
+        ngx.log(ngx.ERR, "[verify] chal state corrupt cid=", cid:sub(1, 8))
+        return deny(403, "verify_state_corrupt")
+    end
+
+    -- Danh tính trong bản ghi là danh tính LÚC PHÁT. `fp` do client gửi nên
+    -- không tự nó chứng minh được gì; ràng buộc nằm ở đây.
+    if r_id ~= id then
+        ngx.log(ngx.ERR, "[verify] identity mismatch id=", id:sub(1,8),
+                " phat cho=", r_id:sub(1, 8))
+        return deny(403, "verify_identity_mismatch")
+    end
+
+    if not const_eq(ngx.md5(token), r_tok) then
+        red:incr("viol:" .. id)
+        red:expire("viol:" .. id, cfg.ttl.violation)
+        ngx.log(ngx.ERR, "[verify] token khong do may chu phat id=", id:sub(1,8))
+        return deny(403, "verify_token_forged")
+    end
+
+    local pow_hash = sha256_hex(token .. n_str)
+    if not pow_hash or pow_hash:sub(1, #r_diff) ~= r_diff then
+        red:incr("viol:" .. id)
+        red:expire("viol:" .. id, cfg.ttl.violation)
+        ngx.log(ngx.ERR, "[verify] PoW failed id=", id:sub(1,8))
+        return deny(403, "verify_pow_failed")
+    end
+
+    -- TIÊU THỤ NGUYÊN TỬ. Hai request song song cùng đọc được bản ghi, nhưng
+    -- chỉ một cái nhận `DEL == 1`. Cái còn lại rơi xuống nhánh gửi-lại-an-toàn.
+    if red:del("chal:" .. cid) ~= 1 then
+        if retry_if_verified("lost_race") then return true end
+        ngx.log(ngx.ERR, "[verify] chal da bi tieu thu id=", id:sub(1,8))
+        return deny(403, "verify_replay")
     end
 
     local verified_ttl = cfg.ttl.verified or 7200
-    local canvas_hash  = args and args.cv or ""
-    local solve_ms     = args and args.sm or ""
+    local canvas_hash  = arg_str(args, "cv", 64) or ""
+    local solve_ms     = arg_str(args, "sm", 16) or ""
 
     check_canvas_consistency(red, id, ctx.ip or "", canvas_hash)
-    consume_label(red, id, ctx, solve_ms)
+    consume_label(red, cid, id, ctx, solve_ms)
     pool.put(red)
 
     grant_verified(ctx, id, verified_ttl, canvas_hash, args and args.dest)

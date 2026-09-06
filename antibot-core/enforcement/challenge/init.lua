@@ -7,9 +7,23 @@ local pool        = require "antibot.core.redis_pool"
 local cfg         = require "antibot.core.config"
 
 function _M.run(ctx)
-    local nonce = issue_token.run(ctx)
+    issue_token.run(ctx)
     pow.run(ctx)
-    nonce_store.run(ctx, nonce)
+
+    -- KHÔNG phục vụ một thách đố không thể giải được.
+    --
+    -- Nếu không ghi được `chal:<id>` (Redis hỏng) thì mọi lời giải gửi lên sau
+    -- đó đều 403 — và với client mới, đó là 403 → tải lại → 403 cho tới khi
+    -- chạm trần. Tức là một sự cố Redis biến thành màn hình chết cho người
+    -- dùng thật. Cho qua thì đúng hơn: cùng hướng fail-open với `pool.safe_*`
+    -- ở khắp cây nguồn, và nhánh này ghi log ERR nên không im lặng.
+    if not nonce_store.run(ctx) then
+        ctx.action        = "monitor"
+        ctx.action_reason = "challenge_store_failed"
+        ngx.log(ngx.ERR, "[challenge] khong luu duoc trang thai, cho qua ip=",
+                ctx.ip or "?")
+        return false
+    end
 
     -- KHÔNG cho beacon chèn vào chính trang này.
     --
@@ -97,6 +111,7 @@ function _M.challenge_html(ctx)
     local token      = ctx.token or ""
     local difficulty = ctx.pow and ctx.pow.difficulty or "000"
     local id         = ctx.identity or ctx.fp_light or ""
+    local cid        = ctx.challenge_id or ""
 
     -- Attack 3 — Stealth browser / undetected-chromedriver:
     -- JS probe thu thập browser environment fingerprint gửi kèm POST
@@ -143,6 +158,7 @@ function _M.challenge_html(ctx)
   var token  = %q;
   var prefix = %q;
   var fp     = %q;
+  var cid    = %q;
 
   var WATCHDOG_MS    = 45000;
   var XHR_TIMEOUT_MS = 8000;
@@ -305,7 +321,9 @@ function _M.challenge_html(ctx)
   // nhánh nữa có thể ném lỗi rồi treo im lặng trên WebView cũ.
   function buildBody(solveMs, env){
     var f = [
-      ['token', token], ['n', String(n)], ['fp', fp],
+      // `c` = ma cua CHINH lan thach do nay. May chu tra loi bang no chu khong
+      // bang danh tinh, nen hai tab la hai ban ghi doc lap.
+      ['token', token], ['n', String(n)], ['fp', fp], ['c', cid],
       ['cv', env.cv],   ['pt', env.pt],   ['hw', env.hw],
       ['dp', env.dp],   ['cd', env.cd],   ['st', env.st],
       ['sm', solveMs],
@@ -404,7 +422,7 @@ function _M.challenge_html(ctx)
 })();
 </script>
 </body></html>
-]=], token, difficulty, id)
+]=], token, difficulty, id, cid)
 end
 
 return _M

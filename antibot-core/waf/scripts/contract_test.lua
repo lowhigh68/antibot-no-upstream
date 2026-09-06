@@ -443,9 +443,9 @@ else
     else
         pass = pass + 1
     end
-    -- So `%q` phai KHOP so doi so truyen vao (token, difficulty, id).
-    if nq == 3 then pass = pass + 1 else
-        bad("  SAI  co %d cho `%%q` nhung ham truyen 3 doi so\n", nq)
+    -- So `%q` phai KHOP so doi so truyen vao (token, difficulty, id, cid).
+    if nq == 4 then pass = pass + 1 else
+        bad("  SAI  co %d cho `%%q` nhung ham truyen 4 doi so\n", nq)
     end
 end
 
@@ -455,6 +455,153 @@ end
 if ch and ch:find("no%-store") then pass = pass + 1 else
     bad("  SAI  trang challenge khong dat Cache-Control: no-store\n" ..
         "       => trinh duyet lay lai ban cu sau khi verify => vong lap\n")
+end
+
+-- ── 7. Nguong quyet dinh: MOT nguon, va cac hang so dan xuat phai theo ──
+--
+-- Truoc thay doi nay, nguong nam o HAI noi va khong noi nao doc noi kia:
+-- `cfg.thresholds` ghi challenge=80/block=100 kem chu thich giai thich vi sao
+-- da nang len, con engine viet cung 55/80. KHONG mot dong nao doc
+-- `cfg.thresholds`. Nen lan hieu chinh do chua bao gio co hieu luc — va nguoi
+-- sua config khong co cach nao biet.
+--
+-- Do lai la dung MOT LOAI loi da lap lai suot: mot gia tri di qua ranh gioi va
+-- hai ben hieu khac nhau. Nen phep kiem khong phai la "config bang 55" (roi se
+-- lac hau ngay khi ai do doi chinh sach), ma la BAT BIEN giua cac con so.
+io.write("\nhop dong: nguong quyet dinh\n")
+
+local engine_src = slurp(SRC .. "enforcement/decision/engine.lua")
+local cfg_src    = slurp(SRC .. "core/config.lua")
+
+local function num(src, pat)
+    if not src then return nil end
+    return tonumber(src:match(pat))
+end
+
+if not engine_src or not cfg_src then
+    bad("  SAI  khong doc duoc engine.lua hoac config.lua\n")
+else
+    -- Doc trong THAN BANG `_M.thresholds`, khong doc ca file: chu thich phia
+    -- tren bang co nhac "challenge=80" de giai thich, va mot mau tho se doc
+    -- nham chinh loi giai thich do.
+    local tbl = cfg_src:match("_M%.thresholds%s*=%s*{(.-)}") or ""
+    local MON = tonumber(tbl:match("monitor%s*=%s*(%d+)"))
+    local CHA = tonumber(tbl:match("challenge%s*=%s*(%d+)"))
+    local BLO = tonumber(tbl:match("block%s*=%s*(%d+)"))
+
+    if not MON or not CHA or not BLO then
+        bad("  SAI  khong doc duoc `_M.thresholds` trong config.lua\n")
+    else
+        -- 7a. Engine PHAI doc config, khong duoc viet cung lai.
+        if engine_src:find("cfg%.thresholds") then pass = pass + 1 else
+            bad("  SAI  engine.lua khong doc `cfg.thresholds`\n" ..
+                "       => nguong lai co hai nguon, va sua config vo tac dung\n")
+        end
+
+        -- 7b. Thu tu co ban.
+        if MON < CHA and CHA < BLO then pass = pass + 1 else
+            bad("  SAI  nguong khong tang dan: monitor=%d challenge=%d block=%d\n",
+                MON, CHA, BLO)
+        end
+
+        -- 7c. San cua kill-switch phai NAM TREN nguong tuong ung, neu khong
+        --     thi kill-switch khong kill gi ca. Chung duoc dan xuat trong
+        --     engine, nen o day chi kiem viec dan xuat con nguyen.
+        if engine_src:find("KILL_CHALLENGE_EFF%s*=%s*T%.CHALLENGE")
+           and engine_src:find("KILL_BLOCK_EFF%s*=%s*T%.BLOCK") then
+            pass = pass + 1
+        else
+            bad("  SAI  KILL_*_EFF khong con dan xuat tu nguong\n" ..
+                "       => nang nguong se lam resource kill-switch chet lang:\n" ..
+                "          san 60 duoi challenge 80 = chi con monitor\n")
+        end
+
+        -- 7d. Hai kill-switch cho class bi giam diem la PHAN TRAM nen KHONG
+        --     tu di theo nguong. Day la cho de chet lang nhat.
+        local SR = num(engine_src, "local KILL_DAMP_SOFT_RAW%s*=%s*([%d%.]+)")
+        local SP = num(engine_src, "local KILL_DAMP_SOFT_PCT%s*=%s*([%d%.]+)")
+        local HR = num(engine_src, "local KILL_DAMP_HARD_RAW%s*=%s*([%d%.]+)")
+        local HP = num(engine_src, "local KILL_DAMP_HARD_PCT%s*=%s*([%d%.]+)")
+        if not (SR and SP and HR and HP) then
+            bad("  SAI  khong doc duoc hang so KILL_DAMP_* trong engine.lua\n")
+        elseif SR * SP < CHA then
+            bad("  SAI  kill_damp_soft chet lang: raw %d x %.2f = %.1f < challenge %d\n" ..
+                "       => class bi giam diem khong con len duoc challenge\n",
+                SR, SP, SR * SP, CHA)
+        elseif HR * HP < BLO then
+            bad("  SAI  kill_damp_hard chet lang: raw %d x %.2f = %.1f < block %d\n" ..
+                "       => ca 20.9.70.139 trong CLAUDE.md se khong con bi chan\n",
+                HR, HP, HR * HP, BLO)
+        else
+            pass = pass + 1
+        end
+
+        -- 7e. Nguong ha khi ip_risk cao phai THAP HON nguong thuong, neu
+        --     khong thi no khong ha gi ca.
+        local CAP = num(engine_src, "local IP_RISK_CHALLENGE_CAP%s*=%s*(%d+)")
+        if CAP and CAP < CHA then pass = pass + 1 else
+            bad("  SAI  IP_RISK_CHALLENGE_CAP=%s khong thap hon challenge=%d\n",
+                tostring(CAP), CHA)
+        end
+    end
+end
+
+-- ── 8. Trang thai mot lan thach do: phat <-> kiem ───────────────────
+--
+-- Verifier cu chi kiem `sha256(token .. n)` co tien to dung roi xoa
+-- `nonce:<identity>`. No KHONG kiem token co phai do may chu phat hay khong,
+-- nen mot bot chi can tim MOT cap (token, n) hop le DUNG MOT LAN roi dung lai
+-- mai mai, cho moi danh tinh, moi ten mien. Chi phi PoW bi triet tieu.
+--
+-- Loi thu hai bi loi thu nhat CHE: `nonce_store` dung SETNX theo danh tinh va
+-- `challenge/init.lua` bo qua ket qua, nen hai tab nhan token moi trong khi
+-- Redis giu nonce cu. Vi token khong duoc kiem nen khong ai thay. Sua nua
+-- truoc ma giu nua sau thi loi bi che se thanh loi verify that.
+io.write("\nhop dong: trang thai mot lan thach do\n")
+
+local ns = slurp(SRC .. "enforcement/challenge/nonce_store.lua")
+
+if not ns or not ch or not vt then
+    bad("  SAI  khong doc duoc nonce_store/challenge/verify_token\n")
+else
+    -- 8a. Trang thai phai khoa theo LAN thach do, khong theo danh tinh.
+    -- `:setnx` chu khong phai `setnx`: bat LOI GOI HAM (`red:setnx(...)`),
+    -- khong bat chu SETNX trong chinh doan chu thich giai thich vi sao no bi go.
+    if ns:find("chal:", 1, true) and not ns:find(":setnx", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  nonce_store khong ghi `chal:<cid>` hoac con dung SETNX\n" ..
+            "       => hai tab dung chung mot khoa: tab sau de tab truoc\n")
+    end
+
+    -- 8b. Client phai GUI ma cua lan thach do do.
+    if ch:find("'c', cid", 1, true) then pass = pass + 1 else
+        bad("  SAI  trang challenge khong gui ma lan thach do\n")
+    end
+
+    -- 8c. Verifier phai DOC trang thai va SO SANH token.
+    if vt:find("chal:", 1, true) and vt:find("const_eq", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  verify_token khong doi chieu token voi trang thai da luu\n" ..
+            "       => PoW tinh truoc mot lan roi dung lai vo han\n")
+    end
+
+    -- 8d. Tieu thu phai NGUYEN TU: chi ke nhan DEL == 1 moi duoc di tiep.
+    if vt:find('red:del%("chal:"') and vt:find("~= 1") then
+        pass = pass + 1
+    else
+        bad("  SAI  verify_token khong tieu thu trang thai nguyen tu\n")
+    end
+
+    -- 8e. Khoa cu phai BIEN MAT hoan toan khoi ca hai nua.
+    if not ns:find('"nonce:"', 1, true)
+       and not vt:find('"nonce:"', 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  con sot khoa `nonce:<identity>` cu\n" ..
+            "       => hai so do song song, va chung se lech\n")
+    end
 end
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))

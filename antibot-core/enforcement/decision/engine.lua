@@ -270,10 +270,41 @@ local function throttle_good_bot(ctx)
     return true
 end
 
+-- ── MỘT NGUỒN SỰ THẬT DUY NHẤT CHO NGƯỠNG ───────────────────────────────
+--
+-- Cho tới trước thay đổi này, ngưỡng nằm ở HAI nơi và **không nơi nào đọc nơi
+-- kia**: `cfg.thresholds` trong `core/config.lua` ghi `challenge=80, block=100`
+-- kèm chú thích giải thích vì sao đã nâng lên — còn engine thì cứng
+-- `55`/`80`. Không một dòng nào trong cây nguồn đọc `cfg.thresholds`. Nghĩa là
+-- lần hiệu chỉnh đó **chưa bao giờ có hiệu lực**, và người sửa config không có
+-- cách nào biết.
+--
+-- Nay engine đọc config. Nhưng CON SỐ trong config được đặt lại đúng bằng con
+-- số đang chạy (25/55/80), nên thay đổi này **không đổi hành vi một chút nào**
+-- — đó là chủ ý: sửa chỗ trùng lặp và đổi chính sách là HAI việc, gộp lại thì
+-- không ai biết cái nào gây ra cái gì.
+--
+-- VÌ SAO KHÔNG ĐƠN GIẢN LÀ TRỎ ENGINE VÀO 80/100. Bốn hằng số dưới đây được
+-- hiệu chỉnh SO VỚI 55/80. Nâng ngưỡng mà giữ nguyên chúng thì ba kill-switch
+-- chết lặng:
+--
+--   KILL_CHALLENGE_EFF = 60  → với CHALLENGE=80 thì 60 < 80 ⇒ resource kill
+--                              không còn tạo ra challenge, chỉ còn monitor.
+--   KILL_BLOCK_EFF     = 85  → với BLOCK=100 thì 85 < 100 ⇒ resource kill
+--                              không còn chặn.
+--   KILL_DAMP_SOFT     = raw 110 × 0.65 = 71,5 → với CHALLENGE=80 ⇒ chết.
+--                              Ca 20.9.70.139 đã ghi trong CLAUDE.md (raw 140
+--                              ⇒ eff 91 ⇒ block) sẽ chỉ còn là challenge.
+--
+-- Nên hai cái EFF nay được DẪN XUẤT từ ngưỡng (+MARGIN) chứ không viết cứng:
+-- nâng ngưỡng thì chúng đi theo. Hai cái DAMP là phần trăm nên không dẫn xuất
+-- được — `waf/scripts/contract_test.lua` mục 7 kiểm bất biến của chúng, và
+-- cổng [3b] sẽ báo đỏ trước khi deploy thay vì hỏng âm thầm trên máy thật.
+local CFG_T = cfg.thresholds or {}
 local T = {
-    MONITOR   = 25,
-    CHALLENGE = 55,
-    BLOCK     = 80,
+    MONITOR   = CFG_T.monitor   or 25,
+    CHALLENGE = CFG_T.challenge or 55,
+    BLOCK     = CFG_T.block     or 80,
 }
 
 -- Authenticated-session trust tier. session_richness >= this = client proves an
@@ -290,8 +321,12 @@ local RESOURCE_BOOST_MAX = 15
 local KILL_CHALLENGE_RAW = 80
 local KILL_BLOCK_RAW     = 95
 
-local KILL_CHALLENGE_EFF = 60
-local KILL_BLOCK_EFF     = 85
+-- Sàn mà kill-switch nâng effective_score lên tới. Phải nằm TRÊN ngưỡng tương
+-- ứng, nếu không thì kill-switch không kill gì cả. Biên +5 giữ nguyên khoảng
+-- cách của bản cứng cũ (60 so với 55; 85 so với 80).
+local KILL_EFF_MARGIN    = 5
+local KILL_CHALLENGE_EFF = T.CHALLENGE + KILL_EFF_MARGIN
+local KILL_BLOCK_EFF     = T.BLOCK     + KILL_EFF_MARGIN
 
 -- Generic kill-switch cho mọi dampened class KHÁC resource (resource đã có
 -- kill riêng ở trên với threshold thấp hơn do mult=0.2). Áp dụng cho

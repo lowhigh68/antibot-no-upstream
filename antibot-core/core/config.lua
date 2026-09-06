@@ -9,11 +9,42 @@ _M.redis = {
     db          = 0,
 }
 
+-- NGƯỠNG QUYẾT ĐỊNH — nay là NGUỒN SỰ THẬT DUY NHẤT.
+--
+-- CẢNH BÁO VỀ CON SỐ CŨ TRONG FILE NÀY: bảng này trước ghi `challenge = 80`,
+-- `block = 100` kèm chú thích "nâng từ 65" / "nâng từ 80". **Chưa một dòng nào
+-- trong cây nguồn đọc bảng này** — `enforcement/decision/engine.lua` viết cứng
+-- 25/55/80 và quyết định bằng con số của nó. Nên lần nâng đó **chưa bao giờ có
+-- hiệu lực**, và hệ thống đã chạy ở 55/80 suốt từ đầu.
+--
+-- Con số dưới đây là con số ĐANG THỰC SỰ CHẠY, chép lại cho đúng sự thật —
+-- không phải một lần hạ ngưỡng. Engine giờ đọc từ đây, nên đổi ở đây là đổi
+-- thật.
+--
+-- MUỐN NÂNG LÊN 80/100 THÌ ĐỌC TIẾP. Việc đó giờ chỉ là sửa hai số ở đây, và
+-- `KILL_CHALLENGE_EFF`/`KILL_BLOCK_EFF` trong engine sẽ tự đi theo (chúng được
+-- dẫn xuất). Nhưng hai kill-switch cho class bị giảm điểm là PHẦN TRĂM nên
+-- không tự đi theo:
+--
+--   KILL_DAMP_SOFT: raw 110 × 0,65 = 71,5 — với challenge=80 thì KHÔNG còn
+--                   tạo được challenge nữa.
+--   KILL_DAMP_HARD: raw 140 × 0,85 = 119 — vẫn ≥ 100, còn sống; nhưng ca đã
+--                   ghi trong `enforcement/CLAUDE.md` (20.9.70.139, raw 140 ⇒
+--                   eff 91 ⇒ block) sẽ tụt xuống chỉ còn challenge.
+--
+-- `waf/scripts/contract_test.lua` mục 7 kiểm các bất biến này, nên cổng [3b]
+-- sẽ báo đỏ trước khi deploy chứ không hỏng âm thầm. Và trước khi nâng, hãy đo
+-- xem dải 55–80 hiện đang chứa bao nhiêu lưu lượng và là ai:
+--
+--   awk '{for(i=1;i<=NF;i++){if($i~/^eff=/)e=substr($i,5);
+--         if($i~/^action=/)a=substr($i,8)}
+--        if(e+0>=55 && e+0<80) print a}' /var/log/antibot/antibot.log \
+--     | sort | uniq -c | sort -rn
 _M.thresholds = {
     allow     = 0,
     monitor   = 25,
-    challenge = 80,  -- nâng từ 65: fresh residential user không bị interrupt
-    block     = 100, -- nâng từ 80: chỉ block khi nhiều signal bot rõ ràng
+    challenge = 55,
+    block     = 80,
 }
 
 _M.weights = {

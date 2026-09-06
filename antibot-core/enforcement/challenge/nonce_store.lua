@@ -2,6 +2,30 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 
+-- ── TRẠNG THÁI CỦA MỘT LẦN THÁCH ĐỐ, KHOÁ THEO LẦN — KHÔNG THEO DANH TÍNH ──
+--
+-- Bản trước lưu `nonce:<identity>` bằng **SETNX**, và `challenge/init.lua`
+-- **bỏ qua kết quả trả về**. Hai tab, hoặc một lần F5, sẽ nhận một token MỚI
+-- trong khi Redis vẫn giữ nonce CŨ. Lỗi đó tồn tại được vì `verify_token`
+-- không hề kiểm token có phải do máy chủ phát hành hay không — nó chỉ kiểm
+-- `nonce:<id>` còn tồn tại rồi xoá. Tức là **một lỗi đang che một lỗi khác**:
+-- sửa phần kiểm token mà giữ nguyên SETNX thì lỗi kia lập tức thành lỗi verify
+-- thật, và nạn nhân đúng là người mở hai tab.
+--
+-- Nên khoá đổi từ danh tính sang **một mã ngẫu nhiên cho mỗi lần thách đố**:
+--
+--   chal:<challenge_id> = identity | md5(token) | difficulty | issued_at
+--
+-- Hai tab ⇒ hai `challenge_id` ⇒ hai bản ghi độc lập ⇒ cả hai giải được. Và
+-- `SETEX` thay `SETNX`: không còn khoá nào để đụng nên không còn gì để chối.
+--
+-- Lưu **md5 của token**, không lưu token: một lần lỡ `MONITOR`/dump Redis thì
+-- không ai cầm được token còn hiệu lực. Với mục đích này md5 là đủ — thứ cần
+-- là kháng tiền ảnh trên một chuỗi 256-bit ngẫu nhiên, không phải kháng va chạm.
+local function clean(s)
+    return (tostring(s or "-"):gsub("[|\r\n]", "/"))
+end
+
 -- Ảnh chụp bối cảnh lúc PHÁT thách đố, để đối chiếu khi client GIẢI được.
 --
 -- Vì sao cần: hệ thống KHÔNG có nguồn ground-truth nào. `async/adaptive_weight.lua`
@@ -21,10 +45,6 @@ local cfg  = require "antibot.core.config"
 -- `enforcement/explain.lua` dựng ra **đã chứa sẵn `|`** (dạng
 -- "score=66.6 class=navigation | top:[...] | rules:[]") → không làm sạch thì nó
 -- tự tách thành nhiều trường và đẩy lệch toàn bộ chỉ số phía sau.
-local function clean(s)
-    return (tostring(s or "-"):gsub("[|\r\n]", "/"))
-end
-
 local function build_label(ctx)
     local names = {}
     if type(ctx.top_signals) == "table" then
@@ -46,25 +66,67 @@ local function build_label(ctx)
         bot_claim)
 end
 
-function _M.run(ctx, nonce)
+-- `math.randomseed` KHÔNG được gọi ở bất kỳ đâu trong cây nguồn này, nên
+-- `math.random` trả về CÙNG MỘT DÃY sau mỗi lần khởi động, ở mọi worker. Với
+-- một khoá Redis thì đó là đụng khoá hàng loạt: hai worker phát hai thách đố
+-- khác nhau nhưng cùng `challenge_id`, bản sau đè bản trước, và người đến
+-- trước ăn 403. Nên mã này lấy từ nguồn ngẫu nhiên thật của OpenResty.
+local random_ok, random = pcall(require, "resty.random")
+
+local function to_hex(s)
+    return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+end
+
+local function new_cid(id)
+    if random_ok and random and random.bytes then
+        local b = random.bytes(16, true)
+        if b and #b == 16 then return to_hex(b) end
+    end
+    -- Đường lùi khi không có `resty.random`: `$request_id` do chính nginx sinh
+    -- ra cho mỗi request (16 byte ngẫu nhiên). Vẫn KHÔNG dùng `math.random`.
+    return ngx.md5(tostring(ngx.var.request_id or "")
+                   .. "|" .. tostring(ngx.worker.pid())
+                   .. "|" .. tostring(ngx.now())
+                   .. "|" .. tostring(id))
+end
+
+function _M.run(ctx)
     local id = ctx.identity or ctx.fp_light
-    if not id or not nonce then return false end
+    if not id or id == "" or not ctx.token or ctx.token == "" then
+        ngx.log(ngx.ERR, "[challenge] thieu identity hoac token, khong luu duoc")
+        return false
+    end
+
+    local difficulty = (ctx.pow and ctx.pow.difficulty)
+                    or (cfg.pow and cfg.pow.difficulty) or "000"
+    local cid = new_cid(id)
+    local rec = table.concat({
+        id, ngx.md5(ctx.token), difficulty, tostring(ngx.time())
+    }, "|")
 
     local red, err = pool.get()
-    if not red then return false end
+    if not red then
+        ngx.log(ngx.ERR, "[challenge] redis unavailable: ", tostring(err))
+        return false
+    end
 
-    local ok = red:setnx("nonce:" .. id, nonce)
-    if ok == 1 then
-        red:expire("nonce:" .. id, cfg.ttl.nonce)
-        -- Cùng TTL với nonce: nhãn chỉ có nghĩa trong đúng vòng thách đố này.
-        red:setex("label:" .. id, cfg.ttl.nonce, build_label(ctx))
+    local ttl = cfg.ttl.nonce
+    local ok, serr = red:setex("chal:" .. cid, ttl, rec)
+    if ok then
+        -- Nhãn cũng khoá theo LẦN thách đố. Trước đây là `label:<identity>`,
+        -- nên hai tab thì tab sau ghi đè nhãn của tab trước và mẫu
+        -- ground-truth bị gán sai bối cảnh.
+        red:setex("label:" .. cid, ttl, build_label(ctx))
     end
     pool.put(red)
 
-    if ok ~= 1 then
-        ngx.log(ngx.WARN, "[nonce] replay attempt or collision id=", id)
+    if not ok then
+        ngx.log(ngx.ERR, "[challenge] khong ghi duoc chal:", cid,
+                " err=", tostring(serr))
         return false
     end
+
+    ctx.challenge_id = cid
     return true
 end
 
