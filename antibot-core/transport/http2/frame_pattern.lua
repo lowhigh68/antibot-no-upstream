@@ -10,8 +10,10 @@ local function classify_cache_control()
     end
 
     if cc:find("no-cache", 1, true) then return "no_cache" end
-    if cc:find("max-age=0", 1, true) then return "max_age_0" end
+    -- Khớp CHÍNH XÁC phải đứng trước khớp CHỨA, nếu không nhánh dưới không bao
+    -- giờ chạy được: `find("max-age=0")` nuốt luôn cả trường hợp bằng đúng.
     if cc == "max-age=0"             then return "force_refresh" end
+    if cc:find("max-age=0", 1, true) then return "max_age_0" end
     return "other"
 end
 

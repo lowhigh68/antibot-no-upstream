@@ -1,13 +1,30 @@
 local _M = {}
 
+-- MỘT THỨ TỰ KHÔNG ÁNH XẠ DUY NHẤT TỚI MỘT CLIENT.
+--
+-- Bảng cũ khai báo khoá `mpsa` **BỐN LẦN**. Lua chỉ giữ bản cuối, nên
+-- `mpsa` = `{curl_h2, tls13=false}` và ba bản trước — trong đó có **Firefox**
+-- — bị nuốt sạch.
+--
+-- Hậu quả không phải "bảng thiếu chính xác", mà là một FP XÁC ĐỊNH:
+--   `infer_from_ua` trả `"mpsa"` cho Firefox → `KNOWN_PATTERNS.mpsa.tls13`
+--   là `false` → Firefox trên TLS 1.3 có `ctx.tls13 = true` → lệch →
+--   `h2_tls_mismatch = true` → `http2/signature.lua:43` cộng **+0,25** vào
+--   `h2_bot_confidence` (trọng số 55) = **+13,75 điểm** cho MỌI người dùng
+--   Firefox đi HTTP/2 mà JA3 bắt được. Cả một họ trình duyệt, mọi request.
+--
+-- Sửa đúng không phải là khôi phục bốn dòng — `mpsa` vẫn chỉ nhận được một
+-- giá trị. Sự thật là: Firefox (TLS 1.3) và curl/python/java/node dùng CHUNG
+-- thứ tự `mpsa`, nên từ thứ tự đó **không suy ra được** phiên bản TLS phải là
+-- gì. `tls13 = nil` ghi thẳng điều đó, và nhánh kiểm bên dưới bỏ qua.
+--
+-- Nói cách khác: tín hiệu này chưa bao giờ phân biệt được `mpsa`; bản cũ chỉ
+-- che điều đó bằng cách chọn bừa một client rồi bắn nhầm vào Firefox.
 local KNOWN_PATTERNS = {
-    masp = { client = "chrome",   tls13 = true  },
-    mpsa = { client = "firefox",  tls13 = true  },
-    mspa = { client = "safari",   tls13 = true  },
-    amps = { client = "go_http2", tls13 = false },
-    mpsa = { client = "python_h2", tls13 = false },
-    mpsa = { client = "java_h2",  tls13 = false },
-    mpsa = { client = "curl_h2",  tls13 = false },
+    masp = { clients = "chrome,edge",                   tls13 = true  },
+    mspa = { clients = "safari",                        tls13 = true  },
+    amps = { clients = "go_http2",                      tls13 = false },
+    mpsa = { clients = "firefox,curl,python,java,node", tls13 = nil   },
 }
 
 local function infer_from_ua(ua)
@@ -78,17 +95,22 @@ function _M.run(ctx)
 
     ctx.h2_is_h2 = true
 
-    local trusted = ngx.var.http_x_h2_pseudo_order
-    if trusted and trusted ~= "" then
-        if #trusted == 4 and trusted:match("^[mpsa]+$") then
-            ctx.h2_order         = trusted
-            ctx.h2_pseudo_method = "upstream_header"
-            ngx.log(ngx.DEBUG, "[h2_pseudo] trusted order=", trusted)
-            ctx.h2_header_obs = observe_headers()
-            return
-        end
-    end
-
+    -- NHÁNH "TRUSTED HEADER" ĐÃ BỊ GỠ (2026-09-06).
+    --
+    -- Nó đọc `ngx.var.http_x_h2_pseudo_order`, tức header **`X-H2-Pseudo-Order`
+    -- của REQUEST** — thứ bất kỳ ai trên Internet cũng gửi được. Không một chỗ
+    -- nào trong repo đặt header này (`grep -rn -i 'h2.pseudo.order' *.sh *.conf`
+    -- → rỗng), nên nó chưa từng có nguồn hợp lệ.
+    --
+    -- Và nó không chỉ cho phép tự khai thứ tự: nhánh đó **`return` sớm**, nên
+    -- một header duy nhất bỏ qua luôn cả phép kiểm `h2_tls_mismatch` bên dưới.
+    -- Gửi `X-H2-Pseudo-Order: masp` là vừa nhận thứ tự của Chrome vừa tắt phép
+    -- đối chiếu. Một dòng, một bypass.
+    --
+    -- Gỡ đi không tạo FP: không có client hợp lệ nào đang dùng đường này.
+    -- Nếu sau này thật sự đặt một proxy nội bộ phía trước, thì điều kiện phải
+    -- là "IP nguồn nằm trong danh sách tin cậy VÀ edge đã ghi đè header",
+    -- không phải "header có mặt".
     local ua = ctx.ua or ngx.var.http_user_agent or ""
     local order, source = infer_from_ua(ua)
 
@@ -100,7 +122,11 @@ function _M.run(ctx)
 
     if order and ctx.tls13 ~= nil then
         local pattern_info = KNOWN_PATTERNS[order]
-        if pattern_info and pattern_info.tls13 ~= ctx.tls13 then
+        -- `tls13 == nil` = thứ tự này dùng chung bởi nhiều client khác họ ⇒
+        -- KHÔNG kết luận gì. Thiếu phép kiểm này thì `nil ~= true` là đúng và
+        -- mọi thứ tự mơ hồ lại bắn mismatch — chính là lỗi vừa sửa ở trên.
+        if pattern_info and pattern_info.tls13 ~= nil
+           and pattern_info.tls13 ~= ctx.tls13 then
             ctx.h2_tls_mismatch = true
             ngx.log(ngx.DEBUG,
                 "[h2_pseudo] tls_version mismatch: order=", order,
