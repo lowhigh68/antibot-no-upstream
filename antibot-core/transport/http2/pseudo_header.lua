@@ -23,7 +23,20 @@ local _M = {}
 local KNOWN_PATTERNS = {
     masp = { clients = "chrome,edge",                   tls13 = true  },
     mspa = { clients = "safari",                        tls13 = true  },
-    amps = { clients = "go_http2",                      tls13 = false },
+    -- `tls13 = nil`, KHONG phai `false`. Go bat TLS 1.3 MAC DINH tu Go 1.13
+    -- (2019), nen moi client Go hien dai co `ctx.tls13 = true` va bang cu ban
+    -- `h2_tls_mismatch` cho TAT CA. Dung y con bug Firefox ngay tren: mot ky
+    -- vong phien ban duoc ghim cung roi client di truoc no.
+    --
+    -- Khac Firefox o MUC DO chu khong o BAN CHAT: nan nhan la webhook/IPN/
+    -- uptime-monitor viet bang Go — tich hop that cua khach, an +0,25 vao
+    -- `h2_bot_confidence` (trong so 55) = +13,75 diem, dung bang gia Firefox
+    -- vua tra.
+    --
+    -- Vi sao la `nil` chu khong phai `true`: Go cho phep dat MaxVersion, con
+    -- co ban Go cu; tu thu tu pseudo-header KHONG suy ra duoc phien ban TLS,
+    -- va nhanh kiem ben duoi da bo qua `nil` dung nhu vay.
+    amps = { clients = "go_http2",                      tls13 = nil   },
     mpsa = { clients = "firefox,curl,python,java,node", tls13 = nil   },
 }
 
