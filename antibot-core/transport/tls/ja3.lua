@@ -237,6 +237,19 @@ local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers, ext_ok)
         ext_ok and "1" or "0")
 end
 
+-- `x and nil or y` KHÔNG BAO GIỜ trả về được `nil`. Vế giữa là `nil` ⇒ `and`
+-- cho `nil` ⇒ rơi thẳng sang vế `or`. Nên `"?"` từng giải mã thành `false`,
+-- tức "client KHÔNG chào TLS 1.3", trong khi sự thật là "ta KHÔNG ĐỌC ĐƯỢC".
+--
+-- Hai thứ đó dẫn tới hai hành động khác nhau: `intelligence/correlation/
+-- consistency_check.lua` nhánh `tls12` gác đúng bằng `ctx.tls13_offered ==
+-- false` và cộng +0.35 × 55 = **19,25 điểm**. Cả nỗ lực dựng trạng thái thứ ba
+-- ở `serialize` (ghi `"?"`) bị hàm này nuốt mất ngay khi đọc lại.
+local function decode_tls13(s)
+    if s == "?" then return nil end
+    return s == "1"
+end
+
 local function deserialize(val)
     if not val then return nil end
     local parts = {}
@@ -257,9 +270,9 @@ local function deserialize(val)
     end
 
     return {
-        -- "?" = capture khong doc duoc supported_versions. Payload cu chi co
-        -- "1"/"0" nen khong bi anh huong.
-        is_tls13   = (parts[1] == "?") and nil or (parts[1] == "1"),
+        -- "?" = capture khong doc duoc supported_versions -> nil (BA trang
+        -- thai). Payload cu chi co "1"/"0" nen khong bi anh huong.
+        is_tls13   = decode_tls13(parts[1]),
         extensions = split_nums(parts[2]),
         curves     = split_nums(parts[3]),
         pt_fmts    = split_nums(parts[4]),
