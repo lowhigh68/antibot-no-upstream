@@ -1,5 +1,13 @@
 local _M = {}
 
+-- Đọc MỘT LẦN lúc nạp module, không đọc trong `capture()`. Phase
+-- `ssl_client_hello` là nơi mọi lỗi Lua đều HUỶ BẮT TAY, nên càng ít việc chạy
+-- trong đó càng tốt. `pcall` + mặc định "off": thiếu config thì hành xử y như
+-- trước, không bao giờ tự bật.
+local _cfg_ok, _cfg = pcall(require, "antibot.core.config")
+local CIPHER_MODE =
+    (_cfg_ok and _cfg and _cfg.tls and _cfg.tls.ja3_cipher) or "off"
+
 -- ============================================================
 -- Cross-phase bridge: ssl_client_hello_by_lua → access_by_lua
 --
@@ -134,18 +142,50 @@ local function build_ja3_str(ver, ciphers, exts, curves, pt_fmts)
         ver, join(ciphers), join(exts), join(curves), join(pt_fmts))
 end
 
-local function serialize(is_tls13, extensions, curves, pt_fmts)
+-- ── ĐỌC CIPHER LIST MÀ KHÔNG ĐOÁN HÌNH DẠNG TRẢ VỀ ──────────────────────
+--
+-- `get_client_hello_ciphers()` có thể trả BẢNG số hoặc CHUỖI byte thô (2 byte
+-- big-endian mỗi cipher) tuỳ phiên bản. Đoán sai thì danh sách rỗng ⇒
+-- `ja3_allowlist` chấm `cipher_count < 5 → 0.6` ⇒ **30 điểm oan cho tất cả**.
+-- Nên xử lý CẢ HAI, và trả về kèm nhãn hình dạng để nấc `probe` in ra sự thật
+-- thay vì để ai đó suy luận.
+local function parse_ciphers(raw)
+    if type(raw) == "table" then
+        local out = {}
+        for _, v in ipairs(raw) do
+            local n = tonumber(v)
+            if n and not is_grease(n) then out[#out + 1] = n end
+        end
+        return out, "table"
+    end
+    if type(raw) == "string" then
+        local out = {}
+        -- Bỏ byte lẻ cuối nếu có: thà thiếu một cipher còn hơn đọc lệch cả dãy.
+        for i = 1, #raw - 1, 2 do
+            local n = raw:byte(i) * 256 + raw:byte(i + 1)
+            if not is_grease(n) then out[#out + 1] = n end
+        end
+        return out, "string"
+    end
+    return {}, type(raw)
+end
+
+local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers)
     local function join(t)
         if not t or #t == 0 then return "" end
         local parts = {}
         for i, v in ipairs(t) do parts[i] = tostring(v) end
         return table.concat(parts, "-")
     end
-    return string.format("%s|%s|%s|%s",
+    -- Trường thứ 5 THÊM VÀO CUỐI, cố ý: `deserialize` vẫn chấp nhận payload
+    -- 4 trường, nên các bản ghi cũ còn nằm trong shared dict lúc reload không
+    -- bị hỏng. Thêm vào giữa là gãy hết.
+    return string.format("%s|%s|%s|%s|%s",
         is_tls13 and "1" or "0",
         join(extensions),
         join(curves),
-        join(pt_fmts))
+        join(pt_fmts),
+        join(ciphers))
 end
 
 local function deserialize(val)
@@ -172,6 +212,9 @@ local function deserialize(val)
         extensions = split_nums(parts[2]),
         curves     = split_nums(parts[3]),
         pt_fmts    = split_nums(parts[4]),
+        -- `parts[5]` là nil với payload cũ (4 trường) còn nằm trong shared dict
+        -- lúc reload. `split_nums(nil)` trả {} nên không cần nhánh riêng.
+        ciphers    = split_nums(parts[5]),
     }
 end
 
@@ -248,7 +291,34 @@ function _M.capture_unsafe()
     local pf_data = ssl_clt.get_client_hello_ext(0x000b)
     if pf_data then pt_fmts = parse_ec_point_formats(pf_data) end
 
-    local val = serialize(is_tls13, extensions, curves, pt_fmts)
+    -- CIPHER LIST — chỉ chạm khi được bật tường minh.
+    --
+    -- `pcall` RIÊNG cho lời gọi này: nó là API mới nhất trong cả hàm, và một
+    -- lỗi Lua ở phase `ssl_client_hello` không phải là "mất JA3" mà là **huỷ
+    -- bắt tay TLS** (sự cố 2026-04-22). Hỏng ở đây phải rơi về danh sách rỗng,
+    -- tức đúng hành vi của nấc "off", chứ không được lan ra ngoài.
+    local ciphers, shape = {}, "skipped"
+    if CIPHER_MODE ~= "off"
+       and type(ssl_clt.get_client_hello_ciphers) == "function" then
+        local ok3, raw = pcall(ssl_clt.get_client_hello_ciphers)
+        if ok3 then
+            ciphers, shape = parse_ciphers(raw)
+        else
+            shape = "error"
+            ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers loi (da nuot): ",
+                    tostring(raw))
+        end
+        -- Lấy mẫu 1/200 ở mức ERR — đây là DÒNG DUY NHẤT nói cho ta biết API
+        -- thật sự trả về cái gì. Không có nó thì việc lên nấc "on" là đoán.
+        if _cap_n % 200 == 1 then
+            ngx.log(ngx.ERR, "[ja3] cipher_probe mode=", CIPHER_MODE,
+                    " shape=", shape, " n=", #ciphers,
+                    " first=", tostring(ciphers[1]),
+                    " last=", tostring(ciphers[#ciphers]))
+        end
+    end
+
+    local val = serialize(is_tls13, extensions, curves, pt_fmts, ciphers)
     local set_ok, set_err = shared:set(TMP_KEY_PREFIX .. addr_key, val,
                                        TMP_KEY_TTL)
     if not set_ok then
@@ -449,9 +519,24 @@ function _M.run(ctx)
     -- (OpenResty 1.29.2.3 / 1.31.1.1, lua-resty-core 0.1.33 / 0.1.34): API này
     -- **CÓ**. Chưa dùng vì bật nó là một thay đổi CHÍNH SÁCH chứ không phải sửa
     -- lỗi — xem `transport/CLAUDE.md` mục 2026-09-06.
+    -- Nấc "probe" ĐẾM cipher nhưng KHÔNG đưa vào hash. Đó là toàn bộ ý nghĩa
+    -- của nấc giữa: chuỗi JA3 và `ja3_partial` y hệt nấc "off", nên hành vi
+    -- chấm điểm không đổi một chút nào, mà `ja3c=` trong antibot.log vẫn cho
+    -- thấy API có lấy được cipher hay không và lấy được bao nhiêu.
+    local captured   = data.ciphers or {}
     local ciphers    = {}
     local cipher_src = "none"
     local is_partial = true
+
+    ctx.ja3_cipher_n = #captured
+
+    if CIPHER_MODE == "on" and #captured > 0 then
+        ciphers    = captured
+        cipher_src = "clienthello"
+        is_partial = false
+    elseif #captured > 0 then
+        cipher_src = "probe_only"
+    end
 
     local tls_version = 0x0303
     local ja3_str  = build_ja3_str(tls_version, ciphers,

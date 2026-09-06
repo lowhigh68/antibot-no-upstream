@@ -47,6 +47,44 @@ _M.thresholds = {
     block     = 80,
 }
 
+-- ── THANG BA NẤC CHO CIPHER LIST CỦA JA3 ────────────────────────────────
+--
+-- `ngx.ssl.clienthello.get_client_hello_ciphers()` CÓ trên cả 5 máy (đo
+-- 2026-09-06: OpenResty 1.29.2.3 / 1.31.1.1, lua-resty-core 0.1.33 / 0.1.34).
+-- Nghĩa là lấy được cipher NGAY trong `ssl_client_hello_by_lua`, không đụng tới
+-- mô hình OpenResty→Apache. Đánh đổi "no-stream" là thật, nhưng nó không còn
+-- buộc JA3 phải partial.
+--
+-- KHÔNG bật thẳng, vì có ĐÚNG MỘT rủi ro và nó là rủi ro CÀI ĐẶT:
+-- `intelligence/threat/ja3_allowlist.lua` chấm `cipher_count < 5 → 0.6`, nhân
+-- trọng số 50 = **30 điểm**. Nếu API trả về dạng mà bộ phân tích không đợi thì
+-- danh sách cipher rỗng ⇒ 30 điểm cho TẤT CẢ. Không đoán hình dạng trả về:
+-- `parse_ciphers` trong `ja3.lua` xử lý cả bảng lẫn chuỗi byte, và nấc `probe`
+-- in ra hình dạng thật.
+--
+--   "off"   — như hiện nay. Không gọi API. (mặc định)
+--
+--   "probe" — GỌI API, đếm cipher, ghi vào log `ja3c=`, nhưng **KHÔNG đưa vào
+--             hash**: `ja3_partial` vẫn true, chuỗi JA3 y hệt nấc "off".
+--             ⇒ HÀNH VI KHÔNG ĐỔI MỘT CHÚT NÀO. Đây là nấc để kiểm.
+--             Kiểm gì (xem log `[ja3] cipher_probe` mức ERR, lấy mẫu 1/200):
+--               shape=table|string  — hình dạng API thật sự trả về
+--               n=<số cipher>       — PHẢI ≥ 5 với trình duyệt thật.
+--                                     n=0 hoặc n<5 hàng loạt ⇒ ĐỪNG lên "on",
+--                                     đó đúng là ca 30 điểm oan.
+--             Và trong antibot.log: `ja3c=` phải có số, `ja3p=` vẫn `true`.
+--
+--   "on"    — dùng cipher thật. `ja3_partial=false` ⇒ `ja3_db` và
+--             `ja3_allowlist` bắt đầu chạy (trước nay chưa từng chạy), và
+--             **hash JA3 đổi ⇒ `fp_light` đổi một lượt** ⇒ `sess:` mồ côi,
+--             `ban:` hết khớp, counter reset. Reload vào giờ thấp điểm.
+--             Theo dõi `j3m=` trong antibot.log: đó là `ja3_allowlist_miss`.
+--             Trình duyệt thật phải ra 0.00. Thấy 0.60 hàng loạt = quay lại
+--             "probe" ngay.
+_M.tls = {
+    ja3_cipher = "off",
+}
+
 _M.weights = {
     rate_flag        = 25,
     burst_flag       = 35,

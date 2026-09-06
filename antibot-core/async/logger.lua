@@ -556,7 +556,7 @@ function _M.run(ctx)
     -- richness=0\\.0 → first-visit/bot pattern.
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
-        " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s" ..
+        " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s%s",
@@ -580,6 +580,15 @@ function _M.run(ctx)
         --   -     = KHÔNG có JA3 (resource class, bridge miss, capture hỏng)
         -- Cùng con `false`-vs-`nil` đã cắn ở `waf/body.lua` (`php = false`).
         (ctx.ja3_partial == nil) and "-" or tostring(ctx.ja3_partial),
+        -- `ja3c` = SỐ CIPHER bắt được từ ClientHello. Cột này tồn tại để cuộc
+        -- triển khai `cfg.tls.ja3_cipher` kiểm được thay vì đoán:
+        --   nấc "probe": ja3c > 0 mà ja3p vẫn `true`  ⇒ API chạy, hash chưa đổi
+        --   ja3c = 0 hàng loạt ở nấc "probe"          ⇒ ĐỪNG lên "on"
+        -- `j3m` = `ja3_allowlist_miss`, trọng số 50. Ở nấc "off"/"probe" luôn
+        -- 0.00 (allowlist gác `ja3_partial`). Lên "on" mà thấy 0.60 hàng loạt
+        -- thì đó đúng là ca 30 điểm oan — quay lại "probe" ngay.
+        tonumber(ctx.ja3_cipher_n) or 0,
+        tonumber(ctx.ja3_allowlist_miss) or 0,
         ctx.score or 0,
         ctx.effective_score or 0,
         tostring(ctx.score_multiplier or 1.0),

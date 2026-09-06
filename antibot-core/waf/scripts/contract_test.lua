@@ -604,5 +604,59 @@ else
     end
 end
 
+-- ── 9. Thang ba nac cua cipher list JA3 ─────────────────────────────
+--
+-- Ghim CAU TRUC, khong ghim GIA TRI: nguoi van hanh se doi
+-- `cfg.tls.ja3_cipher` giua off/probe/on, nen mot phep kiem "phai bang off"
+-- se chan deploy dung luc dang trien khai. Cai phai giu nguyen la hai tinh
+-- chat an toan cua thang do.
+io.write("\nhop dong: thang cipher list JA3\n")
+
+local ja3_src = slurp(SRC .. "transport/tls/ja3.lua")
+local cfgsrc  = slurp(SRC .. "core/config.lua")
+
+if not ja3_src or not cfgsrc then
+    bad("  SAI  khong doc duoc ja3.lua hoac config.lua\n")
+else
+    -- 9a. Nac giua PHAI khong the tu bat. Chi so sanh voi "on" moi duoc phep
+    --     xoa co partial; thieu phep so sanh do thi "probe" lam doi hash JA3
+    --     cua toan bo dan may ma khong ai chu y.
+    if ja3_src:find('CIPHER_MODE == "on"', 1, true) then pass = pass + 1 else
+        bad("  SAI  ja3.lua khong con gac `CIPHER_MODE == \"on\"`\n" ..
+            "       => nac `probe` se doi hash JA3 that => fp_light doi mot\n" ..
+            "          luot tren toan dan may, ngoai y muon\n")
+    end
+
+    -- 9b. KHONG duoc doan hinh dang tra ve cua API. Doan sai => danh sach
+    --     cipher rong => ja3_allowlist cham `cipher_count < 5` = 0.6 x 50
+    --     = 30 diem oan cho TAT CA.
+    if ja3_src:find('type(raw) == "table"', 1, true)
+       and ja3_src:find('type(raw) == "string"', 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  parse_ciphers khong con xu ly ca bang lan chuoi byte\n" ..
+            "       => doan sai hinh dang = 30 diem oan cho moi client\n")
+    end
+
+    -- 9c. Phai co nac de KIEM. Khong co `probe` thi chi con off/on, tuc la
+    --     nhay thang vao thay doi hanh vi ma khong co buoc quan sat nao.
+    if cfgsrc:find("ja3_cipher", 1, true) and ja3_src:find("cipher_probe", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  mat nac `probe` (log `[ja3] cipher_probe`)\n" ..
+            "       => len `on` la doan, khong phai do\n")
+    end
+
+    -- 9d. Cot log phai ton tai, neu khong thi ca cuoc trien khai la mu.
+    local lg = slurp(SRC .. "async/logger.lua")
+    if lg and lg:find("ja3c=", 1, true) and lg:find("j3m=", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  antibot.log thieu cot `ja3c=` hoac `j3m=`\n" ..
+            "       => khong doc duoc API co lay duoc cipher khong, va\n" ..
+            "          khong thay duoc ja3_allowlist_miss khi len `on`\n")
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
