@@ -1,11 +1,12 @@
 {
-  "version": "2026-04-30c",
+  "version": "2026-09-06a",
   "description": "Default good-bot DNS registry. Auto-seed Redis at worker init. Admin override (SET goodbot:dns:<name>) takes priority. ptr_only bots skip forward DNS check (rotating IP pools).",
   "ptr_only": [
     "facebookexternalhit",
     "facebot",
     "meta-externalagent",
-    "meta-externalfetcher"
+    "meta-externalfetcher",
+    "meta-externalads"
   ],
   "bots": {
     "googlebot":              ["googlebot.com", "google.com"],
@@ -43,6 +44,7 @@
     "facebot":                ["facebook.com", "fbsv.net"],
     "meta-externalagent":     ["facebook.com", "fbsv.net"],
     "meta-externalfetcher":   ["facebook.com", "fbsv.net"],
+    "meta-externalads":       ["facebook.com", "fbsv.net"],
 
     "coccocbot-web":          ["coccoc.com"],
     "coccocbot-image":        ["coccoc.com"],

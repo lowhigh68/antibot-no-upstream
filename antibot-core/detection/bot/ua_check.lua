@@ -128,6 +128,13 @@ local PTR_ONLY_BOTS = {
     ["facebot"]                = { ptr_only = true, asns = { 32934 } },
     ["meta-externalagent"]     = { ptr_only = true, asns = { 32934 } },
     ["meta-externalfetcher"]   = { ptr_only = true, asns = { 32934 } },
+    -- Them 2026-09-06 tu san xuat: `do_why.sh` muc B tren cloud183-139 thay 229
+    -- dong `mm=ch_ua` trong mot cua so, TAT CA la `meta-externalads`. UA khop
+    -- regex `meta%-external%w+` nen `bot_name` ra dung, nhung ba noi khai bao
+    -- deu KHONG co ten nay => `get_good_bot_suffixes` tra nil => roi vao nhanh
+    -- `unregistered_bot` => `dns_reverse` khong co suffix de doi chieu => dat
+    -- `bot_score = 0.85`, cong them `ch_ua` +0,3 x 55 = 16,5 diem.
+    ["meta-externalads"]       = { ptr_only = true, asns = { 32934 } },
 
     -- Google family (AS15169 Google LLC). PTR+A symmetric tốt — không cần
     -- ptr_only. ASN list để fallback nếu Google add IP block mới chưa setup
