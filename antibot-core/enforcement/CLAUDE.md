@@ -11,8 +11,7 @@ Translate aggregated score into HTTP action. Apply class-based multipliers, kill
 |---|---|
 | `init.lua` | Orchestrator: `engine.run(ctx)` → if action=challenge: `challenge.serve(ctx)`. If action=block + new violation: `ban.ban_store_write.write(ctx)` |
 | `decision/engine.lua` | Core: short-circuit (`whitelisted`, `good_bot_verified`), apply `score_multiplier × trust_multiplier + fp_penalty + resource_boost capped at 40`, kill-switches for resource (raw≥95→eff≥85 block, raw≥80→eff≥60 challenge), IP-risk threshold lowering (`ip_risk≥0.4` → challenge cap 40), trust cap (trusted→action_cap=monitor). Sets `ctx.action`, `ctx.action_reason`, `ctx.effective_score`, `ctx.kill_reason`. Sets debug `X-Bot-*` response headers when `$antibot_debug=1` |
-| `challenge/init.lua` | When action=challenge: serve PoW HTML page |
-| `challenge/serve.lua` | Generate challenge HTML with PoW token (HMAC-signed, difficulty `cfg.pow.difficulty="000"`) |
+| `challenge/init.lua` | `challenge.run(ctx)` — phát nonce + token, dựng trang PoW, trả **200** (KHÔNG phải 403) kèm `Cache-Control: no-store`. Trang là một máy trạng thái có điểm dừng trên mọi nhánh: SHA-256 thuần JS tự kiểm bằng vector chuẩn, băm đồng bộ theo lát 30ms, gửi bằng XHR có `timeout`, đồng hồ canh 45s, trần tải lại 2 lần, `<noscript>`. Đặt `ctx.inject_candidate=false` để beacon không chèn vào chính nó |
 | `challenge/verify_token.lua` | `/antibot/verify` endpoint handler — verify PoW solution, on success set Redis `verified:<cookie>=1` (TTL ≈ session lifetime) |
 | `ban/ban_store_write.lua` | Write `ban:<id>` to Redis when action=block AND not already banned. Order MUST match `l7/ban/ban_store.lua` read (identity OR fp_light) |
 | `explain.lua` | Build human-readable reason string from `ctx.top_signals` + `ctx.kill_reason` + `ctx.trust_reason` (used by antibot.log + admin) |
@@ -66,7 +65,7 @@ intelligence.run(ctx) → ctx.score, ctx.top_signals
 enforcement.run(ctx)
    engine.run         → ctx.action, ctx.action_reason, ctx.effective_score
    if challenge:
-      challenge.serve → respond 403 + HTML challenge page
+      challenge.run   → respond 200 + HTML challenge page (no-store)
    if block + new viol:
       ban_store_write → Redis ban:<id> with TTL from cfg.ttl.ban_steps[viol]
             ↓
@@ -76,7 +75,7 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 ## Related
 - Upstream: `intelligence/scoring/compute` (provides ctx.score), all detection layers (provide signal flags)
 - Downstream: `async/risk_update` reads `ctx.action` to update `ip_risk:<ip>` async
-- PoW verify cycle: challenge.serve → browser solves → POST `/antibot/verify` → verify_token → Redis `verified:<cookie>` → next request hits cookie fast-path in init.lua
+- PoW verify cycle: challenge.run → browser solves → POST `/antibot/verify` (XHR) → verify_token → Redis `verified:<cookie>` + JSON `{"ok":true,"dest":"/..."}` → client `location.replace(dest + hash)` → next request hits cookie fast-path in init.lua
 
 ## Important rules
 - Thresholds duplicated in `core/config.lua` AND `engine.lua` — change one → reconcile other
@@ -86,6 +85,19 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-09-06 — **Trang challenge treo: bốn nhánh không có điểm dừng, và cách thôi vá từng cái** (`challenge/init.lua` viết lại + `challenge/verify_token.lua` + `intelligence/scoring/compute.lua` + `core/config.lua` + `waf/scripts/contract_test.lua`).
+  - **Cách đặt vấn đề, chứ không phải bốn bản vá.** "Treo" không phải một lỗi — nó là **một nhánh không có điểm dừng**. Bản trước đã vá tuần tự: thêm retry, thêm backoff, sửa referrer… và lần nào cũng "xong" cho tới nguyên nhân kế tiếp. Nay trang được viết lại như một **máy trạng thái liệt kê được**, và điểm cuối cùng — **đồng hồ canh 45s** — là thứ duy nhất không phải bản vá: nó không cần biết cái gì hỏng.
+  - **Nguyên nhân 1 — `crypto.subtle` không tồn tại ngoài secure context. TREO CỨNG, không báo lỗi, không một gói tin.** `nginx/da_to_openresty.sh` đặt `access_by_lua { antibot.run() }` vào **cả khối `listen 80`**, và khối đó **không chuyển hướng sang HTTPS**. Khách vào bằng `http://` mà bị thách đố ⇒ `crypto.subtle` là `undefined` ⇒ `crypto.subtle.digest` ném TypeError ngay trong `solve()` ⇒ văng ra khỏi IIFE ⇒ con quay quay mãi. Đây là nhóm "gõ tên miền vào thanh địa chỉ" — đúng nhóm khách vào lần đầu.
+  - **Nguyên nhân 2 — `setTimeout(solve, 0)` MỖI LẦN BĂM.** Trình duyệt ép tối thiểu 4ms sau 5 lớp timer lồng nhau ⇒ 4096 lần băm của `difficulty="000"` mất **≥16 giây**; tab chạy nền thì timer bị hạ xuống 1 lần/giây ⇒ **68 phút**. Nonce sống 60s nên về tới nơi là 403 → tải lại → lặp. Nay băm **đồng bộ** theo lát 30ms (~3 lát).
+  - **Nguyên nhân 3 — `fetch` không có hạn giờ** và không tồn tại trên WebView cũ. Promise treo thì `.catch` không bao giờ chạy (đổi Wi-Fi/4G, app vào nền, TCP nửa mở). Thay bằng `XMLHttpRequest` + `xhr.timeout`: có điểm dừng tường minh cho mọi kết cục, chạy ở mọi WebView.
+  - **Nguyên nhân 4 — trang challenge không có `Cache-Control`.** Nó mang nonce dùng một lần và nằm ở **đúng URL bài viết**; lấy lại bản cũ sau khi verify = giải bằng token đã chết = 403 = tải lại = vòng lặp.
+  - **Đổi lại phải tự viết SHA-256 (~55 dòng).** Rủi ro thật, nên hai lớp chặn: (a) đã kiểm trên máy dev bằng 5 vector chuẩn + đối chiếu `[System.Security.Cryptography.SHA256]` trên đúng dạng đầu vào (64 hex + chữ số); (b) **trang tự kiểm `sha256('abc')` trước khi dùng** — một bản băm sai mà im lặng còn tệ hơn treo, vì nó gửi lời giải không hợp lệ và ăn 403 mãi.
+  - **`fast_solve` BỊ GỠ khỏi `DEFAULT_WEIGHTS` + `get_signal()` + `flag_fast_solve`.** Ngưỡng `sm < 50ms` chỉ có nghĩa với bộ giải cũ (mỗi lần băm qua một Promise + `setTimeout(0)` ⇒ không đời nào dưới 50ms). Bộ giải đồng bộ xong trong 10–40ms ⇒ **mọi máy để bàn thật sẽ bị đánh dấu**, trọng số 25 ⇒ +8,75đ/lần. Chỉnh ngưỡng không cứu được: sức phân biệt của tín hiệu **sinh ra từ chính sự chậm giả tạo** vừa bị gỡ, và `sm` do client gửi. Giá trị `sm` chuyển vào dòng `[fp_sample]` để còn đo được nếu sau này muốn dựng lại.
+  - **`cfg.ttl.nonce` 60 → 300.** Cửa sổ không còn phải chứa thời gian giải, mà phải chứa: tải trang + thiết bị yếu + khách chuyển sang app khác rồi quay lại + tối đa 3 lần gửi có giãn cách (~28s).
+  - **`safe_dest` loại cả dải `0x00–0x1F` + `0x7F`**, không chỉ `\r \n \0` — chú thích cũ nói "loại ký tự điều khiển" nhưng code chỉ loại ba, và `json_str` tin vào chú thích đó.
+  - **Mọi lối thoát của `verify_token` nay đặt `ctx.action_reason`** (`verify_missing_args` / `verify_missing_id` / `verify_pow_failed` / `verify_redis_down` / `verify_nonce_missing`). Khi khách báo "quay mãi", thứ đầu tiên cần biết là verify có tới nơi không và hỏng ở bước nào — mà đúng những dòng đó đang vô danh.
+  - **`contract_test.lua` mục 0 và mục 6.** Mục 6 ghim các **thuộc tính khiến trang kết thúc được** (cấm `crypto.subtle`/`fetch(`/`TextEncoder`/`URLSearchParams`/`document.referrer` trong chuỗi trang; bắt buộc có đồng hồ canh, trần tải lại, `xhr.timeout`, `<noscript>`, vector tự kiểm; đếm dấu `%` lẻ) — chứ không liệt kê bốn nguyên nhân đã biết. Mục 0 `loadfile` **mọi** file `.lua`: `nginx -t` không nạp module `require` lúc chạy, nên một lỗi cú pháp ở đây đi lọt cả `-t` lẫn `reload` rồi nổ ở request đầu tiên — và máy dev không có Lua.
+  - **CHƯA làm, cần người quyết:** khối `listen 80` không chuyển hướng 301 sang HTTPS (giờ đã vô hại với challenge, nhưng vẫn là lưu lượng trần); chữ ký HMAC của token **vẫn không được kiểm** ở `verify_token` (chỉ kiểm tiền tố hash + sự tồn tại của nonce); `engine.lua` **không có sàn cho truy cập lần đầu** nên một danh tính mới toanh, không tín hiệu, được cho qua.
 - 2026-08-22 (`a770ea5`) — **Tầng danh tính thứ ba: dải IP do nhà vận hành CÔNG BỐ** (`engine.lua` + `nginx/scripts/monitor_ip_sync.sh` MỚI + `async/logger.lua`).
   - **Lỗ hổng đã được ghi sẵn từ 2026-08-07** (`detection/CLAUDE.md`, "lỗ hổng lớn nhất còn lại"): hai tầng sẵn có đều dựa vào **UA tự khai** — S4 (registry + DNS hai chiều) và S2.5 (contact/analyzer attest). Không có đường nào cho nhà vận hành khai danh tính bằng cách **công bố danh sách IP** (cách OpenAI/Anthropic/Perplexity dùng).
   - **Ca đầu tiên chạm vào: công cụ uptime đa điểm.** Bắn ~35 điểm kiểm tra ĐỒNG THỜI từ 35 subnet với cùng một UA trình duyệt trần ⇒ về cấu trúc **không phân biệt được** với thăm dò có phối hợp ⇒ `distributed_swarm` (trọng số 120) chặn 403. **Bộ dò KHÔNG sai:** domain nhận 13,5 req/phút mà mốc cứng là 35 /24 trong **60 giây** — lưu lượng tự nhiên không thể chạm, chỉ một chùm bắn đồng thời mới tạo ra được. `top=` xác nhận `swarm_attack` chiếm 70-86% điểm ở mọi dòng.

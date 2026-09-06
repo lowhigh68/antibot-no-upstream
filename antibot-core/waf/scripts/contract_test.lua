@@ -45,6 +45,48 @@ local function slurp(path)
     return s
 end
 
+-- ── 0. MOI file .lua phai BIEN DICH DUOC ────────────────────────────
+--
+-- `nginx -t` KHONG bat duoc loi cu phap trong nhung module chi duoc `require`
+-- luc chay: no chi kiem cau hinh, khong nap cay Lua. Nen mot dau ngoac thieu
+-- trong, vi du, `enforcement/challenge/init.lua` se im lang di qua ca `-t` lan
+-- `reload`, roi no o request DAU TIEN cham vao no — tuc la o tren may that,
+-- voi khach that.
+--
+-- Cong nay dac biet can vi may dev KHONG CO Lua: khong co gi giua "viet xong"
+-- va "day len fleet". Do dung la cach ma `RX_FILENAME` hong (8dfafd2) di lot
+-- toi tan git.
+--
+-- `loadfile` chi BIEN DICH, khong chay — nen an toan voi moi module, ke ca
+-- nhung module cham `ngx` ngay o than file.
+io.write("bien dich duoc: moi file .lua\n")
+do
+    local ph = io.popen("find '" .. SRC .. "' -name '*.lua' -type f 2>/dev/null")
+    if not ph then
+        bad("  SAI  khong chay duoc `find` de duyet cay nguon\n")
+    else
+        local n, broken = 0, 0
+        for path in ph:lines() do
+            n = n + 1
+            local chunk, err = loadfile(path)
+            if not chunk then
+                broken = broken + 1
+                -- cat tien to bang do dai, KHONG bang `gsub`: SRC la duong
+                -- dan that nen co the chua `-` hay `.`, ca hai deu la ky tu
+                -- dac biet trong mau Lua.
+                bad("  SAI  %s\n       %s\n", path:sub(#SRC + 1), tostring(err))
+            end
+        end
+        ph:close()
+        if n == 0 then
+            bad("  SAI  khong tim thay file .lua nao duoi %s\n", SRC)
+        elseif broken == 0 then
+            pass = pass + 1
+            io.write(string.format("  OK   %d file\n", n))
+        end
+    end
+end
+
 local compute = slurp(SRC .. "intelligence/scoring/compute.lua")
 local root    = slurp(SRC .. "init.lua")
 if not compute or not root then
@@ -277,8 +319,9 @@ else
             "          HTML tu chuyen huong o day KHONG BAO GIO chay.\n")
     end
 
-    -- 5c. Client phai DOC cai do.
-    if ch:find("r.json()", 1, true) then pass = pass + 1 else
+    -- 5c. Client phai DOC cai do. (Truoc day kiem `r.json()` cua `fetch`;
+    --     client nay dung XHR nen phep doc la `JSON.parse`.)
+    if ch:find("JSON.parse", 1, true) then pass = pass + 1 else
         bad("  SAI  trang challenge khong doc JSON tra ve\n" ..
             "       => dich den dung nam o may chu ma khong toi duoc client\n")
     end
@@ -290,6 +333,128 @@ else
         bad("  SAI  verify_token khong kiem `dest` truoc khi dung\n" ..
             "       => open redirect, va header injection neu lot CR/LF\n")
     end
+end
+
+-- ── 6. Trang challenge phai KET THUC DUOC tren moi nhanh ────────────
+--
+-- Muc 5 ghim NOI DUNG hai nua noi voi nhau. Muc nay ghim mot thu khac han:
+-- MAY TRANG THAI cua trang phai co diem dung tren MOI nhanh.
+--
+-- Vi sao can rieng mot muc. Trieu chung "giai challenge treo, mai khong xong"
+-- da duoc va nhieu lan, moi lan mot nguyen nhan: `crypto.subtle` khong ton tai
+-- ngoai secure context (va bo sinh config CO chay antibot tren `listen 80`),
+-- `setTimeout(0)` moi lan bam bi tran 4ms roi bi ha xuong 1s khi tab chay nen,
+-- `fetch` khong co han gio, `document.referrer` trong. Bon nguyen nhan, bon
+-- ban va — va lan nao cung "xong" cho toi nguyen nhan thu nam.
+--
+-- Cai chung cua ca bon: MOT NHANH KHONG CO DIEM DUNG. Nen phep kiem dung khong
+-- phai la liet ke bon nguyen nhan do, ma la ghim cac THUOC TINH khien trang
+-- khong the treo — ke ca vi mot nguyen nhan chua ai biet.
+--
+-- Chi kiem trong CHUOI HTML sinh ra trang, khong kiem ca file: chu thich trong
+-- file co nhac ten `crypto.subtle`, `fetch`, `referrer` de giai thich vi sao
+-- chung bi go. Khong khoanh vung thi chinh loi giai thich se lam test do.
+io.write("\nhop dong: trang challenge phai ket thuc duoc\n")
+
+local function page_of(src)
+    if not src then return nil end
+    return src:match("string%.format%(%[=%[(.-)%]=%]")
+end
+
+local page = page_of(ch)
+
+if not page then
+    bad("  SAI  khong tach duoc chuoi HTML trong challenge/init.lua\n" ..
+        "       => hoac file da doi cau truc, hoac chuoi dai khong dong\n")
+else
+    -- 6a. Khong duoc phu thuoc thu co the BIEN MAT MA KHONG BAO LOI.
+    --     Moi ten duoi day, khi vang mat, deu nem loi ra ngoai IIFE hoac
+    --     tao mot Promise bi tu choi ma khong ai bat => con quay quay mai.
+    local forbidden = {
+        ["crypto.subtle"]   = "khong ton tai ngoai secure context (khach vao bang http://)",
+        ["TextEncoder"]     = "khong co tren WebView cu",
+        ["URLSearchParams"] = "khong co tren WebView cu",
+        ["document.referrer"] = "TRONG voi khach vao lan dau => nem ho ve `/`",
+    }
+    local dirty = false
+    for name, why in pairs(forbidden) do
+        if page:find(name, 1, true) then
+            dirty = true
+            bad("  SAI  trang challenge dung `" .. name .. "`\n" ..
+                "       => " .. why .. "\n")
+        end
+    end
+    -- `fetch(` rieng: ten qua ngan de tim tho, phai co dau mo ngoac.
+    if page:find("fetch%s*%(") then
+        dirty = true
+        bad("  SAI  trang challenge dung `fetch(`\n" ..
+            "       => khong co han gio; Promise treo thi `.catch` khong chay\n")
+    end
+    if not dirty then pass = pass + 1 end
+
+    -- 6b. Luoi cuoi cung cho nguyen nhan CHUA BIET. Day la phep kiem quan
+    --     trong nhat o muc nay: no khong can biet cai gi hong.
+    if page:find("WATCHDOG_MS", 1, true) then pass = pass + 1 else
+        bad("  SAI  trang challenge khong co dong ho canh\n" ..
+            "       => mot nguyen nhan moi = mot nhanh treo moi, khong co day\n")
+    end
+
+    -- 6c. Vong tai lai phai co TRAN. Khong tran thi 403 lap vo han va nguoi
+    --     dung chi thay mot con quay khong doi.
+    if page:find("MAX_RELOAD", 1, true) then pass = pass + 1 else
+        bad("  SAI  vong tai lai sau 403 khong co tran\n")
+    end
+
+    -- 6d. Moi lan gui phai co han gio rieng.
+    if page:find("xhr.timeout", 1, true) then pass = pass + 1 else
+        bad("  SAI  yeu cau verify khong co han gio\n" ..
+            "       => doi mang / app vao nen / TCP nua mo = treo vinh vien\n")
+    end
+
+    -- 6e. JS bi tat cung phai co mot man hinh noi duoc dieu gi.
+    if page:find("<noscript>", 1, true) then pass = pass + 1 else
+        bad("  SAI  khong co <noscript>\n")
+    end
+
+    -- 6f. Ban SHA-256 tu viet PHAI tu kiem truoc khi dung. Mot ban sai ma im
+    --     lang con te hon treo: no gui len loi giai khong hop le va an 403 mai.
+    if page:find("ba7816bf8f01cfea414140de5dae2223"
+                 .. "b00361a396177a9cb410ff61f20015ad", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  SHA-256 trong trang khong tu kiem bang vector chuan\n")
+    end
+
+    -- 6g. Chuoi nay di qua `string.format`. MOT dau `%` le lam ca trang khong
+    --     dung duoc — va loi do khong lo ra o bat ky test don vi nao, giong het
+    --     ca `RX_FILENAME` viet trong long string hoi 2026-09.
+    local i, stray, nq = 1, 0, 0
+    while true do
+        local p = page:find("%%", i)
+        if not p then break end
+        local two = page:sub(p, p + 1)
+        if two == "%%" then i = p + 2
+        elseif two == "%q" then nq = nq + 1; i = p + 2
+        else stray = stray + 1; i = p + 1 end
+    end
+    if stray > 0 then
+        bad("  SAI  co %d dau `%%` le trong chuoi challenge\n" ..
+            "       => `string.format` se hong hoac nuot ky tu\n", stray)
+    else
+        pass = pass + 1
+    end
+    -- So `%q` phai KHOP so doi so truyen vao (token, difficulty, id).
+    if nq == 3 then pass = pass + 1 else
+        bad("  SAI  co %d cho `%%q` nhung ham truyen 3 doi so\n", nq)
+    end
+end
+
+-- 6h. Trang challenge KHONG duoc nam lai trong bo nho dem: no mang mot nonce
+--     dung mot lan va nam o dung URL bai viet. Lay lai ban cu = giai bang
+--     token da chet = 403 = tai lai = vong lap khong loi thoat.
+if ch and ch:find("no%-store") then pass = pass + 1 else
+    bad("  SAI  trang challenge khong dat Cache-Control: no-store\n" ..
+        "       => trinh duyet lay lai ban cu sau khi verify => vong lap\n")
 end
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))

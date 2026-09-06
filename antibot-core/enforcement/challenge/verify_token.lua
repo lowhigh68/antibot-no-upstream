@@ -45,14 +45,25 @@ local function check_canvas_consistency(red, id, ip, canvas_hash)
     end
 end
 
-local function flag_fast_solve(red, id, solve_ms_str)
-    local solve_ms = tonumber(solve_ms_str)
-    if not solve_ms then return end
-    if solve_ms < 50 then
-        red:incr("fp:fast_solve:" .. id)
-        red:expire("fp:fast_solve:" .. id, 3600)
-    end
-end
+-- `flag_fast_solve` ĐÃ BỊ GỠ, cùng lúc với việc trang challenge bỏ WebCrypto.
+--
+-- Nó đo `sm` (mili-giây client tự khai) và đánh dấu khi `< 50`. Ngưỡng đó chỉ
+-- có nghĩa với BỘ GIẢI CŨ: mỗi lần băm đi qua một Promise rồi một
+-- `setTimeout(0)`, nên 4096 lần băm của độ khó "000" không đời nào xong dưới
+-- 50ms. Bộ giải mới băm ĐỒNG BỘ trong một lát 30ms ⇒ một máy để bàn bình
+-- thường xong trong 10–40ms ⇒ **mọi người dùng thật sẽ bị đánh dấu**.
+-- `fast_solve` nặng 25 điểm, một lần đánh dấu là +8,75 — đủ đẩy người thật
+-- từ `allow` lên `monitor`.
+--
+-- Và không thể chỉnh ngưỡng cho xong: sức phân biệt của tín hiệu này SINH RA
+-- TỪ chính sự chậm giả tạo mà ta vừa cố ý gỡ đi. Bot viết bằng Go bam trong
+-- ~1ms, máy để bàn ~10ms — khoảng cách sập, không còn lằn ranh nào cắt được.
+-- Thêm nữa `sm` do CLIENT gửi, nên bot chỉ cần khai `sm=3000`.
+--
+-- Đã gỡ luôn khỏi `DEFAULT_WEIGHTS` và `get_signal()` trong
+-- `intelligence/scoring/compute.lua` — một tín hiệu không còn ai ghi mà vẫn
+-- nằm trong bảng trọng số là số 0 vĩnh viễn mà người đọc sau tưởng là đang
+-- chạy. Giá trị `sm` nay đi vào dòng `[fp_sample]` để còn đo được.
 
 -- Ground truth: client vừa GIẢI ĐƯỢC PoW ⇒ gần như chắc chắn là trình duyệt
 -- thật ⇒ mọi signal đứng trong top-3 của request đã bị thách đố là ỨNG VIÊN FP.
@@ -69,7 +80,7 @@ end
 -- mang nghĩa fingerprint (`fp:canvas:`, `fp:fast_solve:`).
 local FP_CAND_TTL = 604800   -- 7 ngày: đủ tích luỹ qua nhiều đợt hiệu chỉnh
 
-local function consume_label(red, id, ctx)
+local function consume_label(red, id, ctx, solve_ms)
     local raw, gerr = red:get("label:" .. id)
     if not raw or raw == ngx.null then
         -- KHÔNG được im lặng: đây là đường thoát duy nhất khiến toàn bộ nguồn
@@ -99,7 +110,13 @@ local function consume_label(red, id, ctx)
     ngx.log(ngx.ERR, "[fp_sample] solved id=", id:sub(1, 8),
             " score=", f[1], " eff=", f[2], " class=", f[3],
             " reason=", f[4], " top=", f[5], " mm=", f[6],
-            " ip=", tostring(ctx.ip or "-"))
+            " ip=", tostring(ctx.ip or "-"),
+            -- `sm` = mili-giây client tự khai để giải PoW. KHÔNG còn là tín
+            -- hiệu (xem chú thích chỗ `flag_fast_solve` đã gỡ), chỉ là số đo:
+            -- nó cho biết bộ giải đồng bộ thực sự mất bao lâu trên đàn thiết
+            -- bị thật, và đó là điều kiện tiên quyết nếu sau này muốn dựng
+            -- lại một ngưỡng đúng.
+            " sm=", tostring(solve_ms or "-"))
 
     -- `[%w_]+` chứ KHÔNG phải `[^,]+`: tên signal luôn là định danh thuần, còn
     -- `[^,]+` từng nuốt cả đoạn văn bản lọt vào do lỗi phân cách và tạo ra khoá
@@ -146,8 +163,14 @@ end
 --   phải bắt đầu bằng `/`          — chặn `https://evil/`
 --   ký tự thứ hai không là `/`|`\` — `//evil` và `/\evil` là URL TUYỆT ĐỐI với
 --                                    trình duyệt, đây là dạng bị quên nhiều nhất
---   không `\r` `\n` `\0`           — header injection
+--   không ký tự điều khiển nào     — header injection, và JSON không hợp lệ
 --   dài tối đa 512                 — không cho nhồi
+--
+-- Phép thứ ba loại CẢ DẢI `0x00–0x1F` cộng `0x7F`, chứ không chỉ `\r \n \0`.
+-- Bản trước chú thích viết "loại ký tự điều khiển" nhưng code chỉ loại ba ký
+-- tự — nên `json_str` bên dưới, vốn tin vào chú thích đó và chỉ thoát `"` và
+-- `\`, có thể dựng ra JSON hỏng nếu lọt một byte `0x09`/`0x08`. Nay chú thích
+-- và code nói cùng một điều.
 --
 -- KHÔNG lọc theo danh sách ký tự cho phép: đường dẫn tiếng Việt có dấu là bình
 -- thường trên đàn máy này, và một danh sách trắng ASCII sẽ ném chúng về `/`.
@@ -157,8 +180,7 @@ local function safe_dest(s)
     if s:sub(1, 1) ~= "/" then return nil end
     local c2 = s:sub(2, 2)
     if c2 == "/" or c2 == "\\" then return nil end
-    if s:find("\r", 1, true) or s:find("\n", 1, true)
-       or s:find("\0", 1, true) then return nil end
+    if s:find("[%z\1-\31\127]") then return nil end
     return s
 end
 
@@ -268,6 +290,19 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash, dest_arg)
     ngx.exit(200)
 end
 
+-- Mọi lối thoát bên dưới đều đặt `ctx.action` + `ctx.action_reason` TRƯỚC khi
+-- `ngx.exit` — `log_by_lua` chạy sau khi thoát nên nếu không đặt, antibot.log
+-- ghi `reason=-`. Với chính endpoint này thì đó không chỉ là kỷ luật: khi
+-- khách báo "quay mãi", thứ đầu tiên cần biết là verify có tới nơi không và
+-- hỏng ở bước nào — mà đúng những dòng đó lại đang vô danh.
+local function refuse(ctx, status, reason)
+    ctx.verified      = false
+    ctx.action        = "block"
+    ctx.action_reason = reason
+    ngx.exit(status)
+    return false
+end
+
 function _M.run(ctx)
     ngx.req.read_body()
     local args   = ngx.req.get_post_args()
@@ -276,18 +311,14 @@ function _M.run(ctx)
     local fp_arg = args and args.fp
 
     if not token or not n_str then
-        ctx.verified = false
         ngx.log(ngx.ERR, "[verify] missing token/n ip=", ctx.ip)
-        ngx.exit(400)
-        return false
+        return refuse(ctx, 400, "verify_missing_args")
     end
 
     local id = fp_arg or ngx.var.cookie_antibot_fp or nil
     if not id or id == "" then
-        ctx.verified = false
         ngx.log(ngx.ERR, "[verify] missing identity ip=", ctx.ip)
-        ngx.exit(400)
-        return false
+        return refuse(ctx, 400, "verify_missing_id")
     end
 
     ctx.identity = id
@@ -298,16 +329,14 @@ function _M.run(ctx)
 
     if not pow_hash or pow_hash:sub(1, #difficulty) ~= difficulty then
         ngx.log(ngx.ERR, "[verify] PoW failed id=", id:sub(1,8))
-        ctx.verified = false
         pool.safe_incr("viol:" .. id, cfg.ttl.violation)
-        ngx.exit(403)
-        return false
+        return refuse(ctx, 403, "verify_pow_failed")
     end
 
     local red, err = pool.get()
     if not red then
         ngx.log(ngx.ERR, "[verify] redis unavailable: ", tostring(err))
-        ctx.verified = false; ngx.exit(500); return false
+        return refuse(ctx, 500, "verify_redis_down")
     end
 
     local deleted = red:del("nonce:" .. id)
@@ -331,7 +360,7 @@ function _M.run(ctx)
 
         pool.put(red)
         ngx.log(ngx.ERR, "[verify] nonce not found (replay?) id=", id:sub(1,8))
-        ctx.verified = false; ngx.exit(403); return false
+        return refuse(ctx, 403, "verify_nonce_missing")
     end
 
     local verified_ttl = cfg.ttl.verified or 7200
@@ -339,8 +368,7 @@ function _M.run(ctx)
     local solve_ms     = args and args.sm or ""
 
     check_canvas_consistency(red, id, ctx.ip or "", canvas_hash)
-    flag_fast_solve(red, id, solve_ms)
-    consume_label(red, id, ctx)
+    consume_label(red, id, ctx, solve_ms)
     pool.put(red)
 
     grant_verified(ctx, id, verified_ttl, canvas_hash, args and args.dest)

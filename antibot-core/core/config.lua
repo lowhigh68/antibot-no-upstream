@@ -81,7 +81,13 @@ _M.ttl = {
     rep_asn          = 3600,
     rep_ja3          = 3600,
     rep_h2           = 3600,
-    nonce            = 60,
+    -- 60 → 300. Cửa sổ này KHÔNG còn phải chứa thời gian giải PoW (bộ giải
+    -- đồng bộ mới xong trong ~3 lát 30ms, kể cả khi tab chạy nền), mà phải
+    -- chứa: tải trang + thiết bị yếu + khách chuyển sang app khác rồi quay lại
+    -- + tối đa 3 lần thử gửi có giãn cách (~28s). Với 60s, đúng những khách đó
+    -- về tới nơi là `nonce not found` → 403 → tải lại → vòng lặp mà người dùng
+    -- nhìn thấy là "quay mãi không xong". `label:<id>` dùng chung TTL này.
+    nonce            = 300,
     verified         = 604800,  -- 7 ngày (mobile 4G: cookie persist qua đổi mạng)
     explain          = 3600,
     antibot_tls      = 10,

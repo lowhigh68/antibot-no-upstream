@@ -45,7 +45,15 @@ local DEFAULT_WEIGHTS = {
     entropy_inv         = 35,
 
     canvas_change       = 50,
-    fast_solve          = 25,
+    -- `fast_solve` ĐÃ GỠ (cùng lúc trang challenge bỏ WebCrypto). Nó đo `sm`
+    -- do client tự khai và đánh dấu khi `< 50ms` — ngưỡng đó chỉ đúng với bộ
+    -- giải cũ, vốn đi qua một Promise + `setTimeout(0)` MỖI LẦN BĂM nên không
+    -- thể xong dưới 50ms. Bộ giải đồng bộ mới xong trong 10–40ms trên máy để
+    -- bàn bình thường ⇒ giữ lại là đánh dấu chính người dùng thật, +8,75 điểm
+    -- một lần. Xem `enforcement/challenge/verify_token.lua` để biết vì sao
+    -- chỉnh ngưỡng cũng không cứu được. Không để lại mục trọng số 0: một tín
+    -- hiệu không còn ai ghi mà vẫn nằm trong bảng thì người đọc sau tưởng nó
+    -- đang chạy.
 
     resource_starved    = 30,
 
@@ -268,13 +276,6 @@ local function get_signal(name, ctx)
         return safe_val(ctx.waf_body_arg)
     end
 
-    if name == "fast_solve" then
-        if not ctx.identity then return 0.0 end
-        local v = pool.safe_get("fp:fast_solve:" .. ctx.identity)
-        local count = tonumber(v) or 0
-
-        return math.min(1.0, count * 0.35)
-    end
     return 0.0
 end
 
@@ -293,8 +294,7 @@ function _M.run(ctx)
         local src = SIGNAL_SOURCE[name]
         if src and skip[src] then goto continue end
 
-        if (name == "canvas_change" or name == "fast_solve"
-           or name == "resource_starved")
+        if (name == "canvas_change" or name == "resource_starved")
            and (ctx.req_class == "api_callback"
 	   	or ctx.req_class == "resource") then
             goto continue
