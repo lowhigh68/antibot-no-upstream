@@ -302,7 +302,12 @@ if [ $DO_RELOAD -eq 1 ]; then
     #
     # File nay chi mang mot thu: thoi diem reload.
     mkdir -p /var/log/antibot
-    date +%s > /var/log/antibot/.deploy_ts
+    # GHI THEM, khong ghi de: script do can biet ca lan deploy TRUOC do. Cua so
+    # TRUOC cua phep so sanh khong duoc voi nguoc qua lan deploy truoc, neu
+    # khong no tron hai phien ban code lam mot roi van in ra bang so rat dep.
+    date +%s >> /var/log/antibot/.deploy_ts
+    tail -50 /var/log/antibot/.deploy_ts > /var/log/antibot/.deploy_ts.tmp
+    mv /var/log/antibot/.deploy_ts.tmp /var/log/antibot/.deploy_ts
     echo "    moc deploy -> /var/log/antibot/.deploy_ts"
 else
     echo "[6] Bo qua reload (--no-reload)"
