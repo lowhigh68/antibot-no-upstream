@@ -45,7 +45,7 @@ function _M.run(ctx)
     --
     -- Vì sao đo BÂY GIỜ: sửa JA3 xong (2026-07-31) đã kích hoạt hai nhánh
     -- CHẾT SUỐT 3 THÁNG — `chrome_no_h2` gác bởi `ctx.ja3 ~= nil` (ja3 luôn nil)
-    -- và `tls12` gác bởi `ctx.tls13 == false` (tls13 nil, mà trong Lua
+    -- và `tls12` gác bởi `ctx.tls13_offered == false` (tls13 nil, mà trong Lua
     -- `nil == false` là FALSE). Cộng lại tối đa +0.60 = 33 điểm (weight 55)
     -- vừa xuất hiện trong production mà chưa hiệu chỉnh trên dữ liệu thật.
     local hit = {}
@@ -90,7 +90,7 @@ function _M.run(ctx)
     -- Chrome UA + TLS 1.2 (Chrome 100+ luôn dùng TLS 1.3)
     -- NGHI FP: middlebox kiểm tra TLS của doanh nghiệp hạ xuống TLS 1.2 →
     -- cả văn phòng ăn 19 điểm. Nhánh này KHÔNG có guard theo class.
-    if ua_is_chrome(ua) and ctx.tls13 == false then
+    if ua_is_chrome(ua) and ctx.tls13_offered == false then
         score = score + 0.35
         hit[#hit + 1] = "tls12"          -- nhánh MỚI SỐNG sau khi sửa ja3
     end

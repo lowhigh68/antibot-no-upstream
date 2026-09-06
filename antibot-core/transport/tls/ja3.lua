@@ -107,28 +107,40 @@ local function u16(s, pos)
     return a * 256 + b, pos + 2
 end
 
+-- Hai bộ phân tích dưới đây trả thêm `ok`, cùng một lý do với `parse_ciphers`:
+-- **độ dài KHAI BÁO không khớp dữ liệu CÓ THẬT nghĩa là ta đang đọc một
+-- extension bị cắt**, không phải "thừa/thiếu vài byte". Bản trước dùng
+-- `math.min(..., #ext_data)` để lặng lẽ cắt theo phần đọc được rồi trả về như
+-- một danh sách bình thường — tức công bố một JA3 sai mà không ai biết.
+--
+-- Vắng extension thì `ok = true`: client không gửi `supported_groups` là một
+-- sự thật về client, và JA3 vốn mã hoá sự vắng mặt đó bằng trường rỗng.
+-- Chỉ "khai báo rồi cắt ngắn" mới là hỏng.
 local function parse_supported_groups(ext_data)
-    if not ext_data or #ext_data < 2 then return {} end
+    if not ext_data or #ext_data == 0 then return {}, true end
+    if #ext_data < 2 then return {}, false end
     local curves = {}
     local len, pos = u16(ext_data, 1)
-    if not len then return {} end
-    local bound = math.min(pos + len - 1, #ext_data)
+    if not len then return {}, false end
+    -- Khai báo `len` byte danh sách nhưng chỉ có `#ext_data - 2` byte đứng sau.
+    if len % 2 ~= 0 or pos + len - 1 > #ext_data then return {}, false end
+    local bound = pos + len - 1
     while pos + 1 <= bound do
         local g; g, pos = u16(ext_data, pos)
-        if not g then break end
+        if not g then return {}, false end
         if not is_grease(g) then curves[#curves + 1] = g end
     end
-    return curves
+    return curves, true
 end
 
 local function parse_ec_point_formats(ext_data)
-    if not ext_data or #ext_data < 1 then return {} end
+    if not ext_data or #ext_data == 0 then return {}, true end
     local fmts = {}
-    local flen  = ext_data:byte(1)
-    if not flen then return {} end
-    local bound = math.min(1 + flen, #ext_data)
-    for i = 2, bound do fmts[#fmts + 1] = ext_data:byte(i) end
-    return fmts
+    local flen = ext_data:byte(1)
+    if not flen then return {}, false end
+    if 1 + flen > #ext_data then return {}, false end
+    for i = 2, 1 + flen do fmts[#fmts + 1] = ext_data:byte(i) end
+    return fmts, true
 end
 
 local function build_ja3_str(ver, ciphers, exts, curves, pt_fmts)
@@ -203,22 +215,23 @@ end
 -- `contract_test` mục 10b ghim hai con số này không lệch nhau.
 local MIN_PLAUSIBLE_CIPHERS = 5
 
-local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers)
+local function serialize(is_tls13, extensions, curves, pt_fmts, ciphers, ext_ok)
     local function join(t)
         if not t or #t == 0 then return "" end
         local parts = {}
         for i, v in ipairs(t) do parts[i] = tostring(v) end
         return table.concat(parts, "-")
     end
-    -- Trường thứ 5 THÊM VÀO CUỐI, cố ý: `deserialize` vẫn chấp nhận payload
+    -- Trường 5 và 6 THÊM VÀO CUỐI, cố ý: `deserialize` vẫn chấp nhận payload
     -- 4 trường, nên các bản ghi cũ còn nằm trong shared dict lúc reload không
     -- bị hỏng. Thêm vào giữa là gãy hết.
-    return string.format("%s|%s|%s|%s|%s",
+    return string.format("%s|%s|%s|%s|%s|%s",
         is_tls13 and "1" or "0",
         join(extensions),
         join(curves),
         join(pt_fmts),
-        join(ciphers))
+        join(ciphers),
+        ext_ok and "1" or "0")
 end
 
 local function deserialize(val)
@@ -248,6 +261,11 @@ local function deserialize(val)
         -- `parts[5]` là nil với payload cũ (4 trường) còn nằm trong shared dict
         -- lúc reload. `split_nums(nil)` trả {} nên không cần nhánh riêng.
         ciphers    = split_nums(parts[5]),
+        -- `parts[6]` nil = payload do bản CŨ ghi, còn sót trong cửa sổ reload
+        -- (tối đa TLS_KEY_TTL = 300s). Coi là hợp lệ để hành vi trong cửa sổ đó
+        -- đúng bằng hành vi trước khi sửa — không tự dưng siết thêm giữa lúc
+        -- reload, cũng không tự dưng nới ra.
+        ext_ok     = parts[6] ~= "0",
     }
 end
 
@@ -292,7 +310,7 @@ function _M.capture_unsafe()
     -- chỉ nói "client biết cú pháp TLS 1.3", không nói "client đề nghị 1.3".
     --
     -- Vì sao phải đúng: `intelligence/correlation/consistency_check.lua` đọc
-    -- `ctx.tls13 == false` như "client đi TLS 1.2" và cộng 0.35 (nhánh `tls12`,
+    -- `ctx.tls13_offered == false` như "client đi TLS 1.2" và cộng 0.35 (nhánh `tls12`,
     -- 19,25 điểm), còn `transport/http2/pseudo_header.lua` so nó với bảng
     -- `KNOWN_PATTERNS`. Hai chỗ đó diễn giải trường này như PHIÊN BẢN THẬT.
     --
@@ -318,7 +336,24 @@ function _M.capture_unsafe()
         end
     end
 
+    -- ── DANH SÁCH EXTENSION VÀ CỜ `ext_ok` ───────────────────────────────
+    --
+    -- JA3 mã hoá extension theo ĐÚNG THỨ TỰ client gửi. Mất thứ tự thì hash
+    -- không còn là fingerprint — nó đổi giữa các lần duyệt bảng, nên:
+    --   • `fp_light` churn (fp_light = md5(ip+ua+asn+ja3+h2_sig))
+    --   • `sess:` mồ côi, counter reset
+    --   • `ja3:allow:`/`ja3:block:` người vận hành đặt tay KHÔNG BAO GIỜ khớp
+    --
+    -- Còn extension RỖNG (API thiếu hoặc lỗi) thì tệ theo kiểu khác: chuỗi JA3
+    -- có trường extension trống ⇒ `ja3_allowlist` đếm `browser_ext_count = 0`
+    -- ⇒ `ext_score = 0.4` × trọng số 50 = **20 điểm oan**. Cùng đúng hình dạng
+    -- ca "30 điểm oan" của cipher, chỉ khác trục.
+    --
+    -- Nên `ext_ok` PHẢI đi cùng payload sang access phase, và `run()` chỉ hạ
+    -- `ja3_partial` khi cipher hợp lệ VÀ extension hợp lệ. Thiếu bất kỳ vế nào
+    -- thì giữ `partial` — tức đúng hành vi nấc "off", 0 điểm.
     local extensions = {}
+    local ext_ok     = false
     if type(ssl_clt.get_client_hello_ext_present) == "function" then
         local ok2, ext_present = pcall(ssl_clt.get_client_hello_ext_present)
         if ok2 and type(ext_present) == "table" then
@@ -328,7 +363,12 @@ function _M.capture_unsafe()
                         extensions[#extensions + 1] = etype
                     end
                 end
+                ext_ok = true
             else
+                -- Bảng băm: `pairs()` KHÔNG bảo đảm thứ tự. Vẫn thu thập để
+                -- nấc `probe` đếm được, nhưng KHÔNG bao giờ gọi đây là JA3
+                -- đầy đủ. Chỉ xảy ra với lua-resty-core < 0.1.25 (đo
+                -- 2026-09-06: cả 5 máy đang 0.1.33/0.1.34).
                 ngx.log(ngx.ERR,  "[ja3] ext_present is hash — order lost, ",
                         "upgrade lua-resty-core >= 0.1.25")
                 for etype in pairs(ext_present) do
@@ -346,13 +386,30 @@ function _M.capture_unsafe()
                 "upgrade lua-resty-core >= 0.1.25")
     end
 
+    -- Extension rỗng không bao giờ là một JA3 đầy đủ, kể cả khi API chạy êm.
+    if #extensions == 0 then ext_ok = false end
+
     local curves  = {}
     local sg_data = ssl_clt.get_client_hello_ext(0x000a)
-    if sg_data then curves = parse_supported_groups(sg_data) end
+    if sg_data then
+        local ok_sg
+        curves, ok_sg = parse_supported_groups(sg_data)
+        if not ok_sg then
+            ext_ok = false
+            ngx.log(ngx.ERR, "[ja3] supported_groups cat ngan len=", #sg_data)
+        end
+    end
 
     local pt_fmts = {}
     local pf_data = ssl_clt.get_client_hello_ext(0x000b)
-    if pf_data then pt_fmts = parse_ec_point_formats(pf_data) end
+    if pf_data then
+        local ok_pf
+        pt_fmts, ok_pf = parse_ec_point_formats(pf_data)
+        if not ok_pf then
+            ext_ok = false
+            ngx.log(ngx.ERR, "[ja3] point_formats cat ngan len=", #pf_data)
+        end
+    end
 
     -- CIPHER LIST — chỉ chạm khi được bật tường minh.
     --
@@ -393,7 +450,7 @@ function _M.capture_unsafe()
         end
     end
 
-    local val = serialize(is_tls13, extensions, curves, pt_fmts, ciphers)
+    local val = serialize(is_tls13, extensions, curves, pt_fmts, ciphers, ext_ok)
     local set_ok, set_err = shared:set(TMP_KEY_PREFIX .. addr_key, val,
                                        TMP_KEY_TTL)
     if not set_ok then
@@ -406,7 +463,7 @@ function _M.capture_unsafe()
     if _cap_n % 200 == 1 then
         ngx.log(ngx.ERR, "[ja3] capture_ok tmp=", addr_key:sub(1, 8),
                 " n=", _cap_n, " tls13=", tostring(is_tls13),
-                " #exts=", #extensions)
+                " #exts=", #extensions, " ext_ok=", tostring(ext_ok))
     end
 end
 
@@ -482,7 +539,7 @@ function _M.run(ctx)
     if not shared then
         diag_miss("no_shared_dict")
         ctx.ja3 = nil; ctx.ja3_raw = nil; ctx.ja3_partial = nil
-        ctx.tls_version = nil; ctx.tls13 = nil
+        ctx.tls_version = nil; ctx.tls13_offered = nil
         return
     end
 
@@ -500,7 +557,7 @@ function _M.run(ctx)
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
         ctx.tls_version    = nil
-        ctx.tls13          = nil
+        ctx.tls13_offered          = nil
         return
     end
 
@@ -559,7 +616,7 @@ function _M.run(ctx)
         ctx.ja3_raw        = nil
         ctx.ja3_partial    = nil
         ctx.tls_version    = nil
-        ctx.tls13          = nil
+        ctx.tls13_offered          = nil
         return
     end
 
@@ -569,7 +626,7 @@ function _M.run(ctx)
     local data = deserialize(val)
     if not data then
         ngx.log(ngx.ERR, "[ja3] deserialize failed val=", tostring(val))
-        ctx.ja3 = nil; ctx.tls13 = nil; ctx.ja3_partial = nil
+        ctx.ja3 = nil; ctx.tls13_offered = nil; ctx.ja3_partial = nil
         return
     end
 
@@ -612,9 +669,18 @@ function _M.run(ctx)
     -- Giữ `partial` thì `ja3_allowlist` thoát sớm ở cổng `ctx.ja3_partial` và
     -- cộng 0 điểm. Hai đường đều là "mất thông tin", nhưng một đường mất im
     -- lặng còn đường kia phạt oan.
-    if CIPHER_MODE == "on" and #captured >= MIN_PLAUSIBLE_CIPHERS then
+    if CIPHER_MODE == "on"
+       and #captured >= MIN_PLAUSIBLE_CIPHERS
+       and data.ext_ok then
         ciphers    = captured
         is_partial = false
+    elseif CIPHER_MODE == "on" and #captured > 0 and not data.ext_ok then
+        -- Cipher đủ nhưng extension không dùng được: mất thứ tự, rỗng, hoặc
+        -- `supported_groups`/`ec_point_formats` bị cắt ngắn. JA3 dựng từ đó
+        -- không ổn định giữa các request nên không được coi là đầy đủ.
+        ngx.log(ngx.ERR, "[ja3] ext_not_ok n_cipher=", #captured,
+                " #exts=", #(data.extensions or {}),
+                " → giu partial ip=", ctx.ip or "?")
     elseif CIPHER_MODE == "on" and #captured > 0 then
         ngx.log(ngx.ERR, "[ja3] cipher_too_few n=", #captured,
                 " min=", MIN_PLAUSIBLE_CIPHERS, " → giu partial ip=",
@@ -630,16 +696,18 @@ function _M.run(ctx)
     ctx.ja3_raw        = ja3_str
     ctx.ja3_partial    = is_partial
     ctx.tls_version    = tls_version
-    ctx.tls13          = data.is_tls13
-
-    if not is_partial then
-        ngx.ctx.tls_ja3_hash = ja3_hash
-    end
+    -- ĐỔI TÊN 2026-09-06: `offered`, không phải "phiên bản đã thương lượng".
+    -- Đây là điều client GỬI trong `supported_versions`, không phải điều
+    -- OpenSSL chốt với nó. Với tầng `mismatch` thì "client tự nhận gì" mới
+    -- đúng là thứ cần so — nhưng tên cũ (`tls13`) mời gọi lần sửa sau đọc nó
+    -- thành phiên bản thật. Cột log vẫn là `tls13=` để các script phân tích
+    -- đang dùng không gãy.
+    ctx.tls13_offered  = data.is_tls13
 
     ngx.log(ngx.DEBUG,
         "[ja3] run: key=", bridge_key:sub(1, 8),
         " hash=", ja3_hash,
-        " tls13=", tostring(ctx.tls13),
+        " tls13=", tostring(ctx.tls13_offered),
         " partial=", tostring(is_partial),
         " #exts=", #data.extensions,
         " #curves=", #data.curves)

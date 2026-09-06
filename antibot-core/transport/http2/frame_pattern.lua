@@ -53,8 +53,6 @@ local function get_request_timing()
 end
 
 function _M.run(ctx)
-    ctx.h2_frames = nil
-
     if not ctx.h2_is_h2 then return end
 
     local cache_class = classify_cache_control()

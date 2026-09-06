@@ -1,67 +1,40 @@
 local _M = {}
 
+-- `observe_stream_id()` VÀ `ctx.h2_request_profile` ĐÃ BỊ XOÁ (2026-09-06).
+--
+-- `observe_stream_id` đọc `ngx.var.http2_stream_id`. Biến đó KHÔNG có trong
+-- tài liệu module HTTP/2 của nginx — bản chính thức chỉ công bố `$http2`.
+-- `ngx.var` của một biến không tồn tại trả nil, `tonumber(nil)` = nil, nên hàm
+-- luôn trả nil và mọi trường dẫn xuất (`is_fresh_conn`, `is_reused`,
+-- `request_count`) chưa bao giờ có giá trị.
+--
+-- `ctx.h2_request_profile` thì dựng ba bảng lồng nhau cộng một `string.format`
+-- trên MỌI request HTTP/2 rồi không nơi nào đọc. Đây là thứ đắt nhất trong
+-- đám field chỉ-ghi vì nó cấp phát, không chỉ là một phép gán.
+--
+-- `classify_request_size()` Ở LẠI: `ctx.h2_request_anomaly` CÓ người đọc —
+-- `transport/http2/signature.lua:61` cộng 0.2 vào `h2_bot_confidence`.
 local function classify_request_size()
     local method = ngx.var.request_method or "GET"
     local cl     = tonumber(ngx.var.http_content_length)
-    local req_len = tonumber(ngx.var.request_length) or 0
-    local te      = ngx.var.http_transfer_encoding
-
-    local profile = {
-        method     = method,
-        has_body   = cl ~= nil or (te ~= nil),
-        body_size  = cl,
-        is_chunked = te ~= nil and te:lower():find("chunked") ~= nil,
-        req_bytes  = req_len,
-    }
+    local te     = ngx.var.http_transfer_encoding
 
     if method == "GET" and cl ~= nil and cl > 0 then
-        profile.anomaly = "get_with_body"
+        return "get_with_body"
     elseif method == "POST" and cl == 0 then
-        profile.anomaly = "post_empty_body"
+        return "post_empty_body"
     end
-
-    return profile
-end
-
-local function observe_stream_id()
-    local sid = tonumber(ngx.var.http2_stream_id)
-    if not sid then return nil end
-    local request_count = math.floor((sid + 1) / 2)
-    return {
-        stream_id     = sid,
-        request_count = request_count,
-        is_fresh_conn = (sid == 1),
-        is_reused     = (sid > 3),
-    }
+    return nil
 end
 
 function _M.run(ctx)
-    ctx.h2_window = nil
-
     if not ctx.h2_is_h2 then return end
 
-    local req_profile = classify_request_size()
-    local stream_info = observe_stream_id()
-
-    ctx.h2_request_profile = {
-        request  = req_profile,
-        stream   = stream_info,
-        signal   = string.format("%s.%s.%s",
-            (req_profile.method or "?"):lower(),
-            req_profile.has_body and tostring(req_profile.body_size or "chunked") or "nobody",
-            stream_info and (stream_info.is_fresh_conn and "fresh" or "reused") or "unknown"
-        )
-    }
-
-    if req_profile.anomaly then
-        ctx.h2_request_anomaly = req_profile.anomaly
-        ngx.log(ngx.INFO, "[h2_window] request anomaly: ", req_profile.anomaly)
+    local anomaly = classify_request_size()
+    if anomaly then
+        ctx.h2_request_anomaly = anomaly
+        ngx.log(ngx.INFO, "[h2_window] request anomaly: ", anomaly)
     end
-
-    ngx.log(ngx.DEBUG,
-        "[h2_window] stream=", stream_info and tostring(stream_info.stream_id) or "n/a",
-        " req_bytes=", req_profile.req_bytes,
-        " method=", req_profile.method)
 end
 
 return _M

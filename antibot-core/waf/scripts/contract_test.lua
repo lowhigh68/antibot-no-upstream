@@ -749,5 +749,84 @@ else
 end
 
 
+-- ── 11. Cong `ext_ok`: extension khong dung duoc thi KHONG duoc goi la
+--        JA3 day du ────────────────────────────────────────────────────
+--
+-- Cung hinh dang muc 10, truc khac. `parse_ciphers` da co cong; nhung mot JA3
+-- co du 5 cipher ma danh sach extension RONG (API thieu/loi) hoac MAT THU TU
+-- (lua-resty-core < 0.1.25 tra bang bam) van tung duoc cong bo la day du:
+--   • rong    -> `ja3_allowlist` dem browser_ext_count = 0 -> ext_score 0.4
+--                x trong so 50 = 20 diem oan
+--   • mat thu tu -> hash doi giua cac lan duyet bang -> fp_light churn,
+--                `sess:` mo coi, va `ja3:allow:` dat tay khong bao gio khop
+io.write("\nhanh vi: cong ext_ok cua JA3\n")
+
+local ja3_b = slurp(SRC .. "transport/tls/ja3.lua")
+if not ja3_b then
+    bad("  SAI  khong doc duoc transport/tls/ja3.lua\n")
+else
+    -- 11a. Co phai co ca hai ve trong dieu kien ha `is_partial` khong.
+    if ja3_b:find("and data%.ext_ok") then pass = pass + 1 else
+        bad("  SAI  run() khong con doi hoi `data.ext_ok` truoc khi bo partial\n" ..
+            "       => extension rong/mat thu tu van thanh JA3 day du\n")
+    end
+
+    -- 11b. Co phai `ext_ok` that su di qua duoc shared dict khong. Neu chi tinh
+    --      o capture ma khong serialize thi run() luon doc ra nil.
+    if ja3_b:find("ext_ok and \"1\" or \"0\"", 1, true)
+       and ja3_b:find("ext_ok     = parts[6]", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  `ext_ok` khong duoc serialize/deserialize\n" ..
+            "       => co tinh o capture nhung run() doc ra nil\n")
+    end
+
+    -- 11c. Payload CU (4 hoac 5 truong, con nam trong shared dict toi da 300s
+    --      sau reload) phai van giai ma duoc. Them truong vao GIUA la gay het.
+    local des = ja3_b:match("local function deserialize.-\nend")
+    if des and des:find("#parts < 4", 1, true) then pass = pass + 1 else
+        bad("  SAI  deserialize khong con chap nhan payload 4 truong\n" ..
+            "       => moi ket noi mo truoc reload mat JA3 trong 300s\n")
+    end
+
+    -- 11d. Hai bo phan tich extension phai TU CHOI du lieu bi cat ngan, chu
+    --      khong `math.min` cho vua roi tra ve nhu binh thuong.
+    if not ja3_b:find("math%.min%(pos %+ len %- 1, #ext_data%)")
+       and not ja3_b:find("math%.min%(1 %+ flen, #ext_data%)")
+       and ja3_b:find("return {}, false", 1, true) then
+        pass = pass + 1
+    else
+        bad("  SAI  parse_supported_groups/parse_ec_point_formats quay lai\n" ..
+            "       cat theo `math.min` => cong bo mot JA3 sai ma khong ai biet\n")
+    end
+end
+
+-- ── 12. `tls13` la CLIENT CHAO, khong phai phien ban DA THUONG LUONG ──
+--
+-- Ten cu `ctx.tls13` moi goi lan sua sau doc no thanh "phien ban TLS that".
+-- No KHONG phai: no doc tu extension `supported_versions` cua ClientHello.
+-- Voi tang `mismatch` thi "client tu nhan gi" moi dung la thu can so — nhung
+-- dieu do phai nam trong TEN, khong phai trong chu thich (CLAUDE.md cua repo
+-- nay: chu thich sai co he thong).
+io.write("\nhop dong: ten truong tls13\n")
+do
+    local leftovers = {}
+    for _, rel in ipairs({
+        "transport/tls/ja3.lua",
+        "intelligence/correlation/consistency_check.lua",
+        "transport/http2/pseudo_header.lua",
+        "enforcement/decision/engine.lua",
+        "async/logger.lua",
+    }) do
+        local s = slurp(SRC .. rel)
+        if s and s:find("ctx%.tls13[^_]") then leftovers[#leftovers+1] = rel end
+    end
+    if #leftovers == 0 then pass = pass + 1 else
+        bad("  SAI  con `ctx.tls13` (khong hau to `_offered`) tai: %s\n" ..
+            "       => hai ten cho mot truong, dung sai ngu nghia la chuyen som muon\n",
+            table.concat(leftovers, ", "))
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

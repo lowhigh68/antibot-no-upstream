@@ -243,9 +243,19 @@ local function handle_whitelist_api()
         red:set("ja3:allow:" .. req.hash, "1")
         result = {ok=true, msg="JA3 "..req.hash:sub(1,8).."... added to allowlist"}
 
+    -- "Suspect", KHONG phai "Block" — nut nay truoc day ghi "Block" trong khi
+    -- duong di that su la: ja3_allowlist dat `ja3_allowlist_miss = 1.0`, trong
+    -- so 50, ma challenge bat dau o 55 va block o 80. Mot minh no chi toi
+    -- monitor. Panel noi mot dang, he thong lam mot dang khac.
+    --
+    -- QUYET DINH (2026-09-06): giu nguyen muc 50, doi TEN cho dung — chu KHONG
+    -- nang thanh chan cung. Mot JA3 la van tay cua MOT BAN DUNG trinh duyet;
+    -- hang trieu nguoi dung chung mot hash. Chan cung theo JA3 la quy toi tap
+    -- the, dung thu ma `ip_shared` va `canvas_change` sinh ra de chong. Khoa
+    -- Redis van la `ja3:block:` de khong pha `scan_keys` va cac ban ghi dang co.
     elseif action == "ja3_block" and req.hash then
         red:set("ja3:block:" .. req.hash, "1")
-        result = {ok=true, msg="JA3 "..req.hash:sub(1,8).."... added to blocklist"}
+        result = {ok=true, msg="JA3 "..req.hash:sub(1,8).."... danh dau nghi ngo (+50 diem, KHONG phai chan cung)"}
 
     elseif action == "ja3_remove" and req.hash then
         red:del("ja3:allow:" .. req.hash)
@@ -1217,12 +1227,19 @@ tr:hover td{background:#1c2129}
     <div class="card">
       <h2>🔐 JA3 TLS Fingerprint</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
-        Allowlist: browser JA3 từ production log. Blocklist: known bot TLS fingerprint.
+        Allowlist: JA3 trình duyệt lấy từ production log — miss = 0, bỏ qua chấm cấu trúc.<br>
+        <b>Suspect KHÔNG phải chặn cứng.</b> Nó cộng 50 điểm; challenge bắt đầu ở 55,
+        block ở 80. Một mình nó chỉ tới monitor — cần thêm ít nhất một tín hiệu nữa
+        mới thành challenge. Cố ý như vậy: một JA3 là vân tay của MỘT BẢN DỰNG
+        trình duyệt, hàng triệu người dùng chung, nên chặn cứng theo JA3 là quy tội
+        tập thể. Muốn chặn một client cụ thể thì dùng IP ban hoặc identity ban.<br>
+        Cả hai danh sách chỉ có hiệu lực khi <code>cfg.tls.ja3_cipher = "on"</code>
+        — JA3 partial không đủ phân biệt để tra danh sách.
       </div>
       <div class="wl-form">
         <input class="inp" id="inp-ja3" placeholder="32-char hex JA3 hash" type="text" style="width:320px">
         <button class="btn btn-green" onclick="ja3Action('ja3_allow')">+ Allow</button>
-        <button class="btn btn-red" onclick="ja3Action('ja3_block')">Block</button>
+        <button class="btn btn-red" onclick="ja3Action('ja3_block')" title="Cong 50 diem, KHONG phai chan cung">Suspect +50</button>
       </div>
       <table><thead><tr><th>JA3 Hash</th><th>Status</th><th>Action</th></tr></thead>
       <tbody id="t-ja3-list"></tbody></table>

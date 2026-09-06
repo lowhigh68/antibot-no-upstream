@@ -575,7 +575,7 @@ function _M.run(ctx)
         tostring(ctx.identity or ctx.fp_light or "-"),
         tostring(ctx.ip or "-"),
         ua_log,
-        tostring(ctx.tls13),
+        tostring(ctx.tls13_offered),
         tostring(ctx.h2_is_h2),
         tostring(ctx.ja3 or "-"),
         -- BA trạng thái, không phải hai. `tostring(ctx.ja3_partial or false)`

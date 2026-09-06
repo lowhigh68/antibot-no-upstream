@@ -60,8 +60,6 @@ local function observe_content_type()
 end
 
 function _M.run(ctx)
-    ctx.h2_hpack = nil
-
     if not ctx.h2_is_h2 then return end
 
     local ae = ngx.var.http_accept_encoding

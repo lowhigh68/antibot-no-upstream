@@ -8,7 +8,7 @@ local _M = {}
 --
 -- Hậu quả không phải "bảng thiếu chính xác", mà là một FP XÁC ĐỊNH:
 --   `infer_from_ua` trả `"mpsa"` cho Firefox → `KNOWN_PATTERNS.mpsa.tls13`
---   là `false` → Firefox trên TLS 1.3 có `ctx.tls13 = true` → lệch →
+--   là `false` → Firefox trên TLS 1.3 có `ctx.tls13_offered = true` → lệch →
 --   `h2_tls_mismatch = true` → `http2/signature.lua:43` cộng **+0,25** vào
 --   `h2_bot_confidence` (trọng số 55) = **+13,75 điểm** cho MỌI người dùng
 --   Firefox đi HTTP/2 mà JA3 bắt được. Cả một họ trình duyệt, mọi request.
@@ -24,7 +24,7 @@ local KNOWN_PATTERNS = {
     masp = { clients = "chrome,edge",                   tls13 = true  },
     mspa = { clients = "safari",                        tls13 = true  },
     -- `tls13 = nil`, KHONG phai `false`. Go bat TLS 1.3 MAC DINH tu Go 1.13
-    -- (2019), nen moi client Go hien dai co `ctx.tls13 = true` va bang cu ban
+    -- (2019), nen moi client Go hien dai co `ctx.tls13_offered = true` va bang cu ban
     -- `h2_tls_mismatch` cho TAT CA. Dung y con bug Firefox ngay tren: mot ky
     -- vong phien ban duoc ghim cung roi client di truoc no.
     --
@@ -76,25 +76,6 @@ local function infer_from_ua(ua)
     return nil, "ua_unknown"
 end
 
-local function observe_headers()
-    local present = {}
-
-    if ngx.var.http_accept          and ngx.var.http_accept ~= ""
-    then present[#present+1] = "ac" end
-    if ngx.var.http_accept_language and ngx.var.http_accept_language ~= ""
-    then present[#present+1] = "al" end
-    if ngx.var.http_accept_encoding and ngx.var.http_accept_encoding ~= ""
-    then present[#present+1] = "ae" end
-
-    if ngx.var.http_sec_fetch_site  then present[#present+1] = "sf" end
-    if ngx.var.http_sec_ch_ua       then present[#present+1] = "ch" end
-    if ngx.var.http_sec_ch_ua_mobile then present[#present+1] = "cm" end
-
-    if ngx.var.http_dnt == "1"      then present[#present+1] = "dn" end
-
-    return table.concat(present, "")
-end
-
 function _M.run(ctx)
     local proto = ngx.var.server_protocol or ""
     local is_h2 = proto:find("HTTP/2", 1, true) ~= nil
@@ -102,7 +83,6 @@ function _M.run(ctx)
     if not is_h2 then
         ctx.h2_order        = nil
         ctx.h2_is_h2        = false
-        ctx.h2_pseudo_method = nil
         return
     end
 
@@ -128,30 +108,29 @@ function _M.run(ctx)
     local order, source = infer_from_ua(ua)
 
     ctx.h2_order         = order
-    ctx.h2_pseudo_method = "inferred"
-    ctx.h2_pseudo_source = source
+    -- `h2_pseudo_method`, `h2_pseudo_source` va `h2_header_obs` DA BI GO
+    -- (2026-09-06): ca ba chi-ghi. Rieng `observe_headers()` doc BAY bien
+    -- `ngx.var` roi noi chuoi tren MOI request HTTP/2 — cong viec that cho mot
+    -- gia tri chi xuat hien lai trong dong log DEBUG cua chinh no.
 
-    ctx.h2_header_obs = observe_headers()
-
-    if order and ctx.tls13 ~= nil then
+    if order and ctx.tls13_offered ~= nil then
         local pattern_info = KNOWN_PATTERNS[order]
         -- `tls13 == nil` = thứ tự này dùng chung bởi nhiều client khác họ ⇒
         -- KHÔNG kết luận gì. Thiếu phép kiểm này thì `nil ~= true` là đúng và
         -- mọi thứ tự mơ hồ lại bắn mismatch — chính là lỗi vừa sửa ở trên.
         if pattern_info and pattern_info.tls13 ~= nil
-           and pattern_info.tls13 ~= ctx.tls13 then
+           and pattern_info.tls13 ~= ctx.tls13_offered then
             ctx.h2_tls_mismatch = true
             ngx.log(ngx.DEBUG,
                 "[h2_pseudo] tls_version mismatch: order=", order,
                 " expects_tls13=", tostring(pattern_info.tls13),
-                " actual_tls13=", tostring(ctx.tls13))
+                " actual_tls13=", tostring(ctx.tls13_offered))
         end
     end
 
     ngx.log(ngx.DEBUG,
         "[h2_pseudo] order=", tostring(order),
-        " source=", source,
-        " header_obs=", tostring(ctx.h2_header_obs))
+        " source=", source)
 end
 
 return _M

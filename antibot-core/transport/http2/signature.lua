@@ -72,8 +72,6 @@ function _M.run(ctx)
         ctx.h2_sig = nil
     end
 
-    ctx.h2_sig_raw        = sig_str
-    ctx.h2_sig_method     = "inferred"
     ctx.h2_bot_confidence = h2_bot_confidence(ctx)
 
     -- Ghi vào `ctx.signals` ĐÃ GỠ (2026-09-06): bảng đó do `signal_merge.lua`

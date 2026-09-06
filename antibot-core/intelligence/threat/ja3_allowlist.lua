@@ -109,7 +109,7 @@ end
 
 function _M.run(ctx)
     local ja3 = ctx.ja3
-    ctx.ja3_known_browser  = false
+    -- `ctx.ja3_known_browser` DA BI GO (2026-09-06): ghi 4 lan, doc 0 lan.
     ctx.ja3_allowlist_miss = 0.0
 
     if not ja3 or ja3 == "" then
@@ -128,21 +128,18 @@ function _M.run(ctx)
     local blocked, allowed = check_lists(ja3)
 
     if blocked then
-        ctx.ja3_known_browser  = false
         ctx.ja3_allowlist_miss = 1.0
         ngx.log(ngx.INFO, "[ja3_allow] blocklist ja3=", ja3:sub(1,8))
         return
     end
 
     if allowed then
-        ctx.ja3_known_browser  = true
         ctx.ja3_allowlist_miss = 0.0
         ngx.log(ngx.DEBUG, "[ja3_allow] allowlist ja3=", ja3:sub(1,8))
         return
     end
 
     local miss = score_from_tls_structure(ctx)
-    ctx.ja3_known_browser  = (miss < 0.3)
     ctx.ja3_allowlist_miss = miss
 
     ngx.log(ngx.INFO,

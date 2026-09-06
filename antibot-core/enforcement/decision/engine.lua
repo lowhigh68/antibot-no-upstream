@@ -724,8 +724,8 @@ function _M.run(ctx)
         ngx.header["X-Bot-HeaderFlag"] = string.format("%.3f", ctx.header_flag or 0)
         ngx.header["X-Bot-UAFlag"]     = string.format("%.3f", ctx.ua_flag or 0)
         ngx.header["X-Bot-DevType"]    = tostring(ctx.device_type or "-")
-        ngx.header["X-Bot-TLS13"]      = ctx.tls13 == true  and "1"
-                                      or ctx.tls13 == false and "0" or "-"
+        ngx.header["X-Bot-TLS13"]      = ctx.tls13_offered == true  and "1"
+                                      or ctx.tls13_offered == false and "0" or "-"
         ngx.header["X-Bot-JA3Partial"] = ctx.ja3_partial == true  and "1"
                                       or ctx.ja3_partial == false and "0" or "-"
         if ctx.top_signals and ctx.top_signals[1] then
