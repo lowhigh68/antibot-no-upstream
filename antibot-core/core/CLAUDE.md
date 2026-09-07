@@ -44,7 +44,15 @@ None at init phase — first module to run.
 
 ## Update log
 - 2026-09-07 — **`fingerprint/build_light.lua` — `h2_sig` bị loại khỏi băm `fp_light`. Nó là dấu vân tay của REQUEST, không phải của client.**
-  - **Phép đo (5 máy, trong phạm vi TỪNG KẾT NỐI TLS):** cùng `conn` = `worker_pid:$connection` thì chắc chắn cùng client tại thời điểm đó, nên không dính bẫy CGNAT hay `identity = md5(ip+ua_norm)` gộp cả văn phòng. **1228 kết nối HTTP/2 có `fp_light` đổi giữa hai request; 1213 (98,8%) là kết nối có `h2_sig` đổi** — cloud186-126 khớp tuyệt đối 377/377, cloud183-139 349/352, cloud28-246 228/235. Trên H1 (nơi `h2_sig` luôn là sentinel) con số là **0**.
+  - **Phép đo (5 máy, trong phạm vi TỪNG KẾT NỐI TLS):** cùng `conn` = `worker_pid:$connection` thì chắc chắn cùng client tại thời điểm đó, nên không dính bẫy CGNAT hay `identity = md5(ip+ua_norm)` gộp cả văn phòng. Quy trách nhiệm đầy đủ trên 1835 kết nối có churn:
+
+    | | churn | do `h2_sig` | do `ua` | `ja3` đơn thuần | không rõ |
+    |---|---|---|---|---|---|
+    | H2 | 1250 | **1235 (98,8%)** | 161 | 6 | 1 |
+    | H1 | 585 | 0 | **576 (98,5%)** | 7 | 1 |
+
+    cloud186-126 khớp tuyệt đối 390/390. Nhãn `IP` **không xuất hiện lần nào** trên máy nào ⇒ khoá `conn` lành, không có chuyện gộp nhầm hai kết nối. `khong-ro` = 2/1835 ⇒ `asn` không phải yếu tố.
+  - **Dự đoán kiểm chứng, từng máy** (sau fix một kết nối chỉ còn churn nếu `ja3` hoặc `ua` đổi): cloud186 43,2%→**1,2%**, cloud171 18,3%→**3,1%**, cloud168 12,0%→**3,1%**, cloud28 25,3%→**4,1%**, cloud183 26,6%→**8,1%**. Lệch nhiều = giả thuyết sai, đo lại.
   - **Nguyên nhân, đọc thẳng từ `transport/http2/signature.lua:3`:** 3/6 thành phần là thuộc tính của request — `h2_behavior_profile.navigation` lật giữa điều hướng và request con; `h2_request_anomaly` và `h2_bot_pattern` **nối thêm có điều kiện** nên đến độ dài chuỗi cũng đổi. Một trình duyệt tải 1 trang + N tài nguyên trên một kết nối nhận N+1 `fp_light`.
   - **Giá phải trả:** `sess:<fp_light>` vụn nên `sess_len` không lớn lên được, mà `cfg.trust` đòi ≥ 5. Đau đúng chỗ cần nhất — `auth_endpoint` churn **92,9%** (cloud171-96), 52,7% (cloud28-246); `interaction` 28-51%. Cùng hình dạng ca FP ở `enforcement/CLAUDE.md` 2026-07-06 (admin thật richness 0,80 bị block ở `/wp-admin` rồi `banned_id` dây chuyền).
   - **GIỮ `h2_sig` trong `components`, chỉ loại khỏi băm.** `fp_quality = real / #components`; rút mẫu số 5 → 4 sẽ đẩy client H2 thiếu **cả** `ja3` lẫn `asn` từ 3/5 = 0,60 xuống 2/4 = 0,50, qua ngưỡng 0,55 ⇒ **+5 điểm `fp_degraded` oan**. Trên cloud171-96 (92% request không có JA3) đó là hàng chục nghìn request. Cách hiện tại đổi **đúng một thứ**: cái băm.

@@ -46,10 +46,19 @@ local FP_QUALITY_THRESHOLD = 0.55
 -- coalescing) nay giữ NGUYÊN `fp_light` thay vì tách đôi — đúng cái FP đã
 -- hoãn ở `antibot-core/CLAUDE.md` 2026-05-23 mục "Defer C'".
 --
--- KIỂM CHỨNG SAU KHI DEPLOY: chạy lại `do_churn.sh`, churn H2 phải tụt từ
--- 26-43% xuống ngang mức của H1 (2-8%, và mức đó là ĐÚNG — 100% churn H1 là
--- do `ua` đổi giữa các request trên cùng kết nối keep-alive, tức bot xoay UA,
--- `fp_light` đổi theo là đúng).
+-- KIỂM CHỨNG SAU KHI DEPLOY — con số CỤ THỂ, không phải "giảm là được". Sau
+-- khi bỏ `h2_sig` khỏi băm, một kết nối chỉ còn churn nếu `ja3` HOẶC `ua`
+-- đổi; đếm thẳng từ bảng chữ ký trước fix ra dự đoán từng máy:
+--   cloud186-126  43,2% → 1,2%   (11/902)
+--   cloud171-96   18,3% → 3,1%   (18/579)
+--   cloud168-101  12,0% → 3,1%   (42/1350)
+--   cloud28-246   25,3% → 4,1%   (39/948)
+--   cloud183-139  26,6% → 8,1%   (107/1322)
+-- Lệch nhiều so với các số này = giả thuyết sai ở đâu đó, phải đo lại.
+--
+-- Phần dư ĐÚNG, đừng sửa tiếp: 98,5% churn H1 (576/585) là do `ua` đổi giữa
+-- các request trên cùng kết nối keep-alive — bot xoay UA. Một UA khác là một
+-- tuyên bố danh tính khác, `fp_light` đổi theo là đúng.
 local HASH_PARTS = 4
 
 function _M.run(ctx)
