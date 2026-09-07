@@ -915,5 +915,52 @@ do
     end
 end
 
+-- ── 13. `fp_light` KHONG duoc bam tu `h2_sig` ────────────────────────────
+--
+-- Do 2026-09-07 tren 5 may, trong pham vi tung ket noi TLS: 1213/1228
+-- (98,8%) ket noi H2 co `fp_light` doi la ket noi co `h2_sig` doi. Ba trong
+-- sau thanh phan cua `h2_sig` la thuoc tinh cua REQUEST, khong phai cua
+-- client (`transport/http2/signature.lua:3`).
+--
+-- Hai cach lam hong lai, muc nay chan ca hai:
+--   1. doi `table.concat(components, "|", 1, HASH_PARTS)` ve `(components, "|")`
+--   2. bo `h2_sig` khoi CA `components` — se rut mau so `fp_quality` tu 5
+--      xuong 4, day client H2 thieu ja3+asn tu 0,60 xuong 0,50 => qua nguong
+--      0,55 => +5 diem `fp_degraded` oan. Nen `#components` PHAI con la 5.
+io.write("\nfp_light: khong bam tu h2_sig\n")
+do
+    local src = slurp(SRC .. "core/fingerprint/build_light.lua")
+    if not src then
+        bad("  SAI  khong doc duoc core/fingerprint/build_light.lua\n")
+    else
+        local n = src:match("local%s+HASH_PARTS%s*=%s*(%d+)")
+        if n ~= "4" then
+            bad("  SAI  HASH_PARTS = %s, phai la 4 (ip|ua|asn|ja3)\n",
+                tostring(n))
+        else pass = pass + 1 end
+
+        -- Bat DONG LENH THAT, khong bat chu thich.
+        local hash_line = src:match("\n%s*ctx%.fp_light%s*=%s*([^\n]+)")
+        if not hash_line then
+            bad("  SAI  khong tim thay dong gan `ctx.fp_light`\n")
+        elseif not hash_line:find("HASH_PARTS", 1, true) then
+            bad("  SAI  ctx.fp_light bam ma KHONG gioi han HASH_PARTS:\n" ..
+                "         %s\n" ..
+                "       => h2_sig quay lai trong bam => fp_light churn moi\n" ..
+                "          request H2 => sess:<fp_light> vun nat.\n", hash_line)
+        else pass = pass + 1 end
+
+        local qual_line = src:match("\n%s*ctx%.fp_quality%s*=%s*([^\n]+)")
+        if not qual_line then
+            bad("  SAI  khong tim thay dong gan `ctx.fp_quality`\n")
+        elseif not qual_line:find("#components", 1, true) then
+            bad("  SAI  fp_quality khong con chia cho `#components`:\n" ..
+                "         %s\n" ..
+                "       => neu mau so tut ve 4 thi client H2 thieu ja3+asn\n" ..
+                "          roi tu 0,60 xuong 0,50 => +5 diem oan.\n", qual_line)
+        else pass = pass + 1 end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
