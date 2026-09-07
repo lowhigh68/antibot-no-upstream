@@ -812,13 +812,24 @@ else
         if type(pg) ~= "function" or type(pf) ~= "function" then
             bad("  SAI  ja3.lua khong lo `_parse_groups`/`_parse_pt_fmts`\n")
         else
+            -- BA cua vao cua cung mot lo hong, khong phai hai:
+            --   VANG han          -> hop le (su that ve client)
+            --   than 0 byte       -> hong
+            --   than co truong do dai, KHAI BAO danh sach rong -> hong
+            -- Cua thu ba lot qua moi phep kiem cu (`0 % 2 == 0`, `2+0 == 2`)
+            -- roi tra `{}, true`, tuc sinh ra DUNG chuoi JA3 cua client hop le
+            -- khong gui extension.
             local ec = {
                 { "supported_groups VANG        -> ok",   pg, nil, true  },
                 { "supported_groups than rong   -> hong", pg, "",  false },
+                { "supported_groups khai bao 0  -> hong", pg,
+                  string.char(0, 0), false },
                 { "ec_point_formats VANG        -> ok",   pf, nil, true  },
                 { "ec_point_formats than rong   -> hong", pf, "",  false },
+                { "ec_point_formats khai bao 0  -> hong", pf,
+                  string.char(0), false },
             }
-            for i = 1, 4 do
+            for i = 1, 6 do
                 local c = ec[i]
                 local label, fn, input, want = c[1], c[2], c[3], c[4]
                 local ok_call, _, okflag = pcall(fn, input)
@@ -827,6 +838,42 @@ else
                 elseif okflag ~= want then
                     bad("  SAI  `%s`: mong ok=%s, nhan %s\n",
                         label, tostring(want), tostring(okflag))
+                else
+                    pass = pass + 1
+                end
+            end
+        end
+
+        -- ── 10e. `supported_versions`: BA TRANG THAI, va cua thu ba ──────
+        --
+        -- `false` phai co nghia "client KHONG chao TLS 1.3" — mot SU THAT —
+        -- chu khong duoc kiem luon nghia "doc hong", vi `consistency_check`
+        -- doc `ctx.tls13_offered == false` roi cong 0.35 x 55 = 19,25 diem.
+        -- Truoc day phan nay nam INLINE trong `capture()` nen khong co cach
+        -- nao kiem bang test hanh vi; nay tach thanh `_parse_versions`.
+        local pv = ja3_mod._parse_versions
+        if type(pv) ~= "function" then
+            bad("  SAI  ja3.lua khong lo `_parse_versions`\n")
+        else
+            local vc = {
+                { "vang han ext 43           -> false", nil,                 false },
+                { "than rong                 -> nil",   "",                  nil   },
+                { "KHAI BAO do dai 0         -> nil",   string.char(0),      nil   },
+                { "khai bao le               -> nil",   string.char(3,3,3),  nil   },
+                { "khai bao khong khop than  -> nil",   string.char(4,3,4),  nil   },
+                { "co 0x0304                 -> true",  string.char(2,3,4),  true  },
+                { "chi co 0x0303             -> false", string.char(2,3,3),  false },
+                { "0x0304 o vi tri 2         -> true",  string.char(4,3,3,3,4), true },
+            }
+            for i = 1, 8 do
+                local c = vc[i]
+                local label, input, want = c[1], c[2], c[3]
+                local ok_call, got = pcall(pv, input)
+                if not ok_call then
+                    bad("  SAI  `%s` nem loi: %s\n", label, tostring(got))
+                elseif got ~= want then
+                    bad("  SAI  `%s`: mong %s, nhan %s\n",
+                        label, tostring(want), tostring(got))
                 else
                     pass = pass + 1
                 end
@@ -959,6 +1006,58 @@ do
                 "       => neu mau so tut ve 4 thi client H2 thieu ja3+asn\n" ..
                 "          roi tu 0,60 xuong 0,50 => +5 diem oan.\n", qual_line)
         else pass = pass + 1 end
+    end
+
+    -- 13b. HANH VI, khong phai tim chuoi. `HASH_PARTS == 4` KHONG khoa duoc
+    -- THU TU: doi `components` de `h2_sig` len vi tri 4 thi ba phep kiem tren
+    -- van xanh ma bug quay lai nguyen ven. Chi goi ham that moi bat duoc.
+    --
+    -- `build_light.lua` require `identity` o top-level khong boc pcall, ma
+    -- thu muc trong cay nguon ten `antibot-core` chu khong phai `antibot` nen
+    -- `require` khong giai duoc. Nap san mot ban gia — muc nay kiem CACH BAM,
+    -- khong kiem `identity`.
+    package.preload["antibot.core.fingerprint.identity"] = function()
+        return { build = function() end }
+    end
+    local bl_chunk = loadfile(SRC .. "core/fingerprint/build_light.lua")
+    if not bl_chunk then
+        bad("  SAI  khong nap duoc core/fingerprint/build_light.lua\n")
+    else
+        local ok_bl, bl = pcall(bl_chunk)
+        if not ok_bl or type(bl) ~= "table" or type(bl.run) ~= "function" then
+            bad("  SAI  build_light.lua khong tra ve module co `run`\n")
+        else
+            local function mk(h2s, ja3)
+                return { ip = "1.2.3.4", ua = "Mozilla/5.0", ja3 = ja3,
+                         asn = { asn_number = 12345 }, h2_sig = h2s }
+            end
+            local a, b, c = mk("AAA", "J1"), mk("BBB", "J1"), mk("AAA", "J2")
+            pcall(bl.run, a); pcall(bl.run, b); pcall(bl.run, c)
+
+            if not a.fp_light then
+                bad("  SAI  build_light.run khong dat `fp_light`\n")
+            else
+                if a.fp_light ~= b.fp_light then
+                    bad("  SAI  CHI `h2_sig` doi ma `fp_light` DOI THEO.\n" ..
+                        "       => h2_sig quay lai trong bam. Do 2026-09-07:\n" ..
+                        "          1235/1250 ket noi H2 churn la vi no.\n")
+                else pass = pass + 1 end
+
+                if a.fp_light == c.fp_light then
+                    bad("  SAI  `ja3` doi ma `fp_light` KHONG doi => ja3 da\n" ..
+                        "       roi khoi bam, mat mot thanh phan van tay THAT.\n")
+                else pass = pass + 1 end
+
+                if type(a.fp_quality) ~= "number" then
+                    bad("  SAI  build_light.run khong dat `fp_quality`\n")
+                elseif a.fp_quality < 0.999 then
+                    bad("  SAI  fp_quality = %.3f, mong 1.000 khi du ca 5\n" ..
+                        "       thanh phan => mau so da tut khoi 5 => client\n" ..
+                        "       H2 thieu ja3+asn roi tu 0,60 xuong 0,50 =\n" ..
+                        "       +5 diem `fp_degraded` oan.\n", a.fp_quality)
+                else pass = pass + 1 end
+            end
+        end
     end
 end
 

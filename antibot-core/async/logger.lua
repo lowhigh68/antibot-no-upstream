@@ -560,7 +560,7 @@ function _M.run(ctx)
     -- ── TELEMETRY ĐO CHURN `fp_light` (2026-09-07) — CHỈ ĐẾM, không chấm điểm ──
     --
     -- Câu hỏi: `h2_sig` có mang dữ liệu THEO-TỪNG-REQUEST không, khiến
-    -- `fp_light = md5(ip|ua|asn|ja3|h2_sig)` đổi giữa hai request của CÙNG một
+    -- `fp_light` (luc do = md5(ip|ua|asn|ja3|h2_sig)) đổi giữa hai request của CÙNG một
     -- client? Nếu có thì `sess:<fp_light>` bị cắt vụn và `sess_len` không bao
     -- giờ lớn lên được.
     --

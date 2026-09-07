@@ -131,7 +131,12 @@ local function parse_supported_groups(ext_data)
     -- Theo RFC 8422 thân extension DÀI ĐÚNG BẰNG 2 + len. Kiểm `==`, không
     -- phải `>`: byte THỪA cũng là dấu hiệu ta đang đọc sai khung, y như byte
     -- THIẾU. Chấp nhận phần dư là quay lại đúng lối fail-soft vừa bỏ.
-    if len % 2 ~= 0 or 2 + len ~= #ext_data then return {}, false end
+    -- `len == 0` LA CUA THU BA cua cung mot lo hong. Than co mat, truong do
+    -- dai co mat, nhung KHAI BAO danh sach rong — RFC 8422 cam (NamedGroupList
+    -- toi thieu 2 byte). Truoc day no lot qua `len % 2 == 0` va `2+0 == 2` roi
+    -- tra `{}, true`, tuc sinh ra DUNG chuoi JA3 cua client hop le khong gui
+    -- extension. Hai cua kia (`nil`, than rong) da chan; cua nay thi chua.
+    if len < 2 or len % 2 ~= 0 or 2 + len ~= #ext_data then return {}, false end
     local bound = pos + len - 1
     while pos + 1 <= bound do
         local g; g, pos = u16(ext_data, pos)
@@ -149,10 +154,50 @@ local function parse_ec_point_formats(ext_data)
     local fmts = {}
     local flen = ext_data:byte(1)
     if not flen then return {}, false end
-    -- RFC 4492: thân dài ĐÚNG BẰNG 1 + flen. Cùng lý do với supported_groups.
-    if 1 + flen ~= #ext_data then return {}, false end
+    -- RFC 4492: thân dài ĐÚNG BẰNG 1 + flen, và ECPointFormatList tối thiểu 1
+    -- phần tử. `flen == 0` lọt qua `1+0 == 1` — cùng cửa thứ ba như
+    -- `supported_groups`.
+    if flen < 1 or 1 + flen ~= #ext_data then return {}, false end
     for i = 2, 1 + flen do fmts[#fmts + 1] = ext_data:byte(i) end
     return fmts, true
+end
+
+-- BA TRẠNG THÁI, không phải hai. `false` phải có nghĩa "client KHÔNG chào TLS
+-- 1.3" — một SỰ THẬT — chứ không được kiêm luôn nghĩa "đọc hỏng", vì
+-- `consistency_check` đọc `ctx.tls13_offered == false` rồi cộng 0.35 (nhánh
+-- `tls12`, 19,25 điểm). Gộp hai nghĩa vào một giá trị là biến một lỗi ĐỌC
+-- thành một hình PHẠT.
+--   nil   = không đọc được (thân dị dạng) → mọi luật bỏ qua
+--   false = có đọc được, và KHÔNG có 0x0304 (kể cả khi vắng hẳn ext 43)
+--   true  = có 0x0304
+--
+-- Con bug này có BA CỬA VÀO, đã bịt cả ba:
+--   1. payload dict ghi "?" rồi `decode_tls13` trả `false`  (sửa 5757ebd)
+--   2. extension CÓ MẶT nhưng thân 0 byte                    (sửa b41e567)
+--   3. thân hợp lệ nhưng KHAI BÁO danh sách rỗng (`list_len == 0`) — lọt qua
+--      `0 % 2 == 0` và `1 + 0 == 1` rồi rơi vào nhánh "đọc được" ⇒ `false`.
+--      RFC 8446 đòi `versions<2..254>`, nên 0 là dị dạng.
+--
+-- Tách khỏi `capture()` để `contract_test` gọi được trực tiếp — phần này trước
+-- đây nằm inline nên không có cách nào kiểm bằng test hành vi. Không dùng
+-- `ngx` ở đây; lỗi trả về cho caller ghi log.
+local function parse_supported_versions(sv_data)
+    if not sv_data then return false end          -- vắng hẳn = sự thật
+    if #sv_data == 0 then return nil, "than rong" end
+
+    local list_len = sv_data:byte(1)
+    if not list_len or list_len < 2 or list_len % 2 ~= 0
+       or 1 + list_len ~= #sv_data then
+        return nil, "di dang khai bao=" .. tostring(list_len)
+                    .. " than=" .. #sv_data
+    end
+
+    for i = 2, list_len, 2 do
+        if sv_data:byte(i) == 0x03 and sv_data:byte(i + 1) == 0x04 then
+            return true
+        end
+    end
+    return false
 end
 
 local function build_ja3_str(ver, ciphers, exts, curves, pt_fmts)
@@ -361,45 +406,18 @@ function _M.capture_unsafe()
     --   nil   = không đọc được (thân dị dạng)  → mọi luật bỏ qua
     --   false = có đọc được, và KHÔNG có 0x0304 (kể cả khi vắng hẳn ext 43)
     --   true  = có 0x0304
-    local sv_data  = ssl_clt.get_client_hello_ext(0x002b)
-    local is_tls13
-    if not sv_data then
-        -- Vắng hẳn extension 43 = client không biết/không chào TLS 1.3.
-        -- Đây là SỰ THẬT về client, nên `false` là đúng.
-        is_tls13 = false
-    elseif #sv_data == 0 then
-        -- CÓ extension 43 nhưng thân 0 byte. RFC 8446 bắt buộc 1 byte độ dài,
-        -- nên đây là khung hỏng — ta KHÔNG BIẾT client chào gì. Trước đây rơi
-        -- chung nhánh với "vắng hẳn" ⇒ thành `false` ⇒ nhánh `tls12` của
-        -- `consistency_check` cộng +0,35 × 55 = **19,25 điểm** cho một client
-        -- mà lỗi duy nhất là ta đọc không nổi. Đúng con bug `"?"` → `false`
-        -- vừa sửa ở `decode_tls13`, chỉ khác cửa vào.
-        is_tls13 = nil
-        ngx.log(ngx.ERR, "[ja3] supported_versions than rong -> tls13=nil")
-    else
-        local list_len = sv_data:byte(1)
-        -- RFC 8446: 1 byte độ dài, rồi ĐÚNG list_len byte phiên bản (mỗi
-        -- phiên bản 2 byte). Lệch một byte là đọc sai khung, không phải thừa.
-        if not list_len or list_len % 2 ~= 0 or 1 + list_len ~= #sv_data then
-            is_tls13 = nil
-            ngx.log(ngx.ERR, "[ja3] supported_versions di dang len=", #sv_data,
-                    " khai bao=", tostring(list_len), " -> tls13=nil")
-        else
-            is_tls13 = false
-            for i = 2, list_len, 2 do
-                if sv_data:byte(i) == 0x03 and sv_data:byte(i + 1) == 0x04 then
-                    is_tls13 = true
-                    break
-                end
-            end
-        end
+    local is_tls13, sv_err = parse_supported_versions(
+                                 ssl_clt.get_client_hello_ext(0x002b))
+    if sv_err then
+        ngx.log(ngx.ERR, "[ja3] supported_versions ", sv_err, " -> tls13=nil")
     end
 
     -- ── DANH SÁCH EXTENSION VÀ CỜ `ext_ok` ───────────────────────────────
     --
     -- JA3 mã hoá extension theo ĐÚNG THỨ TỰ client gửi. Mất thứ tự thì hash
     -- không còn là fingerprint — nó đổi giữa các lần duyệt bảng, nên:
-    --   • `fp_light` churn (fp_light = md5(ip+ua+asn+ja3+h2_sig))
+    --   • `fp_light` churn (fp_light = md5(ip+ua+asn+ja3) từ 73b413d — `ja3`
+    --     là MỘT PHẦN TƯ cái băm, nên nó chũn là chũn thẳng vào identity)
     --   • `sess:` mồ côi, counter reset
     --   • `ja3:allow:`/`ja3:block:` người vận hành đặt tay KHÔNG BAO GIỜ khớp
     --
@@ -801,5 +819,6 @@ _M._serialize            = serialize
 _M._deserialize          = deserialize
 _M._parse_groups         = parse_supported_groups
 _M._parse_pt_fmts        = parse_ec_point_formats
+_M._parse_versions       = parse_supported_versions
 
 return _M

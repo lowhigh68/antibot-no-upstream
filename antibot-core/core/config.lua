@@ -536,7 +536,7 @@ _M.cluster = {
 }
 
 -- Shared-session-key guard. `sess:<fp_light>` là khoá của session+graph, mà
--- fp_light = md5(ip + ua_thô + asn + ja3 + h2_sig) — TOÀN thuộc tính (mạng +
+-- fp_light = md5(ip + ua_thô + asn + ja3) — TOÀN thuộc tính (mạng +
 -- trình duyệt). Văn phòng dùng image đồng nhất (cùng IP, cùng bản Chrome,
 -- ja3 luôn = NO_JA3 ở kiến trúc no-stream) → mọi máy COLLAPSE về một fp_light
 -- → session của nhiều người bị trộn làm một. `detect_loop` trong graph bắn 0.9

@@ -32,7 +32,8 @@ end
 
 function _M.run(ctx)
     -- PHẢI cùng order với enforcement/ban/ban_store_write.lua (identity trước
-    -- fp_light). identity = md5(ip+ua_norm); fp_light = md5(ip+ua+asn+ja3+h2).
+    -- fp_light). identity = md5(ip+ua_norm); fp_light = md5(ip+ua+asn+ja3).
+    -- (h2_sig BO khoi fp_light tu 73b413d — no la van tay cua REQUEST.)
     -- Hai hash KHÁC NHAU → nếu order ngược, write key X mà read key Y →
     -- ban Redis tồn tại nhưng không bao giờ được tìm thấy → bot lọt mãi.
     local id = ctx.identity or ctx.fp_light

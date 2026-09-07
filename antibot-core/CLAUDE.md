@@ -59,7 +59,7 @@ async/risk_update + adaptive_weight (skip resource), logger
 | Key | Hash source | Stable across |
 |---|---|---|
 | `ctx.identity` | `md5(ip + ua_norm)` | UA + IP |
-| `ctx.fp_light` | `md5(ip + ua + asn + ja3 + h2)` | Same TLS profile + IP |
+| `ctx.fp_light` | `md5(ip + ua + asn + ja3)` — **h2_sig BỎ từ 73b413d**, xem `core/CLAUDE.md` 2026-09-07 | Same TLS profile + IP |
 | `ctx.fp_full` | composite | Per-handshake |
 | Cookie `antibot_fp` | matches `ctx.identity` after first verify | Browser session |
 

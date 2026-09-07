@@ -21,7 +21,7 @@ Catch volumetric/protocol attacks BEFORE expensive detection layers. Reject bann
 | `expensive_filter_guard.lua` | **RESOURCE-keyed** combinatorial-filter-crawl guard. Runs in `STEPS_COMMON` (after `ip_tour`, before short-circuit → sees every caller incl. verified). Detects faceted-filter signature generically (≥`min_values` comma/dot-separated values in one path-segment OR query-param — no param-name enumeration), keys on `base` listing path (strip query + comma-segments), meters DISTINCT combos per base via HLL `xf:combos:<host>:<base>:<bucket>`. `mode=shadow` appends `xf_base/xf_combos/xf_hits/xf_over` to the antibot.log line (via `async/logger.lua`, correlate with richness/class/ip); `enforce` → 429 `action_reason=expensive_filter` when combos > `combos_threshold`. Config `cfg.expensive_filter` |
 
 ## Identity hash discipline
-`ban_store.lua` and `ban_store_write.lua` MUST read/write key with same `id` source (`ctx.identity || ctx.fp_light`). Order matters — identity = md5(ip+ua_norm), fp_light = md5(ip+ua+asn+ja3+h2). If write key X read key Y → ban exists in Redis but never matched → bot loops forever.
+`ban_store.lua` and `ban_store_write.lua` MUST read/write key with same `id` source (`ctx.identity || ctx.fp_light`). Order matters — identity = md5(ip+ua_norm), fp_light = md5(ip+ua+asn+ja3) (h2_sig removed in 73b413d — it was a REQUEST fingerprint, see `core/CLAUDE.md` 2026-09-07). If write key X read key Y → ban exists in Redis but never matched → bot loops forever.
 
 ## ctx fields written
 `banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `slow`, `is_retry`, `ip_surge`, `rate_flag` (also `action`, `action_reason` before `ngx.exit`)
