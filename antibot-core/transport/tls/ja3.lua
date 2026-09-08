@@ -406,10 +406,28 @@ function _M.capture_unsafe()
     --   nil   = không đọc được (thân dị dạng)  → mọi luật bỏ qua
     --   false = có đọc được, và KHÔNG có 0x0304 (kể cả khi vắng hẳn ext 43)
     --   true  = có 0x0304
-    local is_tls13, sv_err = parse_supported_versions(
-                                 ssl_clt.get_client_hello_ext(0x002b))
-    if sv_err then
-        ngx.log(ngx.ERR, "[ja3] supported_versions ", sv_err, " -> tls13=nil")
+    -- ── CỬA THỨ TƯ: cùng con bug, nhưng ở RANH GIỚI API ─────────────────
+    -- `get_client_hello_ext` trả `nil` khi extension VẮNG, và `nil, err` khi
+    -- ĐỌC LỖI. Hai chuyện khác hẳn nhau, chung một giá trị thứ nhất. Truyền
+    -- thẳng lời gọi vào parser thì `err` rơi mất (parser chỉ khai MỘT tham
+    -- số), nên lỗi API biến thành "vắng extension" → `false` → nhánh `tls12`
+    -- → 19,25 điểm cho một client mà ta chỉ đơn giản là không đọc nổi.
+    --
+    -- Chỉ coi giá trị thứ hai là lỗi KHI giá trị đầu là `nil`. Như vậy đúng
+    -- dù hợp đồng API có khớp tài liệu hay không: API không bao giờ trả err
+    -- thì nhánh này chết, chứ không đọc nhầm một giá trị phụ nào đó thành lỗi.
+    local sv_data, sv_api_err = ssl_clt.get_client_hello_ext(0x002b)
+    local is_tls13, sv_err
+    if sv_data == nil and sv_api_err then
+        is_tls13 = nil
+        ngx.log(ngx.ERR, "[ja3] supported_versions API loi: ",
+                tostring(sv_api_err), " -> tls13=nil")
+    else
+        is_tls13, sv_err = parse_supported_versions(sv_data)
+        if sv_err then
+            ngx.log(ngx.ERR, "[ja3] supported_versions ", sv_err,
+                    " -> tls13=nil")
+        end
     end
 
     -- ── DANH SÁCH EXTENSION VÀ CỜ `ext_ok` ───────────────────────────────
@@ -432,7 +450,8 @@ function _M.capture_unsafe()
     local extensions = {}
     local ext_ok     = false
     if type(ssl_clt.get_client_hello_ext_present) == "function" then
-        local ok2, ext_present = pcall(ssl_clt.get_client_hello_ext_present)
+        local ok2, ext_present, ep_api_err =
+            pcall(ssl_clt.get_client_hello_ext_present)
         if ok2 and type(ext_present) == "table" then
             if ext_present[1] ~= nil then
                 -- MỘT phần tử sai kiểu là HỎNG CẢ DANH SÁCH, không phải "bỏ
@@ -467,6 +486,14 @@ function _M.capture_unsafe()
         elseif not ok2 then
             ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present error: ",
                     tostring(ext_present))
+        elseif ext_present == nil and ep_api_err then
+            -- `pcall` gói TẤT CẢ giá trị trả về: API lỗi cho ra
+            -- `true, nil, err`, và `err` xưa nay rơi mất vì chỉ nhận hai biến.
+            -- Hành vi vẫn an toàn (`ext_ok` giữ `false`) nhưng LỖI IM LẶNG —
+            -- không dòng nào nói vì sao danh sách extension rỗng, nên chẩn
+            -- đoán chỉ còn cách đoán.
+            ngx.log(ngx.ERR, "[ja3] get_client_hello_ext_present API loi: ",
+                    tostring(ep_api_err))
         end
     else
         ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present unavailable, ",
@@ -476,9 +503,17 @@ function _M.capture_unsafe()
     -- Extension rỗng không bao giờ là một JA3 đầy đủ, kể cả khi API chạy êm.
     if #extensions == 0 then ext_ok = false end
 
+    -- Ở HAI TRỤC NÀY lỗi API còn đắt hơn: `nil` rơi thẳng qua `if ... then`
+    -- mà KHÔNG chạm `ext_ok`, nên một lần đọc lỗi sẽ công bố JA3 là ĐẦY ĐỦ
+    -- trong khi thiếu hẳn một extension. Vắng thật thì `ext_ok` giữ nguyên là
+    -- ĐÚNG (client được phép không gửi); đọc lỗi thì bắt buộc phải hạ.
     local curves  = {}
-    local sg_data = ssl_clt.get_client_hello_ext(0x000a)
-    if sg_data then
+    local sg_data, sg_api_err = ssl_clt.get_client_hello_ext(0x000a)
+    if sg_data == nil and sg_api_err then
+        ext_ok = false
+        ngx.log(ngx.ERR, "[ja3] supported_groups API loi: ",
+                tostring(sg_api_err), " -> ext_ok=false")
+    elseif sg_data then
         local ok_sg
         curves, ok_sg = parse_supported_groups(sg_data)
         if not ok_sg then
@@ -488,8 +523,12 @@ function _M.capture_unsafe()
     end
 
     local pt_fmts = {}
-    local pf_data = ssl_clt.get_client_hello_ext(0x000b)
-    if pf_data then
+    local pf_data, pf_api_err = ssl_clt.get_client_hello_ext(0x000b)
+    if pf_data == nil and pf_api_err then
+        ext_ok = false
+        ngx.log(ngx.ERR, "[ja3] point_formats API loi: ",
+                tostring(pf_api_err), " -> ext_ok=false")
+    elseif pf_data then
         local ok_pf
         pt_fmts, ok_pf = parse_ec_point_formats(pf_data)
         if not ok_pf then
@@ -507,13 +546,22 @@ function _M.capture_unsafe()
     local ciphers, shape, valid = {}, "skipped", true
     if CIPHER_MODE ~= "off"
        and type(ssl_clt.get_client_hello_ciphers) == "function" then
-        local ok3, raw = pcall(ssl_clt.get_client_hello_ciphers)
-        if ok3 then
-            ciphers, shape, valid = parse_ciphers(raw)
-        else
+        local ok3, raw, ci_api_err = pcall(ssl_clt.get_client_hello_ciphers)
+        if not ok3 then
             shape, valid = "error", false
             ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers loi (da nuot): ",
                     tostring(raw))
+        elseif raw == nil and ci_api_err then
+            -- Tách "API BÁO lỗi" khỏi "API trả nil trơn". Trước đây cả hai
+            -- cùng cho `shape=nil`, nên 7 ca đo được trên cloud28-246 hôm
+            -- 2026-09-07 không nói được là API hỏng hay chỉ là không có dữ
+            -- liệu — mà đó đúng là câu hỏi cần trả lời trước khi lật nấc
+            -- cipher sang "on". `valid=false` giữ nguyên: vẫn rơi về partial.
+            shape, valid = "api_err", false
+            ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers API loi: ",
+                    tostring(ci_api_err))
+        else
+            ciphers, shape, valid = parse_ciphers(raw)
         end
 
         -- ĐỌC HỎNG THÌ KHÔNG GHI GÌ CẢ, thay vì ghi một dãy đã lệch.

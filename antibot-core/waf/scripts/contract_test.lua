@@ -1077,5 +1077,63 @@ do
     end
 end
 
+
+-- ── 14. RANH GIOI API: `nil` vs `nil, err` ───────────────────────────────
+--
+-- `ngx.ssl.clienthello` dung quy uoc chung cua lua-resty-core: extension VANG
+-- tra `nil` tron, con DOC LOI tra `nil, err`. Nhan moi gia tri dau ma vut gia
+-- tri thu hai la bien "khong doc duoc" thanh "khong ton tai" — dung con bug
+-- ba cua truoc, chi dich len tang API.
+--
+-- Gia MAC PHAI TRA cho tung cho, do la ly do muc nay ton tai:
+--   0x002b  -> is_tls13 = false -> nhanh `tls12` -> 19,25 diem oan
+--   0x000a  -> `nil` roi qua `if ... then` ma KHONG cham `ext_ok` => cong bo
+--   0x000b     mot JA3 THIEU extension la DAY DU
+--   pcall   -> `true, nil, err`: an toan nhung LOI IM LANG, het chan doan
+--
+-- Day la kiem NGUON chu khong phai kiem hanh vi: hai nhanh do can `ngx.ssl`
+-- that, `resty` don thuan khong dung duoc. Nen no chi chan viec QUAY LAI kieu
+-- viet cu, khong chung minh duoc hanh vi dung.
+io.write("\nja3: ranh gioi API tra `nil, err`\n")
+do
+    local src = slurp(SRC .. "transport/tls/ja3.lua")
+    if not src then
+        bad("  SAI  khong doc duoc transport/tls/ja3.lua\n")
+    else
+        -- Ba loi goi `get_client_hello_ext` phai nhan HAI bien.
+        for _, t in ipairs({ { "0x002b", "supported_versions" },
+                             { "0x000a", "supported_groups"   },
+                             { "0x000b", "ec_point_formats"   } }) do
+            local pat = "local%s+[%w_]+%s*,%s*[%w_]+%s*=%s*"
+                        .. "ssl_clt%.get_client_hello_ext%(" .. t[1] .. "%)"
+            if not src:find(pat) then
+                bad("  SAI  %s (%s): khong nhan gia tri thu hai cua\n" ..
+                    "       get_client_hello_ext => loi API bi hieu thanh\n" ..
+                    "       'extension vang'.\n", t[2], t[1])
+            else pass = pass + 1 end
+        end
+
+        -- Hai `pcall` phai nhan BA bien (ok, value, api_err).
+        for _, t in ipairs({ "get_client_hello_ext_present",
+                             "get_client_hello_ciphers" }) do
+            local pat = "local%s+[%w_]+%s*,%s*[%w_]+%s*,%s*[%w_]+%s*="
+                        .. "%s*\n?%s*pcall%(ssl_clt%." .. t
+            if not src:find(pat) then
+                bad("  SAI  pcall(%s) khong nhan bien thu ba:\n" ..
+                    "       API loi cho ra `true, nil, err` va `err` roi mat\n" ..
+                    "       => hong im lang, khong con dau vet chan doan.\n", t)
+            else pass = pass + 1 end
+        end
+
+        -- Nhanh API loi PHAI ha `ext_ok`, neu khong thi mot JA3 thieu
+        -- extension van duoc cong bo la day du khi bat nac cipher.
+        for _, nm in ipairs({ "supported_groups", "point_formats" }) do
+            if not src:find("%[ja3%] " .. nm .. " API loi") then
+                bad("  SAI  thieu nhanh bao loi API cho %s\n", nm)
+            else pass = pass + 1 end
+        end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
