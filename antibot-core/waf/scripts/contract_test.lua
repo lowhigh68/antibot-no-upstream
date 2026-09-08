@@ -1032,7 +1032,23 @@ do
                          asn = { asn_number = 12345 }, h2_sig = h2s }
             end
             local a, b, c = mk("AAA", "J1"), mk("BBB", "J1"), mk("AAA", "J2")
-            pcall(bl.run, a); pcall(bl.run, b); pcall(bl.run, c)
+            -- GIỮ kết quả `pcall`. Vứt đi thì một lỗi ném ra SAU khi
+            -- `ctx.fp_light` đã được gán sẽ bị nuốt trọn: ba phép so bên dưới
+            -- vẫn xanh trong khi `run()` thật ra đã chết giữa chừng. Hôm nay
+            -- sau dòng gán chỉ còn khối `fp_degraded` gọi `ngx.log`, nhưng
+            -- test tồn tại để bắt cái NGÀY MAI thêm vào. Và đây đúng là hình
+            -- dạng lỗi cả mục 10 đang chặn: "không biết" bị nhét thành "biết".
+            local errs = {}
+            for _, t in ipairs({ { "a", a }, { "b", b }, { "c", c } }) do
+                local ok_run, err_run = pcall(bl.run, t[2])
+                if not ok_run then
+                    errs[#errs + 1] = t[1] .. ": " .. tostring(err_run)
+                end
+            end
+            if #errs > 0 then
+                bad("  SAI  build_light.run NEM LOI: %s\n",
+                    table.concat(errs, " | "))
+            end
 
             if not a.fp_light then
                 bad("  SAI  build_light.run khong dat `fp_light`\n")
