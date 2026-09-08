@@ -26,10 +26,24 @@ local FP_QUALITY_THRESHOLD = 0.55
 -- N tài nguyên sẽ nhận N+1 `fp_light` khác nhau.
 --
 -- Giá phải trả: `sess:<fp_light>` bị cắt vụn nên `sess_len` không lớn lên
--- được, mà đó là thứ `cfg.trust` đòi >= 5. Đau nhất đúng chỗ cần nhất —
--- `auth_endpoint` churn 92,9% (cloud171-96) và 52,7% (cloud28-246),
--- `interaction` 28-51%: admin đã đăng nhập đang làm XHR. Cùng hình dạng ca FP
--- đã ghi ở `enforcement/CLAUDE.md` 2026-07-06.
+-- được, mà đó là thứ `cfg.trust` đòi >= 5. Nặng nhất ở `interaction` 28-51%
+-- và `auth_endpoint` 92,9% (cloud171-96) / 52,7% (cloud28-246).
+--
+-- SỬA LẠI 2026-09-08 — bản đầu của khối này viết rằng hai lớp đó churn cao
+-- vì "admin đã đăng nhập đang làm XHR". ĐO XONG THÌ CHỈ ĐÚNG MỘT NỬA:
+--   `interaction`   28-51%  ->  3,1%  (133/4351)   — đúng, do `h2_sig`
+--   `auth_endpoint` 92,9%   -> 94,0%  (cloud171-96)
+--                   52,7%   -> 60,2%  (cloud28-246) — KHÔNG ĐỔI
+-- `auth_endpoint` churn chưa bao giờ là lỗi của `h2_sig`. Nó là bot xoay UA
+-- nện `wp-login.php` trên kết nối keep-alive: 99,0% churn H1 toàn đàn quy về
+-- `ua`, và lớp này gần như toàn H1. `h2_sig` bị đổ oan ở đây.
+--
+-- Hệ quả cho ca FP gốc (`enforcement/CLAUDE.md` 2026-07-06 — admin thật bị
+-- chặn cứng ở `/wp-admin`): `admin-ajax.php` được `req_classifier` xếp vào
+-- `auth_endpoint`, tức ĐÚNG cái lớp không cải thiện. Số gộp của lớp này
+-- KHÔNG trả lời được ca đó, vì bot áp đảo về số lượng. Muốn biết thì phải
+-- tách `auth_endpoint` theo `richness>=0.5` — `richness` khoá theo identity
+-- nên nó sống sót qua churn `fp_light` và dùng làm bộ lọc được.
 --
 -- VÌ SAO KHÔNG GỠ LUÔN KHỎI `components`: `fp_quality = real / #components`.
 -- Rút mẫu số 5 → 4 sẽ đẩy client H2 thiếu CẢ `ja3` lẫn `asn` từ 3/5 = 0,60
