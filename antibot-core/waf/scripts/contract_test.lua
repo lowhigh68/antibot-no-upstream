@@ -1085,22 +1085,102 @@ end
 -- tri thu hai la bien "khong doc duoc" thanh "khong ton tai" — dung con bug
 -- ba cua truoc, chi dich len tang API.
 --
--- Gia MAC PHAI TRA cho tung cho, do la ly do muc nay ton tai:
---   0x002b  -> is_tls13 = false -> nhanh `tls12` -> 19,25 diem oan
---   0x000a  -> `nil` roi qua `if ... then` ma KHONG cham `ext_ok` => cong bo
---   0x000b     mot JA3 THIEU extension la DAY DU
---   pcall   -> `true, nil, err`: an toan nhung LOI IM LANG, het chan doan
---
--- Day la kiem NGUON chu khong phai kiem hanh vi: hai nhanh do can `ngx.ssl`
--- that, `resty` don thuan khong dung duoc. Nen no chi chan viec QUAY LAI kieu
--- viet cu, khong chung minh duoc hanh vi dung.
+-- HAI LOP KIEM, vi hai kieu hong khac nhau va khong lop nao thay duoc lop kia:
+--   14a/14b HANH VI — hai ham thuan quyet dinh DUNG chua. Bat duoc viec ai do
+--           xoa `ext_ok = false` o nhanh api_err, thu ma tim-chuoi khong thay.
+--   14c NGUON — cho GOI co nhan gia tri thu hai khong. Ham thuan co dung den
+--           may cung vo nghia neu `err` khong bao gio toi duoc no; luc do
+--           `api_state(true, nil, nil)` tra "absent" va cua lai mo nguyen.
 io.write("\nja3: ranh gioi API tra `nil, err`\n")
 do
     local src = slurp(SRC .. "transport/tls/ja3.lua")
-    if not src then
-        bad("  SAI  khong doc duoc transport/tls/ja3.lua\n")
+    local ja3_chunk = loadfile(SRC .. "transport/tls/ja3.lua")
+    local ja3m
+    if ja3_chunk then
+        local ok_l, m = pcall(ja3_chunk)
+        if ok_l then ja3m = m end
+    end
+
+    if not src or type(ja3m) ~= "table" then
+        bad("  SAI  khong nap duoc transport/tls/ja3.lua\n")
     else
-        -- Ba loi goi `get_client_hello_ext` phai nhan HAI bien.
+        -- 14a. `api_state`: BON trang thai, khong phai hai.
+        local st = ja3m._api_state
+        if type(st) ~= "function" then
+            bad("  SAI  ja3.lua khong lo `_api_state`\n")
+        else
+            local cases = {
+                -- ok_call, value, err            -> mong doi
+                { true,  "\003\004", nil,   "ok"      },
+                { true,  nil,        nil,   "absent"  },
+                { true,  nil,        "boom","api_err" },
+                { false, "loi lua",  nil,   "throw"   },
+                -- gia tri co that + err rac: KHONG duoc doc thanh loi
+                { true,  "\003\004", "x",   "ok"      },
+            }
+            for i = 1, #cases do
+                local c   = cases[i]
+                local got = st(c[1], c[2], c[3])
+                if got ~= c[4] then
+                    bad("  SAI  api_state(%s,%s,%s) = %s, mong %s\n",
+                        tostring(c[1]), tostring(c[2]), tostring(c[3]),
+                        tostring(got), c[4])
+                else pass = pass + 1 end
+            end
+        end
+
+        -- 14b. `read_ext_list`: BON trang thai vao, HAI quyet dinh ra.
+        --
+        -- Day la muc chan duoc con regression dat nhat: `absent` phai GIU
+        -- `ext_ok`, con `api_err`/`throw` phai HA no. Lan nguoc hai cai do la
+        -- hoac cong bo JA3 thieu extension la day du (mo cua cho nac cipher
+        -- "on"), hoac danh dau moi ClientHello hop le khong gui
+        -- `supported_groups` la "thieu".
+        local rl = ja3m._read_ext_list
+        if type(rl) ~= "function" then
+            bad("  SAI  ja3.lua khong lo `_read_ext_list`\n")
+        else
+            local function parse_ok(v)   return { 23, 24 }, true  end
+            local function parse_bad(v)  return {},         false end
+
+            local cases = {
+                -- state,     parser,    mong ok,  nhan
+                { "absent",   parse_bad, true,
+                  "vang that => ext_ok GIU NGUYEN (client duoc phep khong gui)" },
+                { "api_err",  parse_ok,  false,
+                  "doc loi => ext_ok PHAI ha, du parser co noi gi" },
+                { "throw",    parse_ok,  false,
+                  "pcall bat loi => ext_ok PHAI ha" },
+                { "ok",       parse_ok,  true,
+                  "doc duoc + parser xanh => giu" },
+                { "ok",       parse_bad, false,
+                  "doc duoc + parser do => ha" },
+            }
+            for i = 1, #cases do
+                local c = cases[i]
+                local list, ok_flag = rl(c[1], "\000\002\000\023", c[2])
+                if ok_flag ~= c[3] then
+                    bad("  SAI  read_ext_list(%s) tra ok=%s, mong %s\n" ..
+                        "       %s\n",
+                        c[1], tostring(ok_flag), tostring(c[3]), c[4])
+                elseif type(list) ~= "table" then
+                    bad("  SAI  read_ext_list(%s) khong tra bang\n", c[1])
+                else pass = pass + 1 end
+            end
+
+            -- `api_err` va `throw` phai tra DANH SACH RONG, khong duoc de lot
+            -- ket qua cua parser ra ngoai: mot danh sach nua voi con te hon
+            -- danh sach rong vi no van di vao chuoi JA3.
+            for _, s in ipairs({ "api_err", "throw" }) do
+                local list = rl(s, "\000\002\000\023", parse_ok)
+                if #list ~= 0 then
+                    bad("  SAI  read_ext_list(%s) tra %d phan tu, phai rong\n",
+                        s, #list)
+                else pass = pass + 1 end
+            end
+        end
+
+        -- 14c. NGUON: `err` co toi duoc ham thuan khong.
         for _, t in ipairs({ { "0x002b", "supported_versions" },
                              { "0x000a", "supported_groups"   },
                              { "0x000b", "ec_point_formats"   } }) do
@@ -1108,28 +1188,33 @@ do
                         .. "ssl_clt%.get_client_hello_ext%(" .. t[1] .. "%)"
             if not src:find(pat) then
                 bad("  SAI  %s (%s): khong nhan gia tri thu hai cua\n" ..
-                    "       get_client_hello_ext => loi API bi hieu thanh\n" ..
-                    "       'extension vang'.\n", t[2], t[1])
+                    "       get_client_hello_ext => `err` khong bao gio toi\n" ..
+                    "       api_state, va loi API thanh 'extension vang'.\n",
+                    t[2], t[1])
             else pass = pass + 1 end
         end
 
-        -- Hai `pcall` phai nhan BA bien (ok, value, api_err).
         for _, t in ipairs({ "get_client_hello_ext_present",
                              "get_client_hello_ciphers" }) do
             local pat = "local%s+[%w_]+%s*,%s*[%w_]+%s*,%s*[%w_]+%s*="
                         .. "%s*\n?%s*pcall%(ssl_clt%." .. t
             if not src:find(pat) then
                 bad("  SAI  pcall(%s) khong nhan bien thu ba:\n" ..
-                    "       API loi cho ra `true, nil, err` va `err` roi mat\n" ..
-                    "       => hong im lang, khong con dau vet chan doan.\n", t)
+                    "       API loi cho ra `true, nil, err` va `err` roi mat.\n", t)
             else pass = pass + 1 end
         end
 
-        -- Nhanh API loi PHAI ha `ext_ok`, neu khong thi mot JA3 thieu
-        -- extension van duoc cong bo la day du khi bat nac cipher.
-        for _, nm in ipairs({ "supported_groups", "point_formats" }) do
-            if not src:find("%[ja3%] " .. nm .. " API loi") then
-                bad("  SAI  thieu nhanh bao loi API cho %s\n", nm)
+        -- 14d. Log loi API phai CO TRAN. Mot ban thu vien hong he thong se
+        -- sinh mot dong ERR moi bat tay TLS — hang tram nghin dong/ngay, tu
+        -- tay giet chinh file dung de chan doan.
+        if not src:find("_apierr_n%s*%%%s*200%s*==%s*1") then
+            bad("  SAI  log_api_err khong con lay mau 1/200 => ERR khong tran\n")
+        else pass = pass + 1 end
+        for _, nm in ipairs({ "supported_groups", "point_formats",
+                              "supported_versions" }) do
+            if not src:find('log_api_err%("' .. nm) then
+                bad("  SAI  nhanh %s khong di qua log_api_err (ERR khong tran)\n",
+                    nm)
             else pass = pass + 1 end
         end
     end

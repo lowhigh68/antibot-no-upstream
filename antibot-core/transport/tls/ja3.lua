@@ -56,6 +56,21 @@ local _relay_n = 0
 local _relok_n = 0
 local _prom_n  = 0
 local _diag_n  = 0
+local _apierr_n = 0
+
+-- Lỗi API phải CÓ TRẦN. Ba nhánh mới ghi ERR trên mỗi lần lỗi, mà nếu một
+-- bản lua-resty-core hỏng hệ thống thì đó là **mỗi bắt tay TLS** — trên dàn
+-- máy này là hàng trăm nghìn dòng/ngày vào `error.log`, tức tự tay giết cái
+-- file dùng để chẩn đoán. Lấy mẫu 1/200 mỗi worker như các bộ đếm sẵn có,
+-- nhưng **in kèm số đếm thật**: lấy mẫu mà giấu tổng thì lại thành một con số
+-- không đọc được, đúng cái bẫy `capture_ok` đã cắn hôm 2026-09-08.
+local function log_api_err(what, err)
+    _apierr_n = _apierr_n + 1
+    if _apierr_n % 200 == 1 then
+        ngx.log(ngx.ERR, "[ja3] ", what, " API loi (lan thu ", _apierr_n,
+                " cua worker nay): ", tostring(err))
+    end
+end
 
 -- Khoá THẬT: md5(client_random) — unique per handshake.
 -- Dùng ở ssl_certificate_by_lua* (nhịp 2) và access_by_lua* (đọc).
@@ -181,6 +196,39 @@ end
 -- Tách khỏi `capture()` để `contract_test` gọi được trực tiếp — phần này trước
 -- đây nằm inline nên không có cách nào kiểm bằng test hành vi. Không dùng
 -- `ngx` ở đây; lỗi trả về cho caller ghi log.
+-- ── HAI HÀM THUẦN cho ranh giới API ──────────────────────────────────────
+--
+-- Tách ra vì lý do CỤ THỂ: bản trước chỉ có `contract_test` mục 14 tìm chuỗi
+-- trong nguồn, nên nó chặn được kiểu VIẾT mà không chặn được QUYẾT ĐỊNH — ai
+-- đó xoá `ext_ok = false` mà giữ dòng log thì test vẫn xanh. Hai hàm này
+-- không chạm `ngx`, nên bốn trạng thái kiểm được bằng test hành vi thật.
+--
+-- BỐN trạng thái, không phải hai. Đây là cùng một bài đã học ba lần ở tầng
+-- parser, lần này ở ranh giới API:
+--   throw   = `pcall` bắt được lỗi Lua/FFI
+--   api_err = API trả `nil, err` — ĐỌC KHÔNG ĐƯỢC
+--   absent  = API trả `nil` trơn — extension THẬT SỰ không có
+--   ok      = có dữ liệu
+local function api_state(ok_call, value, api_err)
+    if not ok_call  then return "throw"   end
+    if value ~= nil then return "ok"      end
+    if api_err      then return "api_err" end
+    return "absent"
+end
+
+-- BỐN trạng thái vào, HAI quyết định ra — và `absent` là chỗ dễ sai nhất:
+--   throw / api_err -> ext_ok = FALSE. Không đọc được thì không được phép
+--                      công bố JA3 là đầy đủ.
+--   absent          -> ext_ok GIỮ NGUYÊN. Client hoàn toàn được phép không
+--                      gửi `supported_groups`; hạ cờ ở đây là biến một
+--                      ClientHello hợp lệ thành một vân tay "thiếu".
+--   ok              -> parser quyết.
+local function read_ext_list(state, value, parse)
+    if state == "absent" then return {}, true  end
+    if state ~= "ok"     then return {}, false end
+    return parse(value)
+end
+
 local function parse_supported_versions(sv_data)
     if not sv_data then return false end          -- vắng hẳn = sự thật
     if #sv_data == 0 then return nil, "than rong" end
@@ -418,10 +466,9 @@ function _M.capture_unsafe()
     -- thì nhánh này chết, chứ không đọc nhầm một giá trị phụ nào đó thành lỗi.
     local sv_data, sv_api_err = ssl_clt.get_client_hello_ext(0x002b)
     local is_tls13, sv_err
-    if sv_data == nil and sv_api_err then
+    if api_state(true, sv_data, sv_api_err) == "api_err" then
         is_tls13 = nil
-        ngx.log(ngx.ERR, "[ja3] supported_versions API loi: ",
-                tostring(sv_api_err), " -> tls13=nil")
+        log_api_err("supported_versions -> tls13=nil", sv_api_err)
     else
         is_tls13, sv_err = parse_supported_versions(sv_data)
         if sv_err then
@@ -452,7 +499,8 @@ function _M.capture_unsafe()
     if type(ssl_clt.get_client_hello_ext_present) == "function" then
         local ok2, ext_present, ep_api_err =
             pcall(ssl_clt.get_client_hello_ext_present)
-        if ok2 and type(ext_present) == "table" then
+        local ep_state = api_state(ok2, ext_present, ep_api_err)
+        if ep_state == "ok" and type(ext_present) == "table" then
             if ext_present[1] ~= nil then
                 -- MỘT phần tử sai kiểu là HỎNG CẢ DANH SÁCH, không phải "bỏ
                 -- riêng nó". Cùng triết lý với `parse_ciphers`: bỏ lẻ tẻ rồi
@@ -483,17 +531,16 @@ function _M.capture_unsafe()
                     end
                 end
             end
-        elseif not ok2 then
+        elseif ep_state == "throw" then
             ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present error: ",
                     tostring(ext_present))
-        elseif ext_present == nil and ep_api_err then
+        elseif ep_state == "api_err" then
             -- `pcall` gói TẤT CẢ giá trị trả về: API lỗi cho ra
             -- `true, nil, err`, và `err` xưa nay rơi mất vì chỉ nhận hai biến.
             -- Hành vi vẫn an toàn (`ext_ok` giữ `false`) nhưng LỖI IM LẶNG —
             -- không dòng nào nói vì sao danh sách extension rỗng, nên chẩn
             -- đoán chỉ còn cách đoán.
-            ngx.log(ngx.ERR, "[ja3] get_client_hello_ext_present API loi: ",
-                    tostring(ep_api_err))
+            log_api_err("get_client_hello_ext_present", ep_api_err)
         end
     else
         ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present unavailable, ",
@@ -507,32 +554,28 @@ function _M.capture_unsafe()
     -- mà KHÔNG chạm `ext_ok`, nên một lần đọc lỗi sẽ công bố JA3 là ĐẦY ĐỦ
     -- trong khi thiếu hẳn một extension. Vắng thật thì `ext_ok` giữ nguyên là
     -- ĐÚNG (client được phép không gửi); đọc lỗi thì bắt buộc phải hạ.
-    local curves  = {}
     local sg_data, sg_api_err = ssl_clt.get_client_hello_ext(0x000a)
-    if sg_data == nil and sg_api_err then
+    local sg_state = api_state(true, sg_data, sg_api_err)
+    local curves, ok_sg = read_ext_list(sg_state, sg_data,
+                                        parse_supported_groups)
+    if not ok_sg then
         ext_ok = false
-        ngx.log(ngx.ERR, "[ja3] supported_groups API loi: ",
-                tostring(sg_api_err), " -> ext_ok=false")
-    elseif sg_data then
-        local ok_sg
-        curves, ok_sg = parse_supported_groups(sg_data)
-        if not ok_sg then
-            ext_ok = false
+        if sg_state == "api_err" then
+            log_api_err("supported_groups -> ext_ok=false", sg_api_err)
+        else
             ngx.log(ngx.ERR, "[ja3] supported_groups cat ngan len=", #sg_data)
         end
     end
 
-    local pt_fmts = {}
     local pf_data, pf_api_err = ssl_clt.get_client_hello_ext(0x000b)
-    if pf_data == nil and pf_api_err then
+    local pf_state = api_state(true, pf_data, pf_api_err)
+    local pt_fmts, ok_pf = read_ext_list(pf_state, pf_data,
+                                         parse_ec_point_formats)
+    if not ok_pf then
         ext_ok = false
-        ngx.log(ngx.ERR, "[ja3] point_formats API loi: ",
-                tostring(pf_api_err), " -> ext_ok=false")
-    elseif pf_data then
-        local ok_pf
-        pt_fmts, ok_pf = parse_ec_point_formats(pf_data)
-        if not ok_pf then
-            ext_ok = false
+        if pf_state == "api_err" then
+            log_api_err("point_formats -> ext_ok=false", pf_api_err)
+        else
             ngx.log(ngx.ERR, "[ja3] point_formats cat ngan len=", #pf_data)
         end
     end
@@ -546,20 +589,24 @@ function _M.capture_unsafe()
     local ciphers, shape, valid = {}, "skipped", true
     if CIPHER_MODE ~= "off"
        and type(ssl_clt.get_client_hello_ciphers) == "function" then
+        -- MỘT dòng, không phải hai. Bản trước ghi `... API loi` rồi ngay sau
+        -- đó `cipher_invalid shape=api_err` — cùng một sự kiện, hai dòng, và
+        -- cả hai đều không có trần. Nay nguyên nhân đi kèm vào chính dòng
+        -- `cipher_invalid` (giữ nguyên token đó vì `do_sang.sh` đang đếm nó).
         local ok3, raw, ci_api_err = pcall(ssl_clt.get_client_hello_ciphers)
-        if not ok3 then
+        local ci_state = api_state(ok3, raw, ci_api_err)
+        local ci_why   = ""
+        if ci_state == "throw" then
             shape, valid = "error", false
-            ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers loi (da nuot): ",
-                    tostring(raw))
-        elseif raw == nil and ci_api_err then
+            ci_why = " err=" .. tostring(raw)
+        elseif ci_state == "api_err" then
             -- Tách "API BÁO lỗi" khỏi "API trả nil trơn". Trước đây cả hai
             -- cùng cho `shape=nil`, nên 7 ca đo được trên cloud28-246 hôm
             -- 2026-09-07 không nói được là API hỏng hay chỉ là không có dữ
             -- liệu — mà đó đúng là câu hỏi cần trả lời trước khi lật nấc
             -- cipher sang "on". `valid=false` giữ nguyên: vẫn rơi về partial.
             shape, valid = "api_err", false
-            ngx.log(ngx.ERR, "[ja3] get_client_hello_ciphers API loi: ",
-                    tostring(ci_api_err))
+            ci_why = " err=" .. tostring(ci_api_err)
         else
             ciphers, shape, valid = parse_ciphers(raw)
         end
@@ -570,7 +617,7 @@ function _M.capture_unsafe()
         -- không phải đổi định dạng payload lần thứ hai).
         if not valid then
             ciphers = {}
-            ngx.log(ngx.ERR, "[ja3] cipher_invalid shape=", shape,
+            ngx.log(ngx.ERR, "[ja3] cipher_invalid shape=", shape, ci_why,
                     " → bo ca danh sach, giu partial")
         end
 
@@ -868,5 +915,7 @@ _M._deserialize          = deserialize
 _M._parse_groups         = parse_supported_groups
 _M._parse_pt_fmts        = parse_ec_point_formats
 _M._parse_versions       = parse_supported_versions
+_M._api_state            = api_state
+_M._read_ext_list        = read_ext_list
 
 return _M
