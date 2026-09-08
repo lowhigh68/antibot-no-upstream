@@ -605,15 +605,26 @@ function _M.run(ctx)
         elseif peer == (ctx.ip or "") then  peer_s = "-"
         else                                peer_s = peer end
 
+        -- `asn=` là thành phần CUỐI CÙNG của `fp_light` chưa quan sát được.
+        -- Sau 73b413d băm còn `ip|ua|asn|ja3`; ba cái kia đã có cột riêng,
+        -- nên mọi churn không giải thích được đều dồn vào đây — đó chính là
+        -- nhãn `khong-ro` và ca `h2s` lẻ loi ở cloud183-139. Ghi ĐÚNG thứ
+        -- `build_light` đọc (`ctx.asn.asn_number`), không phải tên tổ chức:
+        -- một lần tra hụt sẽ lật `components[3]` sang sentinel `NO_ASN` và
+        -- đổi hash, mà nhìn tên tổ chức thì không thấy.
+        local asn_s = (ctx.asn and ctx.asn.asn_number)
+                      and tostring(ctx.asn.asn_number) or "-"
+
         churn_str = string.format(
-            " fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d peer=%s",
+            " fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d peer=%s asn=%s",
             tostring(ctx.fp_light):sub(1, 8),
             ctx.h2_sig and tostring(ctx.h2_sig):sub(1, 8) or "-",
             tostring(ngx.worker.pid()),
             tostring(ngx.var.connection or "-"),
             tostring(ngx.var.connection_requests or "-"),
             tonumber(ctx.sess_len) or 0,
-            peer_s)
+            peer_s,
+            asn_s)
     end
 
     -- Build structured log line — all fields on one line, space-separated key=value.
