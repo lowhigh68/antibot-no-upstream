@@ -1207,9 +1207,62 @@ do
         -- 14d. Log loi API phai CO TRAN. Mot ban thu vien hong he thong se
         -- sinh mot dong ERR moi bat tay TLS — hang tram nghin dong/ngay, tu
         -- tay giet chinh file dung de chan doan.
-        if not src:find("_apierr_n%s*%%%s*200%s*==%s*1") then
-            bad("  SAI  log_api_err khong con lay mau 1/200 => ERR khong tran\n")
-        else pass = pass + 1 end
+        --
+        -- HANH VI, khong phai hinh thuc. Ban 14d dau tien chi grep regex nen
+        -- no xanh voi CA hai cai dat: counter chung va counter theo loai. Ma
+        -- counter chung chinh la khiem khuyet — no khong phai "lay mau it di",
+        -- no la "co loai KHONG BAO GIO in".
+        local bump = ja3m._bump
+        if type(bump) ~= "function" then
+            bad("  SAI  ja3m._bump khong duoc export => 14d khong kiem duoc\n")
+        else
+            -- Lan dau cua MOI loai phai in ngay.
+            local t1 = {}
+            local n_a, say_a = bump(t1, "a")
+            local n_b, say_b = bump(t1, "b")
+            if not (n_a == 1 and say_a and n_b == 1 and say_b) then
+                bad("  SAI  bump: lan dau cua moi loai phai in va dem rieng\n" ..
+                    "       (a=%s/%s b=%s/%s) => counter dung chung\n",
+                    tostring(n_a), tostring(say_a),
+                    tostring(n_b), tostring(say_b))
+            else pass = pass + 1 end
+
+            -- HAI LOAI XEN KE DEU DAN. Voi counter chung, "b" roi vao cac lan
+            -- chan nen `% 200 == 1` KHONG BAO GIO dung => b im lang vinh vien.
+            local t2, said_a, said_b = {}, 0, 0
+            for _ = 1, 400 do
+                local _, sa = bump(t2, "a"); if sa then said_a = said_a + 1 end
+                local _, sb = bump(t2, "b"); if sb then said_b = said_b + 1 end
+            end
+            if said_a ~= 2 or said_b ~= 2 then
+                bad("  SAI  bump: 400 loi xen ke moi loai -> a in %d lan, " ..
+                    "b in %d lan (phai 2/2).\n" ..
+                    "       Mot loai bi loai kia che = dung chung counter.\n",
+                    said_a, said_b)
+            else pass = pass + 1 end
+
+            -- Va van phai CO TRAN: 400 loi cung loai chi duoc 2 dong.
+            local t3, said = {}, 0
+            for _ = 1, 400 do
+                local _, s = bump(t3, "a"); if s then said = said + 1 end
+            end
+            if said ~= 2 then
+                bad("  SAI  bump: 400 loi cung loai in %d dong (phai 2)\n", said)
+            else pass = pass + 1 end
+
+            -- Dem in ra phai la cua CHINH loai do, khong phai tong worker.
+            local t4 = {}
+            for _ = 1, 50 do bump(t4, "on_ao") end
+            local n_hiem = bump(t4, "hiem")
+            if n_hiem ~= 1 then
+                bad("  SAI  bump: loai hiem dem ra %d, phai 1 " ..
+                    "(dang dem tong cua worker)\n", n_hiem)
+            else pass = pass + 1 end
+        end
+
+        -- NGUON: moi nhanh "doc hong" phai di qua bo lay mau, khong con
+        -- `ngx.log(ngx.ERR` tran trui. `cipher_invalid` la nhanh bi bo sot o
+        -- ban truoc: no ghi ERR o CA hai nac probe VA on.
         for _, nm in ipairs({ "supported_groups", "point_formats",
                               "supported_versions" }) do
             if not src:find('log_api_err%("' .. nm) then
@@ -1217,6 +1270,24 @@ do
                     nm)
             else pass = pass + 1 end
         end
+        -- `ext_present_hash` va `ext_present_unavail` la THUOC TINH PHIEN BAN
+        -- thu vien, khong phai su co: tren lua-resty-core cu chung ghi mot
+        -- dong MOI BAT TAY ma khong can loi gi ca. Chung phai co tran.
+        for _, nm in ipairs({ "cipher_invalid", "ext_not_ok", "cipher_too_few",
+                              "sv_parse", "ext_present_type",
+                              "ext_present_hash", "ext_present_throw",
+                              "ext_present_unavail",
+                              "sg_truncated", "pf_truncated" }) do
+            if not src:find('log_sampled%("' .. nm) then
+                bad("  SAI  nhanh %s ghi ERR khong qua log_sampled:\n" ..
+                    "       mot API hong he thong = mot dong moi bat tay TLS.\n",
+                    nm)
+            else pass = pass + 1 end
+        end
+        -- Token ma `do_sang.sh` dang dem phai con nguyen.
+        if not src:find('"cipher_invalid shape="') then
+            bad("  SAI  mat token `cipher_invalid shape=` => do_sang.sh mu\n")
+        else pass = pass + 1 end
     end
 end
 

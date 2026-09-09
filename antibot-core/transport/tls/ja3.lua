@@ -56,20 +56,46 @@ local _relay_n = 0
 local _relok_n = 0
 local _prom_n  = 0
 local _diag_n  = 0
-local _apierr_n = 0
 
--- Lỗi API phải CÓ TRẦN. Ba nhánh mới ghi ERR trên mỗi lần lỗi, mà nếu một
--- bản lua-resty-core hỏng hệ thống thì đó là **mỗi bắt tay TLS** — trên dàn
--- máy này là hàng trăm nghìn dòng/ngày vào `error.log`, tức tự tay giết cái
--- file dùng để chẩn đoán. Lấy mẫu 1/200 mỗi worker như các bộ đếm sẵn có,
+-- Lỗi API phải CÓ TRẦN. Mọi nhánh "đọc hỏng" ghi ERR trên mỗi lần lỗi, mà nếu
+-- một bản lua-resty-core hỏng hệ thống thì đó là **mỗi bắt tay TLS** — trên
+-- dàn máy này là hàng trăm nghìn dòng/ngày vào `error.log`, tức tự tay giết
+-- cái file dùng để chẩn đoán. Lấy mẫu 1/200 mỗi worker như các bộ đếm sẵn có,
 -- nhưng **in kèm số đếm thật**: lấy mẫu mà giấu tổng thì lại thành một con số
 -- không đọc được, đúng cái bẫy `capture_ok` đã cắn hôm 2026-09-08.
-local function log_api_err(what, err)
-    _apierr_n = _apierr_n + 1
-    if _apierr_n % 200 == 1 then
-        ngx.log(ngx.ERR, "[ja3] ", what, " API loi (lan thu ", _apierr_n,
-                " cua worker nay): ", tostring(err))
+--
+-- ĐẾM THEO LOẠI, KHÔNG DÙNG CHUNG MỘT BIẾN. Bản đầu dùng một `_apierr_n` cho
+-- tất cả, và điều đó hỏng theo ba cách:
+--   1. Một loại lỗi ồn ào che hoàn toàn loại hiếm — đúng cặp đo được ngày
+--      2026-09-09: `shape=nil` 28 lần / `shape=api_err` 12 lần trên 5 máy.
+--   2. "lần thứ N" in ra là TỔNG lỗi của worker, không phải lần thứ N của
+--      chính loại đang in. Con số đó không dùng để suy ra tần suất được.
+--   3. Hai loại xen kẽ đều đặn thì một loại có thể KHÔNG BAO GIỜ rơi trúng
+--      `% 200 == 1` — im lặng vĩnh viễn, không phải "lấy mẫu".
+-- Đổi lại, trần tổng nhân với số loại. Tập khoá là hữu hạn và đóng (4 chuỗi
+-- hằng của `log_api_err`, cộng `cipher_invalid:<shape>` mà `shape` chỉ nhận
+-- `type()` hoặc một trong các hằng của `parse_ciphers`), nên bảng không phình.
+local _errn = {}
+
+-- Tách phần thuần ra khỏi `ngx.log` để mục 14d kiểm được HÀNH VI (hai loại
+-- xen kẽ đều phải in) chứ không chỉ kiểm hình thức bằng regex — đúng chỗ yếu
+-- mà bản 14d đầu tiên mắc phải.
+local function bump(tbl, what)
+    local n = (tbl[what] or 0) + 1
+    tbl[what] = n
+    return n, (n % 200 == 1)
+end
+
+local function log_sampled(what, msg)
+    local n, say = bump(_errn, what)
+    if say then
+        ngx.log(ngx.ERR, "[ja3] ", msg,
+                " (", what, " lan thu ", n, " cua worker nay)")
     end
+end
+
+local function log_api_err(what, err)
+    log_sampled(what, what .. " API loi: " .. tostring(err))
 end
 
 -- Khoá THẬT: md5(client_random) — unique per handshake.
@@ -472,8 +498,15 @@ function _M.capture_unsafe()
     else
         is_tls13, sv_err = parse_supported_versions(sv_data)
         if sv_err then
-            ngx.log(ngx.ERR, "[ja3] supported_versions ", sv_err,
-                    " -> tls13=nil")
+            -- KHOÁ PHẢI LÀ TẬP ĐÓNG. `sv_err` chứa "di dang khai bao=<N>
+            -- than=<M>" với N,M do client quyết định — dùng nó làm khoá thì
+            -- `_errn` phình theo dữ liệu người lạ gửi, đúng cái bẫy ghi Redis
+            -- không chặn của `wp_paths`. Chi tiết đi vào THÔNG ĐIỆP, không đi
+            -- vào khoá. Một bucket là đủ: cả hai biến thể cùng một sự kiện
+            -- ("thân đọc không được"), khác với cặp nil/api_err là hai NGUYÊN
+            -- NHÂN khác nhau nên mới cần tách bucket.
+            log_sampled("sv_parse",
+                        "supported_versions " .. sv_err .. " -> tls13=nil")
         end
     end
 
@@ -510,8 +543,9 @@ function _M.capture_unsafe()
                 for _, etype in ipairs(ext_present) do
                     if type(etype) ~= "number" then
                         ext_ok = false
-                        ngx.log(ngx.ERR, "[ja3] ext_present co phan tu khong ",
-                                "phai so: ", type(etype))
+                        log_sampled("ext_present_type:" .. type(etype),
+                                    "ext_present co phan tu khong phai so: "
+                                    .. type(etype))
                         break
                     end
                     if not is_grease(etype) then
@@ -523,8 +557,12 @@ function _M.capture_unsafe()
                 -- nấc `probe` đếm được, nhưng KHÔNG bao giờ gọi đây là JA3
                 -- đầy đủ. Chỉ xảy ra với lua-resty-core < 0.1.25 (đo
                 -- 2026-09-06: cả 5 máy đang 0.1.33/0.1.34).
-                ngx.log(ngx.ERR,  "[ja3] ext_present is hash — order lost, ",
-                        "upgrade lua-resty-core >= 0.1.25")
+                -- TRẦN BẮT BUỘC ở đây hơn mọi chỗ khác: đây không phải "lỗi
+                -- hiếm" mà là THUỘC TÍNH PHIÊN BẢN. Trên lua-resty-core cũ,
+                -- nhánh này đúng một dòng MỖI BẮT TAY, không cần sự cố gì.
+                log_sampled("ext_present_hash",
+                            "ext_present is hash — order lost, " ..
+                            "upgrade lua-resty-core >= 0.1.25")
                 for etype in pairs(ext_present) do
                     if type(etype) == "number" and not is_grease(etype) then
                         extensions[#extensions + 1] = etype
@@ -532,8 +570,9 @@ function _M.capture_unsafe()
                 end
             end
         elseif ep_state == "throw" then
-            ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present error: ",
-                    tostring(ext_present))
+            log_sampled("ext_present_throw",
+                        "get_client_hello_ext_present error: "
+                        .. tostring(ext_present))
         elseif ep_state == "api_err" then
             -- `pcall` gói TẤT CẢ giá trị trả về: API lỗi cho ra
             -- `true, nil, err`, và `err` xưa nay rơi mất vì chỉ nhận hai biến.
@@ -543,8 +582,11 @@ function _M.capture_unsafe()
             log_api_err("get_client_hello_ext_present", ep_api_err)
         end
     else
-        ngx.log(ngx.ERR,  "[ja3] get_client_hello_ext_present unavailable, ",
-                "upgrade lua-resty-core >= 0.1.25")
+        -- Cùng lý do với `ext_present_hash`: thuộc tính phiên bản, không phải
+        -- sự cố — một dòng mỗi bắt tay nếu thư viện cũ.
+        log_sampled("ext_present_unavail",
+                    "get_client_hello_ext_present unavailable, " ..
+                    "upgrade lua-resty-core >= 0.1.25")
     end
 
     -- Extension rỗng không bao giờ là một JA3 đầy đủ, kể cả khi API chạy êm.
@@ -563,7 +605,8 @@ function _M.capture_unsafe()
         if sg_state == "api_err" then
             log_api_err("supported_groups -> ext_ok=false", sg_api_err)
         else
-            ngx.log(ngx.ERR, "[ja3] supported_groups cat ngan len=", #sg_data)
+            log_sampled("sg_truncated",
+                        "supported_groups cat ngan len=" .. #sg_data)
         end
     end
 
@@ -576,7 +619,8 @@ function _M.capture_unsafe()
         if pf_state == "api_err" then
             log_api_err("point_formats -> ext_ok=false", pf_api_err)
         else
-            ngx.log(ngx.ERR, "[ja3] point_formats cat ngan len=", #pf_data)
+            log_sampled("pf_truncated",
+                        "point_formats cat ngan len=" .. #pf_data)
         end
     end
 
@@ -617,8 +661,14 @@ function _M.capture_unsafe()
         -- không phải đổi định dạng payload lần thứ hai).
         if not valid then
             ciphers = {}
-            ngx.log(ngx.ERR, "[ja3] cipher_invalid shape=", shape, ci_why,
-                    " → bo ca danh sach, giu partial")
+            -- Bốn trạng thái đều rơi vào đây (ném lỗi / API báo lỗi / trả nil
+            -- trơn / payload sai định dạng) và đều ghi ERR ở MỖI bắt tay. Cùng
+            -- một trần với `log_api_err`, nhưng bucket theo `shape` để một
+            -- `shape=nil` ồn ào không nuốt mất `shape=api_err` hiếm.
+            -- Token `cipher_invalid shape=` giữ NGUYÊN — `do_sang.sh` đang đếm.
+            log_sampled("cipher_invalid:" .. shape,
+                        "cipher_invalid shape=" .. shape .. ci_why ..
+                        " → bo ca danh sach, giu partial")
         end
 
         -- Lấy mẫu 1/200 ở mức ERR — đây là DÒNG DUY NHẤT nói cho ta biết API
@@ -860,13 +910,19 @@ function _M.run(ctx)
         -- Cipher đủ nhưng extension không dùng được: mất thứ tự, rỗng, hoặc
         -- `supported_groups`/`ec_point_formats` bị cắt ngắn. JA3 dựng từ đó
         -- không ổn định giữa các request nên không được coi là đầy đủ.
-        ngx.log(ngx.ERR, "[ja3] ext_not_ok n_cipher=", #captured,
-                " #exts=", #(data.extensions or {}),
-                " → giu partial ip=", ctx.ip or "?")
+        -- Hai dòng dưới CHỈ sống dậy khi `CIPHER_MODE == "on"`, và khi đó là
+        -- một dòng MỖI REQUEST. Tỉ lệ `ext_ok=false` không đo được ở nấc
+        -- "probe" (không cột nào chở nó ra log), nên phải có trần TRƯỚC khi
+        -- lật "on" — nếu không, ngày lật là ngày error.log không đọc được nữa.
+        log_sampled("ext_not_ok",
+                    "ext_not_ok n_cipher=" .. #captured ..
+                    " #exts=" .. #(data.extensions or {}) ..
+                    " → giu partial ip=" .. (ctx.ip or "?"))
     elseif CIPHER_MODE == "on" and #captured > 0 then
-        ngx.log(ngx.ERR, "[ja3] cipher_too_few n=", #captured,
-                " min=", MIN_PLAUSIBLE_CIPHERS, " → giu partial ip=",
-                ctx.ip or "?")
+        log_sampled("cipher_too_few",
+                    "cipher_too_few n=" .. #captured ..
+                    " min=" .. MIN_PLAUSIBLE_CIPHERS ..
+                    " → giu partial ip=" .. (ctx.ip or "?"))
     end
 
     local tls_version = 0x0303
@@ -917,5 +973,6 @@ _M._parse_pt_fmts        = parse_ec_point_formats
 _M._parse_versions       = parse_supported_versions
 _M._api_state            = api_state
 _M._read_ext_list        = read_ext_list
+_M._bump                 = bump
 
 return _M
