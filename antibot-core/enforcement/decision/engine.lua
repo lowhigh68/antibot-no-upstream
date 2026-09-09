@@ -678,10 +678,46 @@ function _M.run(ctx)
     -- MONITOR — not challenge, because admin-ajax is XHR and can't render a PoW
     -- page (challenge would break the heartbeat). Monitor also breaks the loop:
     -- async/risk_update decays risk:<id> on monitor instead of raising it.
-    -- Credential-stuffing bots have richness=0 → never reach this tier → still
-    -- get full auth_endpoint ×1.5 + block. Per-request structural signals
-    -- (h2/ja3/ua/anomaly) still compute and log; only identity auto-ban is held.
+    -- ĐÍNH CHÍNH 2026-09-09 — dòng cũ ở đây viết "Credential-stuffing bots have
+    -- richness=0 → never reach this tier". ĐO ĐƯỢC LÀ SAI, và sai theo hướng mở
+    -- cửa. Trong 24h trên 5 máy, tầng này hạ verdict **1.265 lần**, trong đó
+    -- **1.247 (98,6%) là UA bot** — riêng `ClaudeBot/1.0` 1.246 lần trên
+    -- cloud28-246. Số lần nó bảo vệ một trình duyệt thật: **5**.
+    --
+    -- Nguyên nhân nằm ở `core/session_richness.lua`: nó KHÔNG kiểm tra cookie
+    -- có hợp lệ không, chỉ đếm byte (bão hoà 500) + số cookie (bão hoà 4) +
+    -- header `Authorization`/CSRF. **Bốn cookie rác tổng 500 byte = 0,8.** Và
+    -- `richness:max:<identity>` lưu Redis 1 giờ rồi TỰ GIA HẠN mỗi lần dùng,
+    -- nên đạt một lần là giữ mãi chừng nào còn gửi request. 34,5% lưu lượng
+    -- đứng trên ngưỡng này tự khai không phải trình duyệt (và đó là SÀN — regex
+    -- đo chỉ bắt UA tự khai, bot đội lốt trình duyệt không bị đếm).
+    --
+    -- CỔNG `not good_bot_claimed`: một client tới được đây mà vẫn còn cờ đó
+    -- nghĩa là nó tự xưng bot và **đã trượt xác minh** — good bot xác minh được
+    -- đã thoát ở nhánh `good_bot_verified` phía trên, chưa từng chấm điểm. Nên
+    -- cờ này còn bật ở đây chỉ có hai nghĩa: claim chưa xác minh, hoặc giả mạo
+    -- UA. Không nghĩa nào xứng đáng nhận miễn trừ "phiên đã đăng nhập".
+    -- `ua_check.run()` chạy ở cả hai đường (`lite_verify` cho resource,
+    -- `bot/init` cho phần còn lại) nên cờ luôn có giá trị tại điểm này; nếu vì
+    -- lý do nào đó nó chưa được đặt thì `false` giữ nguyên hành vi cũ.
+    --
+    -- VÌ SAO KHÔNG ĐƠN GIẢN ĐĂNG KÝ ClaudeBot VÀO `goodbot.json` (đã hỏi và đã
+    -- đo, 09-09): 145 IP nguồn, **không IP nào có PTR**. Cả bảy đường xác minh
+    -- đều cần PTR hoặc một ASN riêng của nhà vận hành. ASN quan sát được là
+    -- **16509 = Amazon AWS** (4.348 lượt) và 396982 = Google Cloud. Đưa 16509
+    -- vào registry không phải là đăng ký một bot — đó là cho bất kỳ ai thuê một
+    -- EC2 và ghi `ClaudeBot` vào UA được xác minh. Không có datum nào phân biệt
+    -- được ClaudeBot thật với kẻ đội tên nó, nên nó phải được chấm điểm bình
+    -- thường. Muốn cho qua thì đó là quyết định vận hành, có sẵn cần gạt:
+    -- `goodbot:asn:<tên>` / `goodbot:ptr_only:<tên>` trong Redis.
+    --
+    -- CHƯA SỬA, nợ sâu hơn: `session_richness` là proxy tốt cho "client đã có
+    -- state", đúng như tiêu đề module nó. Sai lầm là dùng một proxy về STATE
+    -- làm tầng tin cậy về XÁC THỰC. Sửa tận gốc là đòi bằng chứng xác thực
+    -- thật (header `Authorization`, hoặc cookie phiên đã đối chiếu), chứ không
+    -- phải đắp thêm cổng. Cổng dưới đây bịt lỗ đo được, không chữa gốc.
     if (ctx.session_richness or 0) >= AUTH_SESSION_RICHNESS
+       and not ctx.good_bot_claimed
        and (action == "block" or action == "challenge") then
         ngx.log(ngx.INFO,
             "[engine] auth_session cap action=", action, "->monitor",
