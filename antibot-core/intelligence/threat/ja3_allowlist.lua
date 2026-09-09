@@ -70,11 +70,45 @@ local function score_from_tls_structure(ctx)
     -- ja3.lua` chi bo co `partial` khi bat duoc >= MIN_PLAUSIBLE_CIPHERS cipher,
     -- va `contract_test` muc 10b kiem hai con so do khong lech nhau. Doi so 5 o
     -- day thi phai doi ca ben kia.
+    -- TRAN `> 31`, KHONG PHAI `> 30`. Do 09-09 tren 5 may / 997.492 dong co
+    -- JA3, tach theo TUNG gia tri cipher_count kem `richness>=0.5`:
+    --
+    --   31  128.543 req   9.263 auth   Chrome/Windows (3 may), meta-externalads,
+    --                                  pimeyes-downloader-api
+    --   33  254 req       0 auth
+    --   35  4.003 req     0 auth       GeedoProductSearch, MJ12bot
+    --   36  9.039 req     0 auth       Pinterestbot, "crawler"
+    --   43  40.741 req  100 auth
+    --   45  48.930 req    0 auth       Amazonbot
+    --   49  24.705 req    0 auth       SERankingBacklinksBot
+    --   50  356 req       0 auth       Apache-HttpClient (Java)
+    --   52  5.562 req     0 auth       YisouSpider, QlyzeBot
+    --
+    -- Nguong `> 30` cat DUNG GIUA mot dai co 9.263 request cua phien da dang
+    -- nhap that — 94,5% toan bo FP cua truc nay nam trong MOT gia tri. Tu 33
+    -- tro len la bot tu xung ten, auth ~ 0. Doi 30 -> 31 bo 94,5% FP ma khong
+    -- tha mot ho bot nao.
+    --
+    -- CON LAI, ghi ra de khong ai tuong da sach: 544 request auth van bi phat,
+    -- rai o 43/61/66/75/86/87 (dai 61 tren cloud183-139 la 227/228 auth — mot
+    -- nhom nguoi dung that o 61 cipher). Do la 0,05% luu luong. Neu con sinh
+    -- chuyen thi huong dung la HA DIEM 0.3, khong phai day tran len tiep — vi
+    -- `miss = max(...)`, ha xuong duoi 0.3 se doi thu tu voi `curve_score`.
+    --
+    -- 31 KHONG phai so cipher cua Chrome truc tiep (Chrome that nam o dai 15,
+    -- dai dong nhat toan dan may). Gia thuyet: middlebox soi TLS (proxy doanh
+    -- nghiep / diet virus) chao ho ClientHello cua no. CHUA kiem, va khong can
+    -- kiem de ra quyet dinh nay: 9.263 request dang nhap that la du.
+    --
+    -- `cipher_count < 5` la nguong duoc GHIM tu phia con lai: `transport/tls/
+    -- ja3.lua` chi bo co `partial` khi bat duoc >= MIN_PLAUSIBLE_CIPHERS cipher,
+    -- va `contract_test` muc 10b kiem hai con so do khong lech nhau. Doi so 5 o
+    -- day thi phai doi ca ben kia.
     local _, cipher_count = id_set(cipher_s)
     local cipher_score = 0.0
     if cipher_count < 5 then
         cipher_score = 0.6
-    elseif cipher_count > 30 then
+    elseif cipher_count > 31 then
         cipher_score = 0.3
     end
 

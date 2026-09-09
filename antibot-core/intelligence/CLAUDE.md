@@ -67,6 +67,13 @@ enforcement.engine.run           → effective_score, decide action
 - `top_signals` array: keep at 3 entries, used by explain.lua + antibot.log
 
 ## Update log
+- 2026-09-09 — **`ja3_allowlist`: trần cipher `> 30` → `> 31`. Hiệu chỉnh TRƯỚC khi lật `ja3_cipher = "on"`, không phải sửa lỗi đang chạy.**
+  - Nhánh này **chưa từng chạy một lần nào** — `run()` thoát sớm ở `ctx.ja3_partial`, mà cờ đó luôn `true` ở nấc `off`/`probe`. Nên đây là hiệu chỉnh dự phòng: lật `"on"` là bật nó cho toàn bộ lưu lượng cùng lúc, trọng số 50.
+  - **Đo 09-09, 5 máy, 997.492 dòng có JA3.** `cipher > 30` chiếm **290.614 (29,1%)** lưu lượng, trong đó **9.807** request có `richness >= 0.5` (phiên đăng nhập thật). Một luật bắn vào 29% lưu lượng không phải bộ phân biệt.
+  - **94,5% FP nằm trong ĐÚNG MỘT giá trị.** Dải `31`: 128.543 request, **9.263** auth, UA phổ biến nhất trong nhóm auth là Chrome/Windows trên 3/5 máy. Từ `33` trở lên là bot tự xưng tên (Amazonbot 45, SERankingBacklinksBot 49, MJ12bot 35, Pinterestbot 36, YisouSpider/QlyzeBot 52, Apache-HttpClient 50) với auth ≈ 0. Ngưỡng cũ cắt đúng giữa dải browser.
+  - **Còn lại 544 request auth vẫn bị phạt**, rải ở 43/61/66/75/86/87 — dải `61` trên cloud183-139 là 227/228 auth, một nhóm người dùng thật ở 61 cipher. Đó là 0,05% lưu lượng. Nếu còn sinh chuyện thì hướng đúng là **hạ điểm 0.3**, không phải đẩy trần lên tiếp: `miss = max(...)` nên hạ xuống dưới 0.3 sẽ đổi thứ tự với `curve_score`.
+  - **Chưa giải thích được, và không cần để ra quyết định:** 31 không phải số cipher của Chrome trực tiếp (Chrome thật nằm ở dải 15, dải đông nhất toàn đàn máy). Giả thuyết chưa kiểm: middlebox soi TLS chào hộ ClientHello.
+  - **Quan sát phụ, đáng nghi, CHƯA xác minh:** ở dải 31, UA phổ biến nhất *trong nhóm auth* là `meta-externalads` trên cloud183-139 (2.537) và `pimeyes-downloader-api` trên cloud28-246 (132). Nếu bot đạt được `richness >= 0.5` chỉ bằng cách giữ cookie thì `auth_session_cap` là một đường vòng — cần đo riêng, xem `enforcement/CLAUDE.md`.
 - 2026-09-06 — **Dọn cụm tín hiệu chết: 4 module xoá, 2 tín hiệu gỡ khỏi bảng trọng số. Không đổi hành vi.**
   - **Nguyên tắc dùng để quyết:** một tín hiệu chỉ là "chết" khi **không nơi nào đọc đầu ra của nó**, chứng minh bằng grep toàn cây. Bốn thứ dưới đây đều thoả, và đều tốn CPU/Redis mỗi request để không đổi lấy gì.
   - **`scoring/signal_merge.lua` + `scoring/context_vector.lua` XOÁ.** Chạy trên MỌI request đã chấm điểm, dựng `ctx.signals` / `ctx.context_multipliers` / `ctx.is_api_request` — cả ba **chỉ được ghi**. `compute.lua` đi thẳng từ `DEFAULT_WEIGHTS` + `get_signal()`, không chạm tới. **Một tầng chết che một tầng chết:** chúng là hai nơi duy nhất đọc `ja3_rep`, khiến tín hiệu đó trông như "có người dùng".

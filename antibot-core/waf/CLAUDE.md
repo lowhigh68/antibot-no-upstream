@@ -338,7 +338,7 @@ Gọi từ `run_pre` **sau** phép khớp luật đường dẫn và **bỏ qua 
 
 Mặc định nginx là 8k/16k, nghĩa là **hôm nay** body 16k–64k đã bị ghi ra đĩa rồi mới đọc lại. Nâng lên 64k **giảm** một vòng ghi-đọc đĩa cho nhóm đó, kể cả khi không ai soi. Bộ đệm cấp cho **từng request có body và chỉ trong lúc đọc**, không cấp trước theo `worker_connections`.
 
-64k là **mốc khởi đầu, không phải kết luận**. Cột `blen=`/`spill=` sẽ cho phân bố thật để chỉnh lại có căn cứ.
+**ĐÃ CÓ SỐ, 09-09.** `wafstat.sh` mục 8 trên 5 máy (23,5 giờ, ~100.000 POST): **mọi** lượt spill đều có `Content-Length`, và **368 request chunked không spill lần nào**. Giả thuyết ghi trong `nginx.conf` — "chỉ request KHÔNG có Content-Length mới rơi về buffer" — **ngược hẳn**. Ngưỡng thật là **8K**, không phải 16k: trên cloud186-126 và cloud183-139 số spill khớp chính xác tổng ba nhóm ≥8K (101 = 18+38+45 và 14 = 2+10+2). Directive đã bật lại; nó xử lý dải 8k–64k = **1.115/1.215 lượt spill mỗi ngày** toàn đàn máy. Phần >64k (239 lượt) vẫn spill và đó là đúng — body lớn nhất đọc được là 3,5 MB.
 
 ## waf.log
 
