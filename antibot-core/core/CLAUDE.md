@@ -43,6 +43,57 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+- 2026-09-09 — **Đo xong, gỡ telemetry. Và ba lần đo trước đều sai vì cùng một lý do.**
+  - **Kết quả cuối, cửa sổ 22 giờ liền mạch, 22 442 kết nối H2 trên 5 máy:**
+
+    | | trước 73b413d | sau |
+    |---|---|---|
+    | churn H2 (gộp) | 24,5% | **4,1%** |
+    | `h2s` đơn độc trong số churn H2 | chủ đạo | **2/917 = 0,22%** |
+    | đối chứng H1 — churn quy về `ua` | 98,5% | **97,8%** (2857/2920) |
+    | `kn doi IP` (nhiễm bẩn khoá `pid:conn`) | — | **0/27 243** |
+
+  - **BA LẦN ĐO TRƯỚC ĐÓ ĐỀU CÓ LỖI, và cả ba cùng một hình dạng** — hai loại giá
+    trị đi chung một cột, đúng con bug mà bản vá `73b413d`/`98f602f` sinh ra để
+    đuổi. Ghi ra vì đây là bài học về DỤNG CỤ ĐO, không phải về production:
+    1. **Nhóm `?` = cookie fast-path.** `init.lua:134` gán `ctx.fp_light = cookie`
+       rồi trả về ở dòng 206, **trước** `run_steps(STEPS_COMMON)` ở 209. Nên `fpl=`
+       của những dòng đó là **giá trị cookie**, không phải `md5(ip|ua|asn|ja3)`, và
+       không có transport nên `h2=nil`/`ja3=-`/`asn=-`. Một kết nối trộn hai loại
+       sẽ thấy `fpl` nhảy — script đếm đó là churn. 714 kết nối, 391 "churn", và
+       **100% trong số đó mang nhãn `asn`** (tất nhiên: fast-path không có ASN).
+    2. **Mục 5 dùng MAX của `richness`** trên cả kết nối. Bot xoay UA có identity
+       khác nhau từng request; chỉ cần MỘT request nhìn giàu là cả kết nối bị dán
+       nhãn "đã đăng nhập" — đúng những kết nối churn cao nhất. Phải dùng MIN.
+    3. Hai lỗi trên cộng dồn đúng vào nhóm cần đo nhất: **admin đã đăng nhập CHÍNH
+       LÀ nhóm có cookie verified**, nên kết nối của họ gần như chắc chắn trộn hai
+       loại. Con số "auth_endpoint đã đăng nhập churn 8,7% (08-09) / 19,8% (09-09)"
+       **đều là ảo**.
+  - **Số thật sau khi lọc cả hai lỗi + tách cột "trong đó UA đổi"** — admin thật
+    KHÔNG đổi UA giữa một kết nối, nên chỉ cột UA-ổn-định mới là churn chưa giải
+    thích được:
+
+    | | n | churn | UA đổi | **churn UA ổn định** |
+    |---|---|---|---|---|
+    | `auth_endpoint` đã đăng nhập | 120 | 26 | 17 | **9 (7,5%)** |
+    | `interaction` đã đăng nhập | 384 | 41 | 35 | **6 (1,6%)** |
+
+    15 kết nối trên toàn đàn máy. **Ca FP gốc (`enforcement/CLAUDE.md` 2026-07-06)
+    không còn bị churn `fp_light` dẫn dắt nữa.**
+  - **`khong-ro` có nguyên nhân xác định, không phải bí ẩn:** `logger.lua` ghi
+    `ua_raw:sub(1,120)` còn `build_light` băm UA **đầy đủ**. Hai UA giống nhau 120
+    ký tự đầu → cột `ua=` y hệt mà hash khác. 43 ca (33 trên cloud186-126). UA
+    Chrome hiện đại ~110-130 ký tự nên vượt 120 là chuyện thường. Đây là **điểm mù
+    của phép đo**, và nó giải thích luôn 2 ca `h2s` đơn độc còn lại.
+  - **Đã gỡ khối telemetry `fpl/h2s/conn/creq/slen/peer/asn`** khỏi `logger.lua`
+    (~70 byte/dòng × ~130k dòng/ngày/máy). Mất theo: `do_churn.sh` không chạy được
+    nữa. Muốn đo lại thì `git revert` commit này rồi deploy — rẻ hơn là giữ nó
+    chạy mãi cho một câu hỏi đã trả lời.
+  - **Còn mở, KHÔNG phải lỗi:** cloud183-139 churn H2 **11,2%**, nhưng 596/604 =
+    98,7% dính `UA`. Đó là bot xoay UA trên H2 — `fp_light` đổi theo UA là ĐÚNG,
+    một UA khác là một tuyên bố danh tính khác. cloud28-246 có một nhóm **cookie
+    giàu + UA xoay** (32/34 churn `interaction` đã-đăng-nhập): giống phát lại
+    session hơn là FP, nhưng đó là câu hỏi bảo mật riêng, không thuộc việc này.
 - 2026-09-07 — **`fingerprint/build_light.lua` — `h2_sig` bị loại khỏi băm `fp_light`. Nó là dấu vân tay của REQUEST, không phải của client.**
   - **Phép đo (5 máy, trong phạm vi TỪNG KẾT NỐI TLS):** cùng `conn` = `worker_pid:$connection` thì chắc chắn cùng client tại thời điểm đó, nên không dính bẫy CGNAT hay `identity = md5(ip+ua_norm)` gộp cả văn phòng. Quy trách nhiệm đầy đủ trên 1835 kết nối có churn:
 

@@ -557,76 +557,6 @@ function _M.run(ctx)
         beacon_state = ctx.beacon_received and "1" or "0"
     end
 
-    -- ── TELEMETRY ĐO CHURN `fp_light` (2026-09-07) — CHỈ ĐẾM, không chấm điểm ──
-    --
-    -- Câu hỏi: `h2_sig` có mang dữ liệu THEO-TỪNG-REQUEST không, khiến
-    -- `fp_light` (luc do = md5(ip|ua|asn|ja3|h2_sig)) đổi giữa hai request của CÙNG một
-    -- client? Nếu có thì `sess:<fp_light>` bị cắt vụn và `sess_len` không bao
-    -- giờ lớn lên được.
-    --
-    -- VÌ SAO ĐO TRONG PHẠM VI MỘT KẾT NỐI: cùng `conn` thì chắc chắn cùng
-    -- client tại thời điểm đó. Không phải giả định gì về identity ⇒ tránh được
-    -- bẫy CGNAT và `identity = md5(ip+ua_norm)` gộp cả văn phòng làm một
-    -- (xem `core/CLAUDE.md` 2026-07-21).
-    --
-    -- PHÉP ĐO TRƯỚC ĐÓ (do_fpchurn, so `session_richness` giữa H2 và H1) KHÔNG
-    -- LIÊN QUAN tới câu hỏi này — không phải "bằng chứng yếu", mà là không có
-    -- đường nhân quả: `core/session_richness.lua` tính từ cookie của CHÍNH
-    -- request cộng `richness:max:<identity>`, khoá theo **identity**. Nó không
-    -- thể phản ứng với churn `fp_light` theo chiều nào cả. Trường đọc
-    -- `sess:<fp_light>` là `ctx.sess_len` (`detection/session/session_load.lua`),
-    -- nên nó mới là cột đúng.
-    --
-    -- Bỏ qua request không có `fp_light` (class `resource` skip tầng
-    -- fingerprint): không có fp_light thì không có gì để nói về churn fp_light.
-    --
-    -- TẠM THỜI. Gỡ sau khi kết luận — mỗi dòng tốn ~50 byte.
-    -- `peer=` LÀ CỘT BẮT BUỘC CỦA PHÉP ĐO NÀY, không phải phụ liệu.
-    -- Toàn bộ lập luận "cùng conn ⇒ cùng client" SỤP ĐỔ khi có reverse proxy
-    -- ở giữa: một kết nối HTTP/2 từ edge Cloudflare tới origin chở request
-    -- của NHIỀU người dùng cuối. Khi đó `fpl` khác nhau trong cùng `conn` là
-    -- chuyện đương nhiên, không phải churn — tức nhiễu theo chiều TẠO RA
-    -- churn giả, đúng chiều làm ta kết luận sai.
-    --
-    -- `$realip_remote_addr` giữ nguyên nguồn TCP thật kể cả sau khi module
-    -- realip ghi đè `$remote_addr` (chính `nginx/CF/cloudflare-realip.conf`
-    -- ghi rõ ngữ nghĩa này). So nó với `ctx.ip`:
-    --   "-"  = trùng ⇒ khách nối THẲNG ⇒ dòng này dùng được để kết luận
-    --   <ip> = khác ⇒ qua proxy ⇒ PHẢI LOẠI khỏi phép đo, và còn cho biết
-    --          proxy nào để tra tiếp
-    --   "?"  = biến không có (module realip không nạp) ⇒ không kết luận được
-    -- Cách này tổng quát hơn cờ riêng cho Cloudflare: đúng với mọi reverse
-    -- proxy, và đúng cả khi realip đang tắt.
-    local churn_str = ""
-    if ctx.fp_light then
-        local peer = ngx.var.realip_remote_addr
-        local peer_s
-        if not peer or peer == "" then      peer_s = "?"
-        elseif peer == (ctx.ip or "") then  peer_s = "-"
-        else                                peer_s = peer end
-
-        -- `asn=` là thành phần CUỐI CÙNG của `fp_light` chưa quan sát được.
-        -- Sau 73b413d băm còn `ip|ua|asn|ja3`; ba cái kia đã có cột riêng,
-        -- nên mọi churn không giải thích được đều dồn vào đây — đó chính là
-        -- nhãn `khong-ro` và ca `h2s` lẻ loi ở cloud183-139. Ghi ĐÚNG thứ
-        -- `build_light` đọc (`ctx.asn.asn_number`), không phải tên tổ chức:
-        -- một lần tra hụt sẽ lật `components[3]` sang sentinel `NO_ASN` và
-        -- đổi hash, mà nhìn tên tổ chức thì không thấy.
-        local asn_s = (ctx.asn and ctx.asn.asn_number)
-                      and tostring(ctx.asn.asn_number) or "-"
-
-        churn_str = string.format(
-            " fpl=%s h2s=%s conn=%s:%s creq=%s slen=%d peer=%s asn=%s",
-            tostring(ctx.fp_light):sub(1, 8),
-            ctx.h2_sig and tostring(ctx.h2_sig):sub(1, 8) or "-",
-            tostring(ngx.worker.pid()),
-            tostring(ngx.var.connection or "-"),
-            tostring(ngx.var.connection_requests or "-"),
-            tonumber(ctx.sess_len) or 0,
-            peer_s,
-            asn_s)
-    end
-
     -- Build structured log line — all fields on one line, space-separated key=value.
     -- richness ∈ [0,1] = ctx.session_richness, trust proxy (cookie payload +
     -- auth header). Log mỗi request để debug/audit; volume control qua daily
@@ -637,7 +567,7 @@ function _M.run(ctx)
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -691,8 +621,7 @@ function _M.run(ctx)
         xf_str,
         sc_str,
         mm_str,
-        waf_str,
-        churn_str
+        waf_str
     )
 
     write_log_line(line)
