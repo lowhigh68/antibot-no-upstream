@@ -565,7 +565,7 @@ function _M.run(ctx)
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
-        " score=%.1f eff=%.1f mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
+        " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
@@ -598,7 +598,23 @@ function _M.run(ctx)
         tonumber(ctx.ja3_cipher_n) or 0,
         tonumber(ctx.ja3_allowlist_miss) or 0,
         ctx.score or 0,
-        ctx.effective_score or 0,
+        -- BA TRẠNG THÁI, không phải hai — cùng con bug đã sửa cho `ja3p=` hôm
+        -- 06-09, nay bắt được ở cột dùng để đọc MỌI quyết định.
+        --   <số> = điểm hiệu dụng đã tính
+        --   -     = CHƯA TỪNG TÍNH (engine thoát sớm)
+        -- `enforcement/decision/engine.lua:_M.run` đặt `ctx.effective_score` ở
+        -- ĐÚNG MỘT chỗ (dòng 538), mà trước đó có HAI lệnh `return`:
+        -- `ctx.whitelisted` và `ctx.good_bot_verified`. Cả hai để trường này là
+        -- `nil`. `or 0` biến `nil` thành `0.0`, y hệt `ja3p=false` từng có
+        -- nghĩa "JA3 đầy đủ" trong khi thật ra là "chưa từng có JA3".
+        --
+        -- Hậu quả đo được 10-09: nhóm `ja3c=100` (16.040 request, 5.911 IP,
+        -- 5 máy) đọc ra `eff=0.0` ở 100% số dòng trong khi `score` trung bình
+        -- 8,9–13,3 và đỉnh 35,1. Đọc "eff=0" thành "hệ thống chấm 0 điểm" là
+        -- kết luận ngược: hệ thống KHÔNG chấm. Muốn biết vì sao thì đọc
+        -- `reason=` (`whitelisted` / `good_bot_verified` / …), không phải `eff=`.
+        (ctx.effective_score == nil) and "-"
+            or string.format("%.1f", ctx.effective_score),
         tostring(ctx.score_multiplier or 1.0),
         tostring(ctx.action or "-"),
         beacon_state,

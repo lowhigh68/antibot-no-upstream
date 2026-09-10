@@ -85,6 +85,11 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-09-10 — **CỬA THỨ NĂM của cùng con bug, lần này ở cột đọc mọi quyết định: `eff=`.**
+  - `_M.run` đặt `ctx.effective_score` ở **đúng một chỗ** (`engine.lua:538`), mà trước đó có **hai lệnh `return`**: `ctx.whitelisted` và `ctx.good_bot_verified`. Cả hai để trường đó là `nil`. `async/logger.lua` ghi `ctx.effective_score or 0` ⇒ **`eff=0.0` mang hai nghĩa lẫn nhau**: "điểm hiệu dụng bằng 0" và "chưa từng tính".
+  - **Đo được, và nó suýt dẫn tới kết luận ngược.** Nhóm `ja3c=100` (16.040 request, 5.911 IP, 5 máy, cửa sổ 18,8 giờ) đọc ra `eff=0.0` ở **100%** số dòng, trong khi `score` trung bình 8,9–13,3 và đỉnh **35,1**. Đọc thẳng thì thành "hệ thống chấm chúng 0 điểm"; sự thật là **hệ thống không chấm**. Muốn biết vì sao phải đọc `reason=`, không phải `eff=`.
+  - Nay `eff=` có ba trạng thái: `<số>` = đã tính, `-` = chưa từng tính. Cùng bản vá đã làm cho `ja3p=` hôm 06-09 (`transport/CLAUDE.md`), cùng con `false`-vs-`nil` đã cắn ở `waf/body.lua` (`php = false`).
+  - **`score=` KHÔNG bị ảnh hưởng, và đó là bằng chứng phân biệt:** `compute.lua` chạy ở tầng intelligence, **trước** enforcement, nên `ctx.score` đã có giá trị thật khi engine thoát sớm. Một dòng `score>0` kèm `eff=-` nghĩa là điểm đã tính xong rồi bị một tầng tin cậy cho qua.
 - 2026-09-09 — **`auth_session_cap` là một đường vòng: 98,6% số lần nó bắn là để miễn trừ cho bot.**
   - **Đo 24h, 5 máy.** Tầng này hạ `block`/`challenge` xuống `monitor` **1.265 lần**; **1.247 (98,6%) có UA bot**, riêng `ClaudeBot/1.0` **1.246 lần** trên cloud28-246. Số lần nó bảo vệ một trình duyệt thật: **5**. Chú thích cũ ngay trên nhánh — *"Credential-stuffing bots have richness=0 → never reach this tier"* — sai, và sai theo hướng mở cửa.
   - **Gốc nằm ở `core/session_richness.lua`, không nằm ở đây.** Nó không kiểm cookie có hợp lệ không, chỉ cộng: 50% số byte (bão hoà 500) + 30% số cookie (bão hoà 4) + 0,3 nếu có `Authorization` + 0,2 nếu có CSRF header. **Bốn cookie rác tổng 500 byte = 0,80.** Thêm nữa `richness:max:<identity>` lưu Redis 1 giờ và **tự gia hạn mỗi lần dùng**, nên đạt một lần là giữ mãi chừng nào còn gửi request.
