@@ -69,11 +69,38 @@ end
 
 -- Path 2 (analyzer attest) helpers.
 -- Browser-pattern detection — UA looks like a real browser (Mozilla + WebKit + Chrome/Firefox).
+-- Trinh duyet that = `Mozilla/` + MOT TOKEN DONG CO DUNG HINH.
+--
+-- Ban cu doi `AppleWebKit/` AND (`Chrome/` OR `Firefox/`). Nhanh `Firefox/`
+-- KHONG BAO GIO voi toi duoc: UA Firefox khong he co `AppleWebKit/` — no la
+-- `Gecko/20100101 Firefox/x`. Phep AND do con loai OAN ca Safari (co
+-- AppleWebKit, khong co Chrome/ lan Firefox/), Chrome tren iOS (`CriOS/`) va
+-- Firefox tren iOS (`FxiOS/`). Ten ham la "trong giong trinh duyet" nhung
+-- nghia THAT la "Chromium tren desktop/Android".
+--
+-- Ban nay khoa vao TOKEN DONG CO chu khong phai TEN THUONG HIEU — dung nguyen
+-- tac ghi o dau file nay: khong hardcode ten. Hai dong co phu het trinh duyet
+-- dang song:
+--   AppleWebKit/  WebKit + Blink: Safari, Chrome, Edge, Opera, moi thu tren iOS
+--   Gecko/        Firefox. CO dau `/` — Chromium ghi `(KHTML, like Gecko)`
+--                 khong co dau gach, nen hai cai khong nham nhau.
+--
+-- No RONG HON ban cu, va do la CHU Y. Noi DUY NHAT doc `ctx.browser_ua_pattern`
+-- la `analyzer_attest` (detection/bot/init.lua:233), va phia sau no con BA cong
+-- nua: phai co marker cong cu o cuoi chuoi UA, phai co PTR, va PTR phai thuoc
+-- mot nha cung cap dam may. Tran cua duong nay la `monitor`, KHONG phai bo qua.
+-- Vi du ve hai cong sau con giu: UA kieu ClaudeBot
+-- (`Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0;
+-- +claudebot@anthropic.com)`) NAY qua duoc cong nay, nhung duoi chuoi cua no
+-- khong phai token PascalCase nen truot cong marker, va do 09-10 cho thay no
+-- khong co PTR nen truot luon cong PTR.
+--
+-- Noi rong cong dau = bot phan tich chay Safari/Firefox thoi bi cham diem
+-- nham. Dung huong uu tien FP cua du an.
 local function is_browser_pattern(ua)
-    return ua:find("Mozilla/", 1, true) ~= nil
-       and ua:find("AppleWebKit/", 1, true) ~= nil
-       and (ua:find("Chrome/", 1, true) ~= nil
-            or ua:find("Firefox/", 1, true) ~= nil)
+    if not ua:find("Mozilla/", 1, true) then return false end
+    return ua:find("AppleWebKit/", 1, true) ~= nil
+        or ua:find("Gecko/", 1, true) ~= nil
 end
 
 -- Strict marker extraction (Q23=a).

@@ -1291,5 +1291,76 @@ do
     end
 end
 
+-- ── hanh vi: is_browser_pattern (chay that) ──────────────────────────
+--
+-- NAP TU NGUON, KHONG `require`. `ua_check.lua` mo dau bang
+-- `require "antibot.core.redis_pool"` va `ngx.shared.antibot_ua_cache`, ma
+-- `run.sh` goi `resty` KHONG kem lua_package_path lan shdict do — `loadfile`
+-- ca module se hong VINH VIEN, tuc mot test do mai mai ma khong ai doc nua.
+-- Ham nay THUAN (chi doc tham so `ua`, khong upvalue) nen trich than ham ra
+-- `load()` la chay that duoc. Ai them upvalue vao no thi goi se no => bao do,
+-- dung y.
+io.write("\nhanh vi: is_browser_pattern (chay that)\n")
+local uc_src = slurp(SRC .. "detection/bot/ua_check.lua")
+local fn_src = uc_src and uc_src:match("(local function is_browser_pattern.-\nend)")
+if not fn_src then
+    bad("  SAI  khong trich duoc `is_browser_pattern` tu ua_check.lua\n")
+else
+    local chunk, lerr = load(fn_src .. "\nreturn is_browser_pattern")
+    local ok_c, f = false, nil
+    if chunk then ok_c, f = pcall(chunk) end
+    if not ok_c or type(f) ~= "function" then
+        bad("  SAI  khong nap duoc `is_browser_pattern`: %s\n", tostring(lerr))
+    else
+        -- {nhan, UA, ket qua mong doi}
+        local ua_cases = {
+            { "Chrome desktop",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " ..
+              "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36", true },
+            -- DAY la nhanh CHET cua ban cu: UA Firefox khong he co
+            -- `AppleWebKit/`, nen `AppleWebKit AND (… or Firefox)` luon sai.
+            { "Firefox desktop",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) " ..
+              "Gecko/20100101 Firefox/119.0", true },
+            -- Ba ca duoi day bi ban cu loai OAN: co AppleWebKit nhung khong
+            -- co token `Chrome/`.
+            { "Safari macOS",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " ..
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 " ..
+              "Safari/605.1.15", true },
+            { "Chrome tren iOS (CriOS)",
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " ..
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/119.0.0.0 " ..
+              "Mobile/15E148 Safari/604.1", true },
+            { "Firefox tren iOS (FxiOS)",
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " ..
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/119.0 " ..
+              "Mobile/15E148 Safari/605.1.15", true },
+            { "Edge", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " ..
+              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 " ..
+              "Safari/537.36 Edg/139.0.0.0", true },
+            { "curl",            "curl/8.4.0",            false },
+            { "Go client",       "Go-http-client/2.0",    false },
+            { "python requests", "python-requests/2.31.0", false },
+            { "chuoi rong",      "",                      false },
+        }
+        for _, c in ipairs(ua_cases) do
+            local got = f(c[2]) and true or false
+            if got ~= c[3] then
+                bad("  SAI  is_browser_pattern(%s) = %s, phai %s\n",
+                    c[1], tostring(got), tostring(c[3]))
+            else pass = pass + 1 end
+        end
+        -- TEN THUONG HIEU khong duoc quay lai. Ban cu hardcode `Chrome/` va
+        -- `Firefox/` — vi pham chinh nguyen tac ghi o dau `ua_check.lua`
+        -- ("No specific bot names, company names, or tool names are
+        -- hardcoded") va do la goc cua nhanh chet.
+        if fn_src:find("Firefox/", 1, true) or fn_src:find("Chrome/", 1, true) then
+            bad("  SAI  is_browser_pattern lai hardcode TEN TRINH DUYET.\n" ..
+                "       Khoa vao token dong co (AppleWebKit/ , Gecko/) thay vi ten.\n")
+        else pass = pass + 1 end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
