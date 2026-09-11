@@ -314,6 +314,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# [7] TRANG THAI FIM — CHI DOC. Khong cai cron, khong chay baseline.
+#
+# `waf/scripts/fim.sh` la NUA NGOAI-REQUEST cua tang WAF: thu duy nhat thay
+# duoc mu-plugins tu chay, LFI, va cron/CLI/vao thang Apache — ba duong ma mot
+# WAF theo URI mu hoan toan. Nhung no chay bang CRON, va deploy.sh KHONG cai
+# cron. Khong co gi bat buoc hai thu do gap nhau.
+#
+# DO 2026-09-11: BA TREN NAM may chua tung chay no. Script co mat, dung bit
+# thuc thi, nhung khong manifest va khong lich. Moi dong `fim=` trong waf.log
+# cua ba may do deu la 0 — khong phai vi may sach, ma vi KHONG AI NHIN. Cung
+# ho voi ca `nginx.conf` lech mot dong suot ba ngay (xem buoc dong bo o tren):
+# THU NAM TRONG REPO KHONG TU NO TOI MAY CHU.
+#
+# VI SAO KHONG TU CAI: `baseline` la mot QUYET DINH AN NINH — no cong nhan moi
+# file dang co tren dia la dang tin. Tren may da bi xam nhap, baseline im lang
+# la hop thuc hoa ma doc. Do phai la hanh dong co y cua nguoi van hanh.
+# Buoc nay chi bao dam khong ai con KHONG BIET.
+echo "[7] Trang thai FIM..."
+FIM_STATE_DIR="${FIM_STATE:-/var/lib/antibot/fim}"
+FIM_SH="$TARGET_DIR/waf/scripts/fim.sh"
+fim_cron=$( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } \
+            | grep -c 'fim\.sh' || : )
+fim_cron=${fim_cron:-0}
+if [ ! -s "$FIM_STATE_DIR/manifest.full.txt" ] && [ ! -s "$FIM_STATE_DIR/manifest.hot.txt" ]; then
+    echo "    *** FIM CHUA TUNG CHAY TREN MAY NAY — nua ngoai-request cua WAF dang TAT ***"
+    echo "    Doc ky truoc khi chay: baseline cong nhan moi file HIEN CO la dang tin."
+    echo "      $FIM_SH baseline --hot"
+    echo "      $FIM_SH baseline"
+    echo "    Roi dat lich (vi du):"
+    echo "      */5  * * * * $FIM_SH check --hot"
+    echo "      */30 * * * * $FIM_SH check"
+elif [ "$fim_cron" -eq 0 ]; then
+    echo "    *** CO MANIFEST NHUNG KHONG CO CRON — FIM khong chay dinh ky ***"
+else
+    echo "    OK: co manifest, $fim_cron dong cron goi fim.sh"
+    # Canh bao duong dan CU. `fim.sh` tung nam o `nginx/scripts/`; tren
+    # cloud168-101 con hai dong cron tro vao do, va chung hong im lang tu luc
+    # file doi cho sang `antibot-core/waf/scripts/`.
+    stale=$( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } \
+             | grep -c 'nginx/scripts/fim\.sh' || : )
+    [ "${stale:-0}" -gt 0 ] && \
+        echo "    *** $stale dong cron tro vao duong dan CU nginx/scripts/fim.sh — da hong, nen xoa ***"
+fi
+
+# ---------------------------------------------------------------------------
 # Bao tri Redis - CHI khi co co.
 #
 # Ly do ton tai: mot so khoa Redis lam request THOAT SOM, TRUOC khi code moi
