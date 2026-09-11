@@ -374,6 +374,40 @@ elif [ "$fim_cron" -eq 0 ]; then
     echo "    *** CO MANIFEST NHUNG KHONG CO CRON — FIM khong chay dinh ky ***"
 else
     echo "    OK: co manifest, $fim_cron dong cron goi fim.sh"
+
+    # DEM THEO TUNG TANG, khong dem gop. Ban truoc chi dem so dong chua
+    # `fim.sh`, nen mot may CHI dat lich tang day, MOT NGAY MOT LAN, van duoc
+    # bao "OK" — do la ca da gap that (fim.log 09-06..09-11: sau ngay lien
+    # tiep, khong mot dong `[hot]` nao). Mot buoc kiem bao OK sai thi te hon
+    # khong co buoc kiem nao, vi no dap tat dung cau hoi can hoi.
+    cronlines=$( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } \
+                 | grep 'fim\.sh' | grep -v '^[[:space:]]*#' || : )
+    printf '%s\n' "$cronlines" | sed 's/^/      | /'
+    hot_n=$( printf '%s\n' "$cronlines" | grep -c -- '--hot' || : )
+    full_n=$( printf '%s\n' "$cronlines" | grep 'check' | grep -vc -- '--hot' || : )
+    base_n=$( printf '%s\n' "$cronlines" | grep -c 'baseline' || : )
+
+    if [ "${hot_n:-0}" -eq 0 ]; then
+        echo "    *** KHONG CO CRON CHO TANG NONG (--hot) ***"
+        echo "    Tang day chay thua khong thay the duoc no: WordPress include"
+        echo "    MOI .php trong mu-plugins tren MOI request, nen khong co mot"
+        echo "    request nao de WAF chan — FIM la phong tuyen DUY NHAT o do."
+        echo "      */5 * * * * $FIM_SH check --hot"
+    fi
+    if [ "${full_n:-0}" -eq 0 ]; then
+        echo "    *** KHONG CO CRON CHO TANG DAY ***"
+        echo "      */30 * * * * $FIM_SH check"
+    fi
+    # `baseline` trong cron la thu nguy hiem nhat co the dat o day: no cong
+    # nhan MOI file dang co tren dia la dang tin. Dat dinh ky = tu dong hop
+    # thuc hoa bat ky thu gi vua duoc tha vao, va tu do FIM khong bao gi nua.
+    # Im lang y het luc no khoe manh.
+    if [ "${base_n:-0}" -gt 0 ]; then
+        echo "    *** $base_n dong cron chay 'baseline' — GO NGAY ***"
+        echo "    baseline cong nhan moi file HIEN CO la dang tin. Chay dinh ky"
+        echo "    = moi webshell vua tha vao deu duoc hop thuc hoa o lan chay"
+        echo "    ke tiep, va FIM se im lang y het luc no khoe manh."
+    fi
     # Canh bao duong dan CU. `fim.sh` tung nam o `nginx/scripts/`; tren
     # cloud168-101 con hai dong cron tro vao do, va chung hong im lang tu luc
     # file doi cho sang `antibot-core/waf/scripts/`.
