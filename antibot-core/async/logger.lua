@@ -314,7 +314,22 @@ function _M.run(ctx)
     -- 100%: nó tìm `-` trong khi thực tế là `""`. Chuẩn hoá cả hai về `-`.
     local ua_raw = ctx.ua
     if ua_raw == nil or ua_raw == "" then ua_raw = "-" end
-    local ua_log = ua_raw:sub(1, 120):gsub("[%s\"]", "_")
+    -- 180, KHÔNG phải 120. Token định danh họ client nằm ở CUỐI chuỗi UA, nên
+    -- cắt ở 120 là cắt đúng thứ cần đọc:
+    --   Safari iOS  : `Safari/604.1` bắt đầu ở byte 123 (UA dài 135)
+    --   bot RFC     : `(+http://…/bot.html)` luôn ở cuối
+    --   Applebot    : `(Applebot/0.1; +http://…)` ở byte ~120 trở đi
+    -- Ba lần đọc sai trong phiên 09→10-09 đều do đúng chỗ này:
+    --   1. nhãn `khong-ro` khi quy trách nhiệm churn `fp_light` — hai UA khác
+    --      nhau sau ký tự 120 cho ra cùng một cột `ua=`, khác `fp_light`;
+    --   2. Applebot (28.002 request, 5 máy) bị đọc thành "UA giả Safari" và
+    --      gọi nhầm là botnet suốt hai ngày — đoạn `(Applebot/…)` bị cắt;
+    --   3. đo `h2_order == nil` ra 19% vì `Safari/` của iPhone bị cắt, trong
+    --      khi production đọc `ctx.ua` ĐẦY ĐỦ nên vẫn nhận đúng.
+    -- 180 phủ hết UA trình duyệt thật (WebView Android kèm mã máy ~160).
+    -- Giá: ~20–30 byte/dòng, ~3 MB/ngày/máy — bằng 1/3 khối telemetry churn đã
+    -- gỡ ở 49951d5, và đổi lấy việc cột này thôi nói dối.
+    local ua_log = ua_raw:sub(1, 180):gsub("[%s\"]", "_")
 
     -- ── Nhóm thiết bị + hai header khảo sát ──────────────────────────────
     -- `device_classifier` là bước 10 của STEPS_COMMON (init.lua:64), nên KHÔNG
