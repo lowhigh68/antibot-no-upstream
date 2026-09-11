@@ -46,8 +46,10 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 
 # Nguong gom nhom. Mot ban cap nhat plugin hoac core cham hang tram file cung
 # luc; mot webshell cham DUNG MOT. Nhom dong hon nguong nay gop thanh mot dong
-# tom tat, nhom nho thi liet ke tung file. Day la toan bo co che chong nhieu cua
-# script, va no du vi hai dan so do khac nhau ve BAC do lon.
+# tom tat, nhom nho thi liet ke tung file. Day la co che chong nhieu theo BE
+# RONG, va no du vi hai dan so do khac nhau ve BAC do lon. Co che thu hai, theo
+# THOI GIAN, o $PREVCHG ben duoi — bon file Wordfence thoat duoc cai nay chi vi
+# 4 < 5, khong phai vi chung vo hai.
 GROUP_MAX=5
 
 # ── Bao tin hieu sang WAF ─────────────────────────────────────────────
@@ -184,6 +186,27 @@ done
 # rac va nuot luon moi thay doi ve sau.
 MANIFEST="$STATE/manifest.$tier.txt"
 
+# Tap duong dan da CHG o lan chay TRUOC — co che chong nhieu theo THOI GIAN.
+#
+# Bat bien: mot file doi o HAI lan quet LIEN TIEP la file TRANG THAI cua ung
+# dung, khong phai xam nhap. Wordfence ghi wp-content/wflogs/*.php khong ngung;
+# plugin cache ghi .php khong ngung. Xam nhap thi nguoc lai — no cham mot file
+# DUNG MOT LAN roi thoi.
+#
+# CO Y khong dung danh sach ten thu muc. Danh sach ten sai ca hai chieu: no
+# khong biet plugin cache thu 50 ten gi, con ke tan cong doc duoc danh sach thi
+# biet chinh xac cho nao duoc mien. Bat bien tren khong can biet ten gi het.
+#
+# HAI RANG BUOC giu cho no khong che mat viec that:
+#   - lan doi DAU TIEN cua mot duong dan luon bao o bac day du; chi tu lan thu
+#     hai LIEN TIEP tro di moi ha xuong STATE.
+#   - file MOI (NEW) khong bao gio bi ha bac.
+#
+# Gioi han da biet: file doi cach quang (doi - yen - doi - yen) khong bao gio bi
+# ha; va ke tan cong sua tiep mot file dang on ao thi lan sua thu hai roi xuong
+# STATE — nhung lan thu nhat da bao roi, va dong STATE van nam day du trong $LOG.
+PREVCHG="$STATE/prevchg.$tier.txt"
+
 mkdir -p "$STATE" || { echo "khong tao duoc $STATE" >&2; exit 2; }
 
 # KHOA CHONG CHAY CHONG. Bat buoc khi chay day (moi 15 phut): neu mot lan quet
@@ -223,6 +246,8 @@ if [ "$mode" = "baseline" ]; then
         echo "quet ra 0 file — khong ghi manifest. Kiem FIM_ROOTS=$ROOTS" >&2
         exit 2
     fi
+    # Manifest moi thi moi so sanh CHG truoc do het nghia.
+    : > "$PREVCHG"
     echo "baseline: $n file"
     exit 0
 fi
@@ -274,6 +299,10 @@ awk -F'|' '
 total=$(wc -l < "$diff_out")
 if [ "$total" -eq 0 ]; then
     [ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
+    # PHAI xoa. Khong co CHG nao nghia la moi duong dan deu da yen. Giu lai tap
+    # cu se ha bac nham cho mot file on ao tu thang truoc roi im, nay doi lai —
+    # dung cai lan doi dang duoc bao nhat.
+    [ $dry -eq 0 ] && : > "$PREVCHG"
     # IM LANG khi khong co gi. cron gui mail theo BAT KY dong stdout nao, khong
     # phai theo ma thoat — in "khong co thay doi" moi 15 phut la 96 mail/ngay,
     # va hop thu bi nhan chim thi canh bao that cung chim theo.
@@ -293,12 +322,22 @@ fi
 # plugins/ va themes/: doi thuong xuyen va hop le nen ha xuong ROUTINE.
 # Con lai (web root, wp-config.php, .htaccess ngoai cung) la HIGH.
 #
-# Sap xep theo chuoi muc do cho ra dung thu tu can doc: CRITICAL < HIGH < ROUTINE.
+# Sap xep theo chuoi muc do cho ra dung thu tu can doc:
+#   CRITICAL < HIGH < ROUTINE < STATE   (STATE = file trang thai, xem $PREVCHG)
 marks=$(mktemp) || exit 2
 trap 'rm -f "$new_scan" "$diff_out" "$marks"' EXIT
 
-report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" '
-    function sev(p) {
+report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" '
+    BEGIN {
+        # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
+        # lan chay dau tien (chua co prevchg) di thang qua day.
+        if (prevfile != "")
+            while ((getline _pl < prevfile) > 0) prev[_pl] = 1
+    }
+    function sev(p, t) {
+        # Ha bac TRUOC moi phep phan vung: file trang thai nam trong wp-includes/
+        # thi van la file trang thai. CHI ap cho CHG — NEW khong bao gio bi ha.
+        if (t == "CHG" && (p in prev))       return "STATE"
         if (p ~ /\/wp-content\/uploads\//)    return "CRITICAL"
         if (p ~ /\/wp-content\/mu-plugins\//) return "CRITICAL"
         if (p ~ /\/wp-includes\//)            return "CRITICAL"
@@ -332,7 +371,7 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" '
         return bulk ? "0.5" : "1.0"
     }
     {
-        key = sev($2) "\t" $1 "\t" gkey($2)
+        key = sev($2, $1) "\t" $1 "\t" gkey($2)
         n[key]++
         if (n[key] <= max) item[key] = item[key] $2 "\n"
         # Giu MOI duong dan NEW, khong chi max cai dau — de END con danh dau het.
@@ -439,7 +478,10 @@ if [ "$crit" -gt 0 ] || [ -n "$mark_err" ] || [ $verbose -eq 1 ]; then
     printf '%s\n' "$report"
 fi
 
-[ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
+if [ $dry -eq 0 ]; then
+    cp "$new_scan" "$MANIFEST"
+    awk -F'|' '$1 == "CHG" { print $2 }' "$diff_out" > "$PREVCHG"
+fi
 
 [ "$crit" -gt 0 ] && exit 1
 exit 0
