@@ -56,6 +56,22 @@ local function h2_bot_confidence(ctx)
         end
     end
 
+    -- ĐỌC CHO ĐÚNG: đây KHÔNG phải quan sát tầng vận chuyển. `h2_order` do
+    -- `pseudo_header.infer_from_ua()` suy ra từ **User-Agent** — một chuỗi do
+    -- client tự chọn — chứ không đọc từ dây (repo ghi sẵn ở `build_light.lua`:
+    -- "`h2_order` CHƯA ĐƯỢC ĐO"). Nên `h2_order == nil` nghĩa là **"UA không
+    -- nằm trong bảng mẫu"**, không phải "không đọc được thứ tự header".
+    --
+    -- GIỮ LẠI, có số liệu: đo 2026-09-11, 5 máy, 3,7 giờ, 107.256 request H2 —
+    -- nhóm `nil` còn 9,8% và gần như toàn bộ là crawler TỰ KHAI TÊN (AhrefsBot,
+    -- ClaudeBot, Baiduspider, facebookexternalhit, Wget, ChatGPT-User, GPTBot,
+    -- YandexBot, TurnitinBot…). Với chúng, 0,1 là đúng.
+    -- Nhóm `richness >= 0.5` lọt vào đây còn 470, và phần lớn là WebView iOS —
+    -- đã xử bằng mẫu `AppleWebKit/605` trong `pseudo_header.lua`.
+    --
+    -- Trước khi sửa: 19% và 17.988 phiên đăng nhập. Cả hai con số đó là ẢO,
+    -- do cột `ua=` bị cắt ở 120 ký tự (xem `aca6bef`). Ai định chỉnh nhánh này
+    -- thì đo lại trước — đừng lấy số cũ.
     if ctx.h2_order == nil then score = score + 0.1 end
 
     if ctx.h2_request_anomaly then score = score + 0.2 end

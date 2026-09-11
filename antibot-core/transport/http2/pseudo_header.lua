@@ -94,6 +94,31 @@ local function infer_from_ua(ua)
         return "mpsa", "ua_node"
     end
 
+    -- WebKit CỦA APPLE nhưng UA không có token `Safari/`.
+    --
+    -- Đây là trình duyệt NHÚNG trong ứng dụng iOS (Facebook, Instagram, Zalo…):
+    -- chúng bỏ cả `Safari/` lẫn `Version/`, chỉ còn `Mobile/<build>` rồi tới
+    -- phần `[FBAN/…]`. Người dùng thật, và repo đã biết nhóm này ở chỗ khác
+    -- (`req_classifier` có lớp `inapp_browser`, `ctx.inapp_likeness`).
+    --
+    -- ĐO 2026-09-11, cửa sổ 3,7 giờ sau khi sửa cắt UA (aca6bef), 5 máy,
+    -- 107.256 request H2: `h2_order = nil` còn 10.557 (9,8%), và **470** trong
+    -- số đó có `richness >= 0.5`. Phần lớn là iPhone `AppleWebKit/605`. Không
+    -- có mẫu này thì mỗi request của họ ăn 0,1 × 55 = **5,5 điểm**.
+    --
+    -- Đây là ca THỨ BA của cùng một lỗi trong chính file này — sau Firefox
+    -- (+13,75 oan) và client Go (+13,75 oan): một họ client thật không có
+    -- trong bảng thì bị tính là đáng ngờ.
+    --
+    -- CHỈ nhận `AppleWebKit/605` (engine của Apple, và `mspa` ⇒ `tls13 = true`
+    -- khớp vì WebView iOS dùng TLS của hệ thống). **KHÔNG** mở rộng sang
+    -- `AppleWebKit/537.36`: ClaudeBot, GPTBot và ChatGPT-User đều khai đúng
+    -- chuỗi đó mà không có `Chrome/`, nhận nhầm chúng là trình duyệt là tự tay
+    -- gỡ một tín hiệu đang đúng.
+    if ua:find("AppleWebKit/605", 1, true) then
+        return "mspa", "ua_webkit_inapp"
+    end
+
     return nil, "ua_unknown"
 end
 
