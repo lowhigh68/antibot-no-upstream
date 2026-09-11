@@ -716,8 +716,34 @@ function _M.run(ctx)
     -- làm tầng tin cậy về XÁC THỰC. Sửa tận gốc là đòi bằng chứng xác thực
     -- thật (header `Authorization`, hoặc cookie phiên đã đối chiếu), chứ không
     -- phải đắp thêm cổng. Cổng dưới đây bịt lỗ đo được, không chữa gốc.
+    -- CỔNG THỨ HAI: phải CÓ User-Agent. Đo 2026-09-11, 5 máy, 743 lượt tầng
+    -- này bắn — trong đó **317 lượt trên cloud171-96 có `ua=-`**, tức client
+    -- KHÔNG gửi User-Agent. Không trình duyệt nào làm vậy, nên chúng không thể
+    -- là "phiên đăng nhập của người thật" — thứ duy nhất tầng này tồn tại để
+    -- bảo vệ. Chúng không tự xưng bot nên cổng `good_bot_claimed` không chạm
+    -- tới: đúng phạm vi của cổng đó, và đây là phần còn lại.
+    --
+    -- VÌ SAO CHỈ KIỂM "CÓ UA" chứ không kiểm "UA trông như trình duyệt":
+    -- `detection/bot/ua_check.lua:is_browser_pattern` đòi `Mozilla/` AND
+    -- `AppleWebKit/` AND (`Chrome/` OR `Firefox/`). Firefox **không có**
+    -- `AppleWebKit/` nên nhánh `Firefox/` không bao giờ chạy được, và Safari
+    -- cũng trượt vì không có `Chrome/`. Dùng cờ đó làm cổng là tước miễn trừ
+    -- của mọi admin Firefox/Safari — đúng cái FP tầng này sinh ra để chặn.
+    -- (Khiếm khuyết đó ghi lại ở `detection/CLAUDE.md`, chưa sửa vì nó còn
+    -- được `analyzer_attest` dùng và sửa là đổi hành vi đường khác.)
+    --
+    -- CÒN HỞ, đã đo, chưa bịt: 295 lượt trên cloud186-126 dùng MỘT UA duy nhất
+    -- `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+    -- like Gecko)` — cụt ngay sau `like Gecko`, không có `Chrome/` lẫn
+    -- `Safari/`. Chrome thật không bao giờ gửi chuỗi đó. Một tác nhân, một
+    -- chuỗi: đó là việc của vận hành (chặn theo UA), không phải của một vị từ
+    -- tổng quát — dựng vị từ "UA phải có tên sản phẩm trình duyệt" là quay lại
+    -- đúng cái bảng-cứng đã cắn `pseudo_header.lua` ba lần.
+    local has_ua = (ctx.ua ~= nil and ctx.ua ~= "")
+
     if (ctx.session_richness or 0) >= AUTH_SESSION_RICHNESS
        and not ctx.good_bot_claimed
+       and has_ua
        and (action == "block" or action == "challenge") then
         ngx.log(ngx.INFO,
             "[engine] auth_session cap action=", action, "->monitor",

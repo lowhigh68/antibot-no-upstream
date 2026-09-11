@@ -85,6 +85,15 @@ log_by_lua → async/logger writes /var/log/antibot/antibot.log
 - ban_store_write MUST use SAME id source order as l7/ban/ban_store.lua read
 
 ## Update log
+- 2026-09-11 — **`auth_session_cap` cổng thứ hai: phải CÓ User-Agent. Và beacon đã bị loại bằng số liệu.**
+  - **Beacon KHÔNG dùng được.** Giả thuyết: đòi `ctx.beacon_received` (JS đã chạy) làm chứng cứ bổ trợ. Đo 5 máy, **743 lượt `reason=auth_session_cap`, KHÔNG MỘT lượt nào có `beacon=1`** (439 `skip`, 304 `0`). Lý do: tầng này chỉ bắn trên verdict `block`/`challenge`, mà phần lớn rơi vào XHR/`admin-ajax`/`api_callback` — không phải HTML nên beacon chưa từng được tiêm. Đã loại theo đúng luật dừng đặt ra TRƯỚC khi xem số.
+  - **Nhưng phép kiểm hồi quy lại cho ra bằng chứng khác.** Sau khi deploy `dc06657` cho cả 5 máy, ba máy bật từ 0 lên 122/295/317 lượt — mà một bản vá chỉ GỠ miễn trừ thì không thể TẠO thêm sự kiện. Soi UA: `isbot()` báo 0, nhưng chúng **không phải trình duyệt**:
+    - **cloud171-96, 317 lượt: `ua=-`** — client không gửi User-Agent.
+    - **cloud186-126, 295 lượt: MỘT UA duy nhất** `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)` — cụt ngay sau `like Gecko`, không `Chrome/`, không `Safari/`.
+    - Cả hai **không tự xưng bot** nên cổng `good_bot_claimed` không chạm tới. Đúng phạm vi cổng đó; đây là phần còn lại.
+  - **Vá: thêm điều kiện `ctx.ua ~= nil and ctx.ua ~= ""`.** Không trình duyệt nào bỏ User-Agent, nên rủi ro FP bằng 0, và nó gỡ 317/612 (52%) phần dư đo được.
+  - **KHÔNG dùng `ctx.browser_ua_pattern` làm cổng** dù nó loại đúng cả hai nhóm: `is_browser_pattern` đòi `AppleWebKit/` nên **Firefox không bao giờ thoả** (UA Firefox không có chuỗi đó) và Safari cũng trượt. Dùng là tước miễn trừ của mọi admin Firefox/Safari. Xem `detection/CLAUDE.md` 2026-09-11.
+  - **CÒN HỞ, cố ý:** 295 lượt UA cụt trên cloud186-126. Một tác nhân, một chuỗi — việc của vận hành (chặn theo UA), không phải của một vị từ tổng quát. Dựng vị từ "UA phải có tên sản phẩm trình duyệt" là quay lại đúng cái bảng-cứng đã cắn `transport/http2/pseudo_header.lua` **ba lần** (Firefox, client Go, WebView iOS).
 - 2026-09-10 — **CỬA THỨ NĂM của cùng con bug, lần này ở cột đọc mọi quyết định: `eff=`.**
   - `_M.run` đặt `ctx.effective_score` ở **đúng một chỗ** (`engine.lua:538`), mà trước đó có **hai lệnh `return`**: `ctx.whitelisted` và `ctx.good_bot_verified`. Cả hai để trường đó là `nil`. `async/logger.lua` ghi `ctx.effective_score or 0` ⇒ **`eff=0.0` mang hai nghĩa lẫn nhau**: "điểm hiệu dụng bằng 0" và "chưa từng tính".
   - **Đo được, và nó suýt dẫn tới kết luận ngược.** Nhóm `ja3c=100` (16.040 request, 5.911 IP, 5 máy, cửa sổ 18,8 giờ) đọc ra `eff=0.0` ở **100%** số dòng, trong khi `score` trung bình 8,9–13,3 và đỉnh **35,1**. Đọc thẳng thì thành "hệ thống chấm chúng 0 điểm"; sự thật là **hệ thống không chấm**. Muốn biết vì sao phải đọc `reason=`, không phải `eff=`.
