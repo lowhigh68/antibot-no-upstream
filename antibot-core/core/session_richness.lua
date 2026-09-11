@@ -91,12 +91,36 @@ function _M.compute(ctx)
     -- → dùng giá trị cao hơn → cluster_score được offset đúng mức.
     -- Write chỉ khi r >= RICHNESS_PERSIST_MIN để tránh pollute bằng casual
     -- visit. Write cũng refresh TTL khi dùng stored value (admin active).
+    -- `r_own` = điểm của CHÍNH request này, TRƯỚC khi mượn giá trị từ Redis.
+    -- Phân biệt này là toàn bộ bản vá bên dưới.
+    local r_own = r
+
     local id = ctx.identity or ctx.ip or ""
     if id ~= "" then
         local key    = "richness:max:" .. id
         local stored = tonumber(pool.safe_get(key)) or 0
         if stored > r then r = stored end
-        if r >= RICHNESS_PERSIST_MIN then
+
+        -- GIA HẠN THEO `r_own`, KHÔNG THEO `r`.
+        --
+        -- Bản cũ kiểm `r >= RICHNESS_PERSIST_MIN` — mà `r` vừa được NÂNG LÊN từ
+        -- chính giá trị đang lưu. Nên một khi `stored >= 0.4`, mọi request sau
+        -- đó đều ghi lại với TTL 1 giờ mới, **kể cả request không gửi cookie
+        -- nào**: điều kiện tự thoả bằng chính thứ nó vừa đọc ra. "Nhớ 1 giờ"
+        -- thành vĩnh viễn chừng nào client còn gửi request.
+        --
+        -- Hậu quả: đạt 0.5 MỘT LẦN là giữ mãi. Mà đạt 0.5 không cần đăng nhập —
+        -- công thức trên chỉ đếm byte và số cookie, không kiểm cookie có hợp lệ
+        -- (bốn cookie rác tổng 500 byte = 0.80). Cộng hai thứ đó lại thì
+        -- `richness >= 0.5`, tức ngưỡng mà `enforcement/decision/engine.lua`
+        -- dùng làm tầng tin cậy `auth_session_cap`, trở thành thứ mua một lần
+        -- dùng mãi. Đo 09-10: tầng đó bắn 1.265 lần/ngày, 98,6% cho bot.
+        --
+        -- Nay chỉ request TỰ chứng minh được mới gia hạn cửa sổ. Giá trị lưu
+        -- vẫn là MAX (hành vi với admin thật không đổi — họ luôn gửi cookie nên
+        -- `r_own` của họ luôn đủ), nhưng client ngừng gửi cookie thì bản ghi
+        -- hết hạn sau `RICHNESS_TTL` đúng như thiết kế ban đầu.
+        if r_own >= RICHNESS_PERSIST_MIN then
             pool.safe_set(key, string.format("%.2f", r), RICHNESS_TTL)
         end
     end
