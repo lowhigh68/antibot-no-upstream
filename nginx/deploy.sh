@@ -181,6 +181,31 @@ fi
 echo "[4] Sync core folder..."
 rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
 
+# DAU BAN — PHAI ghi SAU rsync, vi buoc tren dung `--delete` va se xoa chinh
+# file nay neu no da nam san trong $TARGET_DIR.
+#
+# VI SAO CAN. 2026-09-11: cloud183-139 chay ban truoc `aca6bef`, tuc cot `ua=`
+# van cat o 120 ky tu. Hau qua khong phai "thieu mot tinh nang" ma la SO LIEU
+# SAI MA KHONG BAO: 2.250/3.086 dong trong mot phep do hoa ra la anh ao, va suyt
+# dan toi viec them mot nhanh Android WebView vao `pseudo_header.lua` de sua mot
+# loi KHONG TON TAI. Day la lan thu sau mot ket luan bi cot log cat cut lam hong.
+#
+# Goc cua no khong nam trong ma Lua nao ca: KHONG CO CACH NAO HOI MOT MAY DANG
+# CHAY BAN NAO. Suy ra tu do dai chuoi UA la meo vat, va meo vat thi chi dung
+# cho dung mot phep do. Ba dong duoi bien cau hoi do thanh mot lenh `cat`.
+#
+# `git -C` chu khong phai `cd`: deploy.sh co the duoc goi tu bat ky thu muc nao.
+# Moi gia tri deu co duong lui, vi mot may thieu `git` van phai deploy duoc.
+{
+    echo "sha=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "subject=$(git -C "$REPO_DIR" log -1 --pretty=%s 2>/dev/null || echo unknown)"
+    echo "committed=$(git -C "$REPO_DIR" log -1 --date=iso --pretty=%cd 2>/dev/null || echo unknown)"
+    echo "deployed=$(date '+%Y-%m-%d %H:%M:%S')"
+    echo "host=$(hostname)"
+} > "$TARGET_DIR/VERSION"
+chmod 0644 "$TARGET_DIR/VERSION"
+sed 's/^/    /' "$TARGET_DIR/VERSION"
+
 # Cau hinh logrotate nam trong repo chu khong cau hinh tay tren tung may:
 # da co ca antibot.log khong xoay suot 28 ngay vi trot bo sot mot may.
 # Chi ghi de khi noi dung khac -> chay lai deploy nhieu lan khong gay nhieu.
