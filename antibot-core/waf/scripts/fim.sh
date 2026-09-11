@@ -51,7 +51,14 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 GROUP_MAX=5
 
 # ── Bao tin hieu sang WAF ─────────────────────────────────────────────
-# FIM ghi `waf:fimnew:<host>:<uri>`; `waf/init.lua` doc key nay khi mot luat
+# FIM ghi `waf:fimnew:<DUONG-DAN-FILE-TUYET-DOI>` — KHONG phai `<host>:<uri>`.
+# Dong nay truoc ghi sai, va sai theo huong nguy hiem: ai doc chu thich roi sua
+# mot dau cho khop voi no se lam LECH KHOA, tuc FIM danh dau mot noi con WAF
+# doc mot noi, hong trong IM LANG. Su that o duoi (dong `SETEX`) va o
+# `waf/init.lua`: ca hai dung `document_root .. script_path(uri)`.
+# `waf/scripts/wp_paths_test.lua` ghim dieu nay; `fim.sh` con tu doc nguoc mot
+# key vua ghi de xac minh vong tron.
+# `waf/init.lua` doc key nay khi mot luat
 # `signal` ban va nang tin hieu len. KHONG phai chan: luat WAF dong gop tin hieu,
 # engine quyet cung ba tang tin cay — nen quan tri vien dang nhap that
 # (session_richness >= 0.5) van duoc `auth_session_cap` giu o monitor, con
