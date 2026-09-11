@@ -1362,5 +1362,42 @@ else
     end
 end
 
+-- ── moi tin hieu waf_* co trong so PHAI co noi GAN no ────────────────
+--
+-- Phep kiem hai chieu o muc 1 doi chieu `compute.lua` voi `init.lua`. No KHONG
+-- nhin thay truong hop te nhat: ten co trong DEFAULT_WEIGHTS, co trong
+-- `waf_signal`, hop dong bao XANH — nhung khong mot dong ma nao GAN
+-- `ctx.<ten>`, nen tin hieu vinh vien bang 0. Do dung la cach `wp_paths.mark()`
+-- chet trong im lang bon thang.
+--
+-- Tim phep GAN (`ctx.<ten> =`), khong phai phep DOC. `waf_signal` va
+-- `get_signal` chi doc, nen chung khong duoc tinh — vi vay chi quet trong
+-- `waf/`, noi duy nhat co quyen dat co nay.
+io.write("\nhop dong: tin hieu co trong so phai co noi GAN\n")
+do
+    local waf_init = slurp(SRC .. "waf/init.lua") or ""
+    local waf_body = slurp(SRC .. "waf/body.lua") or ""
+    local setters  = waf_init .. "\n" .. waf_body
+    local n_checked = 0
+    for name, w in compute:gmatch("\n%s*(waf_[%w_]+)%s*=%s*([%d%.]+)") do
+        if tonumber(w) > 0 then
+            n_checked = n_checked + 1
+            -- `%f[%W]` neo bien tu: khong co no thi `ctx.waf_arg =` khop nham
+            -- vao `ctx.waf_arg_x =`, tuc mot lan BAO XANH SAI.
+            if not setters:find("ctx%." .. name .. "%f[%W]%s*=") then
+                bad("  SAI  `%s` co trong so %s nhung KHONG CHO NAO gan\n" ..
+                    "       `ctx.%s = ...` trong waf/. Tin hieu se vinh vien\n" ..
+                    "       bang 0 va hop dong hai chieu van bao xanh.\n",
+                    name, w, name)
+            else pass = pass + 1 end
+        end
+    end
+    if n_checked == 0 then
+        bad("  SAI  khong tin hieu waf_* nao co trong so > 0 — muc nay khong kiem gi\n")
+    else
+        io.write(string.format("  %d tin hieu co trong so, deu co noi gan\n", n_checked))
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

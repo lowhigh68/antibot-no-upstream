@@ -152,6 +152,23 @@ function _M.run_pre(ctx)
             record_arg_hit(ctx, b.arg_rule, "BODY",
                            "<" .. b.family .. ":" .. b.len .. ">")
         end
+
+        -- `<?php` / `<?=` trong thân request — tín hiệu RIÊNG, trọng số 50.
+        --
+        -- KHÔNG đi qua `record_arg_hit`: nó không phải một luật trong
+        -- `args.RULES`, không có `rule.score`, và không sinh dòng `[waf]`. Dòng
+        -- `[waf-body]` đã ghi cột `php=` từ trước, nên không mất gì khi đối soát.
+        --
+        -- BA trạng thái, hai trong số đó KHÔNG đặt cờ vì lý do KHÁC nhau:
+        --   true  = đã quét, CÓ mã PHP trong thân
+        --   false = đã quét, không có
+        --   nil   = CHƯA QUÉT (tràn ra file tạm, thân rỗng, worker lỗi)
+        -- `nil` không đặt cờ vì không biết thì không buộc tội. `body.lua:59` để
+        -- `nil` chứ không để `false` đúng vì lý do này — đừng gộp hai cái lại
+        -- bằng `not b.php`, đó là lỗi đã cắn ở `ja3p=` và `eff=`.
+        --
+        -- So `== true` chứ không viết `if b.php then`: cùng một kỷ luật.
+        if b and b.php == true then ctx.waf_body_php = 1 end
     end
 
     if not rule then return false end

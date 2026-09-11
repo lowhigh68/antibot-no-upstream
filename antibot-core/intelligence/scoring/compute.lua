@@ -158,6 +158,39 @@ local DEFAULT_WEIGHTS = {
     -- không cho phép hành động theo nó.
     waf_body_arg        = 0,
 
+    -- waf_body_php: thân request chứa `<?php` hoặc `<?=`.
+    --
+    -- TÁCH khỏi `waf_body_arg` vì đo ra hai họ bằng chứng khác hẳn nhau. Số
+    -- liệu 5 máy (2026-09-12, toàn bộ waf.log còn giữ):
+    --
+    --   argrule  269 lượt, và `arg_traversal fnm=0` là 24/24 có trạng thái
+    --            phiên  -> FP thuần, giữ trọng số 0.
+    --   fnrule     6 lượt trên CẢ đàn máy (riêng 28-246 quét 309.838 thân)
+    --            -> tín hiệu chết, không nối.
+    --   php    2.495 lượt, và dân số hợp lệ chỉ nằm ở MỘT đường dẫn.
+    --
+    -- Vì sao `php` khác hẳn: nội dung người dùng soạn có thể chứa `../` hay
+    -- `php://` một cách hoàn toàn bình thường (bài viết, ticket hỗ trợ) — đó là
+    -- lý do `waf_body_arg` phải nằm ở 0. Nhưng `<?php` trong thân một POST thì
+    -- không: mọi thứ trong danh sách đo được, trừ `/wp-admin/async-upload.php`,
+    -- đều là đích của scanner KHÔNG TỒN TẠI trên các site này —
+    -- `/cgi-bin/php-cgi` và `/php-cgi/php-cgi.exe` (CVE-2024-4577),
+    -- `/jquery-file-upload/server/php/`, `/module/ueditor/php/action_upload.php`,
+    -- `/eoffice10/…/OfficeServer.php`.
+    --
+    -- CẢNH BÁO CHO NGƯỜI ĐỌC SAU: đừng lọc FP bằng `richness >= 0.5`. Chính đợt
+    -- đo này cho thấy một trình dò `/cgi-bin/php5` vẫn đạt ngưỡng đó —
+    -- `session_richness` đo "CÓ TRẠNG THÁI", không đo "ĐÃ XÁC THỰC", và bốn
+    -- cookie rác cộng 500 byte là đủ 0.80. Căn cứ là ĐƯỜNG DẪN, không phải cột
+    -- richness.
+    --
+    -- 50 KHÔNG PHẢI số chọn bừa: bằng `waf_wp_path`, và bằng đúng mức FIM nâng
+    -- một tín hiệu lên (1.0 = 50 điểm). Nó nằm DƯỚI ngưỡng CHALLENGE 55, nên
+    -- tín hiệu này KHÔNG BAO GIỜ tự quyết định một mình — phải có bằng chứng
+    -- thứ hai. Dân số FP duy nhất là quản trị viên upload media qua
+    -- `async-upload.php`, và họ đã được `auth_session_cap` che sẵn.
+    waf_body_php        = 50,
+
     fp_degraded_pen     = 0,
     -- `correlated_boost = 15` DA BI GO (2026-09-06): vong lap cham diem co mot
     -- nhanh `if name == "correlated_boost" then goto continue end` VO DIEU KIEN,
@@ -285,6 +318,10 @@ local function get_signal(name, ctx)
 
     if name == "waf_body_arg" then
         return safe_val(ctx.waf_body_arg)
+    end
+
+    if name == "waf_body_php" then
+        return safe_val(ctx.waf_body_php)
     end
 
     return 0.0

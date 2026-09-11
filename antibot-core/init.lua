@@ -170,9 +170,14 @@ end
 -- sót một tín hiệu trọng số 0 ở đây → chiều hai báo đỏ. Ngày nâng `waf_arg` lên
 -- khỏi 0, sửa `compute.lua` rồi chạy `[3b]` là biết phải thêm gì vào đây.
 --
--- KHÔNG gộp `ctx.waf_body` vào đây: đó là telemetry thuần, không phải tín hiệu.
+-- `ctx.waf_body_php` có mặt ở đây từ 2026-09-12. Chú thích cũ tại đúng dòng này
+-- ghi "KHÔNG gộp `ctx.waf_body` vào đây: đó là telemetry thuần, không phải tín
+-- hiệu" — đúng vào ngày nó được viết, và sai kể từ lúc `<?php` trong thân có
+-- trọng số 50. Nếu không nối, một client đã giải PoW cứ thế POST mã PHP và cả
+-- tầng WAF không thấy gì: đúng lỗ hổng mà tầng này sinh ra để bịt.
 local function waf_signal(ctx)
-    return ctx.waf_wp_path
+    if ctx.waf_wp_path then return ctx.waf_wp_path end
+    return ctx.waf_body_php
 end
 
 function _M.run()
