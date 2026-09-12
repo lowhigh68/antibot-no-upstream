@@ -611,6 +611,38 @@ _M.beacon = {
     endpoint = "/antibot/beacon",
 }
 
+-- So ten cookie ma TUNG HOST thuc su cap phat (core/cookie_registry.lua).
+--
+-- `enabled = false` la CONG TAC TAT: `learn` ngung ghi, `known` luon tra `nil`,
+-- nen ca cong tin cay lan mien tru ban IP quay ve dung hanh vi truoc GD 2.
+-- Thieu cong tac nay la thieu sot cua ban dau (2026-09-12): mot thay doi o
+-- duong TIN CAY ma muon vo hieu phai sua ma roi deploy lai — qua cham khi dang
+-- co su co that.
+_M.cookie_registry = {
+    enabled = true,
+
+    -- So ten toi thieu trong so truoc khi `known()` duoc phep tra `false`.
+    --
+    -- Loi hoc-tung-phan, do duoc tren bestcargo.vn 2026-09-12: so moi hoc duoc
+    -- DUNG MOT ten (`wp-saving-post`), nen cookie dang nhap that cua admin
+    -- khong khop gi ca. `false` khi do KHONG co nghia "cookie ngoai lai" ma chi
+    -- la "khong khop ten nao ta TINH CO hoc duoc". Duoi nguong nay `known()`
+    -- tra `nil` thay vi `false`.
+    --
+    -- CHI chan cau tra loi `false`. Mot lan khop van tra `true` ngay ca khi so
+    -- con non: do la bang chung DUONG TINH that, khong can so dong.
+    min_names = 3,
+
+    -- Mien tao `ban:<ip>` cho phien co bang chung (enforcement/ban/
+    -- ban_store_write.lua). Dat `false` de tat rieng phan nay ma van giu cong
+    -- tin cay.
+    ip_ban_exempt = true,
+
+    -- Nguong richness cua CHINH request cho mien tru tren. Phai khop
+    -- AUTH_SESSION_RICHNESS trong enforcement/decision/engine.lua.
+    richness_min = 0.5,
+}
+
 _M.debug = false
 
 function _M.endpoint_sens(uri)

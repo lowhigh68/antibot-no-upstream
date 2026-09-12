@@ -17,13 +17,35 @@
 -- không danh sách tĩnh nào viết ra được. Học thì bắt đúng tên thật. Và nó tự
 -- đúng với Joomla, Laravel, app tự viết — những thứ một danh sách sẽ bỏ sót.
 --
--- BA TRẠNG THÁI, và đây là toàn bộ tính an toàn FP của nó:
---   true  = host này có sổ, và request mang ít nhất một tên trong sổ
---   false = host này CÓ sổ, và request KHÔNG mang tên nào trong đó
---   nil   = host này CHƯA có sổ  -> cửa tin cậy giữ nguyên hành vi cũ
--- Cửa chỉ được phép SIẾT khi có hiểu biết dương tính (`false`). Không biết thì
--- không siết. Nhờ vậy ngày bật lên, không một host nào đổi hành vi cho tới khi
--- nó tự học xong.
+-- BA TRẠNG THÁI:
+--   true  = request mang ít nhất một tên trong sổ của host
+--   false = sổ đã ĐỦ TRƯỞNG THÀNH và request không mang tên nào trong đó
+--   nil   = chưa biết — host chưa có sổ, HOẶC sổ còn non (< `min_names`)
+--
+-- `nil` có hai nguồn, và nguồn thứ hai là bài học phải trả giá. Sự cố
+-- bestcargo.vn 2026-09-12: sổ mới học được ĐÚNG MỘT tên (`wp-saving-post`,
+-- cookie autosave), nên cookie đăng nhập thật của một quản trị viên không khớp
+-- gì cả. `false` lúc đó không có nghĩa "cookie ngoại lai" mà chỉ là "không khớp
+-- tên nào ta TÌNH CỜ học được" — và hậu quả sẽ là gỡ mất lớp bảo vệ của đúng
+-- người đang đăng nhập. Ngưỡng `min_names` chỉ chặn câu trả lời `false`; một
+-- lần KHỚP vẫn trả `true` kể cả khi sổ còn non, vì đó là bằng chứng dương tính
+-- thật và không cần số đông.
+--
+-- HAI NƠI ĐỌC TRƯỜNG NÀY, VÀ CHÚNG DÙNG HAI CỰC NGƯỢC NHAU. Đây là phần dễ
+-- "dọn dẹp" thành lỗ hổng nhất trong cả module:
+--
+--   enforcement/decision/engine.lua — `~= false`
+--     Cổng `auth_session_cap` LẤY ĐI sự bảo vệ, nên phải fail-OPEN: không biết
+--     thì không siết. Viết `== true` ở đó làm mọi host chưa học kịp mất cap
+--     ngay lập tức = một đợt chặn nhầm hàng loạt vào admin thật.
+--
+--   enforcement/ban/ban_store_write.lua — `== true`
+--     Miễn tạo `ban:<ip>` là TRAO ĐẶC QUYỀN, nên phải fail-CLOSED: không có
+--     bằng chứng dương tính thì không miễn. Viết `~= false` ở đó biến mọi host
+--     chưa có sổ thành không-thể-ban-theo-IP.
+--
+-- Cùng một trường, hai cực, mỗi bên chọn sao cho HƯỚNG HỎNG LÀ HƯỚNG AN TOÀN.
+-- `waf/scripts/contract_test.lua` ghim cả hai.
 --
 -- GIỚI HẠN, ghi thẳng để không ai tưởng đã kín: một kẻ tấn công chịu khó gửi
 -- một request thường trước để nhận `PHPSESSID` rồi mang nó theo thì qua được
@@ -39,6 +61,7 @@
 local _M = {}
 
 local pool  = require "antibot.core.redis_pool"
+local cfg   = require "antibot.core.config"
 local cache = ngx.shared.antibot_cache
 
 local KEY      = "waf:ckn:"
@@ -89,6 +112,7 @@ end
 -- giờ, nên một site đang chạy chỉ sinh vài phép ghi mỗi giờ chứ không phải mỗi
 -- lần `Set-Cookie`.
 function _M.learn(ctx)
+    if not cfg.cookie_registry.enabled then return end
     if not cache then return end
 
     local ok, headers = pcall(ngx.resp.get_headers)
@@ -158,6 +182,7 @@ end
 -- Trả về true / false / nil — xem khối đầu file. `nil` KHÔNG được phép biến
 -- thành `false` ở bất kỳ chỗ nào phía sau.
 function _M.known(ctx, cookie_header)
+    if not cfg.cookie_registry.enabled then return nil end
     if not cookie_header or cookie_header == "" then return nil end
 
     local host = host_key()
@@ -174,13 +199,29 @@ function _M.known(ctx, cookie_header)
     -- Chưa học được gì về host này: KHÔNG biết, không phải "không có".
     if list == "" then return nil end
 
-    local have = {}
-    for nm in list:gmatch("[^,]+") do have[nm] = true end
+    local have, n = {}, 0
+    for nm in list:gmatch("[^,]+") do
+        have[nm] = true
+        n = n + 1
+    end
 
     for pair in cookie_header:gmatch("[^;]+") do
         local nm = pair:match("^%s*([^=%s]+)")
+        -- Khop: tra `true` NGAY CA khi so con non. Day la bang chung DUONG
+        -- TINH — client dang mang mot ten ma chinh host nay cap — va no dung
+        -- bat ke so da hoc duoc bao nhieu ten khac.
         if nm and have[nm] then return true end
     end
+
+    -- Khong khop ten nao. Day la cau tra loi NGUY HIEM, va no chi dang tin khi
+    -- so da du truong thanh.
+    --
+    -- Do tren bestcargo.vn 2026-09-12: so moi co DUNG MOT ten
+    -- (`wp-saving-post`, cookie autosave), nen cookie dang nhap that cua mot
+    -- quan tri vien khong khop gi ca. Tra `false` luc do khong co nghia
+    -- "cookie ngoai lai" ma chi la "khong khop ten nao ta TINH CO hoc duoc" —
+    -- va hau qua la go mat `auth_session_cap` cua dung nguoi dang dang nhap.
+    if n < (cfg.cookie_registry.min_names or 3) then return nil end
     return false
 end
 

@@ -76,6 +76,35 @@ function _M.run(ctx)
         should_ban_ip = false
     end
 
+    -- Mien tao `ban:<ip>` cho phien CO BANG CHUNG do chinh host nay cap.
+    --
+    -- Su co 2026-09-12 (bestcargo.vn): mot quan tri vien dang dang nhap luu
+    -- bai bang trinh dung trang — 8 POST `admin-ajax.php`, moi cai 113 KB,
+    -- trong 7 giay — bi ban IP. Anh ta KHONG co duong nao thoat: `ip_ban_check`
+    -- chay o buoc 2 cua STEPS_COMMON, TRUOC ca cookie fast-path, nen engine
+    -- khong bao gio chay va `auth_session_cap` khong bao gio duoc ap. Ban
+    -- theo identity (`ban_store.lua`) da co loi thoat nay tu truoc; ban theo
+    -- IP thi khong co gi ca. Day la vet bat doi xung do.
+    --
+    -- VI SAO DOI CA HAI DIEU KIEN, khong chi richness: gui 500 byte cookie rac
+    -- la dat `richness 0.80` (do 2026-09-12: mot trinh do `/cgi-bin/php5` dat
+    -- nguong do). Mien ban IP chi bang richness se lam mot bot xoay UA tro
+    -- thanh KHONG THE ban theo IP — dung `UA-rotation game` ma Tier-2 o tren
+    -- sinh ra de chan. Doi them mot cookie do CHINH host cap buoc ke tan cong
+    -- phai lay cookie that tu site truoc, va ten do phai nam trong so.
+    --
+    -- CUC `== true`, KHONG phai `~= false`. Day la trao DAC QUYEN nen phai
+    -- fail-closed: khong co bang chung duong tinh thi khong mien. Nguoc voi
+    -- cong o `engine.lua` — cho do LAY DI su bao ve nen viet `~= false` de
+    -- fail-open. Cung mot truong, hai cuc, moi ben chon sao cho huong hong la
+    -- huong an toan. Doi cuc o bat ky ben nao cung tao mot lo hong.
+    local ckr = cfg.cookie_registry
+    if ckr.ip_ban_exempt
+       and ctx.session_cookie_known == true
+       and (ctx.session_richness_own or 0) >= (ckr.richness_min or 0.5) then
+        should_ban_ip = false
+    end
+
     -- Bậc cuối của thang leo — lấy từ cfg.ttl.ban_steps để KHÔNG lệch với thang
     -- identity ở l7/ban/ban_store.lua. 2026-08-06: đổi từ 0 (vĩnh viễn) sang
     -- hữu hạn (30 ngày) — xem chú thích tại config.lua ban_steps.
