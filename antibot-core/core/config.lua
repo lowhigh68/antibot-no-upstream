@@ -643,6 +643,30 @@ _M.cookie_registry = {
     richness_min = 0.5,
 }
 
+-- Tran cho ASN duoc phan loai `vpn` (intelligence/threat/asn_reputation.lua).
+--
+-- VI SAO CAN. `threat_feed_sync.sh` ghi hai bac:
+--     datacenter -> rep:asn: = 0.45   (x35 = 15,75 diem tho)
+--     vpn        -> rep:asn: = 0.75   (x35 = 26,25 diem tho)
+-- Tuc he thong dang coi VPN DANG NGO HON datacenter. Do la SAI THU TU, khong
+-- phai mot con so to: mot egress VPN tieu dung cho phan lon la NGUOI THAT, con
+-- mot IP datacenter chay UA trinh duyet thi kha nang tu dong hoa cao hon han.
+--
+-- 26,25 diem la gan mot nua nguong CHALLENGE (55). Nguoi dung VPN bat dau o do
+-- truoc khi lam bat cu viec gi — cong them mot tin hieu nho nua la bi thu thach.
+-- Tren ha tang co khach dung VPN/WARP pho bien, do la nguon chan nham CO HE
+-- THONG.
+--
+-- TRAN chu khong phai HE SO NHAN: he so nhan van troi theo feed, con tran thi
+-- giu nguyen y nghia du nguon doi 0.75 thanh bao nhieu. Va no phai nam DUOI bac
+-- datacenter de thu tu khong bao gio dao lai lan nua.
+--
+-- Day KHONG phai mien tru: VPN van la mot tien nghiem hop le, chi la tien
+-- nghiem YEU. Bang chung truc tiep ve chinh client van do cac tang khac lo.
+_M.asn_rep = {
+    vpn_max = 0.30,   -- x35 = 10,5 diem tho, thap hon bac datacenter 15,75
+}
+
 _M.debug = false
 
 function _M.endpoint_sens(uri)

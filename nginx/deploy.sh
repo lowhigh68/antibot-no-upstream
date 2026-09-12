@@ -418,6 +418,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# VI SAO CO BUOC NAY. `threat_feed_sync.sh` truoc nam o `nginx/scripts/`, ma
+# deploy.sh chi rsync `antibot-core/` — nen no KHONG BAO GIO tu toi may chu.
+# Do 2026-09-12: so khoa `rep:asn:` tren ba may la 0 / 820 / 53.454. Cung mot
+# request bi cham diem khac han nhau tuy may nao nhan, ma `asn_rep` nang 35 —
+# cao thu nhi trong bang. Nay script di theo rsync; buoc nay bao cron va du lieu
+# co theo kip khong.
+echo "[8] Trang thai nguon cap ASN..."
+TFS="$TARGET_DIR/intelligence/threat/scripts/threat_feed_sync.sh"
+[ -x "$TFS" ] || echo "    *** $TFS thieu bit thuc thi — cron se chet cam ***"
+tfs_all=$( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } \
+           | grep 'threat_feed_sync' | grep -v '^[[:space:]]*#' || : )
+if [ -z "$tfs_all" ]; then
+    echo "    *** KHONG CO CRON — nguon cap ASN khong bao gio duoc lam moi ***"
+    echo "    asn_rep (trong so 35) se dung 0 vinh vien tren may nay."
+    echo "      17 4 * * * $TFS"
+else
+    printf '%s\n' "$tfs_all" | sed 's/^/      | /'
+fi
+tfs_stale=$( printf '%s\n' "$tfs_all" | grep -c 'nginx/scripts/threat_feed_sync' || : )
+if [ "${tfs_stale:-0}" -gt 0 ]; then
+    echo "    *** $tfs_stale dong cron tro vao duong dan CU nginx/scripts/ ***"
+    echo "    Duong do da hong tu luc file doi cho. Sua sang: $TFS"
+fi
+if command -v redis-cli >/dev/null 2>&1; then
+    n_rep=$(redis-cli --scan --pattern 'rep:asn:*' 2>/dev/null | wc -l)
+    echo "    rep:asn: $n_rep khoa"
+    # Ban da va cho ~800-1000 muc. 0 = chua tung chay. Hang chuc nghin = nguon
+    # doi dinh dang va dang ghi rac (xem chu thich ASN_MAX trong chinh script):
+    # moi khoa rac la +15,75 diem tho OAN cho mot ASN vo toi.
+    if [ "$n_rep" -eq 0 ]; then
+        echo "    *** 0 khoa — asn_rep dung 0: mot tin hieu 35 diem DANG CHET ***"
+    elif [ "$n_rep" -gt 20000 ]; then
+        echo "    *** $n_rep khoa la QUA NHIEU — nguon dang ghi rac (ban da va ~800) ***"
+        echo "    Chay tay mot lan de thay the: $TFS"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Bao tri Redis - CHI khi co co.
 #
 # Ly do ton tai: mot so khoa Redis lam request THOAT SOM, TRUOC khi code moi
