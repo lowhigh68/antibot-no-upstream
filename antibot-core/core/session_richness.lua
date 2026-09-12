@@ -33,6 +33,7 @@
 -- chỉ cần có payload thật là tính.
 
 local _M  = {}
+local ckreg = require "antibot.core.cookie_registry"
 local pool = require "antibot.core.redis_pool"
 
 -- Calibration từ observation thực tế:
@@ -141,6 +142,18 @@ function _M.compute(ctx)
     -- `r_own` cua ho luon du. Phep nang ton tai cho client BO cookie, ma
     -- admin thi khong bo.
     ctx.session_richness_own = r_own
+
+    -- Cookie nay co phai do CHINH host nay cap khong.
+    --
+    -- `r_own` o tren tra loi "request nay co mang trang thai khong"; truong
+    -- duoi tra loi "trang thai do tu dau ra". Hai cau hoi khac nhau, va cau
+    -- thu hai moi la cai `auth_session_cap` thuc su can: cong thuc richness
+    -- khong co so hang nao phan biet admin dang nhap voi scanner gui cookie
+    -- rac — ca hai deu tran o 0,80.
+    --
+    -- BA TRANG THAI: true / false / nil (host chua co so). `nil` KHONG duoc
+    -- bien thanh `false` o bat ky cho nao phia sau — xem `core/cookie_registry`.
+    ctx.session_cookie_known = ckreg.known(ctx, cookie)
 
     ngx.log(ngx.DEBUG,
         "[session_richness] r=", string.format("%.2f", r),

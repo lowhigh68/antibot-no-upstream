@@ -1430,5 +1430,89 @@ do
     else pass = pass + 1 end
 end
 
+-- ── so ten cookie: ba trang thai va bo loc ten ──────────────────────
+--
+-- HAI thu duoc ghim o day, va ca hai deu thuoc loai "don gian hoa mot cai la
+-- thanh lo hong ma khong ai thay":
+--
+--   1. Cong tin cay phai viet `~= false`, KHONG phai `== true`. `nil` nghia la
+--      host chua hoc duoc ten cookie nao. Doi sang `== true` bien phep kiem tu
+--      an toan theo huong MO thanh an toan theo huong DONG: moi host chua hoc
+--      kip mat cap ngay lap tuc, tuc mot dot FP hang loat dung vao admin that.
+--
+--   2. Ten cookie KHONG duoc chua dau phay. Chuoi luu trong Redis lay dau phay
+--      lam ky tu phan cach, nen mot ten chua no se tu che thanh hai muc va lam
+--      hong so — ma noi dung `Set-Cookie` thi do ung dung cua khach quyet dinh.
+io.write("\nhop dong: so ten cookie theo host\n")
+do
+    local eng = slurp(SRC .. "enforcement/decision/engine.lua") or ""
+    local cr  = slurp(SRC .. "core/cookie_registry.lua")        or ""
+
+    -- 1. huong an toan cua cong
+    -- `.-` chu khong phai `[^\n]-`: dieu kien trai NAM dong, ma `[^\n]-`
+    -- khong vuot duoc xuong dong nen se khong khop va bao do OAN. Trong mau Lua,
+    -- `.` CO khop `\n`. Lazy nen dung o `then` dau tien, chinh la cua dieu kien.
+    local cond = eng:match("(if%s*%(ctx%.session_richness_own.-then)")
+    if not cond then
+        bad("  SAI  khong tim thay dieu kien `auth_session_cap` trong engine.lua\n")
+    elseif cond:find("session_cookie_known%s*==%s*true") then
+        bad("  SAI  cong tin cay dung `session_cookie_known == true`.\n" ..
+            "       `nil` = host CHUA HOC duoc gi. Viet `== true` lam moi host\n" ..
+            "       chua hoc kip mat cap ngay lap tuc = FP hang loat vao admin that.\n" ..
+            "       Phai la `~= false`.\n")
+    elseif not cond:find("session_cookie_known%s*~=%s*false") then
+        bad("  SAI  cong tin cay khong doc `ctx.session_cookie_known ~= false`\n")
+    else pass = pass + 1 end
+
+    -- 2. bo loc ten: nap TU NGUON va goi that.
+    -- `cookie_registry.lua` mo dau bang `require` + `ngx.shared`, nen `loadfile`
+    -- ca module se hong o day. `cookie_name` thuan, chi dung upvalue NAME_OK —
+    -- trich ca hai roi `load()`.
+    local pat = cr:match("(local NAME_OK%s*=%s*[^\n]+)")
+    local fn  = cr:match("(local function cookie_name.-\nend)")
+    if not pat or not fn then
+        bad("  SAI  khong trich duoc `NAME_OK`/`cookie_name` tu cookie_registry.lua\n")
+    else
+        local chunk = load(pat .. "\n" .. fn .. "\nreturn cookie_name")
+        local ok_c, f = false, nil
+        if chunk then ok_c, f = pcall(chunk) end
+        if not ok_c or type(f) ~= "function" then
+            bad("  SAI  khong nap duoc `cookie_name`\n")
+        else
+            local cases = {
+                { "wordpress_logged_in_abc=v; Path=/", "wordpress_logged_in_abc" },
+                { "PHPSESSID=x; HttpOnly",             "PHPSESSID" },
+                { "wp-settings-time-1=1; Path=/",      "wp-settings-time-1" },
+                -- DAU PHAY: phai bi loai, neu khong no che doi so trong Redis.
+                { "ev,il=1; Path=/",                   nil },
+                -- Khong co `=` thi khong phai mot phep dat cookie.
+                { "rac-khong-co-dau-bang",             nil },
+                -- Ten rong.
+                { "=value",                            nil },
+                -- Khoang trang trong ten.
+                { "co khoang trang=1",                 nil },
+            }
+            for _, c in ipairs(cases) do
+                local got = f(c[1])
+                if got ~= c[2] then
+                    bad("  SAI  cookie_name(%q) = %s, phai %s\n",
+                        c[1], tostring(got), tostring(c[2]))
+                else pass = pass + 1 end
+            end
+            -- Ten qua dai bi loai (tran 64).
+            if f(string.rep("a", 65) .. "=1") ~= nil then
+                bad("  SAI  cookie_name khong chan ten dai qua 64 ky tu\n")
+            else pass = pass + 1 end
+        end
+    end
+
+    -- 3. hoc PHAI qua timer: cosocket bi cam o log phase.
+    if not cr:find("ngx%.timer%.at") then
+        bad("  SAI  cookie_registry khong dung `ngx.timer.at`.\n" ..
+            "       Hoc chay o LOG PHASE, noi cosocket BI CAM — goi thang\n" ..
+            "       `pool.safe_*` se hong TRONG IM LANG.\n")
+    else pass = pass + 1 end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -758,9 +758,18 @@ function _M.run(ctx)
     -- Authorization" — WordPress xac thuc bang COOKIE nen admin WordPress
     -- KHONG BAO GIO nhan 0,3 diem thuong do. Dong cua that su can hoc tap
     -- ten cookie ma tung host da `Set-Cookie`, la viec khac.
+    -- `~= false` chu KHONG phai `== true`. Day la toan bo tinh an toan FP cua
+    -- phep kiem nay: `nil` nghia la host chua hoc duoc ten cookie nao, va khi
+    -- khong biet thi KHONG SIET. Cua chi bi dong khi co hieu biet DUONG TINH
+    -- rang cookie cua request khong phai do host nay cap.
+    --
+    -- Nho vay ngay bat len khong mot host nao doi hanh vi, va tung host tu
+    -- siet lai khi no hoc xong. Doi thanh `== true` la chuyen sang an toan
+    -- theo huong DONG — moi host chua hoc kip se mat cap ngay lap tuc.
     if (ctx.session_richness_own or 0) >= AUTH_SESSION_RICHNESS
        and not ctx.good_bot_claimed
        and has_ua
+       and ctx.session_cookie_known ~= false
        and (action == "block" or action == "challenge") then
         ngx.log(ngx.INFO,
             "[engine] auth_session cap action=", action, "->monitor",

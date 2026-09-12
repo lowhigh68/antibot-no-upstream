@@ -3,6 +3,7 @@ local _M = {}
 local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
+local cookie_registry    = require "antibot.core.cookie_registry"
 local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
 local ip_ban_check       = require "antibot.l7.ban.ip_ban_check"
@@ -260,6 +261,11 @@ function _M.log()
             intel_reporter.report(ctx)
         end)
     end
+
+    -- Hoc ten cookie ma host nay cap phat. PHAI o log phase: day la noi duy
+    -- nhat doc duoc `Set-Cookie` cua phan hoi. Ban than ham tu defer moi phep
+    -- cham Redis qua `ngx.timer.at` vi cosocket bi CAM o day.
+    cookie_registry.learn(ctx)
 
     logger.run(ctx)
     -- run_log TRƯỚC waf_logger: nó điền `ctx.waf_target_exists` mà waf.log đọc,

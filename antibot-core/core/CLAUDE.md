@@ -43,6 +43,15 @@ None at init phase — first module to run.
 - Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
 
 ## Update log
+
+- 2026-09-12 — **`cookie_registry.lua` mới: sổ tên cookie mà TỪNG HOST thực sự cấp phát.** Giai đoạn 2 của tầng WAF — loại luật **học theo host** thay vì mã hoá quy ước.
+  - **Vấn đề.** `session_richness` chỉ đếm **khối lượng** cookie, và `has_auth` trong công thức **chỉ** có nghĩa "có header `Authorization`". WordPress xác thực bằng **cookie**, nên admin WordPress không bao giờ nhận 0,3 điểm thưởng đó — điểm của họ trần ở **0,80**, **trùng khít** với một scanner gửi 4 cookie rác nặng 500 byte. Đo 2026-09-12 trên 5 máy: một trình dò `/cgi-bin/php5` vẫn đạt `richness >= 0.5`, tức ngưỡng `auth_session_cap` dùng làm **cửa tin cậy**.
+  - **Vì sao HỌC chứ không dùng danh sách tên.** Cookie đăng nhập WordPress là `wordpress_logged_in_<md5 siteurl>` — hậu tố khác nhau ở từng site, không danh sách tĩnh nào viết ra được. Học thì bắt đúng tên thật, và tự đúng với Joomla, Laravel, app tự viết.
+  - **Học ở LOG PHASE, không cần `header_filter`.** `ngx.resp.get_headers()` đọc được `Set-Cookie` ngay trong `log_by_lua`, nên toàn bộ tính năng nằm trong `antibot-core/` — **không sửa một dòng nào trong `nginx/da_to_openresty.sh`**. Cosocket bị CẤM ở log phase nên mọi phép chạm Redis đi qua `ngx.timer.at(0, …)`.
+  - **Khoá theo `ngx.var.server_name`, KHÔNG theo `Host`.** `Host` do client gửi nên giả được — đúng lỗ đã làm hỏng việc đánh dấu host WordPress (một `GET /wp-admin/` với Host giả ghi cờ 30 ngày cho host bất kỳ). Thêm lợi ích: domain pointer/alias dùng chung một sổ, đúng với thực tế chúng chung docroot.
+  - **BA TRẠNG THÁI** — `true` (mang tên trong sổ) / `false` (host **có** sổ, request không mang tên nào) / `nil` (host **chưa** có sổ). Cổng viết `~= false` **chứ không** `== true`: chỉ siết khi có hiểu biết **dương tính**. Nhờ vậy ngày bật lên không một host nào đổi hành vi, và từng host tự siết khi học xong. Đổi thành `== true` là chuyển sang an toàn theo hướng **đóng** — mọi host chưa học kịp mất cap ngay lập tức, tức một đợt FP hàng loạt vào admin thật. `contract_test.lua` ghim đúng điều này.
+  - **Trần chống phình:** 24 tên / 512 byte mỗi host, và **chỉ ghi Redis khi sổ thực sự đổi** — ghi lại y nguyên để gia hạn TTL sẽ biến "30 ngày" thành vĩnh viễn, đúng lỗi tự-gia-hạn đã sửa ở `richness:max:<id>`. Tên chứa **dấu phẩy** bị loại vì dấu phẩy là ký tự phân cách của chuỗi lưu trong Redis; nội dung `Set-Cookie` do ứng dụng của khách quyết định nên đây là đầu vào không tin được.
+  - **Giới hạn đã biết:** kẻ tấn công gửi một request thường trước để nhận `PHPSESSID` rồi mang nó theo thì qua được cửa. Nó **không** chứng minh "đã đăng nhập" — nó chứng minh "đã từng nói chuyện với chính site này". Đổi lại, dân số scanner đo được (gửi cùng một mớ cookie rác cho mọi host) trượt sạch.
 - 2026-09-09 — **Đo xong, gỡ telemetry. Và ba lần đo trước đều sai vì cùng một lý do.**
   - **Kết quả cuối, cửa sổ 22 giờ liền mạch, 22 442 kết nối H2 trên 5 máy:**
 
