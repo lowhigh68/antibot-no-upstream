@@ -28,7 +28,7 @@ function _M.run(ctx)
             identity    = id or "",
             fp_deg      = ctx.fp_degraded or false,
             device_type = ctx.device_type or "unknown",
-            ua          = (ctx.ua or ""):sub(1, 120),
+            ua          = (ctx.ua or ""):sub(1, 180),
             ip          = ctx.ip or "",
             bot_score   = ctx.bot_score or 0,
         })

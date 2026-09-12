@@ -741,7 +741,24 @@ function _M.run(ctx)
     -- đúng cái bảng-cứng đã cắn `pseudo_header.lua` ba lần.
     local has_ua = (ctx.ua ~= nil and ctx.ua ~= "")
 
-    if (ctx.session_richness or 0) >= AUTH_SESSION_RICHNESS
+    -- Doc `session_richness_own`, KHONG doc `session_richness`.
+    --
+    -- `session_richness` la MAX qua cua so TTL: `core/session_richness.lua`
+    -- nang no len tu `richness:max:<id>` trong Redis. Nen mot client tung
+    -- gui cookie beo MOT lan se duoc cap nay che cho moi request ve sau,
+    -- KE CA request khong mang trang thai nao. Cua tin cay ma gac tren gia
+    -- tri thua ke thi khong con la cua tin cay.
+    --
+    -- Khong tang FP: admin dang nhap that gui cookie o MOI request.
+    --
+    -- GIOI HAN CON LAI, ghi ro de khong ai tuong da xong: phep kiem nay
+    -- van chi dem KHOI LUONG cookie, khong kiem cookie co that do site nay
+    -- cap hay khong. Do 2026-09-12: mot trinh do `/cgi-bin/php5` van dat
+    -- `richness >= 0.5`. `has_auth` trong cong thuc CHI co nghia "co header
+    -- Authorization" — WordPress xac thuc bang COOKIE nen admin WordPress
+    -- KHONG BAO GIO nhan 0,3 diem thuong do. Dong cua that su can hoc tap
+    -- ten cookie ma tung host da `Set-Cookie`, la viec khac.
+    if (ctx.session_richness_own or 0) >= AUTH_SESSION_RICHNESS
        and not ctx.good_bot_claimed
        and has_ua
        and (action == "block" or action == "challenge") then

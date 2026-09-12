@@ -260,7 +260,7 @@ local function write_stats(premature, host, class, action, date, device_type, in
     -- Samples" chưa từng có một dòng nào. Nay truyền `ctx.ua` xuống đây.
     if device_type == "unknown" and ua and ua ~= "" then
         local sample_key = "stat:ua_unknown_sample"
-        red:lpush(sample_key, ua:sub(1, 120))
+        red:lpush(sample_key, ua:sub(1, 180))
         red:ltrim(sample_key, 0, 19)
         red:expire(sample_key, 86400)
     end

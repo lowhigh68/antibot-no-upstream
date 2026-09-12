@@ -1399,5 +1399,36 @@ do
     end
 end
 
+-- ── cua tin cay `auth_session_cap` phai gac tren r_own ───────────────
+--
+-- `ctx.session_richness` la MAX qua cua so TTL — `core/session_richness.lua`
+-- nang no len tu `richness:max:<id>`. Gac mot cua TIN CAY tren gia tri thua ke
+-- nghia la mot client tung gui cookie beo MOT lan duoc che cho moi request ve
+-- sau, ke ca request rong. Muc nay ghim lai su phan biet do.
+--
+-- La phep kiem NGUON, nen no chi chung minh duoc mot chieu: bao do = chac chan
+-- sai. Nhung no du de chan viec doi nguoc lai trong im lang.
+io.write("\nhop dong: auth_session_cap gac tren richness cua CHINH request\n")
+do
+    local eng = slurp(SRC .. "enforcement/decision/engine.lua") or ""
+    local sr  = slurp(SRC .. "core/session_richness.lua")       or ""
+
+    if not sr:find("ctx%.session_richness_own%s*=") then
+        bad("  SAI  session_richness.lua khong dat `ctx.session_richness_own`.\n" ..
+            "       Cong tin cay se doc nil va cap khong bao gio ban.\n")
+    else pass = pass + 1 end
+
+    -- Lay DUNG dieu kien cua auth_session_cap, khong quet ca file: `engine.lua`
+    -- con dung `session_richness` o cho khac mot cach hop le.
+    local cond = eng:match("(if%s*%(ctx%.session_richness[^\n]-AUTH_SESSION_RICHNESS)")
+    if not cond then
+        bad("  SAI  khong tim thay dieu kien `auth_session_cap` trong engine.lua\n")
+    elseif not cond:find("session_richness_own", 1, true) then
+        bad("  SAI  auth_session_cap dang gac tren `session_richness` (gia tri\n" ..
+            "       THUA KE tu Redis) thay vi `session_richness_own`.\n" ..
+            "       Mot client tung gui cookie beo mot lan se duoc che mai mai.\n")
+    else pass = pass + 1 end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

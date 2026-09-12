@@ -64,7 +64,7 @@ local function write_ip_ban(ctx, ip, host, base, ip_combos, hits, ttl)
             xf_hits     = hits,
             fp_deg      = false,
             device_type = ctx.device_type or "unknown",
-            ua          = (ctx.ua or ""):sub(1, 120),
+            ua          = (ctx.ua or ""):sub(1, 180),
             ip          = ip,
             bot_score   = 0,
         })

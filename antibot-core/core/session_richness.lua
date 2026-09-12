@@ -127,6 +127,21 @@ function _M.compute(ctx)
 
     ctx.session_richness = r
 
+    -- HAI truong, khong phai mot, va chung tra loi HAI cau hoi khac nhau:
+    --   session_richness     = MAX qua cua so TTL, co the THUA KE tu mot
+    --                          request cu qua `richness:max:<id>`.
+    --   session_richness_own = trang thai request NAY thuc su mang theo.
+    --
+    -- Gia tri nang len dung cho viec no sinh ra: bu `cluster_score` khi mot
+    -- admin di sang domain khac it cookie hon. No KHONG duoc dung lam cong
+    -- TIN CAY — `auth_session_cap` ha `block`/`challenge` xuong `monitor`,
+    -- va mot request khong mang trang thai nao thi khong co gi de tin.
+    --
+    -- Khong tang FP: admin dang nhap that gui cookie o MOI request nen
+    -- `r_own` cua ho luon du. Phep nang ton tai cho client BO cookie, ma
+    -- admin thi khong bo.
+    ctx.session_richness_own = r_own
+
     ngx.log(ngx.DEBUG,
         "[session_richness] r=", string.format("%.2f", r),
         " bytes=", bytes,
