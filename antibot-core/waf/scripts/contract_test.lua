@@ -1467,17 +1467,12 @@ do
     -- 1b. cuc NGUOC LAI o mien tru ban IP: trao dac quyen => fail-CLOSED.
     local bsw = slurp(SRC .. "enforcement/ban/ban_store_write.lua") or ""
     if bsw:find("session_cookie_known%s*~=%s*false") then
-        bad("  SAI  mien tru ban IP dung `session_cookie_known ~= false`.
-" ..
-            "       Do la TRAO DAC QUYEN nen phai fail-CLOSED: `== true`.
-" ..
-            "       Viet `~= false` bien moi host CHUA CO SO thanh khong the
-" ..
-            "       ban theo IP — mat phong tuyen re nhat truoc tan cong dung luong.
-")
+        bad("  SAI  mien tru ban IP dung `session_cookie_known ~= false`.\n" ..
+            "       Do la TRAO DAC QUYEN nen phai fail-CLOSED: `== true`.\n" ..
+            "       Viet `~= false` bien moi host CHUA CO SO thanh khong the\n" ..
+            "       ban theo IP — mat phong tuyen re nhat truoc tan cong dung luong.\n")
     elseif not bsw:find("session_cookie_known%s*==%s*true") then
-        bad("  SAI  ban_store_write khong doc `ctx.session_cookie_known == true`
-")
+        bad("  SAI  ban_store_write khong doc `ctx.session_cookie_known == true`\n")
     else pass = pass + 1 end
 
     -- 2. bo loc ten: nap TU NGUON va goi that.
