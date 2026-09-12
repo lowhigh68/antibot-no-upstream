@@ -580,7 +580,7 @@ function _M.run(ctx)
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
-        " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f inapp=%.2f" ..
+        " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
@@ -634,6 +634,15 @@ function _M.run(ctx)
         tostring(ctx.action or "-"),
         beacon_state,
         ctx.session_richness or 0,
+        -- BA trang thai, khong phai hai. Day la so `auth_session_cap` THUC SU
+        -- doc tu c8f5f8b; con `richness=` ngay trai no la so DA THUA KE tu
+        -- `richness:max:<id>` trong Redis. Hai so nay khac nhau, va truoc dong
+        -- nay chi so KHONG dung de quyet dinh moi duoc ghi ra — nen 3.604 luot
+        -- block o `richness>=0.5` tren 186-126 ngay 12-09 khong doc duoc.
+        -- Ghi `0` cho `nil` se bien "chua do" thanh "do duoc, bang 0": lop loi
+        -- da lap lai sau lan trong repo nay. Lop session chua chay => `-`.
+        (ctx.session_richness_own == nil) and "-"
+            or string.format("%.2f", ctx.session_richness_own),
         ctx.inapp_likeness or 0,
         dev_log,
         sf_log,
