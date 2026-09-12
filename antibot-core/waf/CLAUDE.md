@@ -543,6 +543,7 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Bên cạnh:** `async/waf_logger.lua`
 
 ## Update log
+- 2026-09-13 — **`fim.sh`: `umask 077` + sua quyen file da ton tai.** Script truoc khong dat umask nen quyen phu thuoc umask cua root tung may — do 13-09: bon may 0640, rieng cloud183-139 0644. Tren shared hosting `manifest.full.txt` la danh muc DAY DU duong dan va kich thuoc file cua MOI khach hang tren may (13.636 dong tren 183-139); de 0644 thi PHP cua bat ky khach nao cung doc duoc ban do file cua tat ca khach con lai. Dat umask trong script chu khong chmod tay, vi may moi dung se lai sinh sai quyen; kem hai dong `chmod` vi umask khong dong toi file DA TON TAI.
 
 - 2026-09-12 — **Giai đoạn 1 đóng: nối `waf_body_php` trọng số 50, bỏ hai cái còn lại.** Tầng thân request có **ba** bộ dò độc lập, và chỉ bộ dở nhất được nối vào điểm. Đo trên 5 máy, toàn bộ `waf.log` còn giữ:
   - `argrule` — 269 lượt, `arg_traversal fnm=0` là **24/24** có trạng thái phiên. FP thuần. **Giữ trọng số 0.**

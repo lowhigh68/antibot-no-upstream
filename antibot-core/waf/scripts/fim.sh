@@ -207,7 +207,24 @@ MANIFEST="$STATE/manifest.$tier.txt"
 # STATE — nhung lan thu nhat da bao roi, va dong STATE van nam day du trong $LOG.
 PREVCHG="$STATE/prevchg.$tier.txt"
 
+# QUYEN FILE. Script nay truoc khong dat umask, nen quyen phu thuoc umask cua
+# root tung may. Do 13-09: bon may ra 0640, rieng cloud183-139 ra 0644 — khac
+# nhau do tinh co, khong do thiet ke.
+#
+# Tren shared hosting dieu do co nghia that: `manifest.full.txt` la danh muc
+# DAY DU duong dan va kich thuoc file cua MOI khach hang tren may (13.636 dong
+# tren 183-139). De 0644 thi PHP cua bat ky khach nao cung doc duoc ban do file
+# cua tat ca khach con lai — ke ca ten file backup va ten thu muc admin tu dat.
+#
+# Dat umask o day chu khong chmod tay tung may, vi may moi dung se lai sinh ra
+# sai quyen y nhu cu.
+umask 077
+
 mkdir -p "$STATE" || { echo "khong tao duoc $STATE" >&2; exit 2; }
+# umask khong dong toi file DA TON TAI. Sua lai nhung cai da sinh ra voi quyen
+# rong tren cac may cu; `|| :` vi $LOG co the chua ton tai o lan chay dau.
+chmod 0700 "$STATE" 2>/dev/null || :
+chmod 0600 "$STATE"/* "$LOG" 2>/dev/null || :
 
 # KHOA CHONG CHAY CHONG. Bat buoc khi chay day (moi 15 phut): neu mot lan quet
 # lau hon khoang cach giua hai lan, hai tien trinh se cung ghi $MANIFEST va ban

@@ -105,6 +105,31 @@ function _M.run(ctx)
         should_ban_ip = false
     end
 
+    -- KHONG BAO GIO tu ban dia chi cua CHINH MAY NAY.
+    --
+    -- Do 13-09 tren cloud186-126: trong 3.604 luot block co `richness>=0.5`,
+    -- 2.010 luot den tu 123.30.186.126 — IP cong cong cua chinh may do. Do la
+    -- may chu tu goi minh: wp-cron, kiem tra cap nhat plugin, HTTP giua cac
+    -- site cung may. Tat ca ghi `id=-` vi `ip_ban_check` thoat truoc khi
+    -- identity duoc tinh. Hau qua: moi wp-cron tren may an 403, im lang, khong
+    -- ai bao — chi lo ra khi dem theo IP.
+    --
+    -- WHITELIST KHONG CUU DUOC. `init.lua` xep `ip_ban_check` TRUOC
+    -- `access_layer`, nen dua IP vao whitelist cung khong bao gio kip chay.
+    -- Dung vet bat doi xung da lam `auth_session_cap` khong cuu duoc admin
+    -- bestcargo.vn hom 12-09. Nen phai chan ngay o cho TAO ban.
+    --
+    -- `remote_addr == server_addr` chi dung khi client la chinh may nay — qua
+    -- ten mien cong cong hoac qua loopback. Client ngoai luon co remote_addr
+    -- khac server_addr, nen phep thu nay khong the bi gia mao tu ben ngoai va
+    -- khong can khai bao IP cho tung may.
+    --
+    -- Gioi han da biet: tien trinh bind mot dia chi cuc bo KHAC dia chi dang
+    -- lang nghe thi khong khop. Chap nhan — no van chan het hai duong pho bien.
+    if ip and ip == ngx.var.server_addr then
+        should_ban_ip = false
+    end
+
     -- Bậc cuối của thang leo — lấy từ cfg.ttl.ban_steps để KHÔNG lệch với thang
     -- identity ở l7/ban/ban_store.lua. 2026-08-06: đổi từ 0 (vĩnh viễn) sang
     -- hữu hạn (30 ngày) — xem chú thích tại config.lua ban_steps.
