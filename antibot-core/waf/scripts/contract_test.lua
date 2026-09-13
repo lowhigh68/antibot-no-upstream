@@ -1430,6 +1430,56 @@ do
     else pass = pass + 1 end
 end
 
+-- ── dia chi noi bo: mot header khong bao gio duoc khai ──────────────
+--
+-- Buoc 2 cua `access/whitelist.lua` cap DAC QUYEN manh nhat he thong: dia chi
+-- dai noi bo thi mien TOAN BO pipeline — khong scoring, khong l7, khong
+-- ip_ban_check, va tin hieu WAF thang duoc `verified` nhung KHONG thang
+-- `whitelisted`.
+--
+-- Chu thich cu cua no tu tuyen bo ly do an toan: "RFC1918 khong route qua
+-- public Internet; khong the spoof tu ngoai." Cau do chi dung chung nao
+-- `$remote_addr` con la dia chi TCP that. Mot dong `real_ip_header
+-- CF-Connecting-IP` trong config nginx — nam NGOAI kho nay, khong phep kiem Lua
+-- nao thay duoc — bien `$remote_addr` thanh gia tri sao chep tu header, ma
+-- nginx KHONG kiem tra no co phai IP cong cong. Luc do dac quyen tren mo ra cho
+-- bat ky ai gui dung mot dong header.
+--
+-- Ghim ca bon dau, vi moi dau deu co the bi "don gian hoa" nguoc lai trong im
+-- lang va khong dau nao lam hong mot test chuc nang nao.
+io.write("\nhop dong: dai noi bo phai gac tren dia chi TCP that\n")
+do
+    local wl  = slurp(SRC .. "core/access/whitelist.lua") or ""
+    local cix = slurp(SRC .. "core/ctx/init.lua")         or ""
+
+    if not cix:find("ctx.ip_tcp", 1, true) then
+        bad("  SAI  ctx/init.lua khong dat `ctx.ip_tcp`.\n" ..
+            "       whitelist.lua se doc nil roi quay ve `ctx.ip` — tuc quay ve\n" ..
+            "       dung lo hong ma no sinh ra de chan.\n")
+    else pass = pass + 1 end
+
+    if not cix:find("ip_scope.is_private", 1, true) then
+        bad("  SAI  ctx/init.lua khong con phep kiem tu choi dia chi noi bo do\n" ..
+            "       header khai. `CF-Connecting-IP: 127.0.0.1` se tro thanh\n" ..
+            "       `ctx.ip` va mien toan bo pipeline.\n")
+    else pass = pass + 1 end
+
+    local lan = wl:match("([^\n]-lan_internal[^\n]*)")
+    if not lan then
+        bad("  SAI  khong tim thay nhanh `lan_internal` trong whitelist.lua\n")
+    elseif not lan:find("ip_tcp", 1, true) then
+        bad("  SAI  nhanh `lan_internal` dang gac tren `ctx.ip` (gia tri CO THE\n" ..
+            "       do header dat) thay vi `ctx.ip_tcp`.\n" ..
+            "       Mot dong `CF-Connecting-IP: 127.0.0.1` mien toan bo pipeline.\n")
+    else pass = pass + 1 end
+
+    if wl:find("local function is_private", 1, true) then
+        bad("  SAI  whitelist.lua co lai ban sao cuc bo cua phep kiem dai noi bo.\n" ..
+            "       Phai dung `core/ip_scope.lua`: hai ban sao cua mot phep kiem\n" ..
+            "       an ninh se lech nhau, va lech o phia mo cua.\n")
+    else pass = pass + 1 end
+end
+
 -- ── so ten cookie: ba trang thai va bo loc ten ──────────────────────
 --
 -- HAI thu duoc ghim o day, va ca hai deu thuoc loai "don gian hoa mot cai la

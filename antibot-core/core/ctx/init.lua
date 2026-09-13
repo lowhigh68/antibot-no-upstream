@@ -1,9 +1,47 @@
 local _M = {}
 
+local ip_scope = require "antibot.core.ip_scope"
+
 local FATAL_FIELDS = { "ip", "ua", "req" }
 
 function _M.init(ctx)
-    ctx.ip   = ngx.var.remote_addr or ""
+    -- MOT HEADER KHONG BAO GIO DUOC PHEP KHAI MINH LA DIA CHI NOI BO.
+    --
+    -- `ngx.var.remote_addr` chi la dia chi TCP that CHUNG NAO khong co
+    -- `real_ip_header`. Khi co (vi du `nginx/CF/cloudflare-realip.conf` dat
+    -- `real_ip_header CF-Connecting-IP`), no la gia tri sao chep NGUYEN VAN tu
+    -- mot header, va module realip cua nginx KHONG kiem tra dia chi thay the co
+    -- phai IP cong cong hay khong — `127.0.0.1`, `10.x`, `192.168.x`, `::1`
+    -- deu duoc nhan.
+    --
+    -- Chuoi hau qua neu khong chan o day: `ctx.ip = "127.0.0.1"` =>
+    -- `access/whitelist.lua` tra `lan_internal` => `ctx.whitelisted = true` =>
+    -- pipeline thoat ngay o buoc 4. Bo qua scoring, l7, ip_ban_check,
+    -- detection, PoW. Va tin hieu WAF thang duoc `verified` nhung KHONG thang
+    -- `whitelisted`, nen ca luat chan WP-path lan `dotfile_exposed` cung bi bo
+    -- qua. Tuc mot header duy nhat go bo toan bo he thong.
+    --
+    -- Chan o TANG LUA chu khong chi o config, vi bat bien nay phai dung du ai
+    -- them `set_real_ip_from` o dau, luc nao, cho domain nao.
+    --
+    -- CHI thay the khi dia chi bi ghi de LA dai noi bo. IP cong cong gia mao
+    -- thi khong xu ly duoc o day — do la ban chat cua viec tin header cua mot
+    -- proxy, va cach sua nam o cho gioi han `set_real_ip_from`, khong phai o
+    -- day.
+    local tcp_ip = ip_scope.tcp_peer()
+    local ip     = ngx.var.remote_addr or ""
+
+    if tcp_ip ~= "" and ip ~= tcp_ip and ip_scope.is_private(ip) then
+        ngx.log(ngx.WARN,
+            "[ctx] tu choi dia chi noi bo do header khai: ", ip,
+            " — dung dia chi TCP that: ", tcp_ip,
+            " host=", ngx.var.host or "?")
+        ctx.ip_spoofed = ip
+        ip = tcp_ip
+    end
+
+    ctx.ip     = ip
+    ctx.ip_tcp = tcp_ip
     ctx.port = tonumber(ngx.var.remote_port) or 0
     ctx.ua   = ngx.var.http_user_agent or ""
 

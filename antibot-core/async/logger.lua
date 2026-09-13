@@ -579,7 +579,7 @@ function _M.run(ctx)
     -- richness=0\\.0 → first-visit/bot pattern.
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
-        " ip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
+        " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s%s",
@@ -589,6 +589,17 @@ function _M.run(ctx)
         class,
         tostring(ctx.identity or ctx.fp_light or "-"),
         tostring(ctx.ip or "-"),
+        -- `rip=` — dia chi TCP THAT khi no khac `ip=`, tuc khi `real_ip_header`
+        -- da ghi de. `-` nghia la khong co ghi de nao: hai gia tri bang nhau,
+        -- hoac may nay khong bat realip.
+        --
+        -- Co cot nay vi truoc do KHONG CO CACH NAO nhin ra `ctx.ip` la dia chi
+        -- that hay la mot header. Dung lop loi vua va o `207cde7`: truong ra
+        -- quyet dinh khong nam trong log. Mot dong co `rip=` khac `ip=` nghia
+        -- la moi khoa theo IP cua request do — `ban:`, `ip_risk:`, rate counter
+        -- — deu dang gan vao gia tri do client cung cap.
+        (ctx.ip_tcp and ctx.ip_tcp ~= "" and ctx.ip_tcp ~= ctx.ip)
+            and ctx.ip_tcp or "-",
         ua_log,
         tostring(ctx.tls13_offered),
         tostring(ctx.h2_is_h2),

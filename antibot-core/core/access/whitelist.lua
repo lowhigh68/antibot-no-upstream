@@ -2,6 +2,7 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local identity_mod = require "antibot.core.fingerprint.identity"
 local cfg  = require "antibot.core.config"
+local ip_scope = require "antibot.core.ip_scope"
 
 local ANTIBOT_PATHS = {
     "/antibot/verify",
@@ -16,33 +17,21 @@ local BYPASS_PATHS = {
     "/ajaxcart/",
 }
 
--- Private/loopback ranges — internal infrastructure, bypass antibot.
--- Bao phủ:
---   127.0.0.0/8              — loopback
---   10.0.0.0/8               — RFC1918 class A
---   172.16.0.0/12            — RFC1918 class B
---   192.168.0.0/16           — RFC1918 class C
---   ::1                      — IPv6 loopback
---   fe80::/10                — IPv6 link-local
---   fc00::/7                 — IPv6 unique local (fc/fd prefix)
--- Lý do an toàn: RFC1918 không route qua public Internet; không thể
--- spoof từ ngoài. Request đến với src=RFC1918 = thật sự từ LAN/server.
-local function is_private_lan(ip)
-    if not ip or ip == "" then return false end
-    if ip:find("^127%.", 1, false) then return true end
-    if ip:find("^10%.", 1, false) then return true end
-    if ip:find("^192%.168%.", 1, false) then return true end
-    local b = ip:match("^172%.(%d+)%.")
-    if b then
-        local n = tonumber(b)
-        if n and n >= 16 and n <= 31 then return true end
-    end
-    if ip == "::1" then return true end
-    local p2 = ip:sub(1, 2):lower()
-    if p2 == "fc" or p2 == "fd" then return true end
-    if ip:sub(1, 4):lower() == "fe80" then return true end
-    return false
-end
+-- Phep kiem dai noi bo da chuyen sang `core/ip_scope.lua` — xem chu thich o do
+-- ve ly do khong giu hai ban sao cua mot phep kiem an ninh.
+--
+-- Ly do an toan CU o day: "RFC1918 khong route qua public Internet; khong the
+-- spoof tu ngoai. Request den voi src=RFC1918 = that su tu LAN/server."
+--
+-- Cau do chi dung chung nao `$remote_addr` con la dia chi TCP that. Voi
+-- `real_ip_header` (vi du `CF-Connecting-IP`), `$remote_addr` tro thanh gia tri
+-- sao chep tu mot header, va nginx KHONG kiem tra no co phai IP cong cong hay
+-- khong. Luc do dac quyen o buoc 2 ben duoi mo ra cho bat ky ai gui dung mot
+-- dong header.
+--
+-- Nen buoc 2 nay doc `ctx.ip_tcp` — dia chi TCP that, `ctx/init.lua` da tach
+-- san — chu KHONG doc `ctx.ip`. Bat bien ma cau tren tuyen bo, nay duoc bao
+-- dam bang dung thu no noi den.
 
 -- Tầng 2: Device fingerprint dùng UA + canvas hash.
 --
@@ -156,7 +145,11 @@ function _M.check(ctx)
     -- 2. Loopback + LAN (RFC1918, IPv6 private)
     -- Internal infrastructure: wp-cron, monitoring, DA hairpin, container bridge.
     -- KHÔNG count rate, không chạy scoring, không ghi session.
-    if is_private_lan(ip) then return true, "lan_internal" end
+    --
+    -- `ctx.ip_tcp`, KHONG phai `ctx.ip`: day la dac quyen manh nhat trong he
+    -- thong (mien toan bo pipeline, thang ca tin hieu WAF), nen no phai gac
+    -- tren dia chi TCP that, thu khong header nao dat duoc.
+    if ip_scope.is_private(ctx.ip_tcp or ip) then return true, "lan_internal" end
 
     -- 3. IP whitelist
     local val = pool.safe_get("wl:" .. ip)
