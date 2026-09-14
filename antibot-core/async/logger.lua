@@ -580,7 +580,7 @@ function _M.run(ctx)
     local line = string.format(
         "[%s] [antibot] ts=%d domain=%s class=%s id=%s" ..
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
-        " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s inapp=%.2f" ..
+        " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
         " top=%s reason=%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
@@ -654,6 +654,27 @@ function _M.run(ctx)
         -- da lap lai sau lan trong repo nay. Lop session chua chay => `-`.
         (ctx.session_richness_own == nil) and "-"
             or string.format("%.2f", ctx.session_richness_own),
+        -- `ckn=` — cookie request mang co phai ten do CHINH HOST NAY tung cap
+        -- phat khong. `session_richness.lua:156` tinh o BUOC 5, tuc TRUOC
+        -- `ip_ban_check` o buoc 6, nen truong nay co gia tri that ngay ca tren
+        -- dong `banned_ip`.
+        --
+        -- BA TRANG THAI, va trang thai thu ba moi la cho quan trong:
+        --   true  — mang mot ten cookie co trong so cua host
+        --   false — host da hoc du >=3 ten, request khong mang ten nao
+        --   `-`   — host chua hoc du: CHUA BIET, khong phai "khong co"
+        -- Ep `nil` thanh `false` o day se tai tao dung cai loi ma
+        -- `cookie_registry` sinh ra de tranh, chi la tai tao o tang doc log.
+        --
+        -- VI SAO CAN. Do 14-09: tieu chi `rown>=0.5 + block` cho 28 dong tren
+        -- cloud171-96, va phai doc TUNG DONG mot moi phan loai duoc. Ba mau lay
+        -- ra deu la bot: mot UA Chrome POST vao xmlrpc, va hai IP khac nhau
+        -- phat lai CUNG mot bo cookie trong CUNG mot giay. `rown=0.80` chi
+        -- chung minh mang du cookie, khong chung minh co nguoi nao. Co cot nay
+        -- thi tieu chi thanh `ckn=true` + `rown>=0.5` + bi chan — dung to hop
+        -- ma `ban_store_write` DA coi la bang chung cua mot phien that.
+        (ctx.session_cookie_known == nil) and "-"
+            or tostring(ctx.session_cookie_known),
         ctx.inapp_likeness or 0,
         dev_log,
         sf_log,

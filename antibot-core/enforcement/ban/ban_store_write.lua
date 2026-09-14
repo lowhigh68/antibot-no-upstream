@@ -105,7 +105,25 @@ function _M.run(ctx)
         should_ban_ip = false
     end
 
-    -- KHONG BAO GIO tu ban dia chi cua CHINH MAY NAY.
+    -- KHONG BAO GIO tu KET AN CHINH MAY NAY — ca theo IP lan theo IDENTITY.
+    --
+    -- Do 14-09 tren cloud186-126, sau khi ban va IP da chay: `123.30.186.126`
+    -- KHONG con dong `banned_ip` nao, nhung van co 8.356 luot `banned_id` —
+    -- ban va truoc chi bit mot nua duong. Mot identity duy nhat:
+    --
+    --     id=aba75ff7ba9f053019a0230d4947e262   ttl=2575401 (29,8 ngay con lai)
+    --       ua=WordPress/7.0.4;_https://indochinapost.vn
+    --       ua=WordPress/7.1;_https://bestcargo.vn
+    --       ua=WordPress/6.2.11;_https://aloinan.com
+    --       ua=WordPress/6.9.7;_https://dichthuatchaua.net
+    --       ua=WordPress/6.8.8;_https://aloduasap.com
+    --
+    -- NAM phien ban WordPress, NAM domain, MOT identity. `normalize_ua` rut
+    -- `WordPress/7.0.4;_https://...` xuong token truoc dau `/` dau tien, tuc
+    -- `"WordPress"`; cong voi IP cua chinh may thi cron cua MOI site tren may
+    -- deu bam ra cung mot identity. Mot site cham nguong => toan bo wp-cron
+    -- cua ca may an an 30 ngay: bai hen gio, kiem tra cap nhat plugin, tac vu
+    -- WooCommerce, backup — chet het tren it nhat 13 domain.
     --
     -- Do 13-09 tren cloud186-126: trong 3.604 luot block co `richness>=0.5`,
     -- 2.010 luot den tu 123.30.186.126 — IP cong cong cua chinh may do. Do la
@@ -124,9 +142,31 @@ function _M.run(ctx)
     -- khac server_addr, nen phep thu nay khong the bi gia mao tu ben ngoai va
     -- khong can khai bao IP cho tung may.
     --
+    -- VI SAO MIEN THEO IDENTITY LA AN TOAN, khong phai mot lo hong moi:
+    -- `identity = md5(VERSION | ip | ua_norm)` — IP NAM TRONG HAM BAM. Nen
+    -- identity `md5(V|123.30.186.126|WordPress)` chi co the sinh ra tu mot
+    -- request co `remote_addr` DUNG BANG dia chi do. Khong client ngoai nao tao
+    -- duoc no. Pham vi mien khit dung mot nhom: luu luong may tu goi minh.
+    --
+    -- Bo ca `viol:<id>`, khong chi `ban:<id>`: `viol` la thu leo thang TTL. Giu
+    -- lai thi ban an khong duoc ghi nhung tien an van tang, va lan sau co ly do
+    -- khac de ban thi no nhay thang len bac 30 ngay. Bo an ma giu tien an la
+    -- nua voi.
+    --
+    -- KHONG phai whitelist: khong short-circuit, pipeline van chay du, va engine
+    -- van chan TUNG REQUEST tu-goi neu no dang chan. Chi BAN AN DAI HAN la
+    -- khong duoc ghi. Mot cron hong van bi throttle, no chi khong con keo theo
+    -- cron cua moi site khac xuong cung.
+    --
+    -- Danh doi: neu chinh may bi chiem va dung de tan cong cac site cua no, ta
+    -- mat lop cam-theo-identity cho luu luong do. Chap nhan — ke da chay duoc ma
+    -- tren may khong can vuot WAF, chan theo tung request van con, con cai gia
+    -- cua hien trang la toan bo wp-cron chet 30 ngay.
+    --
     -- Gioi han da biet: tien trinh bind mot dia chi cuc bo KHAC dia chi dang
     -- lang nghe thi khong khop. Chap nhan — no van chan het hai duong pho bien.
-    if ip and ip == ngx.var.server_addr then
+    local self_request = (ip ~= nil and ip ~= "" and ip == ngx.var.server_addr)
+    if self_request then
         should_ban_ip = false
     end
 
@@ -155,7 +195,9 @@ function _M.run(ctx)
 
     local now_ts = tostring(ngx.time())
 
-    if id then
+    -- `not self_request`: xem khoi chu thich o tren. Cong nay doi xung voi cong
+    -- cua `should_ban_ip` — hai nhanh, mot quy tac: may khong tu ket an chinh no.
+    if id and not self_request then
         if ttl and ttl > 0 then
             red:setex("ban:" .. id, ttl, "1")
         else
@@ -180,7 +222,11 @@ function _M.run(ctx)
     end
 
     if ctx_json ~= "" then
-        if id then
+        -- Cung dieu kien voi nhanh ghi an o tren. Truoc day `id` co mat la chac
+        -- chan da ghi an, nen mot `if id` la du; nay khong con dung nua, va ho
+        -- so bang chung khong co ban an di kem chi la rac. Bat bien can giu:
+        -- `ban_ctx:<x>` ton tai <=> co mot ban an cho <x>.
+        if id and not self_request then
             red:setex("ban_ctx:" .. id, ctx_ttl, ctx_json)
         end
         if should_ban_ip then
