@@ -16,8 +16,31 @@
 --   fc00::/7        IPv6 unique local (tien to fc / fd)
 
 local _M    = {}
-local cfg   = require "antibot.core.config"
 local cache = ngx.shared.antibot_cache
+
+-- Dia chi cua CHINH MAY NAY, sinh tai cho boi `nginx/deploy.sh` moi lan deploy
+-- (`ip addr` cho dia chi tren card + `getent` cho dia chi ma hostname tro toi,
+-- tuc dia chi public cua may dung sau NAT). KHONG khai tay trong `config.lua`:
+-- file do deploy chung cho ca dan may, nen khai tay se bat moi may mang danh
+-- sach IP cua moi may khac, va may thu sau lai phai sua tay lan nua.
+--
+-- Doc MOT LAN luc nap module. Moi lan deploy deu reload nginx nen file duoc doc
+-- lai — khong can timer, khong cham Redis, khong ton gi o duong request.
+local SELF_PATH = ngx.config.prefix() .. "conf/antibot/self_addrs.txt"
+
+local function load_self_addrs()
+    local t, n = {}, 0
+    local f = io.open(SELF_PATH, "r")
+    if not f then return t, n end
+    for line in f:lines() do
+        local a = line:match("^%s*([%x%.:]+)%s*$")
+        if a and a ~= "" then t[a] = true; n = n + 1 end
+    end
+    f:close()
+    return t, n
+end
+
+local SELF_ADDRS, SELF_N = load_self_addrs()
 
 function _M.is_private(ip)
     if not ip or ip == "" then return false end
@@ -70,42 +93,48 @@ end
 -- so voi gia tri client dat duoc la mo cua cho ke tan cong tu cap dac quyen
 -- bang mot dong header. `$server_addr` va `$realip_remote_addr` deu khong the
 -- gia mao tu xa.
--- BA HINH THAI MANG, chi hinh thai thu ba can `cfg.self_addrs` (xem chu thich
--- day du tai `core/config.lua`):
---   1. khong NAT, card chi co IP public      => `$server_addr` du
---   2. co NAT, card co CA public lan private => `$server_addr` du
---   3. co NAT, card CHI co IP private        => PHAI khai `self_addrs`
+-- BA HINH THAI MANG tren dan may nay, va `self_addrs.txt` phu ca ba:
+--
+--   1. KHONG NAT, card chi co IP public.
+--      cloud171-96 `123.30.171.96`, cloud183-139, cloud28-246.
+--      `$server_addr` = IP public, va `ip addr` cung thay no.
+--
+--   2. CO NAT, card mang CA public LAN private.
+--      cloud186-126: `123.30.186.126/25` va `192.168.186.126/24` cung tren
+--      `ens160`. `$server_addr` la dia chi cua socket DA NHAN ket noi nen tu
+--      khop dung duong ma request di vao; `ip addr` thay ca hai.
+--
+--   3. CO NAT, card CHI co IP private.
+--      cloud168-101: card chi co `192.168.168.101`, con vao va ra deu qua
+--      `123.30.168.101`. `$server_addr` va dia chi cua luu luong tu-goi KHONG
+--      BAO GIO khop. Day la hinh thai duy nhat can den `getent` — hostname cua
+--      may tro toi dia chi public, va do la thu duy nhat ben trong may biet
+--      duoc ve dia chi ben ngoai cua no.
 function _M.is_self()
     local peer = _M.tcp_peer()
     if peer == "" then return false end
 
+    if SELF_ADDRS[peer] then return true end
+
     local s = ngx.var.server_addr
     if s and s ~= "" and peer == s then return true end
 
-    local list = cfg.self_addrs
-    if list then
-        for i = 1, #list do
-            if peer == list[i] then return true end
-        end
-    end
-
-    -- HINH THAI 3 MA CHUA KHAI: canh bao, dung im lang.
+    -- FILE THIEU HOAC RONG: canh bao, dung im lang.
     --
-    -- `$server_addr` la dia chi RIENG nghia la nginx dang lang nghe sau NAT, va
-    -- dia chi public nam o noi khac. Khi do ca hai cong goi ham nay deu khong
-    -- bao gio kich hoat, ma chung KHONG bao loi — chung chi... khong lam gi.
-    -- Day dung lop that bai am tham da giet `wp_paths.mark()` bon thang va lam
-    -- mot phep do bao `0` sai su that hom 14-09. Mot dong canh bao moi gio re
-    -- hon nhieu so voi viec phat hien ra sau ba tuan.
-    if (not list or #list == 0)
-       and s and s ~= "" and _M.is_private(s) then
-        if cache and cache:add("ip_scope_nat_warn", 1, 3600) then
-            ngx.log(ngx.WARN,
-                "[ip_scope] server_addr=", s, " la dia chi RIENG => may dung ",
-                "sau NAT, nhung cfg.self_addrs RONG. Cac cong 'khong tu ket an' ",
-                "va 'khong tu gan nhan farm' se KHONG BAO GIO kich hoat tren may ",
-                "nay. Khai dia chi public vao core/config.lua: self_addrs.")
-        end
+    -- Che do hong o day khong phai bao loi ma la KHONG LAM GI CA: ca hai cong
+    -- goi ham nay se khong bao gio kich hoat, va may lai tu ket an chinh no ma
+    -- khong ai thay. Dung lop that bai da giet `wp_paths.mark()` bon thang va
+    -- lam mot phep do bao `0` sai su that hom 14-09.
+    --
+    -- Van con `$server_addr` do o tren, nen hinh thai 1 va 2 khong hong khi
+    -- thieu file — chi hinh thai 3 mat bao ve. Canh bao cho ca hai truong hop vi
+    -- tu trong Lua khong phan biet duoc may dang o hinh thai nao.
+    if SELF_N == 0 and cache
+       and cache:add("ip_scope_selfaddr_warn", 1, 3600) then
+        ngx.log(ngx.WARN,
+            "[ip_scope] ", SELF_PATH, " thieu hoac rong. May sau NAT (card chi ",
+            "co IP private) se KHONG duoc bao ve khoi viec tu ket an chinh no. ",
+            "Chay lai ./nginx/deploy.sh de sinh file.")
     end
 
     return false

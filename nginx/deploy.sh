@@ -206,6 +206,45 @@ rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
 chmod 0644 "$TARGET_DIR/VERSION"
 sed 's/^/    /' "$TARGET_DIR/VERSION"
 
+# ---------------------------------------------------------------------------
+# DIA CHI CUA CHINH MAY NAY -> self_addrs.txt
+#
+# `core/ip_scope.lua:is_self()` gac hai cong: khong tu ket an va khong tu gan
+# nhan dan-thiet-bi. No so dia chi nguon voi `$server_addr`, va phep so do dung
+# voi hai trong ba hinh thai mang:
+#
+#   1. khong NAT, card chi co IP public            -> `$server_addr` du
+#   2. co NAT, card co CA public lan private       -> `$server_addr` du
+#   3. co NAT, card CHI co IP private              -> KHONG du
+#
+# Hinh thai 3 (do 15-09: cloud168-101 chi co `192.168.168.101` tren card, vao
+# va ra deu qua `123.30.168.101`) can dia chi public, ma may sau NAT khong tu
+# suy ra duoc tu ben trong. Ghi o day chu KHONG khai tay trong `config.lua`:
+# `config.lua` deploy chung cho ca dan may, nen khai tay se bat moi may mang
+# danh sach IP cua moi may khac, va may thu sau lai phai sua tay lan nua.
+#
+# Sinh TAI CHO tren tung may, moi lan deploy:
+#   - `ip addr`   -> dia chi thuc tren card (hinh thai 1 va 2)
+#   - `getent`    -> hostname cua may tro toi dau (hinh thai 3; dung NSS nen an
+#                    theo ca /etc/hosts lan DNS, khong can `dig`)
+#
+# Loai loopback va 0.0.0.0. Khong loai dia chi private: chung vo hai o day va
+# da duoc `is_private` xu ly o cho khac.
+#
+# PHAI ghi SAU rsync — `--delete` se xoa file khong co trong nguon, dung ly do
+# VERSION o tren cung nam sau.
+{
+    ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    getent ahostsv4 "$(hostname -f 2>/dev/null || hostname)" 2>/dev/null | awk '{print $1}'
+} | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u > "$TARGET_DIR/self_addrs.txt"
+chmod 0644 "$TARGET_DIR/self_addrs.txt"
+n_self=$(grep -c . "$TARGET_DIR/self_addrs.txt" || echo 0)
+echo "    self_addrs ($n_self): $(tr '\n' ' ' < "$TARGET_DIR/self_addrs.txt")"
+if [ "${n_self:-0}" -eq 0 ]; then
+    echo "    *** KHONG xac dinh duoc dia chi nao cua may — is_self() se khong ***"
+    echo "    *** bao gio kich hoat, may co the tu ban chinh no.               ***"
+fi
+
 # Cau hinh logrotate nam trong repo chu khong cau hinh tay tren tung may:
 # da co ca antibot.log khong xoay suot 28 ngay vi trot bo sot mot may.
 # Chi ghi de khi noi dung khac -> chay lai deploy nhieu lan khong gay nhieu.
