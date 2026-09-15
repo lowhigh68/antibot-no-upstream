@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local ip_scope = require "antibot.core.ip_scope"
 
 function _M.run(ctx)
     local id    = ctx.identity or ctx.fp_light
@@ -165,7 +166,17 @@ function _M.run(ctx)
     --
     -- Gioi han da biet: tien trinh bind mot dia chi cuc bo KHAC dia chi dang
     -- lang nghe thi khong khop. Chap nhan — no van chan het hai duong pho bien.
-    local self_request = (ip ~= nil and ip ~= "" and ip == ngx.var.server_addr)
+    -- Qua `ip_scope.is_self()`, KHONG so `ctx.ip` voi `server_addr` truc tiep
+    -- nhu ban dau. Hai ly do, phat hien 15-09:
+    --   1. `ctx.ip` CO THE do `real_ip_header` ghi de tu mot header.
+    --      `ctx/init.lua` chi tu choi dia chi NOI BO do header khai, nen dia chi
+    --      CONG CONG cua chinh may van lot. Ma day la cong cap MIEN TRU — so voi
+    --      gia tri client dat duoc la de ke tan cong tu cap dac quyen bang mot
+    --      dong header. `is_self()` so voi `tcp_peer()`, thu khong gia mao duoc.
+    --   2. `detection/ip_tour.lua` nay cung can dung phep kiem ay. Hai ban sao
+    --      cua mot phep kiem cap dac quyen se lech nhau — cung ly do da gom
+    --      `is_private` ve `ip_scope`.
+    local self_request = ip_scope.is_self()
     if self_request then
         should_ban_ip = false
     end

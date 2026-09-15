@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local ip_scope = require "antibot.core.ip_scope"
 
 -- IP-Tour detector — antibot's structural advantage on shared hosting.
 --
@@ -150,8 +151,36 @@ function _M.run(ctx)
     -- is mostly ephemeral fresh devices → ratio ≈ 0). Fresh un-cookied identities
     -- on such an IP get floored to challenge in engine.lua (never IP-banned) —
     -- the farm's devices are filtered ONE BY ONE, real cookied users are exempt.
+    -- DIA CHI CUA CHINH MAY NAY KHONG BAO GIO DUOC GAN NHAN FARM.
+    --
+    -- Tien de cua tin hieu farm la: "nhieu UA + gan nhu khong cookie = mot dan
+    -- thiet bi dung mot lan". Tren dia chi cua chinh may, tien de do BI LAT
+    -- NGUOC, va lat mot cach khong the tranh:
+    --   - nhieu UA vi nhieu SITE — moi wp-cron gui `WordPress/<ver>;_https://
+    --     <domain>`, chuoi khac nhau tung site. May 13+ site la vuot nguong 15
+    --     ngay lap tuc;
+    --   - khong cookie vi day la goi MAY-TOI-MAY, khong co trinh duyet.
+    -- Cung mot hinh dang, nguyen nhan trai nguoc, va tin hieu khong phan biet
+    -- duoc. Do 14-09 tren cloud186-126: sau khi go `banned_id`, ty le
+    -- `ip_farm_suspect` tren `123.30.186.126` nhay tu 16/200 len 61/200 —
+    -- cua thu ba cua cung mot van de, sau `banned_ip` (ec2b9c9) va `banned_id`
+    -- (28713d2).
+    --
+    -- Hau qua nang hon ve mat van hanh so voi ban: `engine.lua:590` ep
+    -- CHALLENGE, ma wp-cron la mot HTTP client PHP — no khong giai duoc PoW.
+    -- Challenge voi no dong nghia voi chan vinh vien.
+    --
+    -- PHAM VI HEP CO CHU Y. Chi go DUNG tin hieu nay. `ip_shared`,
+    -- `ip_shared_verified`, phat hien tour, cham diem, gioi han toc do, va toan
+    -- bo tang WAF (`waf/exposed.lua` dotfile/dump, `waf/wp_paths.lua`) deu KHONG
+    -- doi — chung chay o buoc 0, truoc ca cookie fast-path. Mot site bi chiem
+    -- roi dung de tan cong hang xom cung may van bi soi day du. Day KHONG phai
+    -- whitelist: khong short-circuit, khong mien tru gi khac.
+    local is_self = ip_scope.is_self()
+
     local cookie_ratio = (uas > 0) and (real_users / uas) or 1.0
-    ctx.ip_farm_suspect = uas >= (c.farm_ua_min or 15)
+    ctx.ip_farm_suspect = not is_self
+        and uas >= (c.farm_ua_min or 15)
         and cookie_ratio < (c.farm_cookie_ratio_max or 0.15)
     if ctx.ip_farm_suspect then
         ngx.log(ngx.WARN,

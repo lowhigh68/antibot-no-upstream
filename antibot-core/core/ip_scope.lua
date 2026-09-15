@@ -51,4 +51,28 @@ function _M.tcp_peer()
     return t
 end
 
+-- Request nay co phai do CHINH MAY NAY phat ra khong (may tu goi minh).
+--
+-- `$server_addr` la dia chi cua socket DA NHAN ket noi. Khi mot tien trinh tren
+-- may goi `https://<domain cua chinh no>`, dich la mot dia chi cuc bo nen nhan
+-- dinh tuyen qua `lo` va chon nguon bang chinh dia chi dich — hai ben bang
+-- nhau. Voi may co NHIEU dia chi tren mot card (do 14-09 tren cloud186-126:
+-- `192.168.186.126/24` VA `123.30.186.126/25` cung tren `ens160`), phep kiem
+-- nay van dung cho tung dia chi, khac han viec lay "dia chi dau tien tren card"
+-- — cai bay da lam mot lenh do bao `0` sai su that hom 14-09.
+--
+-- SO VOI `tcp_peer()`, KHONG so voi `ctx.ip`. `ctx.ip` co the do
+-- `real_ip_header` ghi de tu mot header; `ctx/init.lua` chi tu choi dia chi
+-- NOI BO do header khai, nen dia chi CONG CONG cua chinh may van lot qua duoc.
+-- Ma ham nay cap MIEN TRU (khong ban, khong gan nhan farm), tuc mot dac quyen:
+-- so voi gia tri client dat duoc la mo cua cho ke tan cong tu cap dac quyen
+-- bang mot dong header. `$server_addr` va `$realip_remote_addr` deu khong the
+-- gia mao tu xa.
+function _M.is_self()
+    local s = ngx.var.server_addr
+    if not s or s == "" then return false end
+    local peer = _M.tcp_peer()
+    return peer ~= "" and peer == s
+end
+
 return _M
