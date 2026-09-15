@@ -15,7 +15,9 @@
 --   ::1             IPv6 loopback     fe80::/10       IPv6 link-local
 --   fc00::/7        IPv6 unique local (tien to fc / fd)
 
-local _M = {}
+local _M    = {}
+local cfg   = require "antibot.core.config"
+local cache = ngx.shared.antibot_cache
 
 function _M.is_private(ip)
     if not ip or ip == "" then return false end
@@ -68,11 +70,45 @@ end
 -- so voi gia tri client dat duoc la mo cua cho ke tan cong tu cap dac quyen
 -- bang mot dong header. `$server_addr` va `$realip_remote_addr` deu khong the
 -- gia mao tu xa.
+-- BA HINH THAI MANG, chi hinh thai thu ba can `cfg.self_addrs` (xem chu thich
+-- day du tai `core/config.lua`):
+--   1. khong NAT, card chi co IP public      => `$server_addr` du
+--   2. co NAT, card co CA public lan private => `$server_addr` du
+--   3. co NAT, card CHI co IP private        => PHAI khai `self_addrs`
 function _M.is_self()
-    local s = ngx.var.server_addr
-    if not s or s == "" then return false end
     local peer = _M.tcp_peer()
-    return peer ~= "" and peer == s
+    if peer == "" then return false end
+
+    local s = ngx.var.server_addr
+    if s and s ~= "" and peer == s then return true end
+
+    local list = cfg.self_addrs
+    if list then
+        for i = 1, #list do
+            if peer == list[i] then return true end
+        end
+    end
+
+    -- HINH THAI 3 MA CHUA KHAI: canh bao, dung im lang.
+    --
+    -- `$server_addr` la dia chi RIENG nghia la nginx dang lang nghe sau NAT, va
+    -- dia chi public nam o noi khac. Khi do ca hai cong goi ham nay deu khong
+    -- bao gio kich hoat, ma chung KHONG bao loi — chung chi... khong lam gi.
+    -- Day dung lop that bai am tham da giet `wp_paths.mark()` bon thang va lam
+    -- mot phep do bao `0` sai su that hom 14-09. Mot dong canh bao moi gio re
+    -- hon nhieu so voi viec phat hien ra sau ba tuan.
+    if (not list or #list == 0)
+       and s and s ~= "" and _M.is_private(s) then
+        if cache and cache:add("ip_scope_nat_warn", 1, 3600) then
+            ngx.log(ngx.WARN,
+                "[ip_scope] server_addr=", s, " la dia chi RIENG => may dung ",
+                "sau NAT, nhung cfg.self_addrs RONG. Cac cong 'khong tu ket an' ",
+                "va 'khong tu gan nhan farm' se KHONG BAO GIO kich hoat tren may ",
+                "nay. Khai dia chi public vao core/config.lua: self_addrs.")
+        end
+    end
+
+    return false
 end
 
 return _M

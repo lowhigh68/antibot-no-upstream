@@ -667,6 +667,40 @@ _M.asn_rep = {
     vpn_max = 0.30,   -- x35 = 10,5 diem tho, thap hon bac datacenter 15,75
 }
 
+-- Dia chi CONG CONG cua chinh may nay, khi `$server_addr` khong phai dia chi
+-- ma the gioi ben ngoai nhin thay. Dung boi `core/ip_scope.lua:is_self()`, thu
+-- gac hai cong: khong tu ket an (`ban_store_write`) va khong tu gan nhan dan
+-- thiet bi (`ip_tour`).
+--
+-- BA HINH THAI MANG tren dan may nay, va chi hinh thai thu ba can khai:
+--
+--   1. KHONG NAT, chi co IP public tren card.
+--      vd cloud171-96 (`123.30.171.96`), cloud183-139, cloud28-246.
+--      `$server_addr` = IP public => `is_self()` tu dung. DE RONG.
+--
+--   2. CO NAT, card mang CA public LAN private.
+--      vd cloud186-126: `123.30.186.126/25` VA `192.168.186.126/24` cung tren
+--      `ens160`. `$server_addr` la dia chi cua socket DA NHAN ket noi, nen no
+--      tu khop dung dia chi ma request di vao. DE RONG.
+--
+--   3. CO NAT, card CHI co IP private — IP public nam tren thiet bi NAT.
+--      vd cloud168-101: card chi co `192.168.168.101`, con vao/ra deu qua
+--      `123.30.168.101`. Luc do `$server_addr` = `192.168.168.101` trong khi
+--      luu luong tu-goi quay ve mang `123.30.168.101`: HAI GIA TRI KHONG BAO
+--      GIO KHOP, va ca hai cong tren im lang khong kich hoat.
+--      => PHAI khai dia chi public vao day.
+--
+-- May sau NAT khong the tu suy ra dia chi public cua minh. Hai cach tu suy deu
+-- te hon mot dong khai bao: do bang mot loi goi ra ngoai luc khoi dong thi mong
+-- manh va them phu thuoc mang; nhan dien qua UA `WordPress/...` thi gia mao
+-- duoc ngay, tuc tu cap quyen mien ban bang mot header.
+--
+-- `ip_scope.lua` canh bao mot lan moi gio khi phat hien hinh thai 3 ma danh
+-- sach nay rong — de cau hinh thieu khong that bai trong im lang.
+_M.self_addrs = {
+    -- "123.30.168.101",   -- cloud168-101 (hinh thai 3)
+}
+
 _M.debug = false
 
 function _M.endpoint_sens(uri)
