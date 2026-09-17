@@ -191,6 +191,21 @@ function _M.run(ctx)
 
     local over = combos > (gc.combos_threshold or 60)
 
+    -- GÁN NGAY, TRƯỚC MỌI NHÁNH `ngx.exit`.
+    --
+    -- Trước đây phép gán này nằm ở cuối hàm, trên đường rơi xuống. Nhánh 429
+    -- (5b) và nhánh ban (5a) đều `ngx.exit` rồi `return` trước khi chạm tới nó,
+    -- nên `ctx.xf_over` vẫn là nil ở log phase và `tostring(ctx.xf_over or
+    -- false)` trong `async/logger.lua` biến nil thành chuỗi `false`. Hệ quả:
+    -- MỌI request BỊ CHẶN đều ghi `xf_over=false`, tức cột này đọc ngược với sự
+    -- thật ở đúng những dòng quan trọng nhất, và `xf_over=true` chỉ còn xuất
+    -- hiện khi base vượt ngưỡng mà request được `human_exempt` miễn.
+    --
+    -- Đo 17-09 trên cloud183-139: `msmobile.vn /thay-pin-dt274` báo `over=0`
+    -- trên 900.798 dòng — đọc thành "base chưa từng vượt ngưỡng" là sai. Cùng
+    -- lớp lỗi "không đọc được" tự thu thành "đọc được, và câu trả lời là false".
+    ctx.xf_over = over
+
     -- Human power-user / phiên đã thiết lập (richness cao) làm multi-facet filter:
     -- MIỄN 429 (FP protection) nhưng VẪN được đếm ở trên (để lộ nếu bot gaming
     -- cookie đạt richness cao — sẽ thấy trong xf log). Chỉ traffic KHÔNG tin cậy
@@ -214,7 +229,6 @@ function _M.run(ctx)
     if gc.mode == "enforce" and ip_bannable then
         ctx.action        = "block"
         ctx.action_reason = "expensive_filter_ban"
-        ctx.xf_over       = over
         write_ip_ban(ctx, ip, host, base, ip_combos, hits, gc.ban_ttl or 86400)
         -- ngx.ERR chứ KHÔNG phải ngx.WARN: chạy ở access phase, mà per-domain
         -- conf ghi đè `error_log .../<fqdn>.error.log` không kèm level → mặc
@@ -256,7 +270,6 @@ function _M.run(ctx)
     -- antibot.log qua async/logger.lua (fields xf_base/xf_combos/xf_hits/xf_over),
     -- nơi có đủ context (ip/ua/class/richness/reason) để correlate + hiệu chỉnh.
     -- ctx.xf_* mang dữ liệu sang log phase.
-    ctx.xf_over = over
     return true, false
 end
 

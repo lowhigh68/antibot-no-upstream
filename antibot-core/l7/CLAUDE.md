@@ -54,6 +54,11 @@ FULL/INT → ban_store             → exit 403 if identity banned (defer if goo
 - Ban grace `ban:age:<id>` TTL 24h — first-time ban hit doesn't escalate
 
 ## Update log
+- 2026-09-17 — **`expensive_filter_guard.lua` — cột `xf_over=` trong antibot.log đọc NGƯỢC với sự thật ở đúng những dòng bị chặn.**
+  - **Cơ chế:** `ctx.xf_over = over` nằm ở cuối hàm, trên đường rơi xuống. Nhánh 429 (5b) và nhánh ban (5a) đều `ngx.exit` rồi `return` **trước khi chạm tới nó**, nên `ctx.xf_over` còn `nil` ở log phase, và `tostring(ctx.xf_over or false)` trong `async/logger.lua:528` biến `nil` thành chuỗi `false`. Mọi request **bị chặn** ghi `xf_over=false`; `xf_over=true` chỉ còn xuất hiện khi base vượt ngưỡng mà request được `human_exempt` (richness ≥ 0.5) miễn.
+  - **Chữ ký nhận dạng:** một base có lưu lượng rất lớn mà `xf_over=true` bằng 0 hoặc gần 0. Đo 17-09 trên cloud183-139: `msmobile.vn /thay-pin-dt274` — 900.798 dòng, `over=0`. Đọc thành "base chưa từng vượt ngưỡng" là sai; số đúng phải đếm `reason=expensive_filter`.
+  - **Sửa:** dời phép gán lên ngay sau khi tính `over`, trước mọi nhánh thoát; gỡ bản sao thừa trong nhánh ban. Không đổi một hành vi chặn nào — đây là bản vá PHÉP ĐO.
+  - Cùng lớp lỗi "không đọc được" tự thu thành "đọc được, và câu trả lời là X" đã giết `wp_paths.mark()` bốn tháng — xem `waf/CLAUDE.md` và `core/CLAUDE.md` 2026-09-09.
 - 2026-08-04 — **`ban_store.lua` — lệnh cấm CHƯA TỪNG được thi hành với mọi UA chứa "bot"** (`+ detection/bot/init.lua`). Cơ chế cấm vĩnh viễn hoàn toàn vô hiệu với đúng nhóm nó nhắm tới.
   - **Chữ ký nhận dạng:** `redis-cli TTL ban:<id>` = **-1** (tồn tại, vĩnh viễn) mà `viol:<id>` vẫn leo không giới hạn. Đo trên production 2026-08-04: `viol=199` và `viol=163` (Amazonbot, GPTBot) — nếu lệnh cấm có hiệu lực thì bộ đếm phải dừng ở 4, vì lượt sau phải thoát ở `banned_id` trước khi tới `ban_store_write`.
   - **Gốc rễ:** nhánh defer `ua_claims_good_bot(ua)` khớp **bất kỳ UA nào chứa `bot`/`spider`/`crawler`** rồi `return false` vô điều kiện. Ý đồ đúng (đừng để Googlebot bị cấm nhầm kẹt vĩnh viễn) nhưng **không có gì ghi nhớ phán quyết DNS**. Vòng lặp mỗi request: bỏ qua ban → chạy trọn pipeline **kèm một truy vấn DNS ngược** → `fake_good_bot` (bot_score 0.85) → chấm điểm chặn → `viol++`. Vĩnh viễn.
