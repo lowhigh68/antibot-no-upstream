@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local ua_claim = require "antibot.detection.bot.ua_claim"
 
 -- Expensive faceted-filter guard — RESOURCE-keyed, not caller-keyed.
 --
@@ -82,18 +83,6 @@ local function write_ip_ban(ctx, ip, host, base, ip_combos, hits, ttl)
 end
 
 -- Self-declared good bot (same def as core/access/whitelist + l7/ban/ban_store).
-local function ua_claims_good_bot(ua)
-    if not ua or ua == "" then return false end
-    local ul = ua:lower()
-    return ul:find("bot", 1, true) ~= nil
-        or ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("facebookexternal", 1, true) ~= nil
-        or ul:find("mediapartners", 1, true) ~= nil
-        or ul:find("bingpreview", 1, true) ~= nil
-        or ul:match("meta%-external") ~= nil
-end
-
 function _M.run(ctx)
     local gc = cfg.expensive_filter
     if not gc or gc.mode == "off" then return true, false end
@@ -112,7 +101,7 @@ function _M.run(ctx)
     -- khỏi PHÉP ĐO để crawl hợp pháp của chúng (Googlebot ~109 combos) KHÔNG thổi
     -- phồng base counter → tránh collateral 429 cho người thật đến sau. Bot giả
     -- UA good-bot → fail DNS/ASN verify ở detection → bị scoring xử lý.
-    if ua_claims_good_bot(ctx.ua or "") then return true, false end
+    if ua_claim.claims_good_bot(ctx.ua or "") then return true, false end
 
     local uri  = ngx.var.uri  or ""
     local args = ngx.var.args or ""

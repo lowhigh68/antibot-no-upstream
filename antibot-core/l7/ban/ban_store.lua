@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local ua_claim = require "antibot.detection.bot.ua_claim"
 
 local ESCALATE_RATE_LIMIT = 60   -- 1 viol incr / 60s tối đa per identity
 
@@ -17,18 +18,6 @@ local SHARED_ID_RICHNESS = 0.5
 -- Phán quyết "UA khai good bot nhưng xác minh DNS/attest TRƯỢT".
 -- GHI bởi detection/bot/init.lua, ĐỌC ở đây. Giữ đồng bộ tên tiền tố hai file.
 local FAKE_VERDICT_PREFIX = "botverdict:fake:"
-
-local function ua_claims_good_bot(ua)
-    if not ua or ua == "" then return false end
-    local ul = ua:lower()
-    return ul:find("bot", 1, true) ~= nil
-        or ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("facebookexternal", 1, true) ~= nil
-        or ul:find("mediapartners", 1, true) ~= nil
-        or ul:find("bingpreview", 1, true) ~= nil
-        or ul:match("meta%-external") ~= nil
-end
 
 function _M.run(ctx)
     -- PHẢI cùng order với enforcement/ban/ban_store_write.lua (identity trước
@@ -83,7 +72,7 @@ function _M.run(ctx)
         -- làm mới → tự hết hạn). Bot dựng đúng PTR/A là tự thoát, không cần
         -- thao tác tay. Chi phí giảm từ "mỗi request một DNS" xuống "30 phút một DNS".
         local ua = ctx.ua or ngx.var.http_user_agent or ""
-        if ua_claims_good_bot(ua)
+        if ua_claim.claims_good_bot(ua)
            and pool.safe_get(FAKE_VERDICT_PREFIX .. id) ~= "1" then
             ngx.log(ngx.INFO,
                 "[ban_store] defer good_bot_claim id=", id:sub(1, 8),

@@ -3,6 +3,7 @@
   "description": "Default good-bot DNS registry. Auto-seed Redis at worker init. Admin override (SET goodbot:dns:<name>) takes priority. ptr_only bots skip forward DNS check (rotating IP pools).",
   "ptr_only": [
     "facebookexternalhit",
+    "facebookbot",
     "facebot",
     "meta-externalagent",
     "meta-externalfetcher",
@@ -41,6 +42,7 @@
     "applebot-extended":      ["applebot.apple.com"],
 
     "facebookexternalhit":    ["facebook.com", "fbsv.net"],
+    "facebookbot":            ["facebook.com", "fbsv.net"],
     "facebot":                ["facebook.com", "fbsv.net"],
     "meta-externalagent":     ["facebook.com", "fbsv.net"],
     "meta-externalfetcher":   ["facebook.com", "fbsv.net"],

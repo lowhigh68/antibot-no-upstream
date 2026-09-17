@@ -2,6 +2,7 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
+local ua_claim = require "antibot.detection.bot.ua_claim"
 
 -- IP-Tour detector — antibot's structural advantage on shared hosting.
 --
@@ -42,7 +43,7 @@ local ip_scope = require "antibot.core.ip_scope"
 -- fast-path in init.lua → never re-enters this module → strikes stop within a
 -- handful. A bot can't solve PoW → keeps touring → strikes cross strike_ban →
 -- direct ban:<ip> (sealed at the door by l7/ban/ip_ban_check on EVERY domain).
--- Direct-ban is gated on NOT ua_claims_good_bot so an IP claiming Googlebot is
+-- Direct-ban is gated on NOT ua_claim.claims_good_bot so an IP claiming Googlebot is
 -- never hard-banned here — real ones verify via DNS + bypass scoring, spoofers
 -- get the ip_tour signal plus DNS-fail scoring.
 --
@@ -52,18 +53,6 @@ local ip_scope = require "antibot.core.ip_scope"
 --   iptour:strike:<ip> INCR            → ban-if-repeat counter
 --   iptour:age:<ip>    first-ban stamp → TTL escalation on repeat
 -- Counting is one pipeline / request (6 ops, 1 RTT). Fail-open on Redis error.
-
-local function ua_claims_good_bot(ua)
-    if not ua or ua == "" then return false end
-    local ul = ua:lower()
-    return ul:find("bot", 1, true) ~= nil
-        or ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("facebookexternal", 1, true) ~= nil
-        or ul:find("mediapartners", 1, true) ~= nil
-        or ul:find("bingpreview", 1, true) ~= nil
-        or ul:match("meta%-external") ~= nil
-end
 
 function _M.run(ctx)
     local c = cfg.ip_tour
@@ -229,7 +218,7 @@ function _M.run(ctx)
     -- Googlebot OR spoofer) is never hard-banned here — real ones verify via
     -- DNS and bypass scoring; spoofers still get the ip_tour signal above plus
     -- DNS-fail scoring downstream.
-    if not ua_claims_good_bot(ua) then
+    if not ua_claim.claims_good_bot(ua) then
         local strikes = pool.safe_incr("iptour:strike:" .. ip, window) or 0
         ctx.ip_tour_strikes = strikes
         if strikes >= (c.strike_ban or 12) then

@@ -3,6 +3,7 @@ local pool = require "antibot.core.redis_pool"
 local identity_mod = require "antibot.core.fingerprint.identity"
 local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
+local ua_claim = require "antibot.detection.bot.ua_claim"
 
 local ANTIBOT_PATHS = {
     "/antibot/verify",
@@ -65,22 +66,10 @@ end
 -- a bot-UA holding device_canvas_verified is how meta-externalagent leaked ~31k
 -- req/day past the 60/min ceiling. Route them to the good-bot lane (DNS/ASN
 -- verify + rate ceiling) instead. Same self-claim definition as l7/ban/ban_store.
-local function ua_claims_good_bot(ua)
-    if not ua or ua == "" then return false end
-    local ul = ua:lower()
-    return ul:find("bot", 1, true) ~= nil
-        or ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("facebookexternal", 1, true) ~= nil
-        or ul:find("mediapartners", 1, true) ~= nil
-        or ul:find("bingpreview", 1, true) ~= nil
-        or ul:match("meta%-external") ~= nil
-end
-
 local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     if not ua or ua == "" then return nil end
     -- Gate the device_canvas_verified path (the observed leak).
-    if ua_claims_good_bot(ua) then return nil end
+    if ua_claim.claims_good_bot(ua) then return nil end
     local ip16 = get_ip16(ip)
     if not ip16 then return nil end
 
@@ -135,7 +124,7 @@ function _M.check(ctx)
     -- Self-declared crawlers never enter the verified-human lane. Gates the
     -- cookie (5) and early-id (7) paths below; device (6) is gated inside
     -- lookup_device_by_ua. Infra whitelists (1-4) and static bypass (8) still apply.
-    local ua_is_bot = ua_claims_good_bot(ua)
+    local ua_is_bot = ua_claim.claims_good_bot(ua)
 
     -- 1. Internal antibot endpoints
     for _, p in ipairs(ANTIBOT_PATHS) do

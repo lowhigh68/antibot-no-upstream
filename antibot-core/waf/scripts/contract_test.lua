@@ -1575,5 +1575,56 @@ do
     else pass = pass + 1 end
 end
 
+-- ── 20. ua_claims_good_bot chi duoc co MOT ban, trong ua_claim.lua ────
+--
+-- Phep kiem nay tung bi SAO CHEP SAU lan va cac ban DA LECH NHAU that:
+-- `detection/fleet/trusted.lua` thieu `mediapartners` va `bingpreview` so voi
+-- nam ban con lai, nen `Mediapartners-Google` khong duoc mien khoi viec gom
+-- nhom fleet trong khi moi noi khac coi no la good-bot claim. Do 18-09-2026.
+do
+    local files = {
+        "antibot-core/l7/ban/ip_ban_check.lua",
+        "antibot-core/l7/ban/ban_store.lua",
+        "antibot-core/l7/expensive_filter_guard.lua",
+        "antibot-core/core/access/whitelist.lua",
+        "antibot-core/detection/fleet/trusted.lua",
+        "antibot-core/detection/ip_tour.lua",
+    }
+    for _, path in ipairs(files) do
+        local src = slurp(path)
+        if src then
+            if src:find("local function ua_claims_good_bot") then
+                bad("  SAI  %s giu ban sao rieng cua ua_claims_good_bot.\n" ..
+                    "       Phai dung `require \"antibot.detection.bot.ua_claim\"`.\n" ..
+                    "       Sau ban sao da lech nhau that — xem ua_claim.lua.\n", path)
+            else pass = pass + 1 end
+
+            if not src:find("antibot%.detection%.bot%.ua_claim") then
+                bad("  SAI  %s khong require ua_claim.\n", path)
+            else pass = pass + 1 end
+        end
+    end
+
+    local uc = slurp("antibot-core/detection/bot/ua_claim.lua")
+    if not uc then
+        bad("  SAI  thieu detection/bot/ua_claim.lua\n")
+    else
+        -- Bay token phai giu nguyen, khong duoc bot khi ai do "don dep".
+        for _, tok in ipairs({ "bot", "spider", "crawler", "facebookexternal",
+                               "mediapartners", "bingpreview", "meta%-external" }) do
+            if not uc:find('"' .. tok .. '"') then
+                bad("  SAI  ua_claim thieu token goc %q\n", tok)
+            else pass = pass + 1 end
+        end
+        -- UA dung bang `Google` phai khop TUYET DOI, khong phai substring:
+        -- substring "google" se khop ca UA trinh duyet that, ma whitelist.lua
+        -- dung phep kiem nay theo huong TU CHOI (chan khoi lane nguoi).
+        if not uc:find("EXACT") or not uc:find('%["google"%]') then
+            bad("  SAI  ua_claim phai khop `google` bang phep so BANG TUYET DOI,\n" ..
+                "       khong phai substring — whitelist.lua dung no de TU CHOI.\n")
+        else pass = pass + 1 end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

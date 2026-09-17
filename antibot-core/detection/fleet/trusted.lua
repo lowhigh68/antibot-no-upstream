@@ -1,5 +1,6 @@
 local _M  = {}
 local cfg = require "antibot.core.config"
+local ua_claim = require "antibot.detection.bot.ua_claim"
 
 -- Trusted ASN allowlist — SKIPS fleet aggregation entirely.
 -- Performance optimization only: detection correctness is independent of
@@ -55,22 +56,12 @@ local GOOD_CRAWLER_ASN = {
 -- Also matches the Meta crawler family, whose UAs carry no bot/spider/crawler
 -- token (meta-externalagent, meta-externalfetcher, facebookexternalhit). Safe
 -- because is_good_crawler ALSO requires the matching ASN (AS32934 = Meta-only).
-local function ua_claims_good_bot(ua)
-    if not ua or ua == "" then return false end
-    local ul = ua:lower()
-    return ul:find("bot", 1, true) ~= nil
-        or ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("meta-external", 1, true) ~= nil
-        or ul:find("facebookexternalhit", 1, true) ~= nil
-end
-
 -- Exempt legit search-engine crawlers from fleet aggregation. Needs ctx.asn,
 -- which is now resolved in STEPS_COMMON before the aggregator runs.
 function _M.is_good_crawler(ctx)
     if not ctx.asn or not ctx.asn.asn_number then return false end
     if not GOOD_CRAWLER_ASN[ctx.asn.asn_number] then return false end
-    return ua_claims_good_bot(ctx.ua)
+    return ua_claim.claims_good_bot(ctx.ua)
 end
 
 function _M.label(asn_number)
