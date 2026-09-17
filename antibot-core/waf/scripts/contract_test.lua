@@ -1626,5 +1626,49 @@ do
     end
 end
 
+-- ── 21. wp_login_notc_repeat phai co cua thoat richness, va KHONG duoc 444 ──
+--
+-- Bo dem `wp_login_notc:<ip>` khoa theo IP nen no GOP MOI NGUOI tren cung dia
+-- chi. Khi mot botnet do mat khau dang nen `wp-login.php`, bo dem cua IP do da
+-- vuot nguong; mot quan tri vien THAT di ra tu cung IP bi chan ngay lan POST
+-- dau. Do 18-09-2026: 240/139/113/103 luot chan client mang cookie do chinh
+-- host cap (`rown > 0`).
+--
+-- KHONG duoc "don dep" bang cach doi bo dem sang `ctx.identity`: do 18-09 cho
+-- thay ke tan cong xoay ~10 UA moi IP nen no da co san ~10 identity — doi sang
+-- identity chi nhan nguong len 10 lan CHO KE TAN CONG, khong cuu ai.
+do
+    local wp = slurp("antibot-core/detection/wp_hardening.lua")
+    if not wp then
+        bad("  SAI  thieu detection/wp_hardening.lua\n")
+    else
+        local i = wp:find("wp_login_notc_repeat", 1, true)
+        if not i then
+            bad("  SAI  khong tim thay nhanh wp_login_notc_repeat\n")
+        else
+            local head = wp:sub(1, i)
+            -- Cua thoat phai nam TRUOC cho dat action_reason.
+            if not head:find("session_richness") then
+                bad("  SAI  wp_login_notc_repeat thieu cua thoat richness.\n" ..
+                    "       Bo dem khoa theo IP => gop moi nguoi tren cung dia chi;\n" ..
+                    "       admin that cung IP voi botnet bi chan ngay POST dau.\n")
+            else pass = pass + 1 end
+
+            if not head:find("0%.5") then
+                bad("  SAI  nguong richness phai la 0.5, dong bo SHARED_ID_RICHNESS\n" ..
+                    "       o l7/ban/ban_store.lua (cung mot lop van de).\n")
+            else pass = pass + 1 end
+        end
+
+        -- 444 dong ket noi khong tra gi => trinh duyet hien LOI MANG, nguoi dung
+        -- thay "site chet". Voi botnet hai ma nhu nhau; voi nguoi that thi khac han.
+        local seg = wp:match("ZONE_LOGIN then.-\n    end\n")
+        if seg and seg:find("ngx%.exit%(444%)") then
+            bad("  SAI  nhanh wp-login van dung ngx.exit(444).\n" ..
+                "       Phai la 403 co than: 444 lam trinh duyet hien loi mang.\n")
+        else pass = pass + 1 end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

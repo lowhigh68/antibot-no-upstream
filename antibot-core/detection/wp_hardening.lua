@@ -8,7 +8,15 @@ local pool = require "antibot.core.redis_pool"
 --
 -- Fast-path hard exits (trước scoring) cho 2 case near-zero FP:
 --   xmlrpc  — non-WP/Jetpack UA: Jetpack/WP Core/CLI luôn self-identify.
---   wp-login — missing testcookie 2 lần / 30s: tool post thẳng không GET-first.
+--   wp-login — missing testcookie 2 lần / 30s: tool post thẳng không GET-first,
+--              VÀ `session_richness < 0.5`. Cửa thoát richness thêm 18-09-2026:
+--              bộ đếm khoá theo `ip` nên nó GỘP MỌI NGƯỜI trên cùng địa chỉ —
+--              khi botnet đang nện wp-login, bộ đếm của IP đó đã vượt 2 từ lâu
+--              và một quản trị viên thật đi ra từ cùng IP ăn chặn ngay lần POST
+--              đầu. Đo được 240/139/113/103 lượt chặn client MANG cookie do
+--              chính host cấp trên comchaydacsan/achauled/chungkhoanplus/
+--              alumicastore. Ngưỡng 0.5 đồng bộ `SHARED_ID_RICHNESS` ở
+--              `l7/ban/ban_store.lua` — cùng một lớp vấn đề, cùng một cửa thoát.
 --
 -- wp-admin không được cover ở đây vì /wp-admin/admin-ajax.php là endpoint
 -- public được plugin frontend dùng (contact form, comment, v.v.) — check
@@ -281,11 +289,46 @@ function _M.run(ctx)
     -- 2 misses trong 30s → attack confirmed.
     if zone == ZONE_LOGIN then
         if not ngx.var.cookie_wordpress_test_cookie then
-            local cnt = pool.safe_incr("wp_login_notc:" .. (ctx.ip or ""), 30)
-            if (cnt or 0) >= 2 then
-                ctx.action        = "block"
-                ctx.action_reason = "wp_login_notc_repeat"
-                ngx.exit(444)
+            -- CUA THOAT: phien da co trang thai that voi CHINH site nay.
+            --
+            -- Bo dem duoi day khoa theo `ip`, tuc GOP MOI NGUOI tren cung mot
+            -- dia chi. Khi mot botnet dang nen `wp-login.php`, bo dem cua IP do
+            -- da vuot 2 tu lau; mot quan tri vien THAT di ra tu cung IP (hoac
+            -- tu mot IP ma botnet cung dung) an 444 ngay o lan POST dau tien.
+            --
+            -- Do 18-09-2026, so luot bi chan ma client MANG COOKIE do chinh
+            -- host cap (`rown > 0`): comchaydacsan.com 240, achauled.com 139,
+            -- chungkhoanplus.com 113, alumicastore.com 103.
+            --
+            -- Nguong 0.5 dong bo voi `SHARED_ID_RICHNESS` o
+            -- `l7/ban/ban_store.lua:102` — cung mot lop van de (bo dem/hash gop
+            -- nhieu nguoi lam mot), nen cung mot cua thoat. Dung `richness`
+            -- (max qua cua so) chu KHONG phai `rown`: o day ta dang MO cua chu
+            -- khong phai CAP dac quyen, va admin chuyen domain thi `rown` tut
+            -- xuong trong khi ho van la chinh ho.
+            --
+            -- KHONG noi long cho ke tan cong: toan bo dan IP do duoc 18-09 deu
+            -- co richness = 0 (POST thang, khong cookie). Ke muon qua cua nay
+            -- phai GET truoc de nhan cookie that cua site — ma lam vay thi no
+            -- co luon `wordpress_test_cookie` va khong con di vao nhanh nay.
+            local richness = ctx.session_richness or 0
+            if richness < 0.5 then
+                local cnt = pool.safe_incr("wp_login_notc:" .. (ctx.ip or ""), 30)
+                if (cnt or 0) >= 2 then
+                    ctx.action        = "block"
+                    ctx.action_reason = "wp_login_notc_repeat"
+                    -- 403 CO THAN, khong phai 444.
+                    --
+                    -- 444 dong ket noi ma khong tra gi, nen trinh duyet hien
+                    -- LOI MANG — nguoi dung thay "site chet" chu khong thay mot
+                    -- trang tu choi. Voi botnet thi hai ma nhu nhau (chung
+                    -- khong doc than tra ve); voi nguoi that thi khac han, va
+                    -- no cung lam cho ca ho lan nguoi van hanh chan doan duoc.
+                    ngx.status = 403
+                    ngx.header["Content-Type"] = "text/plain"
+                    ngx.say("Access denied.")
+                    ngx.exit(403)
+                end
             end
         end
     end
