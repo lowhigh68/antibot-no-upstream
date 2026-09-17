@@ -65,6 +65,13 @@ local SUBSTRINGS = {
     "playstore-google",
     "feedfetcher",          -- FeedFetcher-Google
     "chrome privacy preserving",   -- Chrome Privacy Preserving Prefetch Proxy
+
+    -- Cong cu audit SEO ma CHINH CHU SITE chay. `AhrefsBot` co chu "bot" nen
+    -- duoc hoan; `AhrefsSiteAudit` thi KHONG — va do la toan bo khac biet
+    -- giua 3.453 luot va 1.227.995 luot bi `fleet_dyn_block` do 17-09 tren
+    -- cloud183-139. Chan no khong bao ve site khoi thu gi: no la cong cu chu
+    -- site dung de KIEM TRA site cua ho, va chan thi ho thay "audit that bai".
+    "ahrefssiteaudit",
 }
 
 -- UA dung bang mot trong cac chuoi nay (sau khi ha chu thuong). Rieng `google`

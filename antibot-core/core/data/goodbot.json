@@ -52,6 +52,8 @@
     "coccocbot-image":        ["coccoc.com"],
 
     "amazonbot":              ["crawl.amazonbot.amazon"],
+    "ahrefssiteaudit":        ["ahrefs.com", "ahrefs.net"],
+    "ahrefsbot":              ["ahrefs.com", "ahrefs.net"],
 
     "baiduspider":            ["crawl.baidu.com"],
 
