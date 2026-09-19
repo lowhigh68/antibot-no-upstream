@@ -678,6 +678,9 @@ Hai dòng cuối là lý do P1 tồn tại. Không phải "thêm mẫu cho chắ
 | `upload_php_ext` | Đuôi **đã xác minh trên fleet** ở vị trí cuối — `.php .php5 .phtml .inc` | mạnh |
 | `upload_php_double` | Cùng tập đó **không** ở cuối — `x.php.jpg`, vì `AddHandler` (khác `SetHandler`) khớp **bất kỳ** đuôi trong tên | mạnh |
 | `upload_php_legacy_ext` | `.php3 .php4 .php6 .php7 .php8 .pht .phtm .phps .phar` — **không thấy** trong `AddHandler` nào trên fleet. Vẫn soi (máy mới cài, hoặc `.htaccess` của khách bật), nhưng đếm **riêng** | chưa rõ |
+| `upload_config_case` | Tên cấu hình **không phải chữ thường** (`.HTACCESS`, `WEB.CONFIG`). Nhãn riêng để `upload_apache_config` giữ nghĩa hẹp — xem mục 19-09 (8) | chưa rõ |
+
+**Gộp nhiều part bằng `worse_up`, không phải "giữ cái đầu".** Thứ tự part là thứ **kẻ gửi điều khiển**, nên giữ luật đầu tiên để kẻ tấn công *chọn* nhãn nào vào log — chỉ bằng việc đặt `web.config` lên trước `shell.php`. Thang nghiêm trọng (`UP_RANK`): `apache_config` 7 → `php_ext` 6 → `php_double` 5 → `php_config` 4 → `config_case` 3 → `legacy_ext` 2 → `foreign_config` 1. Áp ở **cả ba** tầng gộp (`scan_disposition_headers`, `scan_one_boundary`, `filename_rule`) — bỏ sót một tầng thì tầng đó che các phần sau, và `contract_test` [27d] gác đúng điều đó.
 
 **Bảng đuôi đã ĐO trên fleet 19-09, và số liệu bác bỏ bản đầu của tôi:**
 
@@ -904,9 +907,9 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wp_paths.lua` 469 |
 | F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
-| T — test | **một phần** | `scripts/*.lua` 3.502 dòng test / 2.173 dòng mã. Cổng `deploy.sh [3b]` |
+| T — test | **một phần** | `scripts/*.lua` 3.684 dòng test / 2.355 dòng mã. Cổng `deploy.sh [3b]` |
 | P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
-| P1 — chặn upload webshell | **một phần** | `upload.lua` — **6 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
+| P1 — chặn upload webshell | **một phần** | `upload.lua` — **7 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
 | F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
 | A — admin UI cho WAF | **chưa** | `admin/init.lua` chưa có trang nào của tầng này |
 
@@ -914,10 +917,10 @@ Lệnh đo lại, chạy từ `antibot-core/`:
 
 ```bash
 cat waf/args.lua waf/body.lua waf/body_core.lua waf/body_worker.lua \
-    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2173
-cat waf/scripts/*.lua | wc -l                                # test: 3502
+    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2355
+cat waf/scripts/*.lua | wc -l                                # test: 3684
 grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u   # 3 rule_id tham so
-grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 6 rule_id ten file
+grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 7 rule_id ten file
 grep -nE '^ *waf_[a-z_]+ *=' intelligence/scoring/compute.lua # 5 tín hiệu
 ```
 
@@ -939,6 +942,21 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-19 (8) — **Phản biện từ người vận hành: hai lỗi làm lọt tín hiệu upload. Cả hai ĐÚNG, đã sửa ở BA tầng. Hai điểm khác tôi phản biện lại.**
+  - **Điểm 1 — `fn_rule` sớm làm bỏ qua part phía sau. ĐÚNG, và là đường né thật.** `scan_disposition_headers` và `scan_one_boundary` đều `return` ngay khi `check_args` khớp:
+    ```
+    part 1  filename="../../photo.jpg"   -> khớp arg_traversal -> RETURN
+    part 2  filename="shell.php"         -> KHÔNG BAO GIỜ được soi
+    ```
+    Kẻ tấn công chỉ cần đặt một tên file **vô hại** có `../` lên part đầu là P1 mù với mọi part sau. Hai kênh độc lập ở cấp **dữ liệu** (hai trường khác nhau) nhưng việc **duyệt** vẫn chung nhau, nên `return` sớm của kênh này làm mất kênh kia. Chú thích cũ của tôi ghi *"P1 chạy TRƯỚC và KHÔNG `return`"* — đúng ở cấp **một giá trị filename**, và chính câu đó làm tôi tưởng đã xử lý cấp **nhiều part**.
+  - **Sửa ở BA tầng, và tầng thứ ba do chính test mới bắt được.** Sau khi sửa `scan_disposition_headers` + `scan_one_boundary`, `[27d]` **báo đỏ trên code thật**: `filename_rule` (tầng gộp qua nhiều boundary) vẫn giữ luật đầu tiên và vẫn `return` sớm. Tôi sửa hai tầng rồi bỏ sót tầng ba — đúng thứ test đó sinh ra để bắt, và là lần đầu trong phiên một test của tôi bắt lỗi của tôi **trước** khi deploy.
+  - **Điểm 2 — `MAX_EXT = 6` là đường né. ĐÚNG, và phần phê bình test còn sắc hơn phần phê bình code.** Đã chứng minh bằng cách chạy **song song hai thuật toán**: `shell.php.a.b.c.d.e.f` → bản cũ `[f,e,d,c,b,a]` **LỌT**, bản mới **BẮT**. Và ví dụ trong chú thích của tôi (`a.b.c.d.e.f.g.php`) **không kiểm được gì** vì `.php` ở ngoài cùng phải, luôn bắt ở vòng đầu — tôi viết một ví dụ *trông như* kiểm độ sâu nhưng không kiểm độ sâu. Nhận xét *"test chỉ kiểm `#extensions <= 6`, tức đang khoá chính giới hạn gây bypass"* đúng, và cùng họ với `.inc` sáng nay: lại cài một phỏng đoán vào test rồi tin nó.
+  - **Bỏ trần, không phải nâng trần.** Một lần duyệt tuyến tính thay vòng `for` lồng trong `while` (bản cũ là O(n²) trên tên nhiều dấu chấm, nên trần 6 vừa là lỗ bảo mật vừa là thứ duy nhất giữ nó rẻ). Bỏ trần an toàn vì chuỗi vào đã bị `MAX_HDR_LEN = 2048` chặn sẵn — O(n) với n có trần, không phải n do kẻ gửi chọn. `MAX_EXT_REPORT = 6` giữ lại **chỉ để báo cáo**.
+  - **Điểm 3 — "first match" làm sai phân bố telemetry. ĐÚNG.** `upload.worse_up()` + thang `UP_RANK` giữ luật **nghiêm trọng nhất** thay vì đầu tiên. Lý do mạnh hơn "số liệu đẹp hơn": thứ tự part là thứ **kẻ gửi điều khiển**, nên bản cũ để kẻ tấn công *chọn* nhãn nào xuất hiện trong log, chỉ bằng việc đặt `web.config` lên trước.
+  - **Điểm 4 — lowercase tên cấu hình: PHẢN BIỆN LẠI, giữ `lower()`.** Tiền đề đúng (`.HTACCESS` không chắc được Apache đọc), kết luận ngược: (a) nếu nó không được đọc thì nó vô hại **về mặt cấu hình**, nhưng ai upload nó gần như chắc chắn là scanner — hạ nhãn chỉ vì "tên không chạy được" là bỏ mất chính điều nó chỉ ra; (b) quan trọng hơn, exact-case là **fail-open**: một số filesystem trên hosting chia sẻ case-insensitive, và một số lớp ghi file normalize case, lúc đó `.HTACCESS` **thành** `.htaccess` trên đĩa. Nhưng phản biện của tôi cũng chưa có số đo, nên thay vì tranh luận: nhãn **riêng** `upload_config_case`. Giữ được cả hai — `upload_apache_config` giữ nghĩa hẹp, biến thể case đếm riêng, và nếu số liệu cho thấy nó chỉ là scanner thì hạ trọng số riêng nó.
+  - **Điểm 5 — `.php5`: đúng về nguyên tắc, SAI về đề xuất.** *"Khớp `FilesMatch` chưa chứng minh request tới PHP-FPM"* là kỷ luật đúng. Nhưng đề xuất *"thử bằng file vô hại trả marker"* nghĩa là **đặt một file `.php5` thi hành mã lên production của 74 khách hàng** — tạo đúng thứ P1 sinh ra để chặn, và nếu tôi sai về ngữ cảnh `<Directory>` thì file đó chạy được. Kiểm an toàn hơn cho cùng câu hỏi, đã làm: `.php5` **không** nằm trong danh sách `Deny` của DA (danh sách là `php53`…`php82`, không có `php5` trần) **và** có trong `httpd-php-handlers.conf` `FilesMatch`. Hai nguồn không mâu thuẫn — đủ để giữ ở `PHP_EXT` mà không cần upload file thi hành.
+  - **Kết luận về "chưa nên nâng `waf_upload` khỏi 0": ĐỒNG Ý, nhưng không phải vì hai lỗi này.** Chúng đã sửa. Lý do giữ 0 vẫn là lý do cũ và mạnh hơn: **chưa có một số đo nào từ `waf.log` về tên file upload trên dàn máy này.** Cổng vào không đổi.
+  - **Test: 62 → 79 assertion; `body_test` thêm 7 ca đầu-cuối cho đường né part.** `contract_test` thêm `[27a-bis]`, `[27a-ter]`, `[27d]`. Thử phá: tái tạo `if rule then return` → đỏ; quay về giữ luật đầu tiên ở **cả ba** tầng → đỏ; trần `MAX_EXT` → chứng minh bằng so sánh song song hai thuật toán.
 - 2026-09-19 (7) — **Vòng đo thứ hai: DirectAdmin chọn PHP handler PER-DOMAIN, nên `grep -i php` một lần là không đủ. `PHP_EXT` đúng y nguyên — nhưng vì lý do khác tôi tưởng.**
   - **Vì sao phải đo lại dù vòng một đã có số liệu:** DA sinh vhost theo **ba nhánh loại trừ nhau**, và ba nhánh có **tập đuôi khác nhau** — `HAVE_PHP1_FPM` cho `.php .inc .phtml`, còn `HAVE_PHP1_FCGI` và `HAVE_PHP1_CLI` chỉ cho `.php`. Một lệnh `grep` trên `/etc/httpd/conf/extra/` thấy dòng `AddHandler` nhưng **không nói nhánh nào đang chạy**, mà `.inc` chỉ chạy ở một trong ba.
   - **Đo: 74 / 0 / 0** — toàn bộ 74 domain dùng nhánh FPM. `.inc` chạy trên **mọi** domain. Điều đó **bác bỏ** mối lo tôi vừa nêu ("`.inc` có bản sao hợp lệ thật trong theme WordPress, nếu phần lớn domain dùng FCGI thì nó gây FP trên đa số fleet"), và ý định tách `.inc` thành nhãn riêng đã bỏ. Đây là lần mối lo **của tôi** bị số đếm bác bỏ, không phải lần bảng bị bác bỏ.

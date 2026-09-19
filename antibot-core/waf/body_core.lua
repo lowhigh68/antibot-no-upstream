@@ -397,7 +397,9 @@ end
 -- dem, khong phai mot.
 local function scan_disposition_headers(head, status)
     local lines = unfolded_header_lines(head)
-    local up_rule = nil
+    local up_rule    = nil
+    local first_arg  = nil     -- lan khop `check_args` DAU TIEN (hop dong cu)
+    local arg_status = nil     -- `status` tai dung luc do, de giu nghia `stop`
     for i = 1, #lines do
         local line = lines[i]
         local colon = line:find(":", 1, true)
@@ -415,19 +417,36 @@ local function scan_disposition_headers(head, status)
                         -- Cat o 512 roi moi kiem — cai ban truoc lam — la de ke
                         -- tan cong don 512 byte cho traversal nam ra ngoai.
                         if #v > MAX_FN_LEN then status = worse(status, "len") end
-                        -- P1 chay TRUOC va KHONG `return`: neu no `return`
-                        -- thi `arg_rule` mat o moi ten file chay duoc, va do la
-                        -- nhom co ca hai bang chung.
-                        if not up_rule then
-                            up_rule = upload.check_filename(v)
-                        end
+                        -- P1 chay TRUOC va KHONG `return`.
+                        --
+                        -- `worse_up` giu luat NGHIEM TRONG NHAT, khong phai luat
+                        -- DAU TIEN. Voi `web.config` o part 1 va `shell.php` o
+                        -- part 2, giu cai dau lam so lieu bao `foreign_config`
+                        -- va mat `php_ext` — tuc chinh con so dung de quyet dinh
+                        -- trong so bi lam ban boi thu tu part, la thu ke gui
+                        -- dieu khien.
+                        up_rule = upload.worse_up(up_rule,
+                                                  upload.check_filename(v))
                         local rule = check_args(v, false, false)
-                        if rule then return rule, worse(status, "stop"), up_rule end
+                        -- `arg_rule` DUNG LAI o lan khop dau (hop dong cua
+                        -- `check_args`, va so lieu cu doc theo no), nhung P1 thi
+                        -- KHONG: neu return o day thi mot `filename` khop
+                        -- `check_args` o part 1 lam moi part phia sau khong bao
+                        -- gio duoc `check_filename` soi. `../../a.jpg` roi
+                        -- `shell.php` la duong ne that.
+                        if rule and not first_arg then
+                            first_arg  = rule
+                            arg_status = worse(status, "stop")
+                        end
                     end
                 end
             end
         end
     end
+    -- Da quet HET moi dong header cua phan nay. Tra `first_arg` neu co — gia tri
+    -- y HET nhu ban cu voi `arg_rule`, nhung `up_rule` gio da thay moi
+    -- `filename` trong phan, khong dung o cai dau tien khop `check_args`.
+    if first_arg then return first_arg, arg_status, up_rule end
     return nil, status, up_rule
 end
 
@@ -462,6 +481,7 @@ local function scan_one_boundary(body, boundary, initial_status)
     local delim = "--" .. boundary
     local status = initial_status or false
     local up_rule = nil
+    local first_arg, first_arg_status = nil, nil
     local kind, at, after = next_delimiter(body, 1, delim)
     if not kind then return nil, worse(status, "bd"), nil end
 
@@ -469,8 +489,13 @@ local function scan_one_boundary(body, boundary, initial_status)
     while kind do
         -- Kiem `close` TRUOC tran. Dau dong ket thuc khong phai mot phan, va
         -- dem no vao lam upload dung 64 file bi gan `n` — mot "khong biet" gia.
-        if kind == "close" then return nil, status, up_rule end
-        if nparts >= MAX_PARTS then return nil, worse(status, "n"), up_rule end
+        if kind == "close" then
+            return first_arg, (first_arg and first_arg_status or status), up_rule
+        end
+        if nparts >= MAX_PARTS then
+            return first_arg, worse(first_arg and first_arg_status or status, "n"),
+                   up_rule
+        end
         nparts, saw_open = nparts + 1, true
 
         -- Tim dau phan cach ke tiep tu DAU vung header, khong tu cuoi no: cai
@@ -482,15 +507,26 @@ local function scan_one_boundary(body, boundary, initial_status)
 
         local rule, part_up
         rule, status, part_up = scan_disposition_headers(body:sub(after, he - 1), status)
-        -- Giu lan khop DAU: mot upload nhieu phan thi phan dau tien chay duoc la
-        -- du de ghi log, va giu cai dau cho so dem on dinh giua cac lan chay.
-        if part_up and not up_rule then up_rule = part_up end
-        if rule then return rule, status, up_rule end
+        -- `up_rule`: giu luat NGHIEM TRONG NHAT tren toan bo cac phan.
+        up_rule = upload.worse_up(up_rule, part_up)
+        -- `arg_rule`: giu lan khop DAU (hop dong cu, so lieu doc theo no).
+        --
+        -- KHONG `return` o day. Ban truoc lam vay, va do la mot duong ne THAT:
+        --     part 1  filename="../../photo.jpg"   -> khop arg_traversal
+        --     part 2  filename="shell.php"         -> KHONG BAO GIO duoc soi
+        -- Ke tan cong chi can dat mot ten file vo hai co `../` o phan dau la P1
+        -- mu voi moi phan phia sau. Hai kenh doc lap o cap DU LIEU (hai truong
+        -- khac nhau) nhung viec DUYET van chung nhau, nen `return` som cua kenh
+        -- nay lam mat kenh kia.
+        if rule and not first_arg then
+            first_arg, first_arg_status = rule, status
+        end
 
         kind, at, after = next_kind, next_at, next_after
     end
 
     if saw_open then status = worse(status, "ending") end
+    if first_arg then return first_arg, worse(first_arg_status, "ending"), up_rule end
     return nil, status, up_rule
 end
 
@@ -502,13 +538,20 @@ local function filename_rule(body, family, ct)
 
     local combined = status or false
     local up_rule = nil
+    local first_arg = nil
     for i = 1, #boundaries do
         local rule, st, up = scan_one_boundary(body, boundaries[i], combined)
         combined = worse(combined, st)
-        if up and not up_rule then up_rule = up end
-        if rule then return rule, combined, up_rule end
+        -- Cung `worse_up` nhu hai tang tren. Tang nay gop qua NHIEU BOUNDARY
+        -- (Content-Type khai nhieu gia tri boundary), va bo sot no o day thi
+        -- boundary dau tien khop se che cac boundary sau — dung lo ma [27d] bat
+        -- duoc khi toi sua hai tang tren ma quen tang nay.
+        up_rule = upload.worse_up(up_rule, up)
+        -- KHONG `return` o day, cung ly do nhu hai tang tren: mot boundary khop
+        -- `check_args` se che cac boundary phia sau khoi `check_filename`.
+        if rule and not first_arg then first_arg = rule end
     end
-    return nil, combined, up_rule
+    return first_arg, combined, up_rule
 end
 
 -- Dem `&` thay vi `get_post_args()`: ham do CAT O 100 va khong bao gi, ma 500

@@ -216,23 +216,42 @@ end
 -- trong nhung duong upload webshell pho bien nhat va no KHONG doi hoi loi nao
 -- khac. Gioi han 6 duoi: `a.b.c.d.e.f.g.php` la du sau roi, va tran de ke gui
 -- khong bat ta duyet mot ten file 512 byte day dau cham.
-local MAX_EXT = 6
+-- KHONG con tran so duoi. Ban truoc dung `MAX_EXT = 6` va do la mot duong ne
+-- THAT, khong phai mot gioi han ly thuyet:
+--
+--     shell.php.a.b.c.d.e.f   ->  [f,e,d,c,b,a]  va DUNG truoc `.php`
+--
+-- Vi du trong chu thich cu la `a.b.c.d.e.f.g.php`, ma vi du do KHONG kiem duoc
+-- gi: `.php` nam ngoai cung phai nen luon bat o vong dau. Toi viet mot vi du
+-- TRONG NHU kiem do sau nhung khong kiem do sau — va `upload_test` chi khang
+-- dinh `#extensions <= 6`, tuc KHOA CUNG chinh gioi han gay bypass. Cung ho voi
+-- ca `.inc` cung ngay: cai mot phong doan vao test roi tin no.
+--
+-- Vi sao bo tran duoc, ma khong phai "bo tran la mo cua cho DoS": vung header
+-- cua MOT phan da bi `MAX_HDR_LEN = 2048` chan, va `MAX_FN_LEN` bao cao ten
+-- file > 512 byte. Nen chuoi vao day BI CHAN SAN — mot lan duyet tuyen tinh tren
+-- <= 2 KB la O(n) voi n co tran, khong phai O(n) voi n do ke gui chon.
+--
+-- `MAX_EXT_REPORT` chi de BAO CAO, khong de dung quet: mot ten file 40 dau cham
+-- la bat thuong va dang ghi lai, nhung ta van quet het truoc khi noi vay.
+local MAX_EXT_REPORT = 6
 
+-- Tra ve `exts, nhieu_hon_muc_bao_cao`.
+--
+-- QUET HET, khong dung o tran. Mot lan duyet tuyen tinh tu phai sang, khong co
+-- vong `for` long trong `while` nhu ban truoc (ban do la O(n^2) tren ten file
+-- nhieu dau cham, nen tran 6 vua la lo bao mat vua la thu duy nhat giu no re).
 local function extensions(name)
     local exts, n = {}, 0
-    local tail = #name
-    while n < MAX_EXT do
-        local dot = 0
-        for i = tail, 1, -1 do
-            if name:sub(i, i) == "." then dot = i; break end
+    local last = #name + 1        -- vi tri dau cham (hoac het chuoi) ben phai
+    for i = #name, 1, -1 do
+        if name:sub(i, i) == "." then
+            local e = name:sub(i + 1, last - 1):lower()
+            if e ~= "" then n = n + 1; exts[n] = e end
+            last = i
         end
-        if dot == 0 then break end
-        local e = name:sub(dot + 1, tail):lower()
-        if e ~= "" then n = n + 1; exts[n] = e end
-        tail = dot - 1
-        if tail <= 0 then break end
     end
-    return exts
+    return exts, n > MAX_EXT_REPORT
 end
 
 -- ── Luat ────────────────────────────────────────────────────────────
@@ -289,8 +308,78 @@ local function canonical_views(raw)
     return views
 end
 
+-- ── Thang NGHIEM TRONG, de gop ket qua cua nhieu phan ──────────────
+--
+-- VI SAO CAN. Mot upload nhieu phan co the khop nhieu luat, va ban truoc giu
+-- luat DAU TIEN theo thu tu part. Voi
+--     part 1  web.config     -> upload_foreign_config  (yeu, gan nhu vo hai)
+--     part 2  shell.php      -> upload_php_ext         (manh)
+-- thi ket qua la `foreign_config` va `php_ext` BIEN MAT.
+--
+-- Hien tai khong doi diem (tat ca cung ve `ctx.waf_upload = 1`, trong so 0),
+-- nhung no lam BAN chinh con so dung de quyet dinh trong so — va lam ban theo
+-- mot cach ke tan cong DIEU KHIEN duoc: chi can dat mot phan vo hai len truoc.
+--
+-- Thang nay xep theo "neu file nay dap xuong dia thi hau qua nang the nao",
+-- KHONG theo do tin cay cua phep do:
+--   apache_config  `.htaccess` doi handler cua MOI file trong thu muc  -> nang nhat
+--   php_ext        ma chay duoc ngay, duoi da xac minh tren fleet
+--   php_double     cung tap, an sau mot duoi khac (`AddHandler` van khop)
+--   php_config     `auto_prepend_file` — chay ma, nhung hep hon .htaccess
+--   legacy_ext     duoi CHUA thay tren fleet, co the khong chay
+--   foreign_config `web.config` tren Linux gan nhu vo hai — dau hieu scanner
+local UP_RANK = {
+    upload_apache_config  = 7,
+    upload_php_ext        = 6,
+    upload_php_double     = 5,
+    upload_php_config     = 4,
+    -- `config_case` tren `legacy_ext`: mot `.HTACCESS` la y dinh RO RANG hon mot
+    -- `.phar` (vong sau co the la ai do dat ten file la la), du kha nang chay
+    -- thap hon. Thang nay xep theo hau qua NEU chay, va `.htaccess` doi handler
+    -- cua moi file trong thu muc.
+    upload_config_case    = 3,
+    upload_php_legacy_ext = 2,
+    upload_foreign_config = 1,
+}
+
+function _M.worse_up(a, b)
+    if not a then return b end
+    if not b then return a end
+    return ((UP_RANK[b] or 0) > (UP_RANK[a] or 0)) and b or a
+end
+
+-- GIU `lower()` cho ca ten cau hinh — va day la mot phan bien co chu y.
+--
+-- Da co de xuat doi sang exact-case: `.HTACCESS` khong chac duoc Apache doc nhu
+-- `.htaccess`, nen dung no lam `upload_apache_config` la lam phong so do cua
+-- nhom tin cay cao nhat. Tien de DUNG, ket luan NGUOC:
+--
+--   1. Neu `.HTACCESS` khong duoc Apache doc thi no vo hai ve MAT CAU HINH —
+--      nhung ai upload no thi gan nhu chac chan la scanner hoac client doi case.
+--      Ha nhan xuong chi vi "ten khong chay duoc" la bo mat dieu no chi ra.
+--   2. Quan trong hon: exact-case la FAIL-OPEN. Mot so filesystem tren hosting
+--      chia se case-insensitive, va mot so lop ghi file (SMB, vai panel)
+--      normalize case — luc do `.HTACCESS` THANH `.htaccess` tren dia. Bat
+--      case-insensitive la fail-closed.
+--
+-- Nhung phan bien nay CHUA CO SO DO, nen thay vi tranh luan, ghi ra de dem
+-- duoc: `case_odd` = ten khong phai toan chu thuong. Neu so lieu cho thay
+-- `upload_apache_config` bi phong len boi bien the uppercase thi luc do tach
+-- nhan, co con so trong tay.
 local function classify_name(name)
     local lower = name:lower()
+    -- Bien the KHONG phai chu thuong di sang mot nhan RIENG, khong xuong nhan
+    -- yeu hon va cung khong tron vao nhan manh. Nho vay:
+    --   — `upload_apache_config` giu nghia HEP: ten dung y nhu Apache doc.
+    --   — `upload_config_case` dem duoc rieng, va neu so lieu cho thay no chi la
+    --     scanner thi ha trong so rieng no, khong keo theo nhan kia.
+    -- Mot nhan thay vi mot co boolean vi `check_filename` tra MOT gia tri va
+    -- `worse_up` gop theo nhan; them mot truong nua chi de dem telemetry lam
+    -- giao dien nang hon gia tri no mang lai.
+    if name ~= lower and
+       (APACHE_CONFIG[lower] or PHP_CONFIG[lower] or FOREIGN_CONFIG[lower]) then
+        return "upload_config_case"
+    end
     if APACHE_CONFIG[lower]  then return "upload_apache_config"  end
     if PHP_CONFIG[lower]     then return "upload_php_config"     end
     if FOREIGN_CONFIG[lower] then return "upload_foreign_config" end
@@ -330,5 +419,6 @@ _M.basename       = basename
 _M.strip_tail     = strip_tail
 _M.extensions     = extensions
 _M.canonical_views = canonical_views
+_M.UP_RANK         = UP_RANK
 
 return _M

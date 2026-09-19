@@ -482,6 +482,53 @@ check("shell.php\0/benign.jpg -> bat duoc",
       scan(mp({ part(CD .. 'filename="shell.php\0/benign.jpg"') })).up_rule,
       "upload_php_ext")
 
+-- ══ DUONG NE "fn_rule som" — ca nay la ly do muc [27] chua du ════════
+--
+-- Truoc 19-09 (8), `scan_disposition_headers` va `scan_one_boundary` deu
+-- `return` ngay khi `check_args` khop. Nen:
+--
+--     part 1  filename="../../photo.jpg"   -> khop arg_traversal -> RETURN
+--     part 2  filename="shell.php"         -> KHONG BAO GIO duoc soi
+--
+-- Ke tan cong chi can dat mot ten file VO HAI co `../` len phan dau la P1 mu
+-- voi moi phan phia sau. Hai kenh doc lap o cap DU LIEU (hai truong khac nhau)
+-- nhung viec DUYET van chung nhau — nen `return` som cua kenh nay lam mat kenh
+-- kia. Muc [27] chi doi moi `return` mang theo `up_rule`, khong doi rang duyet
+-- tiep, nen no bao XANH tren chinh duong ne nay.
+io.write("\ncore: P1 duong ne 'fn_rule som' (part vo hai dung truoc)\n")
+do
+    local r = scan(mp({ part(CD .. 'filename="../../photo.jpg"'),
+                        part(CD .. 'filename="shell.php"') }))
+    check("arg_rule van giu lan khop dau", r.fn_rule, "arg_traversal")
+    check("up_rule KHONG bi mat o part 2", r.up_rule, "upload_php_ext")
+end
+
+-- Ba part, cai nguy hiem nhat nam giua hai part khop `check_args`.
+do
+    local r = scan(mp({ part(CD .. 'filename="../a.jpg"'),
+                        part(CD .. 'filename=".htaccess"'),
+                        part(CD .. 'filename="../b.jpg"') }))
+    check("up_rule bat .htaccess o giua", r.up_rule, "upload_apache_config")
+end
+
+-- `worse_up` o cap dau-cuoi: part vo hai (theo thang) dung TRUOC part nang.
+do
+    local r = scan(mp({ part(CD .. 'filename="web.config"'),
+                        part(CD .. 'filename="shell.php"') }))
+    check("giu luat NGHIEM TRONG NHAT, khong phai dau tien",
+          r.up_rule, "upload_php_ext")
+end
+do
+    local r = scan(mp({ part(CD .. 'filename="shell.php"'),
+                        part(CD .. 'filename=".htaccess"') }))
+    check("thu tu nguoc cho CUNG ket qua", r.up_rule, "upload_apache_config")
+end
+
+-- Duoi chay duoc nam sau muc bao cao cu (tran MAX_EXT = 6 da go).
+check("shell.php.a.b.c.d.e.f -> bat duoc",
+      scan(mp({ part(CD .. 'filename="shell.php.a.b.c.d.e.f"') })).up_rule,
+      "upload_php_double")
+
 -- `filename*=` RFC 5987: giai MOT lop. Than multipart chay `decode=false` nen
 -- day la duong ma `check_args` khong thay — va la bypass da ghi trong CLAUDE.md.
 check("filename*= percent-encoded",

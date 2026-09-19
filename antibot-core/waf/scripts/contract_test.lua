@@ -2049,6 +2049,70 @@ do
             if bad_n == 0 then pass = pass + 1 end
         end
 
+        -- 27a-bis. KHONG duoc `return` ngay khi `check_args` khop.
+        --
+        -- VI SAO [27a] MOT MINH KHONG DU, va day la diem yeu cua chinh no:
+        -- [27a] doi moi `return` MANG THEO `up_rule`. No bao XANH tren ca ban co
+        -- duong ne lan ban da sua, vi ban co duong ne cung mang `up_rule` —
+        -- chi la mang mot gia tri CHUA DAY DU (part phia sau chua duoc soi).
+        --
+        -- Duong ne that:
+        --     part 1  filename="../../photo.jpg"  -> khop arg_traversal
+        --     part 2  filename="shell.php"        -> khong bao gio duoc soi
+        -- Ke tan cong dat mot ten file VO HAI co `../` len dau la P1 mu voi moi
+        -- part sau. Hai kenh doc lap o cap DU LIEU nhung viec DUYET van chung.
+        --
+        -- Gac bang cach doi: trong `scan_one_boundary`, thu sau `if rule` KHONG
+        -- duoc la `return`. Phai la phep GAN (`first_arg = rule`) roi duyet tiep.
+        do
+            local fn2 = code:match("local function scan_one_boundary.-\nend")
+            if fn2 then
+                -- tim `if rule` (khong phai `if rule and not first_arg`) di kem
+                -- `return` ngay sau trong cung dong hoac dong ke
+                local ne = fn2:match("if%s+rule%s+then%s+return")
+                if ne then
+                    bad("  SAI  [27a-bis] `scan_one_boundary` co `if rule then return`\n" ..
+                        "       => part phia sau KHONG duoc soi khi part truoc khop\n" ..
+                        "       `check_args`. Duong ne: `../../a.jpg` roi `shell.php`.\n" ..
+                        "       Phai GAN `first_arg` roi duyet tiep het cac part.\n")
+                else
+                    pass = pass + 1
+                end
+            end
+        end
+
+        -- 27a-ter. Cung bat bien do o cap TRONG MOT PART.
+        do
+            local fn3 = code:match("local function scan_disposition_headers.-\nend")
+            if fn3 then
+                local ne = fn3:match("if%s+rule%s+then%s+return")
+                if ne then
+                    bad("  SAI  [27a-ter] `scan_disposition_headers` co " ..
+                        "`if rule then return`\n" ..
+                        "       => cac `filename` sau trong CUNG part khong duoc soi.\n")
+                else
+                    pass = pass + 1
+                end
+            end
+        end
+
+        -- 27d. `up_rule` phai gop bang `worse_up`, khong phai "giu cai dau".
+        --
+        -- `if part_up and not up_rule then up_rule = part_up end` la giu luat DAU
+        -- TIEN theo thu tu part — ma thu tu part la thu KE GUI dieu khien. Dat
+        -- `web.config` (nhan yeu nhat) o part 1 la lam so lieu mat `php_ext` o
+        -- part 2. Khong doi diem o trong so 0, nhung lam ban chinh con so dung de
+        -- quyet dinh trong so.
+        if code:find("and%s+not%s+up_rule%s+then%s+up_rule%s*=") then
+            bad("  SAI  [27d] `up_rule` dang giu luat DAU TIEN.\n" ..
+                "       Phai dung `upload.worse_up()` de giu luat NGHIEM TRONG\n" ..
+                "       NHAT — thu tu part do ke gui dieu khien.\n")
+        elseif not code:find("upload%.worse_up") then
+            bad("  SAI  [27d] khong thay `upload.worse_up()` trong body_core.\n")
+        else
+            pass = pass + 1
+        end
+
         -- 27b. `scan()` phai dat `up_rule` vao bang tra ve.
         local scanfn = code:match("function _M%.scan%b()(.-)\nend")
         if not scanfn then

@@ -156,13 +156,82 @@ if not (e[1] == "jpg" and e[2] == "php" and #e == 2) then
 else
     pass = pass + 1
 end
-local e2 = up.extensions(string.rep("a.", 200) .. "jpg")
-if #e2 > 6 then
-    fail = fail + 1
-    io.write(string.format("  SAI  extensions() khong ton trong MAX_EXT: %d\n", #e2))
-else
-    pass = pass + 1
+-- ── ASSERTION DA GO: "`#extensions <= 6`" ────────────────────────────────
+--
+-- Ban truoc khang dinh `extensions()` KHONG duoc tra ve hon 6 duoi. Do la
+-- assertion khoa cung CHINH GIOI HAN GAY BYPASS:
+--
+--     shell.php.a.b.c.d.e.f  ->  ban cu tra [f,e,d,c,b,a] va DUNG truoc `.php`
+--
+-- Da chung minh bang cach chay song song hai thuat toan: ban cu LOT, ban moi
+-- BAT. Nen assertion cu bao XANH tren dung ca no phai chan — cung ho voi `.inc`
+-- va voi ba lop kiem da go: mot phong doan duoc cai vao test roi tin.
+--
+-- Thay bang hai assertion NGUOC HUONG: quet HET (khong tran), va co bao khi
+-- vuot muc bao cao.
+do
+    local e2, over = up.extensions(string.rep("a.", 200) .. "jpg")
+    if #e2 ~= 200 then
+        fail = fail + 1
+        io.write(string.format(
+            "  SAI  extensions() phai quet HET 200 duoi, duoc %d — tran la duong ne\n",
+            #e2))
+    else
+        pass = pass + 1
+    end
+    if over ~= true then
+        fail = fail + 1
+        io.write("  SAI  extensions() phai BAO vuot muc bao cao (co thu hai)\n")
+    else
+        pass = pass + 1
+    end
 end
+
+-- Duoi chay duoc nam SAU muc bao cao cu — dung ca phan bien neu.
+eq("shell.php.a.b.c.d.e.f",       "upload_php_double",
+   "8 duoi, .php o vi tri 7 — ban tran 6 LOT ca nay")
+eq("shell.php.a.b.c.d.e.f.g.h",   "upload_php_double", "10 duoi")
+eq("shell.inc.1.2.3.4.5.6.7",     "upload_php_double", ".inc sau 7 duoi rac")
+
+io.write("\n[8] Bien the CASE sang nhan RIENG, khong lam ban nhom tin cay cao\n")
+-- Giu `lower()` (fail-closed: mot so filesystem case-insensitive, mot so lop ghi
+-- file normalize case, luc do `.HTACCESS` THANH `.htaccess` tren dia). Nhung
+-- KHONG dem chung vao `upload_apache_config`, de con so nhom do giu nghia hep.
+eq(".HTACCESS",   "upload_config_case", "khong lam ban apache_config")
+eq(".HtAccess",   "upload_config_case", "mixed case")
+eq("WEB.CONFIG",  "upload_config_case", "foreign + case")
+eq(".USER.INI",   "upload_config_case", "php_config + case")
+eq(".htaccess",   "upload_apache_config", "chuan — van la nhom manh nhat")
+eq("web.config",  "upload_foreign_config", "chuan")
+
+io.write("\n[9] worse_up — giu luat NGHIEM TRONG NHAT, khong phai luat DAU TIEN\n")
+-- Ban truoc giu luat dau tien theo thu tu part, ma thu tu part la thu KE GUI
+-- dieu khien: dat `web.config` o part 1 la lam so lieu bao `foreign_config` va
+-- mat `php_ext` o part 2. Khong doi diem (tat ca ve `waf_upload = 1`, trong so
+-- 0) nhung lam ban chinh con so dung de quyet dinh trong so.
+local function eqw(a, b, want, why)
+    local got = up.worse_up(a, b)
+    if got ~= want then
+        fail = fail + 1
+        io.write(string.format("  SAI  worse_up(%s,%s) cho=%s duoc=%s  %s\n",
+                 tostring(a), tostring(b), tostring(want), tostring(got), why or ""))
+    else
+        pass = pass + 1
+    end
+end
+eqw("upload_foreign_config", "upload_php_ext", "upload_php_ext",
+    "web.config part 1, shell.php part 2")
+eqw("upload_php_ext", "upload_foreign_config", "upload_php_ext",
+    "nguoc thu tu phai cho CUNG ket qua")
+eqw("upload_php_ext", "upload_apache_config", "upload_apache_config",
+    ".htaccess nang nhat")
+eqw("upload_php_legacy_ext", "upload_php_double", "upload_php_double",
+    "double > legacy")
+eqw("upload_config_case", "upload_php_legacy_ext", "upload_config_case",
+    "y dinh ro rang hon mot duoi la")
+eqw(nil, "upload_php_ext", "upload_php_ext", "nil + X")
+eqw("upload_php_ext", nil, "upload_php_ext", "X + nil")
+eqw(nil, nil, nil, "nil + nil")
 
 io.write(string.format("\nupload_test: %d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
