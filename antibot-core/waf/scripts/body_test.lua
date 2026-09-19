@@ -423,6 +423,59 @@ if capture_ok then
     ngx.log = ngx_log_real
 end
 
+
+-- ══ P1: `up_rule` di TRON duong tren THAN MULTIPART THAT ════════════
+--
+-- `upload_test.lua` kiem `check_filename` CO LAP. Bo nay kiem thu khac: gia tri
+-- co song qua BON chang `scan_disposition_headers -> scan_one_boundary ->
+-- filename_rule -> scan` voi mot than that hay khong. Mot `return` danh roi
+-- `up_rule` se xanh o bo kia va do o day.
+io.write("\ncore: P1 up_rule (than multipart that)\n")
+
+check("ten file sach -> nil",
+      scan(mp({ part(CD .. 'filename="anh.jpg"') })).up_rule, nil)
+check("shell.php -> upload_exec_ext",
+      scan(mp({ part(CD .. 'filename="shell.php"') })).up_rule, "upload_exec_ext")
+check("duoi kep x.php.jpg -> upload_exec_double",
+      scan(mp({ part(CD .. 'filename="x.php.jpg"') })).up_rule, "upload_exec_double")
+check(".htaccess -> upload_config",
+      scan(mp({ part(CD .. 'filename=".htaccess"') })).up_rule, "upload_config")
+check("logo.svg -> nil (SVG xu ly rieng)",
+      scan(mp({ part(CD .. 'filename="logo.svg"') })).up_rule, nil)
+
+-- Phan SACH dung TRUOC phan xau: neu vong lap `return` som o phan dau thi
+-- phan thu hai khong bao gio duoc soi.
+check("phan xau nam SAU phan sach",
+      scan(mp({ part(CD .. 'filename="anh.jpg"'),
+                part(CD .. 'filename="shell.php"') })).up_rule, "upload_exec_ext")
+
+-- `filename*=` RFC 5987: giai MOT lop. Than multipart chay `decode=false` nen
+-- day la duong ma `check_args` khong thay — va la bypass da ghi trong CLAUDE.md.
+check("filename*= percent-encoded",
+      scan(mp({ part(CD .. "filename*=UTF-8''shell%2Ephp") })).up_rule, "upload_exec_ext")
+
+-- KHONG multipart thi khong ap dung — `nil`, khong phai `false`.
+check("urlencoded -> nil", scan("a=1", URLENC).up_rule, nil)
+
+-- Ca hai bang chung cung luc: `../` khop `check_args`, `.php` khop P1. Phai co
+-- CA HAI, khong duoc de mot cai nuot cai kia.
+do
+    local r = scan(mp({ part(CD .. 'filename="../../wp-config.php"') }))
+    check("ca hai: arg_rule co", r.fn_rule, "arg_traversal")
+    check("ca hai: up_rule co",  r.up_rule, "upload_exec_ext")
+end
+
+-- pack/unpack phai giu `up_rule` qua ranh gioi thread. Lech mot truong la
+-- `bad_payload` tren MOI than spill — im lang, va dung nhom upload lon.
+do
+    local r  = scan(mp({ part(CD .. 'filename="shell.php"') }))
+    local rt, err = core.unpack(core.pack(r))
+    check("pack/unpack khong loi", err, nil)
+    check("pack/unpack giu up_rule", rt and rt.up_rule, "upload_exec_ext")
+    local clean = core.unpack(core.pack(scan(mp({ part(CD .. 'filename="a.jpg"') }))))
+    check("pack/unpack giu up_rule nil", clean.up_rule, nil)
+end
+
 os.remove(tmp)
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))

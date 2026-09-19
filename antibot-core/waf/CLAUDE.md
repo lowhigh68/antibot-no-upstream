@@ -652,6 +652,110 @@ ngày. Cùng lý do đã không ghi thân request vào `matched=`.
 **Đọc kèm `fntr=`:** `uprule=- fntr=spill` nghĩa là **chưa soi**, không phải
 sạch. Gộp hai cái lại là đúng lỗi đã cắt 4 tháng ở `wp_paths.mark()`.
 
+### `upload.lua` — P1: soi TÊN FILE upload
+
+**Câu hỏi khác hẳn `args.lua`.** `args.lua` hỏi *"giá trị này có chứa mẫu tấn công không"*. `upload.lua` hỏi *"file này, nếu đáp xuống đĩa và có ai gọi URL của nó, thì **server có chạy** nó không"*. Câu thứ hai không nhìn mẫu nào — nó nhìn **phần mở rộng** và cách Apache/PHP-FPM ánh xạ đuôi sang handler.
+
+**P1 KHÔNG đi từ 0 lên có.** `body_core.scan` đã có `php` = thân chứa `<?php`/`<?=`, và nó **đã** là tín hiệu trọng số 50 (`waf_body_php`). Việc của P1 là bịt các đường mà `<?php` **không** xuất hiện:
+
+| Đường lọt | `waf_body_php` bắt? | P1 |
+|---|---|---|
+| `shell.php` chứa `<?php` | **có** (50đ) | cộng thêm "đuôi chạy được" |
+| `shell.phtml` / `.php5` / `.phar` | **có** | cộng thêm |
+| Đuôi kép `x.php.jpg` | tuỳ nội dung | **bắt được tên** |
+| `.htaccess` (`AddType … .jpg`) | **MÙ** — không có `<?php` | **chỉ P1** |
+| Webshell mã hoá không thẻ mở | **MÙ** | chưa — xem giới hạn |
+
+Hai dòng cuối là lý do P1 tồn tại. Không phải "thêm mẫu cho chắc".
+
+| rule_id | Bắt gì |
+|---|---|
+| `upload_exec_ext` | Đuôi chạy được ở **vị trí cuối** — `shell.php` |
+| `upload_exec_double` | Đuôi chạy được **không** ở cuối — `x.php.jpg`, vì `AddHandler` (khác `SetHandler`) khớp **bất kỳ** đuôi trong tên |
+| `upload_config` | `.htaccess` `.htpasswd` `.user.ini` `php.ini` `web.config` — nguy hiểm vì đổi cách server đối xử với **các file khác** |
+
+**Ba bước chuẩn hoá, mỗi bước bịt một đường né đã biết:**
+
+- `basename()` — chỉ lấy thành phần cuối. Cả `/` **và** `\`: PHP trên Linux coi `\` là ký tự tên file bình thường, nên `a\b.php` là **một** tên file đuôi `.php`.
+- `strip_tail()` — cắt `::$DATA` (NTFS ADS), byte NUL (`shell.php\0.jpg` → server thấy `shell.php`), dấu cách/tab/dấu chấm cuối (`shell.php.` vẫn được Apache ánh xạ trên một số cấu hình).
+- `extensions()` — duyệt **mọi** đuôi từ phải sang, tối đa 6. Trần 6 để kẻ gửi không bắt ta duyệt một tên 512 byte đầy dấu chấm.
+
+**Trọng số 0 lúc chào đời** — cùng khuôn `waf_arg`/`waf_body_arg`, và là lý do `arg_null_byte` không phá 43 domain. Nên `waf_upload` **không** được có mặt trong `waf_signal()`; `contract_test` [1] gác hai chiều đó.
+
+**Cố ý KHÔNG có:** luật "không có đuôi" hay "đuôi lạ". Khách upload file không đuôi và đuôi lạ thật (`.dwg`, `.ai`, `.sketch`, `.psd`). `.inc` cũng **không** vào bảng — nó không được ánh xạ sang PHP handler theo mặc định; nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện.
+
+**Chưa kiểm trên dàn máy này:** bảng `EXEC_EXT` dựng từ tài liệu chung, **không** từ `/usr/local/apache2/conf` của 5 máy. Phải chạy trước khi nâng trọng số khỏi 0:
+
+```bash
+grep -rniE 'AddHandler|AddType' /usr/local/apache2/conf/ | grep -i php
+```
+
+**Đường đi của `up_rule` là chỗ dễ hỏng âm thầm nhất.** Nó qua bốn chặng — `scan_disposition_headers` → `scan_one_boundary` → `filename_rule` → `scan` — và mỗi chặng có nhiều lối `return` sớm. Bỏ sót **một** thì tín hiệu mất **trong im lặng** ở đúng nhóm đó: ví dụ tràn `MAX_PARTS`, một upload 70 phần có `shell.php` ở phần thứ 3 sẽ thoát qua nhánh `n` và báo cáo "không có gì". Đúng khuôn lỗi đã cắt 4 tháng của `wp_paths.mark()`. `contract_test` [27a] đòi **mọi** `return` trong `scan_one_boundary` trả về đúng 3 giá trị.
+
+**`pack`/`unpack` nâng V2 → V3.** `unpack` gác bằng `#f ~= 11`, nên một bản `pack` mới gặp `unpack` cũ trả `bad_payload` — im lặng, và **chỉ** với thân đã spill, tức đúng nhóm upload lớn. [27c] kiểm cả phiên bản lẫn **số trường**, vì khớp phiên bản một mình không bắt được lệch trường.
+
+**`uprule=` trong `waf.log` ghi RULE_ID, tuyệt đối không ghi tên file** — tên file do kẻ gửi điều khiển và thực tế có mang token/email/đường dẫn nội bộ; `waf.log` là file text giữ 30 ngày. Cùng lý do đã không ghi thân request vào `matched=`. Đọc **kèm** `fntr=`: `uprule=- fntr=spill` nghĩa là **chưa soi**, không phải sạch.
+
+**Giới hạn còn lại, đo được:** webshell mã hoá (`eval(base64_decode(…))` không thẻ mở) vẫn lọt — nó cần luật **nội dung**, thuộc P2/F2. Và MIME lệch đuôi chưa soi: `Content-Type: image/jpeg` kèm `filename="x.php"` hiện chỉ bắn vì đuôi, chưa bắn vì **lệch**.
+
+### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
+
+`.svg` **không** nằm trong bảng đuôi của P1. Không phải vì nó vô hại — ngược lại
+— mà vì nó là loại nguy hiểm **khác**, nên cả ngưỡng FP lẫn chỗ chữa đều khác.
+
+| | Webshell `.php` | `.svg` |
+|---|---|---|
+| Chạy ở đâu | **server**, trong tiến trình PHP | **trình duyệt** nạn nhân |
+| Là gì | RCE | XSS khi phục vụ trực tiếp |
+| Bản sao hợp lệ trong upload của khách | gần như không có | **logo, icon — có thật, nhiều** |
+| Chữa bằng WAF được không | được, chặn lúc upload | **không** — xem dưới |
+
+SVG là XML nên mang được `<script>`, `on*=`, `<foreignObject>`,
+`<use href="data:…">`, `xlink:href="javascript:…"`, `<style>` kèm `@import`.
+Blocklist thẻ/thuộc tính **luôn thua**; phải allowlist (bản làm đúng: SVG
+Sanitizer của DOMPurify).
+
+**Bốn lớp phòng vệ, xếp theo sức mạnh thật — không theo thứ tự hay được nhắc:**
+
+1. **Sanitize lúc upload** — biện pháp gốc, xử lý nguyên nhân.
+2. **Phục vụ từ origin KHÔNG dùng chung cookie** — mạnh nhất trong các lớp
+   *không* cần sửa file, vì nó vô hiệu hoá **hậu quả** thay vì đoán trước
+   payload: script có chạy cũng không đọc được cookie phiên, không gọi được API
+   dưới danh nghĩa nạn nhân. Cùng nguyên lý `googleusercontent.com` tồn tại.
+3. **Chỉ nhúng bằng `<img>`** — trong `<img>` thì script trong SVG **không chạy**
+   (chế độ non-animated/non-interactive của spec). Nhưng nó **chỉ bảo vệ trang
+   nhúng**; mở thẳng `/wp-content/uploads/x.svg` thì vô tác dụng, mà WordPress
+   cho mở thẳng.
+4. **CSP** — **yếu nhất, và hay bị tưởng là mạnh nhất.** Lý do không phải CSP
+   dở, mà là nó **không áp dụng được vào đúng ca đáng lo**: `Content-Security-Policy`
+   là response header của **tài liệu**, còn khi nạn nhân mở thẳng URL thì tài
+   liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. CSP chỉ có
+   tác dụng nếu gắn lên **chính response phục vụ file upload**, tức việc của
+   nginx.
+
+**Rẻ hơn cả ba lớp trên, và chưa ai nhắc: `Content-Disposition: attachment`.**
+Mở thẳng URL thì tải về chứ không render; `<img>` vẫn nhúng bình thường. Trên
+dàn 74 domain đây là tỉ lệ phòng-vệ/chi-phí tốt nhất vì **không cần sửa gì trong
+WordPress của khách**:
+
+```nginx
+location ~* /wp-content/uploads/.*\.svg$ {
+    add_header Content-Disposition "attachment" always;
+    add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'" always;
+    add_header X-Content-Type-Options nosniff always;
+}
+```
+
+**Vì sao đây KHÔNG phải việc của tầng WAF.** Cả bốn lớp đều là **cấu hình phục
+vụ file**, không phải luật soi request. Một luật WAF chặn upload `.svg` sẽ chặn
+đúng thứ khách hàng làm hợp lệ hàng ngày (logo, icon) để đổi lấy việc **không**
+bảo vệ được các file SVG **đã nằm trên đĩa từ trước** — tức trả giá FP cao nhất
+cho vùng phủ nhỏ nhất. Đó là hình dạng của một luật sai chỗ.
+
+**Trạng thái: hạng mục riêng, chưa làm, không thuộc P1.** Cổng vào là số đo —
+bao nhiêu `.svg` thật đang được upload và phục vụ trên dàn máy, để biết đặt
+`Content-Disposition` có phá giao diện site nào không.
+
 ### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
 
 `.svg` **không** nằm trong bảng đuôi của P1. Không phải vì nó vô hại — ngược lại
@@ -726,7 +830,7 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wp_paths.lua` 469 |
 | F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
-| T — test | **một phần** | `scripts/*.lua` 3.059 dòng test / 1.823 dòng mã. Cổng `deploy.sh [3b]` |
+| T — test | **một phần** | `scripts/*.lua` 3.398 dòng test / 2.069 dòng mã. Cổng `deploy.sh [3b]` |
 | P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
 | P1 — chặn upload webshell | **một phần** | `upload.lua` — 3 luật tên file, **trọng số 0**. Đuôi chạy được, đuôi kép (`AddHandler`), file cấu hình. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
 | F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
@@ -736,10 +840,11 @@ Lệnh đo lại, chạy từ `antibot-core/`:
 
 ```bash
 cat waf/args.lua waf/body.lua waf/body_core.lua waf/body_worker.lua \
-    waf/exposed.lua waf/init.lua waf/wp_paths.lua | wc -l   # mã:  1823
-cat waf/scripts/*.lua | wc -l                                # test: 3059
-grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u  # 3 rule_id
-grep -nE '^ *waf_[a-z_]+ *=' intelligence/scoring/compute.lua # 4 tín hiệu
+    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2069
+cat waf/scripts/*.lua | wc -l                                # test: 3398
+grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u   # 3 rule_id tham so
+grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 3 rule_id ten file
+grep -nE '^ *waf_[a-z_]+ *=' intelligence/scoring/compute.lua # 5 tín hiệu
 ```
 
 **Ba rule_id, bốn lệnh `return`.** `arg_null_byte` trả về từ **hai** nhánh —
@@ -748,10 +853,11 @@ byte NUL thô và mẫu văn bản `%00` — vì đó đúng là chỗ trục `b
 luật vẫn là **3**. Lệnh trong khối trên `sort -u` chính vì vậy; bản đầu của
 chính mục này đếm lệnh `return` rồi suýt ghi sai số luật.
 
-**Bốn tín hiệu WAF, không phải ba.** `waf_wp_path = 50`, `waf_body_php = 50`,
-`waf_arg = 0`, `waf_body_arg = 0`. `waf_body_php` **đã** được nâng khỏi 0 — đếm
-"ba luật `args` nên ba tín hiệu trọng số 0" là trộn hai thứ khác nhau: số *luật*
-không bằng số *tín hiệu*.
+**Năm tín hiệu WAF.** `waf_wp_path = 50`, `waf_body_php = 50`, `waf_arg = 0`,
+`waf_body_arg = 0`, `waf_upload = 0` (P1, 19-09). `waf_body_php` **đã** được nâng
+khỏi 0 — đếm "ba luật `args` nên ba tín hiệu trọng số 0" là trộn hai thứ khác
+nhau: số *luật* không bằng số *tín hiệu*. Con số này đổi mỗi lần thêm tín hiệu,
+nên **đọc bằng lệnh ở trên**, đừng đọc câu này.
 
 **Việc kế tiếp là P1, rồi F3.** P1 trước vì nền đã có sẵn trong `body_core` nên
 phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **công cụ chữa FP**:
@@ -759,6 +865,20 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-19 (4) — **P1 khoi dong: `upload.lua` — soi TEN FILE upload. Trong so 0.**
+  - **Vi sao no KHONG phai "them mau cho chac":** `waf_body_php` (trong so 50, da chay tu 05-09) **da** bat webshell PHP thuan trong than multipart. P1 chi bit cac duong ma `<?php` KHONG xuat hien, va do luong duong do rat hep: `.htaccess` chua `AddType application/x-httpd-php .jpg` (khong co the mo PHP nao — `waf_body_php` **mu hoan toan**) va duoi kep `x.php.jpg` khop `AddHandler`. Hai ca do la ly do file nay ton tai; phan con lai la cong them bang chung cho thu da bat duoc.
+  - **Ba luat:** `upload_exec_ext` (duoi chay duoc o cuoi), `upload_exec_double` (duoi chay duoc KHONG o cuoi — `AddHandler` khac `SetHandler`, no khop bat ky duoi nao trong ten), `upload_config` (`.htaccess`/`.user.ini`/`php.ini`/`web.config`).
+  - **Ba buoc chuan hoa, moi buoc bit mot duong ne DA BIET:** `basename` (ca `/` va `\` — PHP tren Linux coi `\` la ky tu ten file binh thuong nen `a\b.php` la MOT ten file duoi `.php`); `strip_tail` (`::$DATA` NTFS ADS, byte NUL cat chuoi, dau cach/tab/cham cuoi); `extensions` duyet MOI duoi tu phai sang, tran 6.
+  - **Co y KHONG co luat "duoi la" hay "khong duoi".** Khach upload `.dwg`/`.ai`/`.sketch`/`.psd` va file khong duoi THAT. `.inc` cung khong vao bang — no khong duoc anh xa sang PHP handler mac dinh, chi nguy hiem qua LFI, ma LFI la duong `args.lua` gac. **Thu pha: them `.svg`/`.inc` vao bang => nhom "phai im" do 2 ca.**
+  - **`.svg` tach RIENG, khong o P1 — va day la quyet dinh ve FP, khong phai ve muc do nguy hiem.** SVG nguy hiem o TRINH DUYET nan nhan (XSS), khong o server (RCE), va khach upload logo/icon SVG **that, hang ngay**. Mot luat chan `.svg` luc upload se chan dung viec do de doi lay viec KHONG bao ve duoc cac file SVG **da nam tren dia tu truoc** — tra gia FP cao nhat cho vung phu nho nhat. Bon lop phong ve that (sanitize / origin khong dung chung cookie / chi nhung `<img>` / CSP + `Content-Disposition: attachment`) deu la **cau hinh phuc vu file**, khong phai luat soi request — nen chung khong thuoc tang WAF. **Dinh chinh mot cho hay bi hieu sai:** CSP la lop YEU NHAT trong bon, khong phai manh nhat — `Content-Security-Policy` la header cua TAI LIEU, ma khi nan nhan mo thang `/uploads/x.svg` thi tai lieu CHINH LA file SVG do, va WordPress/Apache khong gan CSP cho no. Gac bang `contract_test` [28] chu khong chi bang chu thich: mot dong trong bang Lua thi de them, va nguoi them se khong doc CLAUDE.md truoc.
+  - **`pack`/`unpack` nang V2 -> V3.** `unpack` gac bang `#f ~= 11`, nen mot ban `pack` moi gap `unpack` cu tra `bad_payload` — IM LANG, va **chi** voi than da spill, tuc dung nhom upload lon. [27c] kiem ca phien ban LAN so truong, vi khop phien ban mot minh khong bat duoc lech truong (thu pha: them mot `enc()` vao `pack` => do).
+  - **Hai cho hong am tham da chan TRUOC khi deploy, khong phai sau:**
+    - **`notable` trong `waf_logger`.** Cong nay quyet dinh dong `[waf-body]` co duoc ghi hay khong. Thieu `up_rule` o day thi mot upload `shell.php` khong kem bang chung nao khac se **khong sinh dong log nao** — va con so dung de quyet dinh nang trong so khoi 0 se thap di 20 lan, tuc phep do noi "khong co gi" ve dung thu no sinh ra de dem.
+    - **`preload` trong hai bo test cu.** `body_core` gio `require "antibot.waf.upload"`, ma `args_test.lua` va `body_test.lua` chi preload `body_core`. Thieu cai thu hai thi `require` di tim theo `package.path` cua `resty` va hong ngay tu dong nap — truoc khi chay mot assertion nao.
+  - **Test: `upload_test.lua` (55 assertion) + `body_test.lua` them 12 ca dau-cuoi + `contract_test` [27][28].** So assertion "PHAI IM" **nhieu hon** "phai ban", co y: dan so chay qua luat nay la kho anh va tai lieu cua khach. **Nam phep thu pha, nam lan do dung cho:** bo `strip_tail` => 4 duong ne do; bo vong duoi kep => 3 do; bo `basename` => `../.htaccess` do; them `.svg`/`.inc` => 2 do; lech truong `pack` => [27c] do. Tren code that: xanh.
+  - **`upload_test.lua` co lap KHONG du, va do la ly do them 12 ca vao `body_test.lua`:** bo kia kiem `check_filename` tren mot chuoi, khong kiem gia tri co song qua BON chang `scan_disposition_headers -> scan_one_boundary -> filename_rule -> scan` voi mot than multipart THAT hay khong. Mot `return` danh roi `up_rule` se **xanh** o bo co lap va do o bo dau-cuoi.
+  - **CHUA KIEM tren dan may nay:** bang `EXEC_EXT` dung tu tai lieu chung, khong tu `/usr/local/apache2/conf` cua 5 may. Lenh kiem nam trong chu thich `upload.lua` va trong muc nay — phai chay **truoc** khi nang trong so khoi 0.
+  - **Con lai cho P2/F2:** webshell ma hoa (`eval(base64_decode(...))` khong the mo) can luat NOI DUNG. Va MIME lech duoi (`Content-Type: image/jpeg` kem `filename="x.php"`) hien chi ban vi duoi, chua ban vi **lech**.
 - 2026-09-19 (4) — **P1 khởi động: `upload.lua` — soi TÊN FILE upload. Trọng số 0.**
   - **Vì sao P1 KHÔNG phải "đi từ 0 lên có", và đây là điều đáng ghi nhất:** `body_core.scan` đã có `php` (thân chứa `<?php`/`<?=`) và nó **đã** là tín hiệu **trọng số 50** (`waf_body_php`). Nên webshell PHP thuần **đã** bị bắt từ 05-09. Việc của P1 là bịt các đường mà `<?php` **không** xuất hiện: `.htaccess` với `AddType … .jpg` (không có thẻ mở PHP, `waf_body_php` mù hoàn toàn), và đuôi kép `x.php.jpg`. Hai đường đó là lý do P1 tồn tại — không phải "thêm mẫu cho chắc".
   - **Ba luật:** `upload_exec_ext` (đuôi chạy được ở cuối), `upload_exec_double` (đuôi chạy được **không** ở cuối — Apache `AddHandler` ánh xạ theo **bất kỳ** đuôi trong tên, nên `x.php.jpg` chạy như PHP trên cấu hình mặc định của nhiều bản), `upload_config` (`.htaccess` `.user.ini` `php.ini` `web.config`).
