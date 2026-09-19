@@ -19,6 +19,12 @@ end
 -- `args.lua` uy quyen `check` xuong `body_core` — mot ban cai dat duy nhat cho
 -- ca query string lan than request, vi ban chay trong worker thread khong duoc
 -- dung `ngx.re`. Nen phai preload lõi truoc khi nap.
+-- `body_core` require `upload` (P1), nen phai preload CA HAI. Thieu cai thu hai
+-- thi `require` di tim theo `package.path` cua `resty` va bao "module not found"
+-- — hong ngay tu dong nap, truoc khi chay mot assertion nao.
+package.preload["antibot.waf.upload"] = function()
+    return dofile(SRC .. "waf/upload.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end

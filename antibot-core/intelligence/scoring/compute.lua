@@ -202,6 +202,23 @@ local DEFAULT_WEIGHTS = {
     -- `async-upload.php`, và họ đã được `auth_session_cap` che sẵn.
     waf_body_php        = 50,
 
+    -- waf_upload (P1): TEN FILE upload chay duoc tren server — `waf/upload.lua`.
+    --
+    -- TRONG SO 0 — CHE DO QUAN SAT. Cung khuon da dung cho `waf_arg` va
+    -- `waf_body_arg`, va la ly do `arg_null_byte` khong pha 43 domain: luat
+    -- chay, ghi log, KHONG cong diem cho toi khi co so lieu tu `waf.log`.
+    --
+    -- Tin hieu trong so 0 KHONG duoc co mat trong `waf_signal()` o
+    -- `antibot/init.lua`. Do la hop dong HAI CHIEU ma `waf/scripts/contract_test.lua`
+    -- gac: >0 thi PHAI co, ==0 thi KHONG DUOC co. Ngay nang khoi 0, chay `[3b]`
+    -- va cong se noi phai them gi.
+    --
+    -- Vi sao khong dat 50 ngay du `.php` gan nhu khong co ban sao hop le: dan so
+    -- chay qua luat nay la kho anh va tai lieu cua khach. Chua co MOT so do nao
+    -- tu dan may nay ve ten file upload — va "gan nhu khong co" la mot phong
+    -- doan, dung loai phong doan da sai 6 lan trong phien xay tang body.
+    waf_upload          = 0,
+
     fp_degraded_pen     = 0,
     -- `correlated_boost = 15` DA BI GO (2026-09-06): vong lap cham diem co mot
     -- nhanh `if name == "correlated_boost" then goto continue end` VO DIEU KIEN,
@@ -342,6 +359,10 @@ local function get_signal(name, ctx)
 
     if name == "waf_body_php" then
         return safe_val(ctx.waf_body_php)
+    end
+
+    if name == "waf_upload" then
+        return safe_val(ctx.waf_upload)
     end
 
     return 0.0

@@ -119,7 +119,13 @@ function _M.run_body(ctx)
     -- `scan ~= "ok"` cung la notable: mot lan KHONG SOI DUOC la thong tin, va
     -- lay mau no di thi ty le "chua soi" trong so lieu thap di 20 lan — dung
     -- luc con so do la thu quyet dinh co nen bat `thread_pool` hay khong.
+    -- `up_rule` (P1) cung KHONG sinh dong `[waf]` — dung ly do da ghi cho
+    -- `fn_rule` ngay tren: no la kenh rieng, khong tao `waf_hits`. Bo sot no o
+    -- day thi BODY_SAMPLE vut 19/20 luot upload ten file chay duoc, va so lieu
+    -- dung de quyet dinh co nang trong so khoi 0 se thap di 20 lan — tuc phep do
+    -- se noi "khong co gi" ve dung thu no duoc sinh ra de dem.
     local notable = b.php or b.arg_rule or b.fn_rule or b.fn_trunc or b.spill
+                 or b.up_rule
                  or (b.scan and b.scan ~= "ok")
     if not notable then
         body_seen = body_seen + 1
@@ -132,7 +138,7 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -241,6 +247,22 @@ function _M.run_body(ctx)
         -- co la dung nghia ma khong doc duoc. Nhoi 32 chuoi `filename=` gia vao
         -- noi dung file la mot duong ne tranh THAT, va cot nay lam no hien ra.
         (b.fn_trunc == nil) and "-" or (b.fn_trunc or "0"),
+        -- P1: rule_id cua ten file upload chay duoc, hoac `-`.
+        --
+        -- Ghi RULE_ID, TUYET DOI khong ghi ten file. Ten file do ke gui dieu
+        -- khien va thuc te co mang token, email, duong dan noi bo; `waf.log` la
+        -- file text giu 30 ngay. Cung ly do da khong ghi than request vao
+        -- `matched=`.
+        --
+        --     uprule=-                   khong phai multipart, khong co
+        --                                `filename=`, hoac da soi va sach
+        --     uprule=upload_exec_ext     duoi chay duoc o VI TRI CUOI
+        --     uprule=upload_exec_double  duoi chay duoc KHONG o cuoi (AddHandler)
+        --     uprule=upload_config       .htaccess / .user.ini / web.config
+        --
+        -- Doc KEM `fntr=`: `uprule=- fntr=spill` nghia la CHUA SOI, khong phai
+        -- sach. Gop hai cai lai la dung loi da cat 4 thang o `wp_paths.mark()`.
+        b.up_rule or "-",
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --

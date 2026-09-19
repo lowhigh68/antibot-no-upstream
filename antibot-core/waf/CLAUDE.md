@@ -37,6 +37,7 @@ Tín hiệu WAF phá được `verified`, **không phá được `whitelisted`**
 | `exposed.lua` | 2 luật, cả hai `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed` | access |
 | `wp_paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
 | `args.lua` | 3 luật `signal` soi **query string**: `arg_traversal`, `arg_php_wrapper`, `arg_null_byte` | access |
+| `upload.lua` | **P1** — 3 luật `signal` soi **TÊN FILE** upload: `upload_exec_ext`, `upload_exec_double`, `upload_config`. Lua thuần (chạy trong worker thread) | access |
 | `body.lua` | **Giai đoạn 1 — chỉ quan sát, KHÔNG luật nào bắn.** Đọc body an toàn, điền `ctx.waf_body` | access |
 | `scripts/fim.sh` | **Nửa ngoài-request của tầng này.** Cron, giám sát toàn vẹn file | ngoài request |
 | `scripts/wp_paths_test.lua` + `run.sh` | 72 assertion. `deploy.sh` bước `[3b]` gác trên nó | build |
@@ -542,6 +543,173 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Dưới:** `intelligence/scoring/compute.lua` (`waf_wp_path` trọng số 50), `enforcement/decision/engine.lua` (ba tầng tin cậy quyết định thật)
 - **Bên cạnh:** `async/waf_logger.lua`
 
+## `upload.lua` — P1: soi TEN FILE upload
+
+**Câu hỏi khác hẳn phần còn lại của tầng.** `args.lua` hỏi *"giá trị này có chứa
+mẫu tấn công không"*. `upload.lua` hỏi *"file này, nếu đáp xuống đĩa và có ai gọi
+URL của nó, thì **server** có chạy nó không"*. Câu thứ hai không nhìn mẫu nào —
+nó nhìn **phần mở rộng** và cách Apache/PHP-FPM ánh xạ đuôi sang handler.
+
+### Vì sao P1 KHÔNG phải "đi từ 0 lên có"
+
+`body_core.scan` đã có `php` = thân chứa `<?php`/`<?=`, và nó **đã** là tín hiệu
+trọng số 50 (`waf_body_php`). Việc của P1 là bịt các đường mà `<?php` **không**
+xuất hiện:
+
+| Đường lọt | `waf_body_php` bắt? | P1 |
+|---|---|---|
+| `shell.php` chứa `<?php` | **có** (50đ) | cộng thêm "đuôi chạy được" |
+| `shell.phtml` / `.php5` / `.phar` | **có** | cộng thêm |
+| `x.php.jpg` (đuôi kép) | tuỳ nội dung | **bắt được tên** |
+| `.htaccess` với `AddType … .jpg` | **KHÔNG** — không có `<?php` | **chỉ P1** |
+| Polyglot `GIF89a` + PHP | **có** | — |
+
+Hai dòng cuối là lý do P1 tồn tại. Không phải "thêm mẫu cho chắc".
+
+### Ba luật
+
+| rule_id | Bắt gì |
+|---|---|
+| `upload_exec_ext` | Đuôi chạy được ở **vị trí cuối** — `shell.php` |
+| `upload_exec_double` | Đuôi chạy được **không** ở cuối — `x.php.jpg` |
+| `upload_config` | `.htaccess` `.htpasswd` `.user.ini` `php.ini` `web.config` |
+
+**`upload_exec_double` không phải hoang tưởng.** Apache với `AddHandler` (không
+phải `SetHandler`) ánh xạ theo **bất kỳ** đuôi trong tên, không chỉ đuôi cuối —
+`x.php.jpg` chạy như PHP trên cấu hình mặc định của nhiều bản. Đây là một trong
+những đường upload webshell phổ biến nhất và **không** đòi hỏi lỗi nào khác.
+
+### Ba lớp chuẩn hoá, mỗi lớp đóng một đường né đã biết
+
+```
+basename()    lấy thành phần cuối — CẢ `/` lẫn `\`, vì PHP trên Linux coi `\`
+              là ký tự tên file bình thường nên `a\b.php` LÀ đuôi `.php`
+strip_tail()  cắt `::$DATA` (NTFS ADS), byte NUL, khoảng trắng/dấu chấm cuối —
+              Apache vẫn ánh xạ `shell.php.` và `shell.php ` sang PHP
+extensions()  duyệt PHẢI→TRÁI, tối đa 6 đuôi
+```
+
+Bỏ `strip_tail` thì **4** đường né mở ra cùng lúc (đã thử phá, test đỏ 4 dòng).
+
+### Bảng đuôi HẸP có chủ ý — và ba đuôi cố ý KHÔNG có
+
+`.inc` **không** vào bảng: nó không được ánh xạ sang PHP handler theo mặc định;
+nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện.
+Đưa vào là bắn oan mọi file `.inc` của theme thật. `.html`/`.htm` không chạy trên
+server. `.svg` — xem mục riêng dưới.
+
+**`contract_test` [28] gác chính ba cái này**, vì thêm một dòng vào bảng Lua thì
+rất dễ, và người thêm sẽ không đọc file này trước.
+
+### Trọng số 0 — chế độ quan sát
+
+Cùng khuôn `waf_arg`/`waf_body_arg`, và là lý do `arg_null_byte` không phá 43
+domain: luật chạy, ghi log, **không cộng điểm** cho tới khi có số liệu.
+
+Chưa có **một** số đo nào từ dàn máy này về tên file upload. `.php` "gần như
+không có bản sao hợp lệ" là một **phỏng đoán** — đúng loại phỏng đoán đã sai 6
+lần trong phiên xây tầng body. Dân số chạy qua luật này là kho ảnh và tài liệu
+của khách.
+
+**Cổng vào để nâng khỏi 0:** đọc `uprule=` trong `waf.log` vài ngày.
+
+### `up_rule` là KÊNH RIÊNG, không tranh chỗ `return` với `arg_rule`
+
+`filename="shell.php"` **không** khớp mẫu nào của `check_args` — không `..`,
+không `php://`, không `%00`. Gộp hai kết quả vào một đường `return` làm P1 biến
+mất ở đúng nhóm nó sinh ra để bắt. Ngược lại `filename="../../x.php"` khớp **cả
+hai**, và lúc đó ta muốn cả hai số đếm.
+
+**`up_rule` đi qua 4 chặng, mỗi chặng có nhiều `return` sớm:**
+
+```
+scan_disposition_headers → scan_one_boundary → filename_rule → scan
+```
+
+Bỏ sót **một** `return` thì tín hiệu mất **trong im lặng** ở đúng nhóm đó — ví dụ
+tràn `MAX_PARTS`: một upload 70 phần có `shell.php` ở phần thứ 3 thoát qua nhánh
+`n` và báo cáo "không có gì". **`contract_test` [27a]** đòi mọi `return` trong
+`scan_one_boundary` có đúng 3 giá trị.
+
+### `pack`/`unpack` — V2 → V3, và vì sao phải nâng phiên bản
+
+`unpack` gác bằng `#f ~= <số trường>`. Thêm một trường mà quên nâng phiên bản
+thì một bản `pack` mới gặp `unpack` cũ trả `bad_payload` — **trong im lặng**, và
+**chỉ** với thân **đã spill**, tức đúng nhóm upload lớn, nhóm đáng quan tâm nhất.
+Đổi phiên bản làm sự không khớp đó **có tên**. **`contract_test` [27c]** so cả
+phiên bản lẫn số trường.
+
+### `uprule=` trong waf.log
+
+Ghi **rule_id**, tuyệt đối **không** ghi tên file — tên file do kẻ gửi điều khiển
+và thực tế có mang token, email, đường dẫn nội bộ; `waf.log` là file text giữ 30
+ngày. Cùng lý do đã không ghi thân request vào `matched=`.
+
+`up_rule` cũng vào cổng `notable` của `waf_logger`: nó **không** sinh dòng
+`[waf]` (kênh riêng, không tạo `waf_hits`), nên `BODY_SAMPLE` sẽ vứt 19/20 lượt
+— phép đo sẽ nói "không có gì" về đúng thứ nó được sinh ra để đếm.
+
+**Đọc kèm `fntr=`:** `uprule=- fntr=spill` nghĩa là **chưa soi**, không phải
+sạch. Gộp hai cái lại là đúng lỗi đã cắt 4 tháng ở `wp_paths.mark()`.
+
+### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
+
+`.svg` **không** nằm trong bảng đuôi của P1. Không phải vì nó vô hại — ngược lại
+— mà vì nó là loại nguy hiểm **khác**, nên cả ngưỡng FP lẫn chỗ chữa đều khác.
+
+| | Webshell `.php` | `.svg` |
+|---|---|---|
+| Chạy ở đâu | **server**, trong tiến trình PHP | **trình duyệt** nạn nhân |
+| Là gì | RCE | XSS khi phục vụ trực tiếp |
+| Bản sao hợp lệ trong upload của khách | gần như không có | **logo, icon — có thật, nhiều** |
+| Chữa bằng WAF được không | được, chặn lúc upload | **không** — xem dưới |
+
+SVG là XML nên mang được `<script>`, `on*=`, `<foreignObject>`,
+`<use href="data:…">`, `xlink:href="javascript:…"`, `<style>` kèm `@import`.
+Blocklist thẻ/thuộc tính **luôn thua**; phải allowlist (bản làm đúng: SVG
+Sanitizer của DOMPurify).
+
+**Bốn lớp phòng vệ, xếp theo sức mạnh thật — không theo thứ tự hay được nhắc:**
+
+1. **Sanitize lúc upload** — biện pháp gốc, xử lý nguyên nhân.
+2. **Phục vụ từ origin KHÔNG dùng chung cookie** — mạnh nhất trong các lớp
+   *không* cần sửa file, vì nó vô hiệu hoá **hậu quả** thay vì đoán trước
+   payload: script có chạy cũng không đọc được cookie phiên, không gọi được API
+   dưới danh nghĩa nạn nhân. Cùng nguyên lý `googleusercontent.com` tồn tại.
+3. **Chỉ nhúng bằng `<img>`** — trong `<img>` thì script trong SVG **không chạy**
+   (chế độ non-animated/non-interactive của spec). Nhưng nó **chỉ bảo vệ trang
+   nhúng**; mở thẳng `/wp-content/uploads/x.svg` thì vô tác dụng, mà WordPress
+   cho mở thẳng.
+4. **CSP** — **yếu nhất, và hay bị tưởng là mạnh nhất.** Lý do không phải CSP
+   dở, mà là nó **không áp dụng được vào đúng ca đáng lo**: `Content-Security-Policy`
+   là response header của **tài liệu**, còn khi nạn nhân mở thẳng URL thì tài
+   liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. CSP chỉ có
+   tác dụng nếu gắn lên **chính response phục vụ file upload**, tức việc của
+   nginx.
+
+**Rẻ hơn cả ba lớp trên, và chưa ai nhắc: `Content-Disposition: attachment`.**
+Mở thẳng URL thì tải về chứ không render; `<img>` vẫn nhúng bình thường. Trên
+dàn 74 domain đây là tỉ lệ phòng-vệ/chi-phí tốt nhất vì **không cần sửa gì trong
+WordPress của khách**:
+
+```nginx
+location ~* /wp-content/uploads/.*\.svg$ {
+    add_header Content-Disposition "attachment" always;
+    add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'" always;
+    add_header X-Content-Type-Options nosniff always;
+}
+```
+
+**Vì sao đây KHÔNG phải việc của tầng WAF.** Cả bốn lớp đều là **cấu hình phục
+vụ file**, không phải luật soi request. Một luật WAF chặn upload `.svg` sẽ chặn
+đúng thứ khách hàng làm hợp lệ hàng ngày (logo, icon) để đổi lấy việc **không**
+bảo vệ được các file SVG **đã nằm trên đĩa từ trước** — tức trả giá FP cao nhất
+cho vùng phủ nhỏ nhất. Đó là hình dạng của một luật sai chỗ.
+
+**Trạng thái: hạng mục riêng, chưa làm, không thuộc P1.** Cổng vào là số đo —
+bao nhiêu `.svg` thật đang được upload và phục vụ trên dàn máy, để biết đặt
+`Content-Disposition` có phá giao diện site nào không.
+
 ## Trạng thái tầng WAF — đo bằng code, không đọc bảng kế hoạch
 
 **Bảng này đo lại được. Đừng tin nó, chạy lại lệnh ở cột cuối.**
@@ -560,7 +728,7 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
 | T — test | **một phần** | `scripts/*.lua` 3.059 dòng test / 1.823 dòng mã. Cổng `deploy.sh [3b]` |
 | P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
-| P1 — chặn upload webshell | **chưa** | multipart đã parse được (`body_core`: header phần theo boundary, chuẩn hoá `filename`, `fn_rule`), chưa có luật nào chặn |
+| P1 — chặn upload webshell | **một phần** | `upload.lua` — 3 luật tên file, **trọng số 0**. Đuôi chạy được, đuôi kép (`AddHandler`), file cấu hình. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
 | F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
 | A — admin UI cho WAF | **chưa** | `admin/init.lua` chưa có trang nào của tầng này |
 
@@ -591,6 +759,23 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-19 (4) — **P1 khởi động: `upload.lua` — soi TÊN FILE upload. Trọng số 0.**
+  - **Vì sao P1 KHÔNG phải "đi từ 0 lên có", và đây là điều đáng ghi nhất:** `body_core.scan` đã có `php` (thân chứa `<?php`/`<?=`) và nó **đã** là tín hiệu **trọng số 50** (`waf_body_php`). Nên webshell PHP thuần **đã** bị bắt từ 05-09. Việc của P1 là bịt các đường mà `<?php` **không** xuất hiện: `.htaccess` với `AddType … .jpg` (không có thẻ mở PHP, `waf_body_php` mù hoàn toàn), và đuôi kép `x.php.jpg`. Hai đường đó là lý do P1 tồn tại — không phải "thêm mẫu cho chắc".
+  - **Ba luật:** `upload_exec_ext` (đuôi chạy được ở cuối), `upload_exec_double` (đuôi chạy được **không** ở cuối — Apache `AddHandler` ánh xạ theo **bất kỳ** đuôi trong tên, nên `x.php.jpg` chạy như PHP trên cấu hình mặc định của nhiều bản), `upload_config` (`.htaccess` `.user.ini` `php.ini` `web.config`).
+  - **Ba lớp chuẩn hoá, mỗi lớp đóng một đường né đã biết:** `basename` (cả `/` lẫn `\` — PHP trên Linux coi `\` là ký tự tên file bình thường nên `a\b.php` **là** đuôi `.php`), `strip_tail` (`::$DATA` NTFS ADS, byte NUL, khoảng trắng/dấu chấm cuối — Apache vẫn ánh xạ `shell.php.` sang PHP), `extensions` phải→trái tối đa 6. **Thử phá: bỏ `strip_tail` ⇒ 4 đường né mở cùng lúc, test đỏ đúng 4 dòng.**
+  - **Bảng đuôi HẸP có chủ ý, và ba đuôi cố ý KHÔNG có.** `.inc` không được ánh xạ sang PHP handler mặc định — nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện; đưa vào là bắn oan mọi file `.inc` của theme thật. `.html`/`.htm` không chạy trên server. `.svg` xử lý riêng.
+  - **`.svg` tách khỏi P1 — quyết định, không phải bỏ sót.** Nó là loại nguy hiểm **khác**: chạy ở trình duyệt nạn nhân (XSS), không ở server (RCE). Và khác ở chỗ đắt nhất: **khách upload logo/icon SVG thật, hàng ngày**. Một luật chặn `.svg` lúc upload sẽ chặn đúng việc đó, để đổi lấy việc **không** bảo vệ được các file SVG đã nằm trên đĩa từ trước — trả giá FP cao nhất cho vùng phủ nhỏ nhất. Bốn lớp phòng vệ xếp theo sức mạnh thật đã ghi trong mục riêng; **một đính chính đáng chú ý: CSP là lớp YẾU nhất**, không vì nó dở mà vì `Content-Security-Policy` là header của **tài liệu**, còn khi nạn nhân mở thẳng `/uploads/x.svg` thì tài liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. Muốn CSP có tác dụng phải gắn lên **chính response phục vụ file upload**, tức việc của nginx. Rẻ hơn cả ba lớp trên và chưa ai nhắc: `Content-Disposition: attachment`.
+  - **`up_rule` là KÊNH RIÊNG, không tranh chỗ `return` với `arg_rule`.** `filename="shell.php"` **không** khớp mẫu nào của `check_args` — không `..`, không `php://`, không `%00` — nên gộp hai kết quả vào một `return` làm P1 biến mất ở đúng nhóm nó sinh ra để bắt. Ngược lại `filename="../../x.php"` khớp **cả hai** và lúc đó muốn cả hai số đếm.
+  - **Chỗ hỏng-trong-im-lặng phải gác, và đã gác: `up_rule` đi qua 4 chặng** (`scan_disposition_headers` → `scan_one_boundary` → `filename_rule` → `scan`), mỗi chặng nhiều `return` sớm. Bỏ sót **một** cái thì tín hiệu mất im lặng ở đúng nhóm đó — tràn `MAX_PARTS` là ví dụ cụ thể: upload 70 phần có `shell.php` ở phần 3 thoát qua nhánh `n` và báo "không có gì". Đúng khuôn lỗi đã cắt 4 tháng của `wp_paths.mark()`. **`contract_test` [27a]** đòi mọi `return` trong `scan_one_boundary` có đúng 3 giá trị.
+  - **`pack`/`unpack` nâng V2 → V3.** `unpack` gác bằng `#f ~= <số trường>`, nên thêm trường mà quên nâng phiên bản thì `pack` mới gặp `unpack` cũ trả `bad_payload` **im lặng**, và **chỉ** với thân **đã spill** — tức đúng nhóm upload lớn. Đổi phiên bản làm sự không khớp đó **có tên**. **[27c]** so cả phiên bản lẫn số trường (đếm `enc(` trong `pack`).
+  - **`up_rule` vào cổng `notable` của `waf_logger`** — nó **không** sinh dòng `[waf]` (kênh riêng, không tạo `waf_hits`), nên thiếu bước này thì `BODY_SAMPLE` vứt 19/20 lượt và phép đo sẽ nói "không có gì" về đúng thứ nó sinh ra để đếm. Cùng lý do đã ghi cho `fn_rule`.
+  - **Cột `uprule=` ghi RULE_ID, tuyệt đối không ghi tên file** — tên file do kẻ gửi điều khiển và thực tế mang token, email, đường dẫn nội bộ; `waf.log` là file text giữ 30 ngày. Cùng lý do đã không ghi thân request vào `matched=`. Đọc kèm `fntr=`: `uprule=- fntr=spill` là **chưa soi**, không phải sạch.
+  - **Trọng số 0, và lần này nói rõ vì sao không đặt 50 ngay.** `.php` "gần như không có bản sao hợp lệ" là một **phỏng đoán** — đúng loại đã sai 6 lần trong phiên xây tầng body. Dân số chạy qua luật này là **kho ảnh và tài liệu của khách**. Chưa có một số đo nào từ dàn máy này về tên file upload. Cổng vào: đọc `uprule=` vài ngày.
+  - **Hai bộ test preload thiếu module là lỗi sẽ chặn deploy — đã vá trước khi đẩy.** `body_core` nay `require "antibot.waf.upload"`, nên `body_test.lua` và `args_test.lua` (cả hai preload `body_core` bằng `dofile`) sẽ hỏng **ngay từ lúc nạp**, trước một assertion nào. Đúng họ lỗi đã chặn bản 19-09 ở cổng `[3b]`.
+  - **`contract_test` [28] gác bảng đuôi:** `svg`/`inc`/`html`/`htm` **không được** nằm trong `EXEC_EXT`. Thêm một dòng vào bảng Lua thì rất dễ, và người thêm sẽ không đọc `CLAUDE.md` trước.
+  - **Thử phá — 4 phép, 4 lần đỏ đúng chỗ:** (a) bỏ `up_rule` ở `return` của nhánh `MAX_PARTS` ⇒ [27a] đỏ; (b) `pack` V3 + `unpack` V2 ⇒ [27c] đỏ; (c) thêm trường vào `pack` mà quên sửa `#f` ⇒ [27c] đỏ với số trường cụ thể; (d) nhét `svg` vào `EXEC_EXT` ⇒ [28] đỏ. Thêm 5 phép phá trên chính `upload.lua` (bỏ `strip_tail`/`basename`/vòng đuôi kép, mở rộng bảng quá mức) ⇒ đều đỏ. **Bộ test 55 assertion mô phỏng chạy được tại chỗ bằng perl** vì máy dev không có Lua.
+  - **Chưa chạy trên `resty`.** `luacheck.pl` 131/131 và `luabal.pl` 131/131 đều 0 lỗi, nhưng đó là kiểm **tĩnh**. Cổng thật là `deploy.sh [3b]` trên máy có OpenResty.
+  - **Một chú thích sai tự bắt được lúc viết:** bản đầu của `upload.lua` ghi "đã kiểm `AddHandler` trên `/usr/local/apache2/conf` của dàn máy này" — **chưa hề**. Đã thay bằng lời thừa nhận chưa kiểm + lệnh `grep` cụ thể để kiểm trước khi nâng trọng số. Chú thích khẳng định một phép đo chưa làm là đúng loại câu làm người đọc sau tin sai.
 - 2026-09-19 (3) — **Trạng thái tầng WAF ghi lại theo số đo của mã, vì bảng kế hoạch đã sai về chính mình.**
   - **Lỗi được sửa:** bản lộ trình khai `F1a`/`F1b` là *chưa làm*. Chúng đã chạy từ 05-09: `body.lua` 149 dòng gọi từ `init.lua:111`, luật áp lên thân ở `init.lua:137`, spill qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io`. **801 dòng đang chạy trên 5 máy** bị khai là chưa tồn tại.
   - **Nguyên nhân, và vì sao nó không phải chuyện bất cẩn:** tôi đọc hết 1.504 dòng lộ trình rồi tin **bảng trạng thái bên trong nó** thay vì `grep` mã nguồn. Cùng một họ lỗi với `ctx.xf_over`, `h2=`/`tls13=`, `ctx.ip_shared`, `ja3=` — *"không đọc được" bị thu thành "đã đọc và câu trả lời là X"*. Lần này nguồn không phải một cột log mà là một tài liệu; cơ chế y hệt. **Lần thứ năm.**

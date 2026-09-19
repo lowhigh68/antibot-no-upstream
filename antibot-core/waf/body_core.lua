@@ -22,6 +22,11 @@ local _M = {}
 -- nen `%50hp%3A%2F%2Finput` giai ra `Php://input` va KHONG khop mau chu thuong.
 -- Mot bypass co that, chi vi hai ban cai dat.
 
+-- P1: bang duoi chay duoc + ten file cau hinh. File RIENG vi no tra loi mot cau
+-- KHAC — "server co chay file nay khong" — chu khong phai "gia tri nay co chua
+-- mau tan cong khong". Cung phai la Lua thuan, cung ly do da ghi o dau file.
+local upload = require "antibot.waf.upload"
+
 local MAX_PARTS   = 64     -- so phan multipart soi toi da
 local MAX_HDR_LEN = 2048   -- do dai vung header cua MOT phan
 local MAX_FN_LEN  = 512    -- nguong BAO CAO cho mot gia tri ten file
@@ -378,8 +383,21 @@ local function filename_variants(p)
     return values
 end
 
+-- Tra ve `arg_rule, status, up_rule`.
+--
+-- `up_rule` la KENH RIENG, khong tranh cho `return` voi `arg_rule`. Cung lap
+-- luan da tach `waf_arg` khoi `waf_wp_path`: hai cau hoi khac nhau ve cung mot
+-- byte. `check_args` hoi "gia tri nay co chua mau tan cong khong";
+-- `upload.check_filename` hoi "server co chay file nay khong". Mot
+-- `filename="shell.php"` KHONG chua mau nao cua `check_args` — khong `..`,
+-- khong `php://`, khong `%00` — nen gop hai ket qua vao mot duong `return` la
+-- lam P1 bien mat o dung nhom no sinh ra de bat.
+--
+-- Nguoc lai, `filename="../../x.php"` khop CA HAI, va luc do ta muon CA HAI so
+-- dem, khong phai mot.
 local function scan_disposition_headers(head, status)
     local lines = unfolded_header_lines(head)
+    local up_rule = nil
     for i = 1, #lines do
         local line = lines[i]
         local colon = line:find(":", 1, true)
@@ -397,14 +415,20 @@ local function scan_disposition_headers(head, status)
                         -- Cat o 512 roi moi kiem — cai ban truoc lam — la de ke
                         -- tan cong don 512 byte cho traversal nam ra ngoai.
                         if #v > MAX_FN_LEN then status = worse(status, "len") end
+                        -- P1 chay TRUOC va KHONG `return`: neu no `return`
+                        -- thi `arg_rule` mat o moi ten file chay duoc, va do la
+                        -- nhom co ca hai bang chung.
+                        if not up_rule then
+                            up_rule = upload.check_filename(v)
+                        end
                         local rule = check_args(v, false, false)
-                        if rule then return rule, worse(status, "stop") end
+                        if rule then return rule, worse(status, "stop"), up_rule end
                     end
                 end
             end
         end
     end
-    return nil, status
+    return nil, status, up_rule
 end
 
 -- Tra ve `vi_tri_ket_thuc_header, da_bi_cat`.
@@ -428,18 +452,25 @@ local function header_separator(body, hs, next_boundary)
     return math.min(cap, #body + 1), true
 end
 
+-- Tra ve `arg_rule, status, up_rule`.
+--
+-- MOI LOI RA phai mang theo `up_rule`. Bo sot mot cai thi P1 mat tin hieu TRONG
+-- IM LANG o dung nhom do — vd tran `MAX_PARTS`: mot upload 70 phan trong do
+-- phan thu 3 la `shell.php` se thoat o nhanh `n` va bao cao "khong co gi". Do la
+-- khuon loi da cat 4 thang cua `wp_paths.mark()`.
 local function scan_one_boundary(body, boundary, initial_status)
     local delim = "--" .. boundary
     local status = initial_status or false
+    local up_rule = nil
     local kind, at, after = next_delimiter(body, 1, delim)
-    if not kind then return nil, worse(status, "bd") end
+    if not kind then return nil, worse(status, "bd"), nil end
 
     local nparts, saw_open = 0, false
     while kind do
         -- Kiem `close` TRUOC tran. Dau dong ket thuc khong phai mot phan, va
         -- dem no vao lam upload dung 64 file bi gan `n` — mot "khong biet" gia.
-        if kind == "close" then return nil, status end
-        if nparts >= MAX_PARTS then return nil, worse(status, "n") end
+        if kind == "close" then return nil, status, up_rule end
+        if nparts >= MAX_PARTS then return nil, worse(status, "n"), up_rule end
         nparts, saw_open = nparts + 1, true
 
         -- Tim dau phan cach ke tiep tu DAU vung header, khong tu cuoi no: cai
@@ -449,29 +480,35 @@ local function scan_one_boundary(body, boundary, initial_status)
         local he, capped = header_separator(body, after, next_at)
         if capped then status = worse(status, "hdr") end
 
-        local rule
-        rule, status = scan_disposition_headers(body:sub(after, he - 1), status)
-        if rule then return rule, status end
+        local rule, part_up
+        rule, status, part_up = scan_disposition_headers(body:sub(after, he - 1), status)
+        -- Giu lan khop DAU: mot upload nhieu phan thi phan dau tien chay duoc la
+        -- du de ghi log, va giu cai dau cho so dem on dinh giua cac lan chay.
+        if part_up and not up_rule then up_rule = part_up end
+        if rule then return rule, status, up_rule end
 
         kind, at, after = next_kind, next_at, next_after
     end
 
     if saw_open then status = worse(status, "ending") end
-    return nil, status
+    return nil, status, up_rule
 end
 
+-- Tra ve `fn_rule, status, up_rule`.
 local function filename_rule(body, family, ct)
-    if family ~= "multipart" then return nil, nil end
+    if family ~= "multipart" then return nil, nil, nil end
     local boundaries, status = boundaries_of(ct)
-    if #boundaries == 0 then return nil, status end
+    if #boundaries == 0 then return nil, status, nil end
 
     local combined = status or false
+    local up_rule = nil
     for i = 1, #boundaries do
-        local rule, st = scan_one_boundary(body, boundaries[i], combined)
+        local rule, st, up = scan_one_boundary(body, boundaries[i], combined)
         combined = worse(combined, st)
-        if rule then return rule, combined end
+        if up and not up_rule then up_rule = up end
+        if rule then return rule, combined, up_rule end
     end
-    return nil, combined
+    return nil, combined, up_rule
 end
 
 -- Dem `&` thay vi `get_post_args()`: ham do CAT O 100 va khong bao gi, ma 500
@@ -509,7 +546,7 @@ function _M.scan(body, ct)
     local low    = body:lower()
     local arg_rule, at = check_args_lower(low, family == "urlencoded",
                                           family == "multipart" or family == "other")
-    local fn_rule, fn_trunc = filename_rule(body, family, ct)
+    local fn_rule, fn_trunc, up_rule = filename_rule(body, family, ct)
 
     return {
         family = family,
@@ -525,6 +562,12 @@ function _M.scan(body, ct)
         fnm      = legacy_fnm(body, family, at),
         fn_rule  = fn_rule,
         fn_trunc = fn_trunc,
+        -- P1. `nil` gop BA truong hop: khong phai multipart, khong co
+        -- `filename=` nao, hoac da soi va khong co duoi chay duoc. Ba nguyen
+        -- nhan nhung CUNG mot ket luan "khong co gi de bao", nen mot gia tri la
+        -- du. Khac han `php`, noi `nil` = CHUA SOI va la mot y nghia thu ba thuc
+        -- su — dung cho `waf_body_php` phai so `== true`.
+        up_rule  = up_rule,
     }
 end
 
@@ -540,9 +583,14 @@ local function enc(v)
 end
 
 function _M.pack(r)
+    -- V3 them `up_rule` (P1). PHAI nang phien ban khi them truong: `unpack` gac
+    -- bang `#f ~= <so truong>`, nen mot ban `pack` moi gap mot ban `unpack` cu se
+    -- tra `bad_payload` — TRONG IM LANG, va chi voi than DA SPILL, tuc dung nhom
+    -- upload lon. Doi phien ban lam cho su khong khop do CO TEN.
     return table.concat({
-        "V2", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
+        "V3", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
         enc(r.arg_rule), enc(r.fnm), enc(r.fn_rule), enc(r.fn_trunc), enc(r.scan),
+        enc(r.up_rule),
     }, SEP)
 end
 
@@ -579,7 +627,7 @@ function _M.unpack(payload)
     if type(payload) ~= "string" then return nil, "bad_payload" end
     local f = split(payload)
     if f[1] == "E"  then return nil, f[2] or "worker", tonumber(f[3]) end
-    if f[1] ~= "V2" or #f ~= 10 then return nil, "bad_payload" end
+    if f[1] ~= "V3" or #f ~= 11 then return nil, "bad_payload" end
     return {
         family   = dec(f[2]),
         len      = tonumber(f[3]),
@@ -590,6 +638,7 @@ function _M.unpack(payload)
         fn_rule  = dec(f[8]),
         fn_trunc = dec_stat(f[9]),
         scan     = dec(f[10]) or "ok",
+        up_rule  = dec(f[11]),
     }
 end
 

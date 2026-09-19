@@ -38,4 +38,8 @@ echo
 echo "── body ──────────────────────────────────────────────"
 "$RESTY" "$HERE/body_test.lua" || rc=1
 
+echo
+echo "── upload (P1) ───────────────────────────────────────"
+"$RESTY" "$HERE/upload_test.lua" || rc=1
+
 exit $rc

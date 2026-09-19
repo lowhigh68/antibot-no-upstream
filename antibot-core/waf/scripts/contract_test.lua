@@ -1999,5 +1999,132 @@ do
         if bad_n == 0 then pass = pass + 1 end
     end
 end
+
+-- ── 27. P1: `up_rule` phai di TRON duong, va `pack`/`unpack` cung phien ban ──
+--
+-- VI SAO CAN MOT MUC RIENG du [1]/[1b]/[2] da gac trong so. Ba muc do gac
+-- `waf_upload` o TANG TIN HIEU (DEFAULT_WEIGHTS <-> get_signal <-> waf_signal).
+-- Chung khong thay duoc doan duong TRUOC do: `up_rule` phai chay qua BON chang
+--
+--     scan_disposition_headers -> scan_one_boundary -> filename_rule -> scan
+--
+-- va moi chang co nhieu loi `return` som. Bo sot MOT `return` thi tin hieu mat
+-- TRONG IM LANG o dung nhom do — vi du tran `MAX_PARTS`: mot upload 70 phan co
+-- `shell.php` o phan thu 3 thoat qua nhanh `n` va bao cao "khong co gi".
+--
+-- Do dung la khuon loi da cat 4 thang cua `wp_paths.mark()`, va la ho loi da
+-- bat 5 lan trong dan nay (xem muc [25]).
+io.write("\nhop dong: [27] P1 — up_rule di tron duong\n")
+do
+    local core = slurp(SRC .. "waf/body_core.lua")
+    if not core then
+        bad("  SAI  [27] khong doc duoc body_core.lua\n")
+    else
+        local code = core:gsub("%-%-[^\n]*", "")
+
+        -- 27a. Moi `return` trong `scan_one_boundary` phai co 3 gia tri.
+        -- Ham nay tra `rule, status, up_rule`; mot `return nil, status` con sot
+        -- lai la mot loi ra danh roi P1.
+        local fn = code:match("local function scan_one_boundary.-\nend")
+        if not fn then
+            bad("  SAI  [27a] khong tim thay `scan_one_boundary`\n")
+        else
+            local bad_n = 0
+            for ret in fn:gmatch("return ([^\n]+)") do
+                -- dem dau phay o muc ngoac 0
+                local depth, commas = 0, 0
+                for ch in ret:gmatch(".") do
+                    if ch == "(" then depth = depth + 1
+                    elseif ch == ")" then depth = depth - 1
+                    elseif ch == "," and depth == 0 then commas = commas + 1 end
+                end
+                if commas ~= 2 then
+                    bad_n = bad_n + 1
+                    bad("  SAI  [27a] `scan_one_boundary` co `return %s`\n" ..
+                        "       => %d gia tri, phai la 3 (rule, status, up_rule).\n" ..
+                        "       Mot loi ra danh roi up_rule lam P1 mat tin hieu IM LANG.\n",
+                        ret, commas + 1)
+                end
+            end
+            if bad_n == 0 then pass = pass + 1 end
+        end
+
+        -- 27b. `scan()` phai dat `up_rule` vao bang tra ve.
+        local scanfn = code:match("function _M%.scan%b()(.-)\nend")
+        if not scanfn then
+            bad("  SAI  [27b] khong tim thay `_M.scan`\n")
+        elseif not scanfn:find("up_rule%s*=%s*up_rule") then
+            bad("  SAI  [27b] `_M.scan` khong dat `up_rule` vao bang tra ve\n" ..
+                "       => luat chay nhung ket qua khong ra khoi ham.\n")
+        else
+            pass = pass + 1
+        end
+
+        -- 27c. `pack` va `unpack` phai cung phien ban VA cung so truong.
+        -- Day la cho hong AM THAM nhat cua P1: `unpack` gac bang `#f ~= <n>`,
+        -- nen lech mot truong thi than DA SPILL tra `bad_payload` — tuc dung
+        -- nhom upload lon, nhom dang quan tam nhat, im lang bien mat.
+        local pv = code:match('table%.concat%(%s*{%s*"(V%d+)"')
+        local uv, un = code:match('f%[1%] ~= "(V%d+)" or #f ~= (%d+)')
+        if not pv or not uv then
+            bad("  SAI  [27c] khong doc duoc phien ban pack/unpack\n")
+        elseif pv ~= uv then
+            bad("  SAI  [27c] `pack` ghi %s nhung `unpack` cho %s\n" ..
+                "       => moi than spill tra `bad_payload`, IM LANG.\n", pv, uv)
+        else
+            -- dem so `enc(` trong pack, so sanh voi #f cua unpack
+            local packfn = code:match("function _M%.pack%b()(.-)\nend")
+            local nenc = 0
+            for _ in packfn:gmatch("enc%(") do nenc = nenc + 1 end
+            -- +1 cho chinh chuoi phien ban
+            if nenc + 1 ~= tonumber(un) then
+                bad("  SAI  [27c] `pack` ghi %d truong (ke ca %s) nhung `unpack` " ..
+                    "cho #f == %s\n       => lech mot truong la `bad_payload` " ..
+                    "tren moi than spill.\n", nenc + 1, pv, un)
+            else
+                pass = pass + 1
+            end
+        end
+    end
+end
+
+-- ── 28. `.svg` KHONG duoc nam trong bang duoi chay duoc cua P1 ──────────────
+--
+-- Quyet dinh 19-09: `.svg` xu ly RIENG, khong o P1. Khong phai vi vo hai —
+-- nguoc lai — ma vi no la loai nguy hiem KHAC: chay o trinh duyet nan nhan
+-- (XSS), khong chay o server (RCE). Va khac quyet dinh o cho dat gia nhat:
+-- khach hang upload logo/icon SVG THAT, hang ngay. Mot luat chan `.svg` luc
+-- upload se chan dung viec do, de doi lay viec KHONG bao ve duoc cac file SVG
+-- da nam tren dia tu truoc — tra gia FP cao nhat cho vung phu nho nhat.
+--
+-- Chua o `waf/CLAUDE.md`. Gac o day vi mot dong trong bang Lua thi de them, va
+-- nguoi them se khong doc CLAUDE.md truoc.
+io.write("\nhop dong: [28] P1 — .svg khong o bang duoi chay duoc\n")
+do
+    local up = slurp(SRC .. "waf/upload.lua")
+    if not up then
+        bad("  SAI  [28] khong doc duoc upload.lua\n")
+    else
+        local code = up:gsub("%-%-[^\n]*", "")
+        local tbl = code:match("local EXEC_EXT = {(.-)}")
+        if not tbl then
+            bad("  SAI  [28] khong tim thay bang `EXEC_EXT`\n")
+        else
+            local bad_n = 0
+            -- Ba duoi nay la QUYET DINH da ghi, khong phai so thich.
+            for _, ext in ipairs({ "svg", "inc", "html", "htm" }) do
+                if tbl:find("%f[%w]" .. ext .. "%s*=%s*true") then
+                    bad_n = bad_n + 1
+                    bad("  SAI  [28] `%s` nam trong EXEC_EXT.\n" ..
+                        "       `.svg` xu ly rieng (XSS o trinh duyet, khong phai\n" ..
+                        "       RCE o server) — xem waf/CLAUDE.md. `.inc`/`.html`\n" ..
+                        "       khong duoc anh xa sang PHP handler mac dinh.\n" ..
+                        "       Them vao day la bat oan file that cua khach.\n", ext)
+                end
+            end
+            if bad_n == 0 then pass = pass + 1 end
+        end
+    end
+end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

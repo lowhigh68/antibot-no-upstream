@@ -16,6 +16,12 @@ if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
 end
 
+-- `body_core` require `upload` (P1), nen phai preload CA HAI. Thieu cai thu hai
+-- thi `require` di tim theo `package.path` cua `resty` va bao "module not found"
+-- — hong ngay tu dong nap, truoc khi chay mot assertion nao.
+package.preload["antibot.waf.upload"] = function()
+    return dofile(SRC .. "waf/upload.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end

@@ -169,6 +169,22 @@ function _M.run_pre(ctx)
         --
         -- So `== true` chứ không viết `if b.php then`: cùng một kỷ luật.
         if b and b.php == true then ctx.waf_body_php = 1 end
+
+        -- P1: ten file upload chay duoc tren server (`upload.lua`).
+        --
+        -- KENH RIENG, khong qua `record_arg_hit`: khong phai luat trong
+        -- `args.RULES`, khong co `rule.score`. Cung khuon `waf_body_php`.
+        --
+        -- TRONG SO 0 luc chao doi — xem `waf/CLAUDE.md`. Nen tin hieu nay KHONG
+        -- duoc co mat trong `waf_signal()`, va `contract_test` gac hai chieu do.
+        --
+        -- `matched=` la RULE_ID, TUYET DOI khong phai ten file. Ten file do ke
+        -- gui dieu khien va co the mang token/email/duong dan noi bo; `waf.log`
+        -- la file text giu 30 ngay. Cung ly do da khong ghi than request.
+        if b and b.up_rule then
+            ctx.waf_upload = 1
+            ctx.waf_upload_rule = b.up_rule
+        end
     end
 
     if not rule then return false end
