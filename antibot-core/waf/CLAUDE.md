@@ -704,10 +704,37 @@ Do đó [28] nay gác **hai chiều**: `svg`/`html`/`htm` **không được** c�
 
 **Cố ý KHÔNG có:** luật "không có đuôi" hay "đuôi lạ". Khách upload file không đuôi và đuôi lạ thật (`.dwg`, `.ai`, `.sketch`, `.psd`). `.inc` thì **có** trong bảng — đo trên fleet, xem bảng rule_id ở trên.
 
-**ĐÃ kiểm trên fleet 19-09** (mục này trước đó ghi "chưa kiểm" — nay có số liệu). Lệnh, để kiểm lại khi thêm máy hoặc đổi PHP handler:
+**ĐÃ kiểm trên fleet 19-09, HAI vòng đo độc lập** (mục này trước đó ghi "chưa kiểm").
+
+**Vòng 1 — `AddHandler`.** Ba dòng, đều liệt kê `.inc .php .php5 .phtml`.
+
+**Vòng 2 — vì DirectAdmin chọn handler PER-DOMAIN**, nên `grep -i php` một lần là không đủ. DA sinh vhost theo **ba nhánh loại trừ nhau**, và ba nhánh có tập đuôi **khác nhau**:
+
+| Nhánh DA | Đuôi chạy được | Số domain |
+|---|---|---|
+| `HAVE_PHP1_FPM` | `.php` `.inc` `.phtml` | **74** |
+| `HAVE_PHP1_FCGI` | chỉ `.php` | 0 |
+| `HAVE_PHP1_CLI` (LiteSpeed) | chỉ `.php` | 0 |
+
+**74/0/0 — toàn bộ dùng FPM.** Nên `.inc` chạy trên **mọi** domain, không phải một nhánh. Điều đó **bác bỏ** mối lo "`.inc` gây FP trên đa số fleet", và ý định tách `.inc` thành nhãn riêng đã bỏ. `FilesMatch "\.(inc|php|php5|phtml)$"` khớp chính xác `PHP_EXT` — không thiếu, không thừa.
+
+**Một chỗ đọc sai ngay trong vòng đo này, ghi lại vì nó là dạng lỗi hay lặp:** template DA có `<FilesMatch "\.(php53|php54|…|php82)$">` ở ba chỗ và tôi kết luận ngay *"thiếu 12 đuôi, `shell.php74` chạy được"*. Sai — thân khối là `Order Allow,Deny` + `Deny from all`. DA **chặn** chúng có chủ ý. Tôi đọc **cấu trúc** (`FilesMatch` có tên đuôi) mà không đọc **nội dung** khối.
+
+**`.fcgi` — chưa quyết định, cần số đếm.** `grep -hoE 'AddHandler[^\n]*' | grep '^\.'` trả về đúng một đuôi ngoài tập PHP: `.fcgi`. Nhưng trong `<Directory>` docroot, DA đặt `Options -ExecCGI -Includes +IncludesNOEXEC` — và đặt **chỉ khi `CGI=""`** (CGI tắt). Domain **bật** CGI thì có `ScriptAlias /cgi-bin/` và không có `-ExecCGI`, nên `.fcgi` `.cgi` `.pl` chạy được trong `/cgi-bin/`.
+
+Cổng vào là số đếm, và phải đo trên **cả 5 máy** — máy code tay là nơi có khả năng bật CGI nhất (site tự viết hay dùng Perl CGI), nên đo riêng máy WordPress sẽ cho kết luận sai:
 
 ```bash
-grep -rniE 'AddHandler|AddType' /usr/local/apache2/conf/ | grep -i php
+# Nhanh handler nao dang dung — chay tren TUNG may
+grep -rl 'proxy:unix.*fcgi://localhost' /usr/local/directadmin/data/users/*/httpd.conf 2>/dev/null | wc -l
+grep -rl 'SetHandler fcgid-script'      /usr/local/directadmin/data/users/*/httpd.conf 2>/dev/null | wc -l
+
+# Bao nhieu domain BAT CGI => `.fcgi`/`.cgi`/`.pl` chay duoc
+grep -c 'ScriptAlias /cgi-bin/' /usr/local/directadmin/data/users/*/httpd.conf 2>/dev/null | grep -v ':0$' | wc -l
+
+# Tap duoi DAY DU — khong loc san bang `grep -i php`
+grep -rhoE 'AddHandler[^\n]*' /etc/httpd/conf/extra/ | tr ' ' '\n' | grep '^\.' | sort -u
+grep -rhoE 'FilesMatch "[^"]*"' /etc/httpd/conf/extra/ | sort -u
 ```
 
 **Đường đi của `up_rule` là chỗ dễ hỏng âm thầm nhất.** Nó qua bốn chặng — `scan_disposition_headers` → `scan_one_boundary` → `filename_rule` → `scan` — và mỗi chặng có nhiều lối `return` sớm. Bỏ sót **một** thì tín hiệu mất **trong im lặng** ở đúng nhóm đó: ví dụ tràn `MAX_PARTS`, một upload 70 phần có `shell.php` ở phần thứ 3 sẽ thoát qua nhánh `n` và báo cáo "không có gì". Đúng khuôn lỗi đã cắt 4 tháng của `wp_paths.mark()`. `contract_test` [27a] đòi **mọi** `return` trong `scan_one_boundary` trả về đúng 3 giá trị.
@@ -912,6 +939,13 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-19 (7) — **Vòng đo thứ hai: DirectAdmin chọn PHP handler PER-DOMAIN, nên `grep -i php` một lần là không đủ. `PHP_EXT` đúng y nguyên — nhưng vì lý do khác tôi tưởng.**
+  - **Vì sao phải đo lại dù vòng một đã có số liệu:** DA sinh vhost theo **ba nhánh loại trừ nhau**, và ba nhánh có **tập đuôi khác nhau** — `HAVE_PHP1_FPM` cho `.php .inc .phtml`, còn `HAVE_PHP1_FCGI` và `HAVE_PHP1_CLI` chỉ cho `.php`. Một lệnh `grep` trên `/etc/httpd/conf/extra/` thấy dòng `AddHandler` nhưng **không nói nhánh nào đang chạy**, mà `.inc` chỉ chạy ở một trong ba.
+  - **Đo: 74 / 0 / 0** — toàn bộ 74 domain dùng nhánh FPM. `.inc` chạy trên **mọi** domain. Điều đó **bác bỏ** mối lo tôi vừa nêu ("`.inc` có bản sao hợp lệ thật trong theme WordPress, nếu phần lớn domain dùng FCGI thì nó gây FP trên đa số fleet"), và ý định tách `.inc` thành nhãn riêng đã bỏ. Đây là lần mối lo **của tôi** bị số đếm bác bỏ, không phải lần bảng bị bác bỏ.
+  - **`FilesMatch "\.(inc|php|php5|phtml)$"`** (dòng 4 và 11 của `httpd-php-handlers.conf`) khớp **chính xác** `PHP_EXT`. Hai vòng đo độc lập, cùng một tập.
+  - **Một chỗ tôi đọc sai NGAY TRONG vòng đo này:** template DA có `<FilesMatch "\.(php53|php54|…|php82)$">` ở ba chỗ, và tôi kết luận ngay *"thiếu 12 đuôi, `shell.php74` chạy được"*. Sai — thân khối là `Order Allow,Deny` + `Deny from all`; DA **chặn** chúng có chủ ý. Tôi đọc **cấu trúc** (`FilesMatch` có tên đuôi) mà không đọc **nội dung** khối. Cùng họ với `[R2]` hồi 17-09 và với việc tin bảng trạng thái thay vì grep code: *thấy một cái tên ở đúng chỗ rồi suy ra ý nghĩa của nó.*
+  - **`.fcgi` — phát hiện thật, chưa quyết định.** Lệnh không lọc trước bằng `grep -i php` trả về đúng một đuôi ngoài tập PHP. Nhưng `<Directory>` docroot có `Options -ExecCGI -Includes +IncludesNOEXEC`, **đặt chỉ khi `CGI=""`**. Domain **bật** CGI thì có `ScriptAlias /cgi-bin/` và `.fcgi`/`.cgi`/`.pl` chạy được trong `/cgi-bin/`. Cổng vào là số đếm domain bật CGI, và phải đo trên **cả 5 máy**: máy code tay là nơi có khả năng bật CGI nhất (site tự viết hay dùng Perl CGI), nên đo riêng máy WordPress sẽ cho kết luận sai — cùng lập luận đã dùng khi ba máy cho ba hồ sơ `resource` 12,7% / 17,4% / 55,2%.
+  - **Về chi phí phiên làm việc:** phần ngốn token nhất **không** phải các phép thử phá (mỗi phép ~3 lệnh) mà là việc tôi sửa file bằng `perl -0777 -i -pe` trong shell — ba lớp escape (bash → perl → Lua) chồng nhau, hỏng 8 lần liên tiếp, và chính nó **sinh ra** lỗi escape mà cổng `[2]` chặn ở mục (6). Đã chuyển sang `Edit`/`Write`: không lớp escape nào, không vòng thử lại.
 - 2026-09-19 (6) — **Cong `[2]` chan ban P1: escape sequence sai. Nguyen nhan la ONG DAN, khong phai Lua — va `luacheck` co lop thu ba vi vay.**
   - **Loi:** `upload_test.lua:82: invalid escape sequence near '"..'`. Toi viet `"..\..\shell.php"` trong mot **heredoc bash**, bash an mot lop `\`, nen file nhan `"..\..\shell.php"` — va `\.` khong phai escape hop le trong Lua. Hai dong bi: 82 (`\.`) va 143 (`a\b\c.php`, `\c` khong hop le).
   - **Vi sao hai lop kiem cu deu MU:** `luabal.pl` dem khoi; `luacheck` lop [1] cung dem khoi, va no chay tren code **da bo chuoi** boi `strip()`. Ca hai deu lam viec ben NGOAI chuoi, nen khong lop nao nhin vao ben TRONG chuoi. **Do la vung mu co cau truc, khong phai sot ngau nhien** — va no giai thich vi sao mot ban "131/131 xanh" van bi luajit tu choi nap.

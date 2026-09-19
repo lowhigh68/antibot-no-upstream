@@ -68,6 +68,50 @@ local _M = {}
 -- `upload_exec_ext` ma khong biet bao nhieu lan la duoi that su chay duoc thi
 -- khong the dung con so do quyet dinh trong so. Nen tach tang.
 --
+-- ── VONG DO THU HAI: DirectAdmin chon handler PER-DOMAIN ─────────────
+--
+-- Lenh `grep -i php` o vong mot KHONG du, vi DA sinh vhost theo BA nhanh loai
+-- tru nhau, va ba nhanh do co tap duoi KHAC nhau:
+--
+--     HAVE_PHP1_FPM   ->  .php .inc .phtml       (AddHandler proxy:unix)
+--     HAVE_PHP1_FCGI  ->  .php               chi (SetHandler fcgid-script)
+--     HAVE_PHP1_CLI   ->  .php               chi (AddHandler x-httpd-php)
+--
+-- Do tren fleet: **74 / 0 / 0** — TOAN BO 74 domain dung nhanh FPM, khong domain
+-- nao FCGI hay LiteSpeed. Nen `.inc` chay duoc tren MOI domain, khong phai chi
+-- mot nhanh. Moi lo "`.inc` gay FP tren da so fleet" BI BAC BO bang so dem, va
+-- y dinh tach `.inc` thanh nhan rieng da bo.
+--
+-- `FilesMatch` that trong `httpd-php-handlers.conf`:
+--     <FilesMatch "\.(inc|php|php5|phtml)$">     (dong 4 va 11)
+-- Khop CHINH XAC `PHP_EXT` duoi day. Khong thieu, khong thua.
+--
+-- ── MOT CHO TOI DOC SAI TRONG CHINH VONG DO NAY ─────────────────────
+--
+-- Template DA co `<FilesMatch "\.(php53|php54|...|php82)$">` o BA cho, va toi
+-- da ket luan ngay "thieu 12 duoi, `shell.php74` chay duoc". SAI — than khoi do
+-- la:
+--     Order Allow,Deny
+--     Deny from all
+-- DA CHAN chung co chu y. Chung KHONG chay duoc, va them vao `PHP_EXT` la sai.
+-- Toi doc CAU TRUC (`FilesMatch` co ten duoi) ma khong doc NOI DUNG khoi.
+--
+-- ── `.fcgi`: co trong `AddHandler` nhung phu thuoc CGI ──────────────
+--
+-- `grep -hoE 'AddHandler[^\n]*' | grep '^\.'` tra ve duy nhat `.fcgi` ngoai tap
+-- PHP. Nhung trong `<Directory>` cua docroot, DA dat
+--     Options -ExecCGI -Includes +IncludesNOEXEC
+-- va dat no CHI KHI `CGI=""` (tuc CGI TAT). Domain BAT CGI thi co
+-- `ScriptAlias /cgi-bin/` va KHONG co `-ExecCGI` => `.fcgi` `.cgi` `.pl` chay
+-- duoc trong `/cgi-bin/`.
+--
+-- CHUA quyet dinh, vi con thieu mot so dem: bao nhieu domain co
+-- `ScriptAlias /cgi-bin/`. Neu 0 thi khong them gi. May code tay la noi co kha
+-- nang bat CGI nhat (site tu viet hay dung Perl CGI), nen phai do tren CA 5 MAY
+-- chu khong chi may WordPress:
+--     grep -c 'ScriptAlias /cgi-bin/' /usr/local/directadmin/data/users/*/httpd.conf \
+--         | grep -v ':0$' | wc -l
+--
 -- ── Vi sao TACH TANG chu khong chi cat bang ─────────────────────────
 --
 -- Cat `.phar`/`.phps` ra khoi bang la mat kha nang phat hien; giu chung chung
@@ -75,10 +119,15 @@ local _M = {}
 -- ban, khac nhan, nen `waf.log` dem duoc rieng va ngay nang trong so thi nang
 -- duoc TUNG TANG.
 --
--- `PHP_EXT`    — DA XAC MINH tren fleet. `.inc` o day chu khong o tang duoi.
--- `PHP_LEGACY` — phu thuoc cau hinh, KHONG thay tren fleet nay. Van soi vi mot
---                may moi cai hay mot `.htaccess` cua khach co the bat chung —
---                nhung dem rieng.
+-- `PHP_EXT`    — DA XAC MINH tren fleet, HAI vong do doc lap: `AddHandler` va
+--                `FilesMatch "\.(inc|php|php5|phtml)$"`. Ca hai cho cung mot
+--                tap. `.inc` o day chu khong o tang duoi, va 74/74 domain dung
+--                nhanh FPM nen no chay tren MOI domain.
+-- `PHP_LEGACY` — KHONG thay trong bat ky `AddHandler`/`FilesMatch` nao tren
+--                fleet. Voi `.php53..php82` thi con manh hon the: DA co
+--                `Deny from all` tuong minh cho chung. Van soi vi mot may moi
+--                cai hay mot `.htaccess` cua khach co the bat — nhung dem
+--                RIENG, vi tron vao `PHP_EXT` lam con so kia mat nghia.
 local PHP_EXT = {
     php = true, php5 = true, phtml = true, inc = true,
 }
