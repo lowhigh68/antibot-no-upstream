@@ -60,7 +60,7 @@ local STEPS_COMMON = {
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
     { layer = session_richness,  fn = "run"           },
     -- proxy_origin: dat ctx.behind_proxy tu DAI IP da xac minh (Cloudflare) hoac
-    -- khai bao operator (`waf:proxyhost:<host>`). PHAI dung TRUOC ip_ban_check va
+    -- khai bao operator (`SADD waf:proxyhosts <host>`). PHAI dung TRUOC ip_ban_check va
     -- moi tang khoa theo IP, vi voi domain sau proxy thi `ctx.ip` la dia chi EDGE:
     -- do 19-09 tren in3mien.com thay 431 IP edge phuc vu 456 identity, trong do
     -- 218 luot co cookie that. Tang nay KHONG doc gia tri header nao — header chi

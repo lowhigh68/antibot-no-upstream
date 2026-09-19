@@ -56,8 +56,10 @@ local function ip_to_int(ip)
     return a * 16777216 + b * 65536 + c * 256 + d
 end
 
--- Dung ho chia/nhan thay vi `bit.band`: `2^(32-bits)` la mot phep chia nguyen,
--- chay duoc o moi phien ban LuaJIT ma khong phu thuoc module `bit`.
+-- Dung luy thua thay vi `bit.band`: khong phu thuoc module `bit`, va
+-- `2^(32-bits)` la so phan tu cua khoi. LuaJIT tra ve FLOAT o day, nhung moi gia
+-- tri deu <= 2^32 nen so sanh voi so nguyen la chinh xac tuyet doi (float 64-bit
+-- bieu dien dung moi so nguyen duoi 2^53). Khong lam tron, khong mat bit.
 local CF_RANGES = nil
 local function build_ranges()
     local t = {}
@@ -89,21 +91,51 @@ local PROXY_CLAIM_HEADERS = {
     "cf-connecting-ip", "true-client-ip", "x-forwarded-for", "x-real-ip",
 }
 
--- Khai tay theo host, cho proxy KHONG phai Cloudflare (Fastly, Bunny, Sucuri,
--- hoac proxy noi bo cua khach). Cache shdict 300s de khong cham Redis moi
--- request. Ghi bang: `redis-cli SET waf:proxyhost:<host> 1`
-local HOST_TTL = 300
+-- Khai tay cho proxy KHONG phai Cloudflare (Fastly, Bunny, Sucuri, hoac proxy
+-- noi bo cua khach). Ghi bang:
+--     redis-cli SADD waf:proxyhosts example.com www.example.com
+--
+-- MOT KHOA TAP HOP, khong phai mot khoa moi host. Ly do la chi phi o duong nong:
+-- module nay chay o BUOC 6 cho MOI request, va `antibot_cache` chi 5m dung chung
+-- voi `waf:fimnew:`, dau `wp_paths`, v.v. Khi LRU duoi key thi mot so do
+-- `waf:proxyhost:<host>` se cham Redis MOI REQUEST cho moi host chua cache — 74
+-- domain nhan len thanh mot RTT them vao duong nong. Voi mot khoa tap hop thi
+-- xau nhat cung chi la MOT lan doc moi 300s cho toan may.
+--
+-- Danh sach hien tai rong (0 host khai). Neu no rong thi phep kiem la mot phep
+-- so sanh chuoi trong bo nho, khong cham Redis.
+local HOSTS_TTL  = 300
+local HOSTS_KEY  = "waf:proxyhosts"
+local HOSTS_CK   = "proxyhosts:set"
+
+-- Tra ve chuoi "|host1|host2|" (rong = "|") de kiem bang `find` plain-text.
+local function declared_set()
+    if cache then
+        local v = cache:get(HOSTS_CK)
+        if v then return v end
+    end
+    local joined = "|"
+    local red = pool.get()
+    if red then
+        local members = red:smembers(HOSTS_KEY)
+        pool.put(red)
+        if type(members) == "table" then
+            for i = 1, #members do
+                joined = joined .. members[i] .. "|"
+            end
+        end
+    end
+    -- Cache CA khi rong: "khong co host nao khai" cung la mot cau tra loi, va no
+    -- la cau tra loi thuong gap nhat. Thieu buoc nay thi SMEMBERS chay moi request.
+    if cache then cache:set(HOSTS_CK, joined, HOSTS_TTL) end
+    return joined
+end
+
 local function host_declared(host)
     if not host or host == "" then return false end
-    local ck = "proxyhost:" .. host
-    if cache then
-        local v = cache:get(ck)
-        if v ~= nil then return v == 1 end
-    end
-    local val = pool.safe_get("waf:proxyhost:" .. host)
-    local ok  = (val == "1")
-    if cache then cache:set(ck, ok and 1 or 0, HOST_TTL) end
-    return ok
+    local set = declared_set()
+    if set == "|" then return false end          -- khong ai khai: thoat khong cham gi
+    return set:find("|" .. host .. "|", 1, true) ~= nil
 end
 
 function _M.run(ctx)
