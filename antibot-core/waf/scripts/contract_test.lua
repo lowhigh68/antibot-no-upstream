@@ -1705,5 +1705,68 @@ do
     end
 end
 
+
+-- [23] `proxy_spoof` phai duoc dang ky o CA HAI noi, va `proxy_origin` phai
+-- KHONG BAO GIO doc GIA TRI header de dat dia chi.
+--
+-- Hai bat bien khac nhau trong cung mot muc:
+--   (a) Tin hieu dang ky mot nua la tin hieu CHET — dung ho voi muc [22]
+--       (`ahrefssiteaudit` dang ky ma khong trich duoc ten).
+--   (b) `ctx.ip` KHONG duoc phep lay tu header. Day la bat bien AN NINH: tin
+--       gia tri `CF-Connecting-IP` nghia la bat ky ai cung tu khai duoc danh
+--       tinh, ma `ctx.ip` la khoa cua ban/rate/reputation.
+do
+    local comp = slurp("antibot-core/intelligence/scoring/compute.lua")
+    local po   = slurp("antibot-core/core/proxy_origin.lua")
+    local ini  = slurp("antibot-core/init.lua")
+    if not comp or not po or not ini then
+        bad("  SAI  thieu compute.lua / proxy_origin.lua / init.lua\n")
+    else
+        -- (a) ca hai nua
+        local in_weights = comp:find("proxy_spoof%s*=%s*%d")
+        local in_signal  = comp:find('name%s*==%s*"proxy_spoof"')
+        if in_weights and in_signal then pass = pass + 1
+        elseif in_weights then
+            bad("  SAI  proxy_spoof co trong DEFAULT_WEIGHTS nhung THIEU trong\n" ..
+                "       get_signal() => trong so la so CHET, khong bao gio cong diem.\n")
+        elseif in_signal then
+            bad("  SAI  proxy_spoof co trong get_signal() nhung THIEU trong\n" ..
+                "       DEFAULT_WEIGHTS => compute khong bao gio hoi tin hieu nay.\n")
+        else
+            bad("  SAI  proxy_spoof khong duoc dang ky o dau ca.\n")
+        end
+
+        -- (b) khong duoc gan ctx.ip / remote_addr tu header.
+        -- Bo COMMENT truoc khi kiem: chu thich dau file CO Y nhac ten
+        -- `set_real_ip_from` de giai thich vi sao KHONG dung no, va mot phep kiem
+        -- khop ca comment se bao do vinh vien (da mac khi viet chinh muc nay).
+        local po_code = po:gsub("%-%-[^\n]*", "")
+        local viol = po_code:find("ctx%.ip%s*=") or po_code:find("set_real_ip")
+                     or po_code:find("remote_addr%s*=")
+        if viol then
+            bad("  SAI  proxy_origin.lua gan dia chi tu trong module nay. `ctx.ip`\n" ..
+                "       PHAI giu la dia chi TCP that; header chi duoc dung de phat\n" ..
+                "       hien mao danh (ctx.proxy_spoof). Xem chu thich dau file.\n")
+        else pass = pass + 1 end
+
+        -- (b2) behind_proxy khong duoc bat tu header
+        local hdr_gate = po:match("if[^\n]-get_headers[^\n]-then[^\n]-behind_proxy%s*=%s*true")
+        if hdr_gate then
+            bad("  SAI  ctx.behind_proxy duoc bat tu header. No CHI duoc bat tu dai\n" ..
+                "       IP da xac minh hoac khai bao operator.\n")
+        else pass = pass + 1 end
+
+        -- (c) thu tu pipeline: proxy_origin PHAI dung truoc ip_ban_check
+        local p_po = ini:find("layer%s*=%s*proxy_origin")
+        local p_bc = ini:find("layer%s*=%s*ip_ban_check")
+        if not p_po or not p_bc then
+            bad("  SAI  khong tim thay proxy_origin hoac ip_ban_check trong STEPS_COMMON\n")
+        elseif p_po > p_bc then
+            bad("  SAI  proxy_origin dung SAU ip_ban_check trong STEPS_COMMON =>\n" ..
+                "       ctx.behind_proxy con false o moi tang khoa theo IP. Dung ho\n" ..
+                "       loi da lam Fix B thanh code chet (doc buoc 6, ghi buoc 10).\n")
+        else pass = pass + 1 end
+    end
+end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

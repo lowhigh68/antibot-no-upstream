@@ -87,6 +87,12 @@ function _M.init(ctx)
     ctx.ip_shared_verified = false   -- Tier 2 (strict): shared AND real cookied users → IP-ban immunity
     ctx.ip_real_users  = 0           -- distinct cookie-bearing identities on IP (ip_tour)
     ctx.ip_farm_suspect = false      -- Phase 2: shared IP with mobile-farm signature (many UAs, very low cookie-ratio)
+    -- Dat boi core/proxy_origin.lua (buoc 6 cua STEPS_COMMON, TRUOC ip_ban_check).
+    -- `behind_proxy` CHI bat tu dai IP da xac minh hoac khai bao operator, KHONG
+    -- BAO GIO tu header. `proxy_spoof` = header khai proxy ma ip ngoai dai ⇒ xau.
+    ctx.behind_proxy   = false       -- request den qua reverse proxy cong cong (ctx.ip la dia chi EDGE)
+    ctx.proxy_vendor   = nil         -- "cloudflare" | "declared"
+    ctx.proxy_spoof    = false       -- header khai proxy nhung dia chi khong thuoc dai nao da xac minh
 
     ctx.ip_rep         = 0.0
     ctx.asn_rep        = 0.0

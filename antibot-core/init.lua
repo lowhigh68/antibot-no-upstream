@@ -3,6 +3,7 @@ local _M = {}
 local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
+local proxy_origin       = require "antibot.core.proxy_origin"
 local cookie_registry    = require "antibot.core.cookie_registry"
 local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
@@ -58,6 +59,13 @@ local STEPS_COMMON = {
     -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
     { layer = session_richness,  fn = "run"           },
+    -- proxy_origin: dat ctx.behind_proxy tu DAI IP da xac minh (Cloudflare) hoac
+    -- khai bao operator (`waf:proxyhost:<host>`). PHAI dung TRUOC ip_ban_check va
+    -- moi tang khoa theo IP, vi voi domain sau proxy thi `ctx.ip` la dia chi EDGE:
+    -- do 19-09 tren in3mien.com thay 431 IP edge phuc vu 456 identity, trong do
+    -- 218 luot co cookie that. Tang nay KHONG doc gia tri header nao — header chi
+    -- dung de phat hien MAO DANH (ctx.proxy_spoof), va chi lam TANG diem.
+    { layer = proxy_origin,      fn = "run"           },
     { layer = ip_ban_check,      fn = "run"           },
     -- iprep: cross-server IP reputation check (Central Redis, 1h local cache).
     -- Runs after ip_ban_check so locally-banned IPs exit before reaching this.
