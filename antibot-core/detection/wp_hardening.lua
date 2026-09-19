@@ -63,6 +63,10 @@ local function escalate_xmlrpc(ctx)
     -- Tier-2: IP dùng chung đã chứng minh có nhiều user cookie thật
     -- (CGNAT/văn phòng) — một thiết bị hỏng không được khoá cả nhà.
     if ctx.ip_shared_verified then return end
+    -- Dia chi edge cua reverse proxy: cung ly le, va dai do con dong nguoi that
+    -- hon CGNAT. Xem `enforcement/ban/ban_store_write.lua` (72 khoa edge CF do
+    -- 19-09). Identity van bi chan binh thuong.
+    if ctx.behind_proxy then return end
 
     local n = pool.safe_incr("hardexit:xmlrpc:" .. ip, HARD_EXIT_WINDOW) or 0
     if n < HARD_EXIT_STRIKES then return end

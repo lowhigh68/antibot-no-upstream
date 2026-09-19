@@ -1768,5 +1768,46 @@ do
         else pass = pass + 1 end
     end
 end
+
+-- [24] MOI cho ghi `ban:<ip>` phai co cong `ctx.behind_proxy`.
+--
+-- Dia chi edge cua reverse proxy cong cong khong dinh danh ai, nen `ban:<ip>` o
+-- do la ban TAP THE — va vo hieu voi ke tan cong (CF chon edge cho tung ket noi,
+-- bot bi ban mot edge chi can ket noi lai). Do 19-09-2026 tren cloud171-96: 72
+-- khoa `ban:<ip>` la IP edge Cloudflare, TTL ~2.591.000s tuc vua duoc ghi.
+--
+-- Bat bien: THEM mot cho ghi `ban:<ip>` ma quen cong nay la mo lai lo hong. Test
+-- nay liet ke moi file co chuoi ghi `ban:` theo ip va doi file do phai nhac
+-- `behind_proxy`.
+do
+    local sites = {
+        { "enforcement/ban/ban_store_write.lua", "should_ban_ip" },
+        { "detection/ip_tour.lua",               "strike_ban"    },
+        { "detection/wp_hardening.lua",          "xmlrpc"        },
+        { "l7/expensive_filter_guard.lua",       "ip_bannable"   },
+        { "l7/rate/adaptive_limit.lua",          "ip_surge"      },
+    }
+    for i = 1, #sites do
+        local f, what = sites[i][1], sites[i][2]
+        local src = slurp(SRC .. f)
+        if not src then
+            bad("  SAI  thieu %s\n", f)
+        elseif not src:find("behind_proxy", 1, true) then
+            bad("  SAI  %s ghi `ban:<ip>` (%s) nhung KHONG co cong\n" ..
+                "       `ctx.behind_proxy`. Dia chi edge reverse proxy khong dinh\n" ..
+                "       danh ai => ban tap the, va bot di vong bang cach ket noi\n" ..
+                "       lai qua edge khac. Xem ban_store_write.lua.\n", f, what)
+        else pass = pass + 1 end
+    end
+
+    -- Khong duoc mien `ban:<id>` theo `behind_proxy`: identity la thu DUY NHAT
+    -- con dung nghia khi `ctx.ip` vo nghia. Mien ca hai la tha bot hoan toan.
+    local bs = slurp(SRC .. "l7/ban/ban_store.lua") or ""
+    if bs:find("behind_proxy", 1, true) then
+        bad("  SAI  l7/ban/ban_store.lua doc `behind_proxy`. Ban theo IDENTITY\n" ..
+            "       KHONG duoc mien theo co nay — khi `ctx.ip` vo nghia thi\n" ..
+            "       identity la thu duy nhat con phan biet duoc thiet bi.\n")
+    else pass = pass + 1 end
+end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

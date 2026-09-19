@@ -212,6 +212,10 @@ function _M.run(ctx)
     local ip_bannable = gc.ban_enabled
         and ip ~= "" and ip ~= "127.0.0.1" and ip ~= "::1"
         and not ctx.ip_shared_verified
+        -- Dia chi edge cua reverse proxy khong dinh danh ai (xem
+        -- `enforcement/ban/ban_store_write.lua`). `ban_enabled` dang `false` nen
+        -- nhanh nay chua chay, nhung cong phai dung san cho luc bat.
+        and not ctx.behind_proxy
         and not human_exempt
         and ip_combos >= (gc.ban_ip_combos or 20)
 

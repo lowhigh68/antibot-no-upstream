@@ -221,7 +221,11 @@ function _M.run(ctx)
     if not ua_claim.claims_good_bot(ua) then
         local strikes = pool.safe_incr("iptour:strike:" .. ip, window) or 0
         ctx.ip_tour_strikes = strikes
-        if strikes >= (c.strike_ban or 12) then
+        -- `ctx.behind_proxy`: dia chi edge cua reverse proxy KHONG dinh danh ai,
+        -- nen `ban:<ip>` o day la ban tap the. Xem khoi chu thich o
+        -- `enforcement/ban/ban_store_write.lua` (72 khoa edge CF do 19-09).
+        -- `ip_tour` la buoc 10, `proxy_origin` buoc 6 ⇒ co da duoc ghi.
+        if strikes >= (c.strike_ban or 12) and not ctx.behind_proxy then
             local age_key = "iptour:age:" .. ip
             local first   = pool.safe_get(age_key)
             local ttl

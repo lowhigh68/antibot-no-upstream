@@ -85,7 +85,10 @@ function _M.run(ctx)
     then
         local distinct = pool.safe_scard("rate:ids:" .. ctx.ip) or 0
         local distinct_min = cfg.rate.ip_surge_distinct_min or 3
-        if distinct < distinct_min then
+        -- `not ctx.behind_proxy`: mot edge reverse proxy tap hop luu luong cua
+        -- rat nhieu khach, nen `ip_rate` cao o day la binh thuong va `ban:<ip>`
+        -- la ban tap the. Xem `enforcement/ban/ban_store_write.lua`.
+        if distinct < distinct_min and not ctx.behind_proxy then
             local ttl = cfg.rate.ip_surge_ban_ttl or 300
             pool.safe_set("ban:" .. ctx.ip, "1", ttl)
             pool.safe_set("ban:hit:" .. ctx.ip, tostring(ngx.time()), 300)

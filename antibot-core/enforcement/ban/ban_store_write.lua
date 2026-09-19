@@ -77,6 +77,32 @@ function _M.run(ctx)
         should_ban_ip = false
     end
 
+    -- KHONG BAO GIO `ban:<ip>` cho dia chi cua mot REVERSE PROXY cong cong.
+    --
+    -- Cung mot ly le voi Tier-2 ngay tren, nhung dai nay CON DONG NGUOI THAT
+    -- HON CGNAT: Cloudflare dinh tuyen theo dia ly nen mot edge phuc vu phan
+    -- lon khach cua mot vung. `ban:104.23.211.47` 30 ngay co the la toan bo
+    -- khach mot vung mat truy cap vao domain do trong mot thang.
+    --
+    -- VA NO VO HIEU VOI KE TAN CONG: CF chon edge cho TUNG ket noi, nen bot bi
+    -- ban mot edge chi can ket noi lai la sang edge khac. Ta tra gia bang khach
+    -- that de doi mot rao chan ma bot di vong trong mot giay.
+    --
+    -- DO 19-09-2026 tren cloud171-96 — day la lo hong DANG DIEN RA, khong phai
+    -- gia thuyet: **72 khoa `ban:<ip>` la IP edge Cloudflare**, TTL ~2.591.000s
+    -- (29,99 ngay) — tuc vua duoc ghi vai chuc giay truoc, dang duoc tao lien
+    -- tuc. Trong so do co `ban:172.68.26.251` va `ban:162.159.104.57` tren
+    -- `in3mien.com`, domain do duoc 391 luot cookie that trong 3h40.
+    --
+    -- KHONG mien `ban:<id>`: identity van bi chan per-device. Chinh vi `ctx.ip`
+    -- vo nghia o day ma ban theo identity moi la thu duy nhat con dung nghia.
+    --
+    -- `== true` de fail-closed, giong cong cookie_registry ben duoi: day la trao
+    -- MIEN TRU nen khong co bang chung duong tinh thi khong mien.
+    if ctx.behind_proxy == true then
+        should_ban_ip = false
+    end
+
     -- Mien tao `ban:<ip>` cho phien CO BANG CHUNG do chinh host nay cap.
     --
     -- Su co 2026-09-12 (bestcargo.vn): mot quan tri vien dang dang nhap luu
