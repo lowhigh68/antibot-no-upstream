@@ -192,8 +192,26 @@ fleet)
     ;;
 
 fp)
+    echo "--- [0] rown CO PHAI HANG SO khong — DOC MUC NAY TRUOC MOI THU KHAC."
+    echo "        rown giong het nhau tren nhieu IP/domain khac nhau = cookie CO"
+    echo "        DINH do bot mang san, KHONG phai khach quay lai. Do 19-09:"
+    echo "        rown=0.12 tren 1.219/1.251 luot, tren ba dai IP va ba domain"
+    echo "        khac nhau => mot dan bot, khong phai FP."
+    echo "        Phan bo rown cua cac luot BI CHAN co cookie:"
+    since | grep -v 'rown=0.00' | grep -v 'rown=-' | grep 'action=block' \
+      | field rown | sort | uniq -c | sort -rn | head -8
+    echo "        So IP rieng biet tren gia tri rown pho bien nhat:"
+    TOP=$(since | grep -v 'rown=0.00' | grep -v 'rown=-' | grep 'action=block' \
+          | field rown | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+    if [ -n "${TOP:-}" ]; then
+        printf '        rown=%s xuat hien tren %s IP va %s domain\n' "$TOP" \
+          "$(since | grep "rown=$TOP" | field ip | sort -u | wc -l)" \
+          "$(since | grep "rown=$TOP" | field domain | sort -u | wc -l)"
+        echo "        (nhieu IP + nhieu domain + MOT gia tri => bot mang cookie co dinh)"
+    fi
+
+    echo
     echo "--- [1] phien CO COOKIE THAT (rown>0) bi chan — ung vien FP theo reason:"
-    echo "        Doc muc 2 o dau file truoc khi ket luan."
     since | grep -v 'rown=0.00' | grep -v 'rown=-' | grep 'action=block' \
       | grep -oE 'reason=[a-z_0-9]+' | sort | uniq -c | sort -rn | head -10
 
@@ -205,20 +223,45 @@ fp)
       | wc -l
 
     echo
-    echo "--- [3] UA cua nhom rown >= 0.5 bi chan:"
+    echo "--- [3] UA cua nhom rown >= 0.5 bi chan (DAY DU, khong cat):"
+    echo "        KHONG cat chuoi UA o day. Do 19-09: toi cat o 52 ky tu roi ket"
+    echo "        luan 'tam UA giong nhau', trong khi phan PHAN BIET (Chrome"
+    echo "        /120.0.6099.109 vs .110) nam dung sau cho bi cat."
     since | grep 'action=block' \
       | perl -ne '($r) = /rown=([0-9.]+)/; print if defined($r) && $r >= 0.5' \
-      | field ua | cut -c1-60 | sort | uniq -c | sort -rn | head -5
+      | field ua | sort | uniq -c | sort -rn | head -5
 
     echo
     echo "--- [4] UA/identity CHI trong tap co cookie that — thuoc do collapse:"
-    echo "        =1 la moi client tach rieng (chan dung). >1 nhieu la identity"
-    echo "        dang gop nhieu khach that. LOC COOKIE la BAT BUOC: thieu no thi"
-    echo "        bot xoay UA cho so cao y nhu collapse that (da mac 19-09)."
+    echo "        =1 la moi client tach rieng (chan dung). >1 nhieu CO THE la"
+    echo "        identity gop nhieu khach that — NHUNG cung co the la mot bot"
+    echo "        xoay UA, va muc [0] phan biet hai thu do. Doc [0] truoc."
+    echo "        LOC COOKIE la BAT BUOC o day: thieu no thi bot xoay UA cho so"
+    echo "        cao y nhu collapse that (da mac 19-09)."
     since | grep -v 'rown=0.00' | grep -v 'rown=-' \
       | perl -ne '($i) = / id=(\S+)/; ($u) = / ua=(\S+)/;
                   if (defined($i) && defined($u) && $i ne "-") { print "$i\t$u\n" }' \
       | sort -u | cut -f1 | uniq -c | sort -rn | head -5
+
+    echo
+    echo "--- [5] voi identity dong nhat: UA DAY DU cua no."
+    echo "        Neu tam UA chi khac nhau o so build (Chrome/120.0.6099.109 vs"
+    echo "        .110) thi ua_norm gop DUNG — mot may doi minor version, khong"
+    echo "        phai tam nguoi. Neu khac he dieu hanh/trinh duyet thi moi la"
+    echo "        collapse that."
+    BIG=$(since | grep -v 'rown=0.00' | grep -v 'rown=-' \
+      | perl -ne '($i) = / id=(\S+)/; ($u) = / ua=(\S+)/;
+                  if (defined($i) && defined($u) && $i ne "-") { print "$i\t$u\n" }' \
+      | sort -u | cut -f1 | uniq -c | sort -rn | head -1 | awk '{print $2}')
+    if [ -n "${BIG:-}" ]; then
+        echo "        id=$BIG"
+        since | grep " id=$BIG " | field ua | sort -u | sed 's/^/          /'
+        echo "        IP va domain cua identity nay:"
+        since | grep " id=$BIG " \
+          | perl -ne '($i)=/ ip=(\S+)/; ($d)=/domain=(\S+)/;
+                      print "          ".($i//"-")." | ".($d//"-")."\n"' \
+          | sort -u | head -5
+    fi
     ;;
 
 *)
