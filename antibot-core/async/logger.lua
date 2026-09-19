@@ -29,6 +29,30 @@ local DEVICE_GROUP = {
     no_ua                 = "no_ua",
 }
 
+
+-- ── Cột transport: `ja3` / `ja3p` / `ja3c` / `j3m` / `tls13` / `h2` ──────
+-- CÙNG MỘT HỌ LỖI với khối ngay trên, nhưng ở chiều ngược lại và đã đọc sai
+-- nhiều lần, nên ghi tách ra.
+--
+-- `transport_layer` là bước **CUỐI** của `STEPS_COMMON`. Nên với mọi request
+-- thoát sớm — `banned_ip` (bước 6), `banned_id`, `fleet_dyn_block_*` (bước 4),
+-- `ip_whitelist`, fast-path cookie — các cột này ghi `-` hoặc `nil` **vì tầng
+-- chưa chạy**, KHÔNG phải vì "đã đo và kết quả rỗng".
+--
+-- `-` Ở ĐÂY NGHĨA LÀ "CHƯA ĐO", KHÔNG PHẢI "ĐO RỒI, ÂM". Đọc lẫn hai thứ này
+-- làm mọi phép đo sau đó vô nghĩa, và đã xảy ra bốn lần trong phiên 19-09-2026:
+--   `ja3=-` trên 848/848 dòng `banned_id` ⇒ tôi đề xuất dùng `ja3` để tách
+--     client sau proxy — trên đúng tập dữ liệu mà `ja3` KHÔNG THỂ tồn tại.
+--   `h2=nil tls13=nil` trên 100% dòng throttled ⇒ tôi đọc thành "client không
+--     dùng HTTP/2", trong khi đó chỉ là hệ quả vị trí guard.
+--   `xf_over=false` trên 100% dòng bị chặn (gán ở nhánh fall-through — đã vá
+--     ở `e40e1d5`).
+--   `rown=-` / `id=-` / `ua=-` ⇒ request thoát trước khi trường được dựng,
+--     KHÔNG phải một identity mang nhiều UA.
+--
+-- QUY TẮC ĐO: muốn kết luận gì về transport thì phải lọc trên tập request SỐNG
+-- tới bước 13. Với tập `banned_*` thì các cột này vô giá trị — dùng cột khác.
+-- Xem `transport/CLAUDE.md` 2026-08 và `memory/feedback_flag_read_before_write.md`.
 -- ── Nhãn ý định theo `action_reason` ─────────────────────────────────────
 -- VÌ SAO PHẢI CÓ BẢNG NÀY, chứ không chỉ dựa vào bốn trường bằng chứng:
 -- `bot_score` / `ua_flag` / `ip_rep` / `ip_risk` đều CHỈ được điền ở tầng

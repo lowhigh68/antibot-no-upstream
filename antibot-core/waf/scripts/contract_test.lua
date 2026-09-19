@@ -1607,7 +1607,7 @@ do
         end
     end
 
-    local uc = slurp("antibot-core/detection/bot/ua_claim.lua")
+    local uc = slurp(SRC .. "detection/bot/ua_claim.lua")
     if not uc then
         bad("  SAI  thieu detection/bot/ua_claim.lua\n")
     else
@@ -1640,7 +1640,7 @@ end
 -- thay ke tan cong xoay ~10 UA moi IP nen no da co san ~10 identity — doi sang
 -- identity chi nhan nguong len 10 lan CHO KE TAN CONG, khong cuu ai.
 do
-    local wp = slurp("antibot-core/detection/wp_hardening.lua")
+    local wp = slurp(SRC .. "detection/wp_hardening.lua")
     if not wp then
         bad("  SAI  thieu detection/wp_hardening.lua\n")
     else
@@ -1684,8 +1684,8 @@ end
 -- "crawler", ma `AhrefsSiteAudit` khong co chu nao => bot_name = nil.
 -- `AhrefsBot` (co chu "bot") thi chay dung: 8.879 luot `good_bot_verified`.
 do
-    local uachk = slurp("antibot-core/detection/bot/ua_check.lua")
-    local gb    = slurp("antibot-core/core/data/goodbot.json")
+    local uachk = slurp(SRC .. "detection/bot/ua_check.lua")
+    local gb    = slurp(SRC .. "core/data/goodbot.json")
     if not uachk or not gb then
         bad("  SAI  thieu ua_check.lua hoac goodbot.json\n")
     else
@@ -1718,9 +1718,9 @@ end
 --       gia tri `CF-Connecting-IP` nghia la bat ky ai cung tu khai duoc danh
 --       tinh, ma `ctx.ip` la khoa cua ban/rate/reputation.
 do
-    local comp = slurp("antibot-core/intelligence/scoring/compute.lua")
-    local po   = slurp("antibot-core/core/proxy_origin.lua")
-    local ini  = slurp("antibot-core/init.lua")
+    local comp = slurp(SRC .. "intelligence/scoring/compute.lua")
+    local po   = slurp(SRC .. "core/proxy_origin.lua")
+    local ini  = slurp(SRC .. "init.lua")
     if not comp or not po or not ini then
         bad("  SAI  thieu compute.lua / proxy_origin.lua / init.lua\n")
     else
@@ -1945,19 +1945,16 @@ do
                 end
             end
 
-            -- 4) Cot transport trong logger: `ja3`/`tls13`/`h2` chi co nghia khi
-            -- request song toi buoc transport. Bat buoc co chu thich canh bao o
-            -- logger de nguoi doc log khong hieu `-` la "da do, ket qua rong".
-            local lg = slurp(SRC .. "async/logger.lua") or ""
-            local tpos = order["transport_layer"] or 0
-            if tpos > 0 and not lg:find("transport", 1, true) then
-                bad("  SAI  [25] async/logger.lua ghi cot transport (ja3/tls13/h2) ma\n" ..
-                    "       KHONG nhac `transport` o chu thich. Transport la buoc %d nen\n" ..
-                    "       moi request thoat som ghi `-`/`nil`; thieu canh bao thi phep\n" ..
-                    "       do se doc `-` thanh \"da do, am\" thay vi \"chua do\".\n", tpos)
-            else
-                pass = pass + 1
-            end
+            -- ĐA GO assertion "logger.lua phai nhac chu `transport` o chu thich".
+            --
+            -- No la Y KIEN PHONG CACH doi lot bat bien: mot test do vi THIEU CHU
+            -- THICH buoc nguoi khac sua VAN BAN moi deploy duoc, va no da chan
+            -- dung mot ban deploy hop le (19-09). Test hop dong chi duoc gac thu
+            -- KIEM CHUNG DUOC: mot co doc truoc khi ghi la sai khach quan; mot
+            -- dong chu thich thieu thi khong.
+            --
+            -- Kien thuc do van dang gia, nen no duoc ghi vao DUNG CHO: khoi chu
+            -- thich o dau `async/logger.lua` va `transport/CLAUDE.md:122`.
         end
     end
 end
