@@ -2088,43 +2088,95 @@ do
     end
 end
 
--- ── 28. `.svg` KHONG duoc nam trong bang duoi chay duoc cua P1 ──────────────
+-- ── 28. P1: `.svg` KHONG o bang duoi chay duoc — va vi sao `.inc` THI CO ────
 --
--- Quyet dinh 19-09: `.svg` xu ly RIENG, khong o P1. Khong phai vi vo hai —
--- nguoc lai — ma vi no la loai nguy hiem KHAC: chay o trinh duyet nan nhan
--- (XSS), khong chay o server (RCE). Va khac quyet dinh o cho dat gia nhat:
--- khach hang upload logo/icon SVG THAT, hang ngay. Mot luat chan `.svg` luc
--- upload se chan dung viec do, de doi lay viec KHONG bao ve duoc cac file SVG
--- da nam tren dia tu truoc — tra gia FP cao nhat cho vung phu nho nhat.
+-- `.svg`: quyet dinh 19-09, xu ly RIENG. Khong phai vi vo hai — nguoc lai — ma
+-- vi no la loai nguy hiem KHAC: chay o trinh duyet nan nhan (XSS), khong chay o
+-- server (RCE). Va khac o cho dat gia nhat: khach hang upload logo/icon SVG
+-- THAT, hang ngay. Mot luat chan `.svg` luc upload se chan dung viec do, de doi
+-- lay viec KHONG bao ve duoc cac file SVG da nam tren dia tu truoc — tra gia FP
+-- cao nhat cho vung phu nho nhat.
 --
--- Chua o `waf/CLAUDE.md`. Gac o day vi mot dong trong bang Lua thi de them, va
--- nguoi them se khong doc CLAUDE.md truoc.
-io.write("\nhop dong: [28] P1 — .svg khong o bang duoi chay duoc\n")
+-- ── `.inc`: BAN DAU CUA MUC NAY DA SAI, va sai theo kieu te nhat ────
+--
+-- Ban dau [28] gac ca `inc` cung voi `svg`/`html`, dua tren cau toi tu viet
+-- trong `upload.lua`: ".inc khong duoc anh xa sang PHP handler theo mac dinh".
+-- Do luong tren fleet 19-09 BAC BO:
+--
+--     httpd-hostname.conf:4      AddHandler ...php74...  .inc .php .phtml
+--     httpd-php-handlers.conf:5  AddHandler ...lsphp     .inc .php .php5 .phtml
+--     httpd-php-handlers.conf:12 AddHandler ...lsphp     .inc .php .php5 .phtml
+--
+-- `.inc` dung NGAY CANH `.php` trong ca ba dong. Tren dan may nay no la ma chay
+-- duoc, va bo no ra la mot lo THAT: webshell ten `x.inc` chay binh thuong.
+--
+-- Bai hoc phuong phap, ghi o day chu khong o CLAUDE.md vi day la cho nguoi ta
+-- doc khi sua bang: toi da lay mot phong doan chua do va CAI NO VAO MOT TEST
+-- nhu mot bat bien. Test khong lam phong doan thanh su that — no chi khoa cung
+-- phong doan lai, va lam nguoi sua DUNG ve sau bi bao do. Mot bat bien chi duoc
+-- dat vao test khi no den tu phep do hoac tu quyet dinh tuong minh.
+--
+-- Nen muc nay gio gac HAI chieu:
+--   `svg`/`html`/`htm`  KHONG duoc co trong PHP_EXT  (quyet dinh FP)
+--   `php`/`inc`         PHAI co trong PHP_EXT        (do tren fleet)
+io.write("\nhop dong: [28] P1 — bang duoi: svg khong, inc CO\n")
 do
     local up = slurp(SRC .. "waf/upload.lua")
     if not up then
         bad("  SAI  [28] khong doc duoc upload.lua\n")
     else
         local code = up:gsub("%-%-[^\n]*", "")
-        local tbl = code:match("local EXEC_EXT = {(.-)}")
+        local tbl = code:match("local PHP_EXT = {(.-)}")
         if not tbl then
-            bad("  SAI  [28] khong tim thay bang `EXEC_EXT`\n")
+            bad("  SAI  [28] khong tim thay bang `PHP_EXT`\n" ..
+                "       (bang cu ten `EXEC_EXT` — doi ten thi sua muc nay)\n")
         else
             local bad_n = 0
-            -- Ba duoi nay la QUYET DINH da ghi, khong phai so thich.
-            for _, ext in ipairs({ "svg", "inc", "html", "htm" }) do
-                if tbl:find("%f[%w]" .. ext .. "%s*=%s*true") then
+            local function has(ext)
+                return tbl:find("%f[%w]" .. ext .. "%s*=%s*true") ~= nil
+            end
+
+            -- 28a. KHONG duoc co — quyet dinh ve FP.
+            for _, ext in ipairs({ "svg", "html", "htm" }) do
+                if has(ext) then
                     bad_n = bad_n + 1
-                    bad("  SAI  [28] `%s` nam trong EXEC_EXT.\n" ..
-                        "       `.svg` xu ly rieng (XSS o trinh duyet, khong phai\n" ..
-                        "       RCE o server) — xem waf/CLAUDE.md. `.inc`/`.html`\n" ..
-                        "       khong duoc anh xa sang PHP handler mac dinh.\n" ..
-                        "       Them vao day la bat oan file that cua khach.\n", ext)
+                    bad("  SAI  [28a] `%s` nam trong PHP_EXT.\n" ..
+                        "       `.svg` xu ly rieng (XSS o trinh duyet, khong phai RCE\n" ..
+                        "       o server) — xem waf/CLAUDE.md. `.html` khong duoc anh\n" ..
+                        "       xa sang PHP handler tren fleet nay. Them vao day la\n" ..
+                        "       bat oan file that cua khach.\n", ext)
                 end
             end
+
+            -- 28b. PHAI co — do duoc tren fleet 19-09.
+            for _, ext in ipairs({ "php", "inc", "php5", "phtml" }) do
+                if not has(ext) then
+                    bad_n = bad_n + 1
+                    bad("  SAI  [28b] `%s` KHONG nam trong PHP_EXT.\n" ..
+                        "       Do tren fleet 19-09: `AddHandler` o\n" ..
+                        "       httpd-php-handlers.conf va httpd-hostname.conf liet ke\n" ..
+                        "       `.inc .php .php5 .phtml` — ca bon deu la ma chay duoc.\n" ..
+                        "       Bo mot cai ra la mot lo THAT, khong phai mot dong log.\n", ext)
+                end
+            end
+
+            -- 28c. Cac duoi CHUA thay tren fleet phai o tang legacy, khong o
+            -- PHP_EXT: tron chung vao lam ban chinh con so dung de quyet dinh
+            -- trong so.
+            for _, ext in ipairs({ "phar", "phps", "php7", "pht" }) do
+                if has(ext) then
+                    bad_n = bad_n + 1
+                    bad("  SAI  [28c] `%s` nam trong PHP_EXT nhung CHUA thay trong\n" ..
+                        "       `AddHandler` nao tren fleet. No thuoc `PHP_LEGACY` de\n" ..
+                        "       dem RIENG — gop vao PHP_EXT lam con so `upload_php_ext`\n" ..
+                        "       khong tra loi duoc \"bao nhieu la duoi that su chay duoc\".\n", ext)
+                end
+            end
+
             if bad_n == 0 then pass = pass + 1 end
         end
     end
 end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

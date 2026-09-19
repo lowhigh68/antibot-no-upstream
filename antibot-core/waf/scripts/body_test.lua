@@ -434,12 +434,12 @@ io.write("\ncore: P1 up_rule (than multipart that)\n")
 
 check("ten file sach -> nil",
       scan(mp({ part(CD .. 'filename="anh.jpg"') })).up_rule, nil)
-check("shell.php -> upload_exec_ext",
-      scan(mp({ part(CD .. 'filename="shell.php"') })).up_rule, "upload_exec_ext")
-check("duoi kep x.php.jpg -> upload_exec_double",
-      scan(mp({ part(CD .. 'filename="x.php.jpg"') })).up_rule, "upload_exec_double")
-check(".htaccess -> upload_config",
-      scan(mp({ part(CD .. 'filename=".htaccess"') })).up_rule, "upload_config")
+check("shell.php -> upload_php_ext",
+      scan(mp({ part(CD .. 'filename="shell.php"') })).up_rule, "upload_php_ext")
+check("duoi kep x.php.jpg -> upload_php_double",
+      scan(mp({ part(CD .. 'filename="x.php.jpg"') })).up_rule, "upload_php_double")
+check(".htaccess -> upload_apache_config",
+      scan(mp({ part(CD .. 'filename=".htaccess"') })).up_rule, "upload_apache_config")
 check("logo.svg -> nil (SVG xu ly rieng)",
       scan(mp({ part(CD .. 'filename="logo.svg"') })).up_rule, nil)
 
@@ -447,12 +447,45 @@ check("logo.svg -> nil (SVG xu ly rieng)",
 -- phan thu hai khong bao gio duoc soi.
 check("phan xau nam SAU phan sach",
       scan(mp({ part(CD .. 'filename="anh.jpg"'),
-                part(CD .. 'filename="shell.php"') })).up_rule, "upload_exec_ext")
+                part(CD .. 'filename="shell.php"') })).up_rule, "upload_php_ext")
+
+
+-- `.inc` — DO TREN FLEET 19-09, khong phai suy luan. Ca ba dong `AddHandler`
+-- tren dan may nay liet ke `.inc` NGAY CANH `.php`. Ban dau toi ghi nguoc
+-- ("`.inc` khong duoc anh xa") va con cai phong doan do vao contract test [28]
+-- nhu mot bat bien. Ca do la ly do co dong nay.
+check("shell.inc -> upload_php_ext (do tren fleet)",
+      scan(mp({ part(CD .. 'filename="shell.inc"') })).up_rule, "upload_php_ext")
+
+-- Tang LEGACY dem rieng: `.phar`/`.phps`/`.php7`/`.pht` KHONG thay trong
+-- `AddHandler` nao tren fleet. Van soi (mot may moi cai hay `.htaccess` cua
+-- khach co the bat), nhung phai dem rieng de con so `upload_php_ext` tra loi
+-- duoc "bao nhieu la duoi THAT SU chay duoc".
+check("payload.phar -> legacy",
+      scan(mp({ part(CD .. 'filename="payload.phar"') })).up_rule, "upload_php_legacy_ext")
+check("x.php7 -> legacy",
+      scan(mp({ part(CD .. 'filename="x.php7"') })).up_rule, "upload_php_legacy_ext")
+
+-- BA nhan config, khong gop mot. `web.config` tren stack Linux/Apache gan nhu
+-- khong co gia tri thuc thi, nen tron no vao `.htaccess` la lam con so
+-- `.htaccess` phong len bang luu luong scanner vo hai.
+check(".user.ini -> upload_php_config",
+      scan(mp({ part(CD .. 'filename=".user.ini"') })).up_rule, "upload_php_config")
+check("web.config -> upload_foreign_config",
+      scan(mp({ part(CD .. 'filename="web.config"') })).up_rule, "upload_foreign_config")
+
+-- NUL + dau phan cach: goc nhin cua mot thanh phan dung chuoi kieu C thay
+-- `shell.php`, trong khi `basename` don thuan thay `benign.jpg`. Mot chuoi
+-- normalize duy nhat PHA HUY thong tin nay — do la ly do `canonical_views` kiem
+-- ba goc nhin. Thu pha: quay ve mot goc nhin => ca nay do.
+check("shell.php\0/benign.jpg -> bat duoc",
+      scan(mp({ part(CD .. 'filename="shell.php\0/benign.jpg"') })).up_rule,
+      "upload_php_ext")
 
 -- `filename*=` RFC 5987: giai MOT lop. Than multipart chay `decode=false` nen
 -- day la duong ma `check_args` khong thay — va la bypass da ghi trong CLAUDE.md.
 check("filename*= percent-encoded",
-      scan(mp({ part(CD .. "filename*=UTF-8''shell%2Ephp") })).up_rule, "upload_exec_ext")
+      scan(mp({ part(CD .. "filename*=UTF-8''shell%2Ephp") })).up_rule, "upload_php_ext")
 
 -- KHONG multipart thi khong ap dung — `nil`, khong phai `false`.
 check("urlencoded -> nil", scan("a=1", URLENC).up_rule, nil)
@@ -462,7 +495,7 @@ check("urlencoded -> nil", scan("a=1", URLENC).up_rule, nil)
 do
     local r = scan(mp({ part(CD .. 'filename="../../wp-config.php"') }))
     check("ca hai: arg_rule co", r.fn_rule, "arg_traversal")
-    check("ca hai: up_rule co",  r.up_rule, "upload_exec_ext")
+    check("ca hai: up_rule co",  r.up_rule, "upload_php_ext")
 end
 
 -- pack/unpack phai giu `up_rule` qua ranh gioi thread. Lech mot truong la
@@ -471,7 +504,7 @@ do
     local r  = scan(mp({ part(CD .. 'filename="shell.php"') }))
     local rt, err = core.unpack(core.pack(r))
     check("pack/unpack khong loi", err, nil)
-    check("pack/unpack giu up_rule", rt and rt.up_rule, "upload_exec_ext")
+    check("pack/unpack giu up_rule", rt and rt.up_rule, "upload_php_ext")
     local clean = core.unpack(core.pack(scan(mp({ part(CD .. 'filename="a.jpg"') }))))
     check("pack/unpack giu up_rule nil", clean.up_rule, nil)
 end

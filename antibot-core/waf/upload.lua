@@ -40,37 +40,82 @@ local _M = {}
 -- ── Duoi CHAY DUOC tren server ──────────────────────────────────────
 --
 -- Tieu chi vao bang nay HEP va kiem tra duoc: co cau hinh Apache/LiteSpeed nao
--- mac dinh anh xa duoi nay sang handler PHP khong. KHONG phai "duoi nghe nguy
--- hiem".
+-- TREN DAN MAY NAY anh xa duoi nay sang handler PHP khong. KHONG phai "duoi
+-- nghe nguy hiem".
 --
--- `.phar` co trong bang vi `php_value` mac dinh cho phep, va mot phar duoc
--- `include` la chay ma. `.inc` thi KHONG — no khong duoc anh xa sang PHP handler
--- theo mac dinh; no chi nguy hiem qua LFI, ma LFI la duong `args.lua` gac va
--- `fim.sh` phat hien. Dua `.inc` vao la bat oan moi file `.inc` cua theme that.
+-- ── DA DO 19-09-2026, va so lieu BAC BO ban dau cua bang nay ────────
 --
--- `.phtml` `.pht` `.php3..8` nam trong `AddHandler`/`AddType` mac dinh cua
--- nhieu ban Apache va cPanel/DA template.
+-- Ban dau toi viet 12 duoi tu tai lieu chung, va ghi trong chu thich rang
+-- `.inc` "KHONG duoc anh xa sang PHP handler theo mac dinh". SAI, va con te hon
+-- la toi da cai phong doan do vao `contract_test` [28] nhu mot BAT BIEN — tuc
+-- khoa cung mot dieu sai, va nguoi sau sua dung se bi test bao do.
 --
--- CHUA KIEM TREN DAN MAY NAY. Bang nay dung tu tai lieu chung, khong tu
--- `/usr/local/apache2/conf` cua 5 may. Phai kiem truoc khi nang trong so khoi 0:
---     grep -rniE 'AddHandler|AddType' /usr/local/apache2/conf/ | grep -i php
--- Neu may nay anh xa duoi KHAC (vd `.php-single`) thi bang thieu; neu no KHONG
--- anh xa `.pht`/`.php3` thi bang rong hon thuc te — huong thu hai chi ton mot
--- dong log trong so 0, huong thu nhat la lo that. Do la ly do lenh kiem nam
--- day chu khong nam trong dau toi.
-local EXEC_EXT = {
-    php = true, php3 = true, php4 = true, php5 = true, php6 = true,
-    php7 = true, php8 = true, phps = true, phtml = true, pht = true,
-    phar = true, phtm = true,
+-- Do that tren fleet:
+--     /etc/httpd/conf/extra/httpd-hostname.conf:4
+--         AddHandler "proxy:unix:.../php74/sockets/webapps.sock|fcgi://..."
+--                    .inc .php .phtml
+--     /etc/httpd/conf/extra/httpd-php-handlers.conf:5,12
+--         AddHandler application/x-httpd-lsphp  .inc .php .php5 .phtml
+--
+-- Hai ket luan, ca hai nguoc chieu nhau:
+--
+--   1. `.inc` LA MA CHAY DUOC tren dan may nay — dung ngay canh `.php` trong ca
+--      ba dong. Bo no ra la mot lo THAT: webshell ten `x.inc` chay binh thuong.
+--   2. `.php3 .php4 .php6 .php7 .php8 .pht .phtm .phps .phar` KHONG co trong
+--      BAT KY dong nao. Bang cu rong gap ba lan thuc te.
+--
+-- Huong (2) chi ton mot dong log o trong so 0, nhung no lam BAN phep do: dem
+-- `upload_exec_ext` ma khong biet bao nhieu lan la duoi that su chay duoc thi
+-- khong the dung con so do quyet dinh trong so. Nen tach tang.
+--
+-- ── Vi sao TACH TANG chu khong chi cat bang ─────────────────────────
+--
+-- Cat `.phar`/`.phps` ra khoi bang la mat kha nang phat hien; giu chung chung
+-- mot rule_id voi `.php` la mat kha nang DO. Tach ra giai quyet ca hai: cung
+-- ban, khac nhan, nen `waf.log` dem duoc rieng va ngay nang trong so thi nang
+-- duoc TUNG TANG.
+--
+-- `PHP_EXT`    — DA XAC MINH tren fleet. `.inc` o day chu khong o tang duoi.
+-- `PHP_LEGACY` — phu thuoc cau hinh, KHONG thay tren fleet nay. Van soi vi mot
+--                may moi cai hay mot `.htaccess` cua khach co the bat chung —
+--                nhung dem rieng.
+local PHP_EXT = {
+    php = true, php5 = true, phtml = true, inc = true,
+}
+
+local PHP_LEGACY = {
+    php3 = true, php4 = true, php6 = true, php7 = true, php8 = true,
+    pht  = true, phtm = true, phps = true, phar = true,
 }
 
 -- Ten file CAU HINH — nguy hiem vi no doi cach server doi xu voi CAC file khac.
--- `.htaccess` chua `AddType application/x-httpd-php .jpg` bien moi anh JPEG
--- trong thu muc do thanh ma chay duoc, va KHONG chua `<?php` nen
--- `waf_body_php` mu hoan toan. Day la duong lot ma P1 sinh ra de bit.
-local CONFIG_NAME = {
-    [".htaccess"] = true, [".htpasswd"] = true, [".user.ini"] = true,
-    ["php.ini"]    = true, ["web.config"] = true,
+--
+-- TACH BA NHOM, khong gop mot `upload_config`. Ly do: tren OpenResty + Apache
+-- tren Linux, ba nhom nay co suc manh KHAC HAN nhau, va gop lai thi phep do
+-- khong tra loi duoc cau hoi duy nhat dang quan tam — "tin hieu nay den tu
+-- `.htaccess` hay tu `web.config`".
+--
+-- `APACHE_CONFIG` — doi HANDLER cua cac file khac. `.htaccess` chua
+--   `AddType application/x-httpd-php .jpg` bien moi anh JPEG trong thu muc do
+--   thanh ma chay duoc, va KHONG chua `<?php` nen `waf_body_php` mu hoan toan.
+--   Day la nhom manh nhat va la duong lot ma P1 sinh ra de bit.
+-- `PHP_CONFIG` — doi cau hinh PHP (`.user.ini` doc duoc o che do FPM/CGI:
+--   `auto_prepend_file` la mot duong chay ma). Manh, nhung hep hon `.htaccess`.
+-- `FOREIGN_CONFIG` — `web.config` la IIS, tren stack nay gan nhu KHONG co gia
+--   tri thuc thi. Giu lai vi no la dau hieu scanner ro rang, nhung phai dem
+--   RIENG: tron no vao `.htaccess` la lam con so `.htaccess` phong len bang
+--   luu luong scanner vo hai.
+--   `.htpasswd` cung o day — no khong doi handler, chi lo hash mat khau.
+local APACHE_CONFIG = {
+    [".htaccess"] = true,
+}
+
+local PHP_CONFIG = {
+    [".user.ini"] = true, ["php.ini"] = true,
+}
+
+local FOREIGN_CONFIG = {
+    ["web.config"] = true, [".htpasswd"] = true,
 }
 
 -- ── Chuan hoa ten file ─────────────────────────────────────────────
@@ -146,36 +191,95 @@ end
 -- Tra ve MOT rule_id, uu tien giam dan. Cung khuon `check_args`: mot lan khop
 -- la du de ghi log, va thu tu co dinh nen so lieu doc duoc on dinh.
 --
---   upload_exec_ext     duoi chay duoc o VI TRI CUOI — `shell.php`
---   upload_exec_double  duoi chay duoc KHONG o cuoi — `x.php.jpg`
---   upload_config       ten file cau hinh — `.htaccess`
+--   upload_apache_config   `.htaccess` — doi HANDLER cua file khac
+--   upload_php_config      `.user.ini` / `php.ini` — `auto_prepend_file`
+--   upload_foreign_config  `web.config` / `.htpasswd` — dau hieu scanner
+--   upload_php_ext         duoi DA XAC MINH chay duoc, o vi tri cuoi
+--   upload_php_double      duoi DA XAC MINH, KHONG o cuoi (`AddHandler`)
+--   upload_php_legacy_ext  duoi phu thuoc cau hinh, bat ky vi tri
+--
+-- SAU nhan chu khong phai HAI, va day khong phai chia nho cho vui: gop lai thi
+-- phep do khong tra loi duoc cau hoi quyet dinh trong so — "tin hieu nay den tu
+-- `.htaccess` (doi handler cua moi file trong thu muc) hay tu `web.config`
+-- (tren stack nay gan nhu vo hai)". Mot nhan gop la mot con so khong dung duoc.
 --
 -- KHONG co luat "khong co duoi" hay "duoi la la": khach upload file khong duoi
 -- va duoi la that (`.dwg`, `.ai`, `.sketch`, `.psd`). Bat oan ca kho tai lieu
 -- cua khach de doi lay mot vung phu ma `waf_body_php` da phu.
-function _M.check_filename(raw)
-    if type(raw) ~= "string" or raw == "" then return nil end
 
-    local name = strip_tail(basename(raw))
-    if name == "" then return nil end
+-- BON GOC NHIN, khong phai mot chuoi da normalize.
+--
+-- VI SAO. `basename` roi `strip_tail` la mot chuoi da PHA HUY THONG TIN, va voi
+-- `shell.php\0/benign.jpg` no chon `benign.jpg`: `basename` thay dau `/` cuoi
+-- cung nen lay phan sau NUL. Nhung mot thanh phan ha nguon dung chuoi kieu C
+-- (hoac mot ham PHP cu) nhin thay `shell.php` — chuoi DUNG o chinh cho ta khong
+-- nhin.
+--
+-- Chua chac la exploit tren stack hien tai: nginx va PHP hien dai tu choi NUL
+-- trong ten file. Nhung phong ve KHONG duoc dua vao mot gia dinh ve tang khac,
+-- va gia cua viec kiem bon goc nhin la ba lan `find` tren mot chuoi < 512 byte
+-- — do duoc, va chi tra khi request THAT SU co `filename=`.
+--
+-- Thu tu trong bang la thu tu uu tien khi nhieu goc nhin cung khop: goc nhin
+-- DAY DU nhat truoc.
+local function canonical_views(raw)
+    local views, seen, n = {}, {}, 0
+    local function add(v)
+        if v and v ~= "" and not seen[v] then
+            seen[v] = true; n = n + 1; views[n] = v
+        end
+    end
 
+    -- 1. Cat NUL/ADS TRUOC roi moi basename — goc nhin cua mot thanh phan dung
+    --    chuoi kieu C. Day la goc nhin NGUY HIEM NHAT nen dung dau.
+    add(strip_tail(basename(strip_tail(raw))))
+    -- 2. basename truoc roi cat — goc nhin cua tang hien dai.
+    add(strip_tail(basename(raw)))
+    -- 3. Chuoi tho, chi cat duoi: bat ca truong hop khong co dau phan cach nao.
+    add(strip_tail(raw))
+    return views
+end
+
+local function classify_name(name)
     local lower = name:lower()
-    if CONFIG_NAME[lower] then return "upload_config" end
+    if APACHE_CONFIG[lower]  then return "upload_apache_config"  end
+    if PHP_CONFIG[lower]     then return "upload_php_config"     end
+    if FOREIGN_CONFIG[lower] then return "upload_foreign_config" end
 
     local exts = extensions(name)
     if #exts == 0 then return nil end
 
-    if EXEC_EXT[exts[1]] then return "upload_exec_ext" end
+    if PHP_EXT[exts[1]] then return "upload_php_ext" end
     for i = 2, #exts do
-        if EXEC_EXT[exts[i]] then return "upload_exec_double" end
+        if PHP_EXT[exts[i]] then return "upload_php_double" end
+    end
+    -- Tang legacy KHONG phan biet vi tri: no da la "phu thuoc cau hinh", nen
+    -- tach them theo vi tri chi lam nho dan so ma khong them thong tin.
+    for i = 1, #exts do
+        if PHP_LEGACY[exts[i]] then return "upload_php_legacy_ext" end
     end
     return nil
 end
 
-_M.EXEC_EXT    = EXEC_EXT
-_M.CONFIG_NAME = CONFIG_NAME
-_M.basename    = basename
-_M.strip_tail  = strip_tail
-_M.extensions  = extensions
+function _M.check_filename(raw)
+    if type(raw) ~= "string" or raw == "" then return nil end
+
+    local views = canonical_views(raw)
+    for i = 1, #views do
+        local rule = classify_name(views[i])
+        if rule then return rule end
+    end
+    return nil
+end
+
+_M.PHP_EXT        = PHP_EXT
+_M.PHP_LEGACY     = PHP_LEGACY
+_M.APACHE_CONFIG  = APACHE_CONFIG
+_M.PHP_CONFIG     = PHP_CONFIG
+_M.FOREIGN_CONFIG = FOREIGN_CONFIG
+_M.basename       = basename
+_M.strip_tail     = strip_tail
+_M.extensions     = extensions
+_M.canonical_views = canonical_views
 
 return _M

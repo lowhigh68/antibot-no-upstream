@@ -60,43 +60,62 @@ eq("template.phpsomething.jpg",   nil, "`phpsomething` KHONG phai `php`")
 eq("my-php-guide.pdf",            nil, "chu `php` trong TEN, khong phai duoi")
 eq("php.jpg",                     nil, "duoi la `jpg`; `php` la ten goc")
 eq("notes.txt",                   nil, "text")
-eq("include.inc",                 nil, "`.inc` KHONG anh xa PHP mac dinh")
+-- `.inc` DA CHUYEN sang nhom "phai ban" (dong duoi muc [2]) — do tren fleet
+-- 19-09 cho thay ca ba dong `AddHandler` liet ke `.inc` ngay canh `.php`.
+--
+-- GHI RO VI SAO LAN NAY SUA TEST LA DUNG, trong khi dau muc [1] noi "khong
+-- duoc sua test cho khop": cai bi bac bo la GIA DINH cua toi ("`.inc` khong
+-- duoc anh xa"), khong phai hanh vi dung cua code. Do luong tu may that thang
+-- mot gia dinh chua kiem la ly do HOP LE duy nhat de doi ky vong; "test do nen
+-- toi ha ky vong" thi khong.
 eq("readme.md",                   nil, "markdown")
 
 io.write("\n[2] PHAI BAN — duoi chay duoc o cuoi\n")
-eq("shell.php",                   "upload_exec_ext", "ca co ban")
-eq("SHELL.PHP",                   "upload_exec_ext", "khong phan biet hoa thuong")
-eq("shell.phtml",                 "upload_exec_ext", "phtml")
-eq("shell.php5",                  "upload_exec_ext", "php5")
-eq("shell.php7",                  "upload_exec_ext", "php7")
-eq("shell.pht",                   "upload_exec_ext", "pht")
-eq("payload.phar",                "upload_exec_ext", "phar include duoc")
-eq("../../wp-config.php",         "upload_exec_ext", "traversal — lay basename")
-eq("..\..\shell.php",           "upload_exec_ext", "dau phan cach Windows")
-eq("/tmp/a/b/shell.php",          "upload_exec_ext", "duong dan tuyet doi")
+eq("shell.php",                   "upload_php_ext", "ca co ban")
+eq("SHELL.PHP",                   "upload_php_ext", "khong phan biet hoa thuong")
+eq("shell.phtml",                 "upload_php_ext", "phtml")
+eq("shell.php5",                  "upload_php_ext", "php5")
+eq("shell.php7",                  "upload_php_legacy_ext", "php7")
+eq("shell.pht",                   "upload_php_legacy_ext", "pht")
+eq("payload.phar",                "upload_php_legacy_ext", "phar include duoc")
+eq("../../wp-config.php",         "upload_php_ext", "traversal — lay basename")
+eq("..\..\shell.php",           "upload_php_ext", "dau phan cach Windows")
+eq("/tmp/a/b/shell.php",          "upload_php_ext", "duong dan tuyet doi")
+eq("shell.inc",                   "upload_php_ext", "DO TREN FLEET: AddHandler liet ke .inc canh .php")
+eq("x.inc.jpg",                   "upload_php_double", ".inc o vi tri giua")
 
 io.write("\n[3] PHAI BAN — duoi bi che o cuoi (cac duong ne that)\n")
-eq("shell.php.",                  "upload_exec_ext", "dau cham cuoi — Apache van anh xa")
-eq("shell.php ",                  "upload_exec_ext", "khoang trang cuoi")
-eq("shell.php\t",                 "upload_exec_ext", "tab cuoi")
-eq("shell.php::$DATA",            "upload_exec_ext", "NTFS ADS")
-eq("shell.php\0.jpg",             "upload_exec_ext", "byte NUL cat chuoi")
-eq("shell.php...",                "upload_exec_ext", "nhieu dau cham cuoi")
+eq("shell.php.",                  "upload_php_ext", "dau cham cuoi — Apache van anh xa")
+eq("shell.php ",                  "upload_php_ext", "khoang trang cuoi")
+eq("shell.php\t",                 "upload_php_ext", "tab cuoi")
+eq("shell.php::$DATA",            "upload_php_ext", "NTFS ADS")
+eq("shell.php\0.jpg",             "upload_php_ext", "byte NUL cat chuoi")
+eq("shell.php...",                "upload_php_ext", "nhieu dau cham cuoi")
 
 io.write("\n[4] PHAI BAN — duoi kep KHONG o cuoi (AddHandler)\n")
-eq("x.php.jpg",                   "upload_exec_double", "AddHandler khop duoi GIUA")
-eq("avatar.phtml.png",            "upload_exec_double", "phtml giua")
-eq("a.php.b.c.jpg",               "upload_exec_double", "sau nhieu lop")
+eq("x.php.jpg",                   "upload_php_double", "AddHandler khop duoi GIUA")
+eq("avatar.phtml.png",            "upload_php_double", "phtml giua")
+eq("a.php.b.c.jpg",               "upload_php_double", "sau nhieu lop")
 
 io.write("\n[5] PHAI BAN — ten file cau hinh\n")
 -- Nhom nay la ly do P1 ton tai: KHONG file nao o day chua `<?php`, nen
 -- `waf_body_php` (trong so 50, da chay) mu hoan toan voi chung.
-eq(".htaccess",                   "upload_config", "AddType bien .jpg thanh PHP")
-eq(".HTACCESS",                   "upload_config", "khong phan biet hoa thuong")
-eq(".user.ini",                   "upload_config", "PHP doc .user.ini")
-eq("php.ini",                     "upload_config", "php.ini")
-eq("web.config",                  "upload_config", "IIS")
-eq("../.htaccess",                "upload_config", "qua traversal")
+eq(".htaccess",                   "upload_apache_config", "AddType bien .jpg thanh PHP")
+eq(".HTACCESS",                   "upload_apache_config", "khong phan biet hoa thuong")
+eq(".user.ini",                   "upload_php_config", "PHP doc .user.ini")
+eq("php.ini",                     "upload_php_config", "php.ini")
+eq("web.config",                  "upload_foreign_config", "IIS")
+eq("../.htaccess",                "upload_apache_config", "qua traversal")
+eq(".htpasswd",                   "upload_foreign_config", "khong doi handler, chi lo hash")
+
+-- Diem 3 cua ban gop y: NUL + dau phan cach. `basename` don thuan chon
+-- `benign.jpg` (dau `/` cuoi cung nam SAU NUL), nhung mot thanh phan ha nguon
+-- dung chuoi kieu C thay `shell.php`. `canonical_views` kiem ba goc nhin nen bat
+-- duoc ca hai chieu. Thu pha: quay ve mot goc nhin => bon ca duoi do.
+eq("shell.php\0/benign.jpg",      "upload_php_ext", "C-string thay shell.php")
+eq("benign.jpg\0/shell.php",      "upload_php_ext", "basename thay shell.php")
+eq("a/b/shell.php\0/x/y.jpg",     "upload_php_ext", "NUL + nhieu thu muc")
+eq("shell.php\0",                 "upload_php_ext", "NUL o cuoi")
 
 io.write("\n[6] MEP — dau vao xau khong duoc lam no no\n")
 eq(nil,                           nil, "nil")
@@ -105,8 +124,8 @@ eq(".",                           nil, "mot dau cham")
 eq("...",                         nil, "toan dau cham")
 eq("/",                           nil, "chi dau phan cach")
 eq("\\",                          nil, "chi dau phan cach Windows")
-eq(".php",                        "upload_exec_ext", "file an ten `.php` — duoi la php")
-eq(string.rep("a", 500) .. ".php", "upload_exec_ext", "ten dai van bat")
+eq(".php",                        "upload_php_ext", "file an ten `.php` — duoi la php")
+eq(string.rep("a", 500) .. ".php", "upload_php_ext", "ten dai van bat")
 eq(string.rep("a.", 200) .. "jpg", nil, "200 dau cham, khong duoi chay duoc — KHONG treo")
 
 io.write("\n[7] Ham phu — kiem rieng tung buoc chuan hoa\n")

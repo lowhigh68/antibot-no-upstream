@@ -591,11 +591,11 @@ extensions()  duyệt PHẢI→TRÁI, tối đa 6 đuôi
 
 Bỏ `strip_tail` thì **4** đường né mở ra cùng lúc (đã thử phá, test đỏ 4 dòng).
 
-### Bảng đuôi HẸP có chủ ý — và ba đuôi cố ý KHÔNG có
+### Bảng đuôi HẸP có chủ ý — và hai đuôi cố ý KHÔNG có
 
-`.inc` **không** vào bảng: nó không được ánh xạ sang PHP handler theo mặc định;
-nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện.
-Đưa vào là bắn oan mọi file `.inc` của theme thật. `.html`/`.htm` không chạy trên
+`.inc` **CÓ** trong bảng, và bản đầu của mục này ghi ngược. Đo trên fleet 19-09:
+cả ba dòng `AddHandler` liệt kê `.inc` ngay cạnh `.php`, nên trên dàn máy này nó
+là mã chạy được. Bỏ ra là một lỗ thật. `.html`/`.htm` không chạy trên
 server. `.svg` — xem mục riêng dưới.
 
 **`contract_test` [28] gác chính ba cái này**, vì thêm một dòng vào bảng Lua thì
@@ -668,11 +668,31 @@ sạch. Gộp hai cái lại là đúng lỗi đã cắt 4 tháng ở `wp_paths.
 
 Hai dòng cuối là lý do P1 tồn tại. Không phải "thêm mẫu cho chắc".
 
-| rule_id | Bắt gì |
-|---|---|
-| `upload_exec_ext` | Đuôi chạy được ở **vị trí cuối** — `shell.php` |
-| `upload_exec_double` | Đuôi chạy được **không** ở cuối — `x.php.jpg`, vì `AddHandler` (khác `SetHandler`) khớp **bất kỳ** đuôi trong tên |
-| `upload_config` | `.htaccess` `.htpasswd` `.user.ini` `php.ini` `web.config` — nguy hiểm vì đổi cách server đối xử với **các file khác** |
+**Sáu nhãn, không phải hai — và đó là quyết định về phép ĐO, không phải chia nhỏ cho vui.** Gộp lại thì không trả lời được câu quyết định trọng số: *"tín hiệu này đến từ `.htaccess` (đổi handler của mọi file trong thư mục) hay từ `web.config` (trên stack Linux/Apache gần như vô hại)"*. Một nhãn gộp là một con số không dùng được.
+
+| rule_id | Bắt gì | Mức |
+|---|---|---|
+| `upload_apache_config` | `.htaccess` — đổi **handler** của các file khác. `AddType application/x-httpd-php .jpg` biến mọi JPEG thành mã chạy được, và **không** chứa `<?php` nên `waf_body_php` mù hoàn toàn | mạnh nhất |
+| `upload_php_config` | `.user.ini` `php.ini` — `auto_prepend_file` là một đường chạy mã | mạnh |
+| `upload_foreign_config` | `web.config` (IIS, stack này gần như vô hại) `.htpasswd` (không đổi handler) — dấu hiệu scanner, đếm **riêng** | yếu |
+| `upload_php_ext` | Đuôi **đã xác minh trên fleet** ở vị trí cuối — `.php .php5 .phtml .inc` | mạnh |
+| `upload_php_double` | Cùng tập đó **không** ở cuối — `x.php.jpg`, vì `AddHandler` (khác `SetHandler`) khớp **bất kỳ** đuôi trong tên | mạnh |
+| `upload_php_legacy_ext` | `.php3 .php4 .php6 .php7 .php8 .pht .phtm .phps .phar` — **không thấy** trong `AddHandler` nào trên fleet. Vẫn soi (máy mới cài, hoặc `.htaccess` của khách bật), nhưng đếm **riêng** | chưa rõ |
+
+**Bảng đuôi đã ĐO trên fleet 19-09, và số liệu bác bỏ bản đầu của tôi:**
+
+```
+httpd-hostname.conf:4       AddHandler ...php74/sockets/webapps.sock  .inc .php .phtml
+httpd-php-handlers.conf:5   AddHandler application/x-httpd-lsphp     .inc .php .php5 .phtml
+httpd-php-handlers.conf:12  AddHandler application/x-httpd-lsphp     .inc .php .php5 .phtml
+```
+
+Hai kết luận ngược chiều nhau:
+
+1. **`.inc` LÀ mã chạy được** trên dàn máy này — đứng ngay cạnh `.php` trong cả ba dòng. Bản đầu tôi ghi ngược ("`.inc` không được ánh xạ theo mặc định") và còn **cài phỏng đoán đó vào `contract_test` [28] như một bất biến**. Bỏ `.inc` ra là một lỗ **thật**: webshell tên `x.inc` chạy bình thường.
+2. **`.php3 .php4 .php6 .php7 .php8 .pht .phtm .phps .phar` không có trong bất kỳ dòng nào.** Bảng cũ rộng gấp ba lần thực tế — chỉ tốn một dòng log ở trọng số 0, nhưng nó làm **bẩn phép đo**: đếm `upload_exec_ext` mà không biết bao nhiêu lượt là đuôi thật sự chạy được thì không dùng con số đó quyết định trọng số được.
+
+Do đó [28] nay gác **hai chiều**: `svg`/`html`/`htm` **không được** có trong `PHP_EXT` (quyết định FP), còn `php`/`inc`/`php5`/`phtml` **phải** có (đo trên fleet). Nhánh [28b] chính là cái bắt lại lỗi của tôi nếu ai lặp nó.
 
 **Ba bước chuẩn hoá, mỗi bước bịt một đường né đã biết:**
 
@@ -682,9 +702,9 @@ Hai dòng cuối là lý do P1 tồn tại. Không phải "thêm mẫu cho chắ
 
 **Trọng số 0 lúc chào đời** — cùng khuôn `waf_arg`/`waf_body_arg`, và là lý do `arg_null_byte` không phá 43 domain. Nên `waf_upload` **không** được có mặt trong `waf_signal()`; `contract_test` [1] gác hai chiều đó.
 
-**Cố ý KHÔNG có:** luật "không có đuôi" hay "đuôi lạ". Khách upload file không đuôi và đuôi lạ thật (`.dwg`, `.ai`, `.sketch`, `.psd`). `.inc` cũng **không** vào bảng — nó không được ánh xạ sang PHP handler theo mặc định; nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện.
+**Cố ý KHÔNG có:** luật "không có đuôi" hay "đuôi lạ". Khách upload file không đuôi và đuôi lạ thật (`.dwg`, `.ai`, `.sketch`, `.psd`). `.inc` thì **có** trong bảng — đo trên fleet, xem bảng rule_id ở trên.
 
-**Chưa kiểm trên dàn máy này:** bảng `EXEC_EXT` dựng từ tài liệu chung, **không** từ `/usr/local/apache2/conf` của 5 máy. Phải chạy trước khi nâng trọng số khỏi 0:
+**ĐÃ kiểm trên fleet 19-09** (mục này trước đó ghi "chưa kiểm" — nay có số liệu). Lệnh, để kiểm lại khi thêm máy hoặc đổi PHP handler:
 
 ```bash
 grep -rniE 'AddHandler|AddType' /usr/local/apache2/conf/ | grep -i php
@@ -697,6 +717,33 @@ grep -rniE 'AddHandler|AddType' /usr/local/apache2/conf/ | grep -i php
 **`uprule=` trong `waf.log` ghi RULE_ID, tuyệt đối không ghi tên file** — tên file do kẻ gửi điều khiển và thực tế có mang token/email/đường dẫn nội bộ; `waf.log` là file text giữ 30 ngày. Cùng lý do đã không ghi thân request vào `matched=`. Đọc **kèm** `fntr=`: `uprule=- fntr=spill` nghĩa là **chưa soi**, không phải sạch.
 
 **Giới hạn còn lại, đo được:** webshell mã hoá (`eval(base64_decode(…))` không thẻ mở) vẫn lọt — nó cần luật **nội dung**, thuộc P2/F2. Và MIME lệch đuôi chưa soi: `Content-Type: image/jpeg` kèm `filename="x.php"` hiện chỉ bắn vì đuôi, chưa bắn vì **lệch**.
+
+### Vùng không quan sát của multipart — đo trước, KHÔNG vá bằng ngưỡng
+
+`MAX_PARTS = 64` và `MAX_HDR_LEN = 2048` làm parser trả trạng thái truncated (`fntr=n`, `fntr=hdr`). Điều đó **đúng** — nó không im lặng coi là đã quét đầy đủ, và đó là cả điểm của cột `fntr=`.
+
+Nhưng **trạng thái đó hiện chỉ đi vào `waf.log`, không vào `ctx`.** Đã grep: `fn_trunc` không xuất hiện trong `init.lua` lẫn `compute.lua`. Nghĩa là một upload 70 part với `shell.php` ở part 65 **lọt sạch và không sinh tín hiệu nào** — ta biết mình không quét hết, rồi không làm gì với thông tin đó.
+
+**Không block theo số part.** Upload nhiều part là chuyện hợp lệ thường xuyên (gallery sản phẩm, import CSV kèm ảnh), nên một ngưỡng toàn cục là cỗ máy FP. `MAX_PARTS` cũng **không** nên nâng: nó là trần chi phí do kẻ gửi điều khiển.
+
+**Hướng đúng là tín hiệu theo NGỮ CẢNH**, và nó chỉ có nghĩa khi **bốn** điều kiện cùng đúng:
+
+| Điều kiện | Vì sao cần |
+|---|---|
+| endpoint upload (`async-upload.php`, `media-new.php`, `admin-ajax.php?action=upload*`) | loại trừ form nhiều trường thông thường |
+| có `filename=` trong thân | loại trừ form không kèm file |
+| body scan **incomplete** (`fntr ∈ {n, hdr, spill}`) | đây là vùng mù thật, không phải scan sạch |
+| **chưa xác thực** (`session_richness < 0.5`) | admin đăng nhập upload 70 ảnh là việc bình thường — đúng dân số `auth_session_cap` che |
+
+Bốn điều kiện cùng lúc thì mới là *"có người nhồi part để đẩy file ra ngoài vùng quét"*; thiếu điều kiện thứ tư là chặn đúng quản trị viên thật.
+
+**Chưa implement, và cổng vào là số đo:** cần biết `fntr=n` và `fntr=hdr` xuất hiện bao nhiêu lần trên `waf.log` của 5 máy, và trong đó bao nhiêu lượt có `rown < 0.5`. Nếu con số là 0 thì đây là hạng mục **gác vĩnh viễn** như `expensive_filter` throttle — viết luật cho một dân số bằng 0 là cái giá đã trả một lần.
+
+```bash
+grep -c 'fntr=n\b'   /var/log/antibot/waf.log
+grep -c 'fntr=hdr'   /var/log/antibot/waf.log
+grep -E 'fntr=(n|hdr)' /var/log/antibot/waf.log | tr ' ' '\n' | grep '^rown=' | sort | uniq -c | sort -rn | head
+```
 
 ### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
 
@@ -830,9 +877,9 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wp_paths.lua` 469 |
 | F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
-| T — test | **một phần** | `scripts/*.lua` 3.398 dòng test / 2.069 dòng mã. Cổng `deploy.sh [3b]` |
+| T — test | **một phần** | `scripts/*.lua` 3.502 dòng test / 2.173 dòng mã. Cổng `deploy.sh [3b]` |
 | P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
-| P1 — chặn upload webshell | **một phần** | `upload.lua` — 3 luật tên file, **trọng số 0**. Đuôi chạy được, đuôi kép (`AddHandler`), file cấu hình. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
+| P1 — chặn upload webshell | **một phần** | `upload.lua` — **6 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
 | F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
 | A — admin UI cho WAF | **chưa** | `admin/init.lua` chưa có trang nào của tầng này |
 
@@ -840,10 +887,10 @@ Lệnh đo lại, chạy từ `antibot-core/`:
 
 ```bash
 cat waf/args.lua waf/body.lua waf/body_core.lua waf/body_worker.lua \
-    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2069
-cat waf/scripts/*.lua | wc -l                                # test: 3398
+    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2173
+cat waf/scripts/*.lua | wc -l                                # test: 3502
 grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u   # 3 rule_id tham so
-grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 3 rule_id ten file
+grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 6 rule_id ten file
 grep -nE '^ *waf_[a-z_]+ *=' intelligence/scoring/compute.lua # 5 tín hiệu
 ```
 
@@ -865,6 +912,16 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-19 (5) — **So lieu `AddHandler` tu fleet BAC BO bang duoi cua toi, va bon gop y cua nguoi van hanh vao code.**
+  - **Loi te nhat trong ngay, va no la loi cua rieng toi:** `upload.lua` ban dau ghi ".inc KHONG duoc anh xa sang PHP handler theo mac dinh" — roi toi **cai chinh phong doan do vao `contract_test` [28] nhu mot BAT BIEN**. Do that tren fleet: ca **ba** dong `AddHandler` (`httpd-hostname.conf:4`, `httpd-php-handlers.conf:5,12`) liet ke `.inc` **ngay canh** `.php`. Tren dan may nay `.inc` la ma chay duoc; bo no ra la mot lo THAT, webshell ten `x.inc` chay binh thuong.
+  - **Bai hoc phuong phap, khac han cac lan truoc:** cac lan truoc la "doan sai roi do lai". Lan nay toi lay mot phong doan chua do va **khoa cung no bang mot test**. Test khong lam phong doan thanh su that — no chi lam nguoi sua DUNG ve sau bi bao do. **Mot bat bien chi duoc dat vao test khi no den tu phep do hoac tu quyet dinh tuong minh.** [28] nay gac HAI chieu: `svg`/`html`/`htm` KHONG duoc co trong `PHP_EXT`, `php`/`inc`/`php5`/`phtml` PHAI co — nhanh [28b] chinh la cai bat lai loi cua toi neu ai lap.
+  - **Chieu nguoc lai cung sai:** `.php3 .php4 .php6 .php7 .php8 .pht .phtm .phps .phar` **khong co trong bat ky dong nao**. Bang cu rong gap ba lan thuc te. Huong nay chi ton mot dong log o trong so 0, nhung no lam **ban phep do** — dem `upload_exec_ext` ma khong biet bao nhieu luot la duoi that su chay duoc thi khong dung con so do quyet dinh trong so duoc.
+  - **HAI nhan -> SAU nhan, theo gop y, va giai quyet ca hai diem 1+2 bang mot co che.** `upload_apache_config` (`.htaccess` — doi handler cua moi file trong thu muc, manh nhat) · `upload_php_config` (`.user.ini`/`php.ini` — `auto_prepend_file`) · `upload_foreign_config` (`web.config` tren stack Linux gan nhu vo hai, `.htpasswd` khong doi handler — dem RIENG de khong lam con so `.htaccess` phong len bang luu luong scanner) · `upload_php_ext` (duoi DA XAC MINH tren fleet) · `upload_php_double` (cung tap, khong o cuoi) · `upload_php_legacy_ext` (phu thuoc cau hinh, dem rieng). Cat bang la mat kha nang phat hien; gop nhan la mat kha nang DO. Tach tang giu ca hai.
+  - **Diem 3 — thu tu chuan hoa: `canonical_views` kiem BA goc nhin thay vi mot chuoi da normalize.** `shell.php\0/benign.jpg`: `basename` don thuan chon `benign.jpg` (dau `/` cuoi cung nam SAU NUL), nhung mot thanh phan ha nguon dung chuoi kieu C thay `shell.php` — **chuoi dung o dung cho ta khong nhin**. Ba goc nhin: cat NUL/ADS **truoc** roi basename (goc nhin C-string, dung dau vi nguy hiem nhat) · basename truoc roi cat (tang hien dai) · chuoi tho chi cat duoi. **Thu pha: quay ve mot goc nhin => hai ca `shell.php\0/...` do, dung ca ban neu.** Gia: ba `find` tren chuoi < 512 byte, va chi tra khi request THAT SU co `filename=`.
+  - **Diem 4 — vung mu sau part 64: GHI RA, chua vá, va co ly do.** Da grep: `fn_trunc` **khong xuat hien** trong `init.lua` lan `compute.lua` — trang thai truncated chi di vao `waf.log`. Mot upload 70 part co `shell.php` o part 65 lot sach va khong sinh tin hieu nao. Dung nhu ban noi: **khong block theo so part** (gallery san pham, import CSV kem anh — FP ngay), va `MAX_PARTS` cung khong nen nang (no la tran chi phi do ke gui dieu khien). Huong dung la tin hieu theo ngu canh voi **BON** dieu kien cung luc: endpoint upload · co `filename=` · scan incomplete (`fntr ∈ {n,hdr,spill}`) · **chua xac thuc** (`richness < 0.5`). Thieu dieu kien thu tu la chan dung quan tri vien that upload 70 anh. **Cong vao la so do**, khong phai truc giac: neu `fntr=n`/`fntr=hdr` = 0 tren waf.log cua 5 may thi gac vinh vien nhu `expensive_filter` throttle — viet luat cho mot dan so bang 0 la cai gia da tra mot lan.
+  - **Test: 62 assertion (tu 55) + 12 ca dau-cuoi -> 19.** Them `.inc` (do tren fleet), tang legacy dem rieng, ba nhan config, bon ca NUL, `.htpasswd`. `[28]` ba nhanh, **thu pha ca ba, ca ba do dung cho**.
+  - **Mot cho trong bo test phai sua ky vong, va ghi ro vi sao lan nay la DUNG:** dau muc [1] cua `upload_test.lua` viet "neu dong nao trong nhom nay do, KHONG duoc sua test cho khop". Ca `include.inc` -> `nil` nam dung o do. Lan nay sua **la dung**, vi cai bi bac bo la GIA DINH cua toi, khong phai hanh vi dung cua code — do luong tu may that thang mot gia dinh chua kiem la ly do hop le duy nhat de doi ky vong. "Test do nen toi ha ky vong" thi khong.
+  - **So do: ma 2.069 -> 2.173 dong, test 3.398 -> 3.502, nhan 3 -> 6.**
 - 2026-09-19 (4) — **P1 khoi dong: `upload.lua` — soi TEN FILE upload. Trong so 0.**
   - **Vi sao no KHONG phai "them mau cho chac":** `waf_body_php` (trong so 50, da chay tu 05-09) **da** bat webshell PHP thuan trong than multipart. P1 chi bit cac duong ma `<?php` KHONG xuat hien, va do luong duong do rat hep: `.htaccess` chua `AddType application/x-httpd-php .jpg` (khong co the mo PHP nao — `waf_body_php` **mu hoan toan**) va duoi kep `x.php.jpg` khop `AddHandler`. Hai ca do la ly do file nay ton tai; phan con lai la cong them bang chung cho thu da bat duoc.
   - **Ba luat:** `upload_exec_ext` (duoi chay duoc o cuoi), `upload_exec_double` (duoi chay duoc KHONG o cuoi — `AddHandler` khac `SetHandler`, no khop bat ky duoi nao trong ten), `upload_config` (`.htaccess`/`.user.ini`/`php.ini`/`web.config`).
@@ -883,7 +940,7 @@ nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
   - **Vì sao P1 KHÔNG phải "đi từ 0 lên có", và đây là điều đáng ghi nhất:** `body_core.scan` đã có `php` (thân chứa `<?php`/`<?=`) và nó **đã** là tín hiệu **trọng số 50** (`waf_body_php`). Nên webshell PHP thuần **đã** bị bắt từ 05-09. Việc của P1 là bịt các đường mà `<?php` **không** xuất hiện: `.htaccess` với `AddType … .jpg` (không có thẻ mở PHP, `waf_body_php` mù hoàn toàn), và đuôi kép `x.php.jpg`. Hai đường đó là lý do P1 tồn tại — không phải "thêm mẫu cho chắc".
   - **Ba luật:** `upload_exec_ext` (đuôi chạy được ở cuối), `upload_exec_double` (đuôi chạy được **không** ở cuối — Apache `AddHandler` ánh xạ theo **bất kỳ** đuôi trong tên, nên `x.php.jpg` chạy như PHP trên cấu hình mặc định của nhiều bản), `upload_config` (`.htaccess` `.user.ini` `php.ini` `web.config`).
   - **Ba lớp chuẩn hoá, mỗi lớp đóng một đường né đã biết:** `basename` (cả `/` lẫn `\` — PHP trên Linux coi `\` là ký tự tên file bình thường nên `a\b.php` **là** đuôi `.php`), `strip_tail` (`::$DATA` NTFS ADS, byte NUL, khoảng trắng/dấu chấm cuối — Apache vẫn ánh xạ `shell.php.` sang PHP), `extensions` phải→trái tối đa 6. **Thử phá: bỏ `strip_tail` ⇒ 4 đường né mở cùng lúc, test đỏ đúng 4 dòng.**
-  - **Bảng đuôi HẸP có chủ ý, và ba đuôi cố ý KHÔNG có.** `.inc` không được ánh xạ sang PHP handler mặc định — nó chỉ nguy hiểm qua LFI, mà LFI là đường `args.lua` gác và `fim.sh` phát hiện; đưa vào là bắn oan mọi file `.inc` của theme thật. `.html`/`.htm` không chạy trên server. `.svg` xử lý riêng.
+  - **Bảng đuôi HẸP có chủ ý.** *(Đính chính cùng ngày — xem mục 19-09 (5): câu "`.inc` không được ánh xạ sang PHP handler mặc định" ở đây SAI. Số liệu `AddHandler` trên fleet cho thấy `.inc` đứng ngay cạnh `.php` trong cả ba dòng. Giữ nguyên câu sai ở đây, có dấu, vì xoá nó đi thì mục 19-09 (5) mất đối tượng.)* `.html`/`.htm` không chạy trên server. `.svg` xử lý riêng.
   - **`.svg` tách khỏi P1 — quyết định, không phải bỏ sót.** Nó là loại nguy hiểm **khác**: chạy ở trình duyệt nạn nhân (XSS), không ở server (RCE). Và khác ở chỗ đắt nhất: **khách upload logo/icon SVG thật, hàng ngày**. Một luật chặn `.svg` lúc upload sẽ chặn đúng việc đó, để đổi lấy việc **không** bảo vệ được các file SVG đã nằm trên đĩa từ trước — trả giá FP cao nhất cho vùng phủ nhỏ nhất. Bốn lớp phòng vệ xếp theo sức mạnh thật đã ghi trong mục riêng; **một đính chính đáng chú ý: CSP là lớp YẾU nhất**, không vì nó dở mà vì `Content-Security-Policy` là header của **tài liệu**, còn khi nạn nhân mở thẳng `/uploads/x.svg` thì tài liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. Muốn CSP có tác dụng phải gắn lên **chính response phục vụ file upload**, tức việc của nginx. Rẻ hơn cả ba lớp trên và chưa ai nhắc: `Content-Disposition: attachment`.
   - **`up_rule` là KÊNH RIÊNG, không tranh chỗ `return` với `arg_rule`.** `filename="shell.php"` **không** khớp mẫu nào của `check_args` — không `..`, không `php://`, không `%00` — nên gộp hai kết quả vào một `return` làm P1 biến mất ở đúng nhóm nó sinh ra để bắt. Ngược lại `filename="../../x.php"` khớp **cả hai** và lúc đó muốn cả hai số đếm.
   - **Chỗ hỏng-trong-im-lặng phải gác, và đã gác: `up_rule` đi qua 4 chặng** (`scan_disposition_headers` → `scan_one_boundary` → `filename_rule` → `scan`), mỗi chặng nhiều `return` sớm. Bỏ sót **một** cái thì tín hiệu mất im lặng ở đúng nhóm đó — tràn `MAX_PARTS` là ví dụ cụ thể: upload 70 phần có `shell.php` ở phần 3 thoát qua nhánh `n` và báo "không có gì". Đúng khuôn lỗi đã cắt 4 tháng của `wp_paths.mark()`. **`contract_test` [27a]** đòi mọi `return` trong `scan_one_boundary` có đúng 3 giá trị.
