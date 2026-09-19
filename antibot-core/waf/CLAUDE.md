@@ -542,7 +542,64 @@ Ba cái đầu cần `open_basedir` + cấu hình Apache. Cái thứ tư là lý
 - **Dưới:** `intelligence/scoring/compute.lua` (`waf_wp_path` trọng số 50), `enforcement/decision/engine.lua` (ba tầng tin cậy quyết định thật)
 - **Bên cạnh:** `async/waf_logger.lua`
 
+## Trạng thái tầng WAF — đo bằng code, không đọc bảng kế hoạch
+
+**Bảng này đo lại được. Đừng tin nó, chạy lại lệnh ở cột cuối.**
+
+Lý do nó tồn tại: bản lộ trình đăng ngày 18-09 khai `F1a` (đọc body) và `F1b` (soi
+thân) là **chưa làm**, trong khi 801 dòng của chúng đã chạy trên cả 5 máy từ
+05-09. Tôi đọc hết 1.504 dòng lộ trình rồi tin **bảng trạng thái trong đó** thay
+vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong dàn này: *"không đọc
+được" bị thu thành "đã đọc và câu trả lời là X"* — xem `l7/CLAUDE.md` và
+`async/logger.lua`.
+
+| Mục | Trạng thái | Bằng chứng trong mã |
+|---|---|---|
+| P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wp_paths.lua` 469 |
+| F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
+| F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
+| T — test | **một phần** | `scripts/*.lua` 3.059 dòng test / 1.823 dòng mã. Cổng `deploy.sh [3b]` |
+| P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
+| P1 — chặn upload webshell | **chưa** | multipart đã parse được (`body_core`: header phần theo boundary, chuẩn hoá `filename`, `fn_rule`), chưa có luật nào chặn |
+| F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
+| A — admin UI cho WAF | **chưa** | `admin/init.lua` chưa có trang nào của tầng này |
+
+Lệnh đo lại, chạy từ `antibot-core/`:
+
+```bash
+cat waf/args.lua waf/body.lua waf/body_core.lua waf/body_worker.lua \
+    waf/exposed.lua waf/init.lua waf/wp_paths.lua | wc -l   # mã:  1823
+cat waf/scripts/*.lua | wc -l                                # test: 3059
+grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u  # 3 rule_id
+grep -nE '^ *waf_[a-z_]+ *=' intelligence/scoring/compute.lua # 4 tín hiệu
+```
+
+**Ba rule_id, bốn lệnh `return`.** `arg_null_byte` trả về từ **hai** nhánh —
+byte NUL thô và mẫu văn bản `%00` — vì đó đúng là chỗ trục `binary` tách ra
+(xem mục `args.check` ở trên). Nên đếm `grep -c 'return "arg_'` ra **4** mà số
+luật vẫn là **3**. Lệnh trong khối trên `sort -u` chính vì vậy; bản đầu của
+chính mục này đếm lệnh `return` rồi suýt ghi sai số luật.
+
+**Bốn tín hiệu WAF, không phải ba.** `waf_wp_path = 50`, `waf_body_php = 50`,
+`waf_arg = 0`, `waf_body_arg = 0`. `waf_body_php` **đã** được nâng khỏi 0 — đếm
+"ba luật `args` nên ba tín hiệu trọng số 0" là trộn hai thứ khác nhau: số *luật*
+không bằng số *tín hiệu*.
+
+**Việc kế tiếp là P1, rồi F3.** P1 trước vì nền đã có sẵn trong `body_core` nên
+phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **công cụ chữa FP**:
+6 host sau reverse proxy cần chính sách khác 68 host còn lại, và P2/F2 — mục duy
+nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
+
 ## Update log
+- 2026-09-19 (3) — **Trạng thái tầng WAF ghi lại theo số đo của mã, vì bảng kế hoạch đã sai về chính mình.**
+  - **Lỗi được sửa:** bản lộ trình khai `F1a`/`F1b` là *chưa làm*. Chúng đã chạy từ 05-09: `body.lua` 149 dòng gọi từ `init.lua:111`, luật áp lên thân ở `init.lua:137`, spill qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io`. **801 dòng đang chạy trên 5 máy** bị khai là chưa tồn tại.
+  - **Nguyên nhân, và vì sao nó không phải chuyện bất cẩn:** tôi đọc hết 1.504 dòng lộ trình rồi tin **bảng trạng thái bên trong nó** thay vì `grep` mã nguồn. Cùng một họ lỗi với `ctx.xf_over`, `h2=`/`tls13=`, `ctx.ip_shared`, `ja3=` — *"không đọc được" bị thu thành "đã đọc và câu trả lời là X"*. Lần này nguồn không phải một cột log mà là một tài liệu; cơ chế y hệt. **Lần thứ năm.**
+  - **Phòng vệ đặt vào chỗ đúng:** trạng thái nay nằm trong `waf/CLAUDE.md` — file nằm **cạnh mã**, kèm bốn lệnh `wc -l`/`grep` để đo lại — chứ không nằm trong một tài liệu ngoài cây nguồn, vốn không ai `grep` và không có gì buộc nó trung thực.
+  - **Số đo 19-09:** mã tầng WAF **1.823 dòng**, test **3.059 dòng**. `waf/scripts/*.lua` nhiều hơn mã 1,68 lần.
+  - **Và một đính chính ngay trong lúc viết mục này: bốn tín hiệu WAF, không phải ba.** Tôi định ghi "ba luật `args` = ba tín hiệu trọng số 0"; `grep` ra `waf_wp_path = 50`, `waf_body_php = 50`, `waf_arg = 0`, `waf_body_arg = 0`. `waf_body_php` **đã** rời mức 0 và tôi đếm sót. Số *luật* không bằng số *tín hiệu* — `args.lua` có 3 luật nhưng đổ vào **hai** tín hiệu khác nhau tuỳ nguồn (query string hay thân).
+  - **Và một cái bẫy đếm nữa, bắt được lúc tự kiểm lệnh mình vừa viết:** lệnh xác minh tôi đặt vào tài liệu trả về **4** trong khi tài liệu ghi **3 luật**. Không phải cái nào sai cũng bỏ qua được — `arg_null_byte` `return` từ **hai** nhánh (byte NUL thô / mẫu văn bản `%00`), đúng chỗ trục `binary` tách ra. Ba rule_id, bốn `return`. Lệnh đã sửa thành `grep -o ... | sort -u`. Một lệnh xác minh sai còn tệ hơn không có lệnh nào — cùng lập luận đã gỡ ba lớp kiểm hôm qua.
+  - **P2/F2 vẫn chỉ có 3 luật tham số**, không SQLi/XSS/RCE: `grep -niE 'union|select.*from|<script|eval\('` trên `waf/*.lua` trả về **0** dòng mã (một lượt duy nhất nằm trong chú thích giải thích vì sao **không** đi đường CRS).
+  - **Thứ tự việc còn lại: P1 → F3 → P2/F2 → A.** P1 trước vì `body_core` đã parse multipart (header phần theo boundary, chuẩn hoá `filename`, `fn_rule`) nên phần thiếu là luật chứ không phải hạ tầng. F3 xếp trước P2/F2 vì nó là **công cụ gỡ FP**, mà P2/F2 là mục duy nhất còn lại có rủi ro FP cao — thêm luật payload trước khi có đường gỡ theo domain là làm ngược.
 - 2026-09-19 (2) — **Hai công cụ đo/kiểm vào git: `measure.sh` và `luacheck.pl`. Và ba lớp kiểm bị GỠ vì báo sai — ghi lại để không ai dựng lại.**
   - **`waf/scripts/measure.sh` — bốn nhóm đo, chỉ đọc.** `cf` (lưu lượng qua reverse proxy + `proxy_spoof`), `ban` (phân bố TTL `ban:<id>`/`ban:<ip>`), `fleet` (chặn theo dải), `fp` (ứng viên false-positive). Nhận mốc thời gian dạng file hoặc chuỗi. **Vì sao vào git:** mỗi vòng đo trước là 30–40 dòng dán qua chat, và **ba lần** trong phiên lệnh SAI mà không ai thấy ngay — `grep -o 'ip=[0-9.]*'` trả rỗng, `grep 'ua="..."'` không bao giờ khớp (logger khử dấu nháy + khoảng trắng), `awk -v t=""` khớp MỌI dòng khi mốc rỗng rồi báo là "sau mốc". Trong git thì lệnh được review một lần, dùng nhiều lần, sửa một chỗ. Hai cảnh báo đọc kết quả in ngay ở đầu file: cột transport ghi `-` vì **tầng chưa chạy**, và `rown > 0` **không** chứng minh người thật (hằng số trên nhiều IP là dấu hiệu bot mang cookie cố định).
   - **`waf/scripts/luacheck.pl` — hai lớp kiểm tĩnh, đã thử phá cả hai.** Máy dev không có luajit/lua/node/python nên cổng cú pháp duy nhất là `deploy.sh` bước [2] trên máy thật; file này cắt ngắn vòng lặp "đẩy lên rồi mới phát hiện". **[1] cân bằng khối** — tách chuỗi/comment trước khi tokenize, long-bracket mọi mức `=`, `repeat...until` đóng bằng `until`. Thử phá: bỏ một `end` ⇒ ĐỎ, in ra khối còn treo; bỏ một `return` ⇒ vẫn xanh (đúng). **[2] gọi hàm của module đã `require`** — `local m = require "antibot.x.y"` rồi gọi `m.foo()` thì `x/y.lua` phải xuất `foo`. Thử phá: đổi `claims_good_bot` thành `claims_good_bot_TYPO` ⇒ ĐỎ với tên file và tên hàm. Bỏ qua module dùng `setmetatable`. **Kết quả: 129/129 file, 0 lỗi.**
