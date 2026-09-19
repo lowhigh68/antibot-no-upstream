@@ -353,6 +353,18 @@ function _M.run(ctx)
                       or ua_lower:match("(apis%-google)")
                       or ua_lower:match("(bingpreview)")
                       or ua_lower:match("(microsoftpreview)")
+
+                      -- ── THEM 19-09-2026: crawler KHONG mang chu "bot" ──
+                      -- `AhrefsSiteAudit` la mot UA rieng, khac `AhrefsBot`, va
+                      -- no KHONG chua chu "bot" nen ba pattern greedy o dau
+                      -- chuoi deu truot => `bot_name = nil` => khong tra cuu
+                      -- registry => khong xac minh => khong co dau `crawler:<ip>`
+                      -- => nuoi bucket fleet. Do 19-09 tren cloud168-101:
+                      -- `AhrefsBot` 8.879 luot `good_bot_verified` (khop pattern,
+                      -- chay dung), con dai 51.81.0.0/16 bi `fl:dyn` chan song.
+                      -- Dang ky trong `goodbot.json` MOT MINH la vo nghia: neu
+                      -- khong trich duoc ten thi khong gi tra cuu no.
+                      or ua_lower:match("(ahrefssiteaudit)")
         if bot_name then bot_name = bot_name:lower() end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)

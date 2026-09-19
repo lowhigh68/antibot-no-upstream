@@ -1670,5 +1670,40 @@ do
     end
 end
 
+-- ── 22. Dang ky trong goodbot.json PHAI trich xuat duoc ten tu UA ──────
+--
+-- `ua_check.lua` trich `bot_name` bang chuoi pattern, roi moi tra cuu
+-- `goodbot:dns:<bot_name>`. Mot muc trong `goodbot.json` ma khong pattern nao
+-- trich ra duoc la muc CHET: khong gi tra cuu no, va crawler do khong bao gio
+-- duoc xac minh — no im lang roi xuong duong cham diem va nuoi bucket fleet.
+--
+-- Da tra gia 19-09-2026: `ahrefssiteaudit` duoc them vao goodbot.json o
+-- `1e5dc87` nhung ba pattern greedy dau chuoi deu doi chu "bot"/"spider"/
+-- "crawler", ma `AhrefsSiteAudit` khong co chu nao => bot_name = nil.
+-- `AhrefsBot` (co chu "bot") thi chay dung: 8.879 luot `good_bot_verified`.
+do
+    local uachk = slurp("antibot-core/detection/bot/ua_check.lua")
+    local gb    = slurp("antibot-core/core/data/goodbot.json")
+    if not uachk or not gb then
+        bad("  SAI  thieu ua_check.lua hoac goodbot.json\n")
+    else
+        -- Cac ten trong registry KHONG chua bot/spider/crawler thi PHAI co
+        -- pattern explicit trong ua_check.
+        for name in gb:gmatch('"([%w%-%.]+)":%s*%[') do
+            local n = name:lower()
+            if not (n:find("bot", 1, true) or n:find("spider", 1, true)
+                    or n:find("crawler", 1, true)) then
+                -- Ten co dau gach noi: pattern viet duoi dang `a%-b`.
+                local pat = n:gsub("%-", "%%%%%%-")
+                if not (uachk:find(n, 1, true) or uachk:find(pat, 1, true)) then
+                    bad("  SAI  goodbot.json co %q nhung ua_check khong trich\n" ..
+                        "       duoc ten do tu UA => muc CHET, crawler khong bao\n" ..
+                        "       gio duoc xac minh. Them pattern vao chuoi bot_name.\n", name)
+                else pass = pass + 1 end
+            end
+        end
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
