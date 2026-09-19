@@ -7,7 +7,7 @@
 # bang perl tu goc repo" va thay dung, vi perl chay voi cwd khac han runtime
 # that. Truoc khi day code len, can mot phep kiem chay duoc TAI CHO.
 #
-# BON LOP KIEM, xep theo do tin cay:
+# BA LOP KIEM, xep theo do tin cay:
 #
 #   [1] CAN BANG KHOI  — do tin cay CAO. Dem khoi mo/dong sau khi da tach chuoi
 #       va comment. Mot `end` thieu la loi khach quan.
@@ -17,13 +17,21 @@
 #       co `function _M.foo` hoac `_M.foo =`. Bat duoc loi goi ten sai.
 #       BO QUA khi module tra ve bang dung `setmetatable` hay gan dong.
 #
-#   [3] DUONG DAN FILE TRONG CHUOI — do tin cay CAO cho dung mot ca: chuoi
-#       trong `slurp(SRC .. "...")` / `io.open(...)` tro toi file .lua hay .json
-#       thi file do phai TON TAI. Day chinh la lop bat duoc loi 19-09.
+#   [3] ESCAPE SEQUENCE TRONG CHUOI — do tin cay CAO. Them 19-09 sau khi cong
+#       [2] cua deploy.sh chan mot ban voi `upload_test.lua:82: invalid escape
+#       sequence`. Xem chu thich tai ham `check_escapes`.
 #
-#   [4] NGX API — do tin cay THAP, chi canh bao. Danh sach ham `ngx.*` hay dung;
-#       goi ten ngoai danh sach thi in WARN chu khong bao loi, vi danh sach nay
-#       khong bao gio day du.
+#       CHI kiem chuoi nhay don/nhay doi. Long-bracket `[[...]]` KHONG xu ly
+#       escape, nen `[[\.(?:sql)$]]` la HOP LE va la dung y (PCRE can `\.`).
+#       Ban dau gop hai loai vao mot mang => bao sai 3 lan tren `exposed.lua` va
+#       `wp_paths.lua`, tuc code DANG CHAY production. Da tach.
+#
+# HAI LOP DA GO, ghi lai de khong ai dung lai:
+#   — "duong dan trong chuoi phai ton tai": BAO XANH cho dung loi no sinh ra de
+#     bat (chay tu goc repo thi duong dan tuong doi TON TAI). Bat bien do nay
+#     duoc gac o `contract_test` [26], pham vi hep hon nhung khong bao sai.
+#   — "ngx API ngoai danh sach": danh sach khong bao gio day du nen chi sinh
+#     nhieu WARN, va mot canh bao luon sang la mot canh bao day nguoi ta bo qua.
 #
 # GIOI HAN PHAI BIET: day KHONG phai parser. Khong bat duoc sai kieu, bien nil
 # luc chay, logic sai, hay cosocket goi trong log phase. `deploy.sh` buoc [2] va
@@ -83,6 +91,7 @@ sub strip {
     my $src = shift;
     my $out = "";
     my @strs;
+    my @longs;
     my $i = 0;
     my $n = length($src);
     my $DQ = chr(34);
@@ -107,7 +116,13 @@ sub strip {
             my $close = "]" . $1 . "]";
             my $j = index($src, $close, $i);
             my $body = $j < 0 ? substr($src, $i) : substr($src, $i, $j - $i);
-            push @strs, $body;
+            # KHONG day vao @strs. Long-bracket string KHONG xu ly escape —
+            # trong `[[.(?:sql)$]]` thi `.` la HAI ky tu literal va la dung y
+            # (PCRE can `.`). Gop chung vao mot mang lam lop [3] bao sai 3 lan
+            # tren `exposed.lua`/`wp_paths.lua` — code DANG CHAY production. Do
+            # dung la ho loi da got ba lop kiem hom qua: mot lop bao sai se bi
+            # tat di, va luc do con te hon khong co.
+            push @longs, $body;
             $i = $j < 0 ? $n : $j + length($close);
             $out .= " "; next;
         }
@@ -128,7 +143,7 @@ sub strip {
         $out .= $c;
         $i++;
     }
-    return ($out, \@strs);
+    return ($out, \@strs, \@longs);
 }
 
 # ── [1] Can bang khoi ────────────────────────────────────────────────────
@@ -186,6 +201,43 @@ sub check_calls {
     return @errs;
 }
 
+
+# ── [3] Escape sequence trong chuoi ──────────────────────────────────
+#
+# VI SAO LOP NAY TON TAI, va vi sao no la lop THU BA chu khong phai thu nhat:
+# ngay 19-09-2026 mot ban P1 bi cong [2] cua deploy.sh chan voi
+#
+#     upload_test.lua:82: invalid escape sequence near '"..'
+#
+# Nguyen nhan KHONG phai loi Lua — la loi ONG DAN: toi viet `"..\..\x"` trong
+# mot heredoc bash, bash an mot lop `\`, nen file nhan `"..\..\x"` va `\.` khong
+# phai escape hop le trong Lua. `luabal.pl` dem khoi nen mu hoan toan voi chuyen
+# nay; `check_blocks` cung mu vi `strip()` da bo chuoi di TRUOC khi tokenize.
+#
+# Do la vung mu co cau truc: hai lop kiem dau tien deu lam viec tren CODE da bo
+# chuoi, nen khong lop nao nhin vao BEN TRONG chuoi. Lop nay kiem dung cho do.
+#
+# Lua cho: \a \b \f \n \r \t \v \ \" \' \ddd (0-255) \xHH \z \<newline>
+# Bat ky \<ky tu khac> la loi cu phap.
+my %ESC_OK = map { $_ => 1 } split //, 'abfnrtv\\"\'xz';
+
+sub check_escapes {
+    my ($strs, $file) = @_;
+    my @errs;
+    for my $s (@$strs) {
+        my $i = 0;
+        while (($i = index($s, "\\", $i)) >= 0) {
+            my $c = substr($s, $i + 1, 1);
+            if ($c eq "" or (!$ESC_OK{$c} and $c !~ /[0-9\n]/)) {
+                push @errs, sprintf("escape khong hop le `\%s` trong chuoi",
+                                    ($c eq "" ? "<het chuoi>" : $c));
+            }
+            $i += 2;
+        }
+    }
+    return @errs;
+}
+
 # ── Chay ─────────────────────────────────────────────────────────────────
 my $nerr = 0;
 my $nfile = 0;
@@ -198,11 +250,12 @@ for my $f (@files) {
     close $fh;
     $nfile++;
 
-    my ($code, $strs) = strip($raw);
+    my ($code, $strs, $longs) = strip($raw);
     my @errs;
     my @warns;
 
     push @errs, check_blocks($code, $f);
+    push @errs, check_escapes($strs, $f);
 
     # [2] goi ham module — doc tu nguon goc de lay ca ten module trong chuoi
     my %alias;
