@@ -24,6 +24,8 @@
 -- Nhung thu khac no KHONG chung minh, noi ro de khong ai tuong nham:
 --   - khong chung minh diem so thuc su toi enforcement
 --   - khong chung minh thu tu cac buoc trong pipeline
+--     (muc [25] bat dau lam viec nay: no so vi tri buoc GHI vs buoc DOC cho
+--      mot danh sach co tuong minh — khong phai moi co, xem chu thich o do)
 --   - khong chung minh gi ve race hay timer
 
 local SRC = os.getenv("ANTIBOT_SRC")
@@ -1808,6 +1810,156 @@ do
             "       KHONG duoc mien theo co nay — khi `ctx.ip` vo nghia thi\n" ..
             "       identity la thu duy nhat con phan biet duoc thiet bi.\n")
     else pass = pass + 1 end
+end
+
+-- [25] BAT BIEN THU TU CO: khong co `ctx.<co>` nao duoc DOC o mot buoc chay
+-- TRUOC buoc GHI no.
+--
+-- VI SAO CO MUC NAY. Bon ca trong MOT phien 19-09-2026, khong ca nao bi
+-- `luajit -b` hay `nginx -t` bat (cu phap dung, ngu nghia sai):
+--   `ctx.xf_over`   gan o nhanh fall-through => 100% dong bi chan ghi `false`
+--   `h2=`/`tls13=`  transport la buoc cuoi => moi request thoat som ghi `nil`
+--   `ctx.ip_shared` `ban_store` doc o buoc 6, `ip_tour` ghi o buoc 10
+--                   => Fix B la CODE CHET hai thang, chu thich van mo ta nhu
+--                      dang hoat dong
+--   `ja3=`          toi de xuat dung no de tach client tren dung tap
+--                   `banned_id` — ma `ja3` KHONG THE ton tai o do
+--
+-- Muc [22][23][24] chan ba ca CU THE. Muc nay chan TINH CHAT, nen no bat duoc
+-- ca thu nam chua ai biet. Do la khac biet giua va loi va sua lop loi.
+--
+-- CACH LAM: trich map bien->file tu cac dong `local X = require "antibot.a.b"`,
+-- trich thu tu tu cac bang `STEPS_*`, roi voi moi co trong DANH SACH CANH GAC
+-- duoi day, so vi tri buoc ghi va buoc doc.
+--
+-- DANH SACH la tuong minh, KHONG tu dong quet moi `ctx.*`: mot co co the duoc
+-- ghi o log phase hoac boi timer, va mot test tu dong se bao do hang loat roi
+-- bi tat di — te hon la khong co test. Them co vao day khi no gac mot QUYET
+-- DINH (mien tru, chan, hay bo qua tang).
+do
+    local ini = slurp(SRC .. "init.lua")
+    if not ini then
+        bad("  SAI  thieu init.lua\n")
+    else
+        -- 1) map bien -> duong dan file
+        local var2file = {}
+        for v, mod in ini:gmatch("local%s+([%w_]+)%s*=%s*require%s*\"antibot%.([%w_.]+)\"") do
+            var2file[v] = mod:gsub("%.", "/") .. ".lua"
+        end
+
+        -- 2) thu tu buoc trong STEPS_COMMON (cac bang khac chay SAU no)
+        local order, n = {}, 0
+        local common = ini:match("local STEPS_COMMON%s*=%s*{(.-)\n}")
+        if common then
+            for v in common:gmatch("layer%s*=%s*([%w_]+)") do
+                n = n + 1
+                if not order[v] then order[v] = n end
+            end
+        end
+        -- Cac bang sau COMMON: gan vi tri > moi buoc cua COMMON.
+        local after = n
+        for _, tbl in ipairs({ "STEPS_FULL_DETECTION", "STEPS_INTERACTION", "STEPS_RESOURCE" }) do
+            local body = ini:match("local " .. tbl .. "%s*=%s*{(.-)\n}")
+            if body then
+                for v in body:gmatch("layer%s*=%s*([%w_]+)") do
+                    after = after + 1
+                    if not order[v] then order[v] = after end
+                end
+            end
+        end
+
+        if n == 0 then
+            bad("  SAI  khong trich duoc STEPS_COMMON tu init.lua\n")
+        else
+            -- 3) canh gac: co -> { noi GHI (bien layer), cac noi DOC }
+            -- 3) Canh gac: co -> { w = buoc GHI (bien layer trong STEPS_*),
+            --                      r = danh sach { file DOC, buoc ma file do chay } }
+            --
+            -- NOI DOC PHAI KHAI BANG FILE + BUOC, KHONG bang bien layer.
+            -- Ban dau toi khai bang bien layer va test BAO XANH cho mot loi dang
+            -- ton tai: `ip_shared` duoc doc trong `l7/ban/ban_store.lua`, nhung
+            -- toi khai noi doc la `ip_ban_check` — hai FILE KHAC NHAU cung nam
+            -- trong `l7/ban/`. `ip_ban_check.lua` khong chua chuoi `ctx.ip_shared`
+            -- nen phep kiem `reads` tra nil va test bo qua. Test luon xanh con te
+            -- hon khong co test.
+            --
+            -- Buoc phai khai TAY vi mot file co the duoc goi giua duong: `ban_store`
+            -- khong nam trong STEPS_* nao ca — `l7/init.lua` goi no, tuc no chay
+            -- theo `l7_layer`. Chinh cho nay da lam toi ket luan sai "Fix B la code
+            -- chet" (xem khoi DINH CHINH trong `l7/ban/ban_store.lua`).
+            local L7 = order["l7_layer"] or 99
+            local guarded = {
+                ip_shared = {
+                    w = "ip_tour",
+                    r = { { "l7/ban/ban_store.lua", L7 } },
+                },
+                ip_shared_verified = {
+                    w = "ip_tour",
+                    r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
+                          { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 } },
+                },
+                behind_proxy = {
+                    w = "proxy_origin",
+                    r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
+                          { "detection/ip_tour.lua",               order["ip_tour"]           or 99 },
+                          { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 },
+                          { "l7/expensive_filter_guard.lua",       order["xfilter_guard"]     or 99 },
+                          { "l7/rate/adaptive_limit.lua",          L7 },
+                          { "intelligence/scoring/compute.lua",    order["intelligence_layer"] or 99 } },
+                },
+                asn = {
+                    w = "asn_layer",
+                    r = { { "detection/fleet/trusted.lua", order["fleet"] or 99 } },
+                },
+            }
+
+            for flag, spec in pairs(guarded) do
+                local wpos = order[spec.w]
+                if not wpos then
+                    bad("  SAI  [25] co `%s`: khong tim thay buoc ghi `%s` trong\n" ..
+                        "       bang STEPS_* nao. Sua danh sach canh gac trong test.\n",
+                        flag, spec.w)
+                else
+                    for i = 1, #spec.r do
+                        local rfile, rpos = spec.r[i][1], spec.r[i][2]
+                        local rsrc = slurp(SRC .. rfile)
+                        if not rsrc then
+                            bad("  SAI  [25] co `%s`: khong doc duoc file `%s`.\n", flag, rfile)
+                        elseif not rsrc:find("ctx%." .. flag) then
+                            -- FAIL-CLOSED: khai mot noi doc ma file do khong con
+                            -- doc co nay nua => danh sach canh gac da lac hau, va
+                            -- neu bo qua im lang thi test tu rong dan theo thoi
+                            -- gian cho toi luc khong con gac gi.
+                            bad("  SAI  [25] `%s` KHONG con doc `ctx.%s`. Danh sach canh\n" ..
+                                "       gac lac hau — go dong do khoi test, hoac khoi phuc\n" ..
+                                "       phep doc neu no bi xoa nham.\n", rfile, flag)
+                        elseif rpos < wpos then
+                            bad("  SAI  [25] `%s` DOC `ctx.%s` o buoc %d nhung `%s` GHI\n" ..
+                                "       no o buoc %d => co LUON la gia tri khoi tao.\n" ..
+                                "       Sua: doc gia tri tai cho, hoac doi thu tu buoc.\n",
+                                rfile, flag, rpos, spec.w, wpos)
+                        else
+                            pass = pass + 1
+                        end
+                    end
+                end
+            end
+
+            -- 4) Cot transport trong logger: `ja3`/`tls13`/`h2` chi co nghia khi
+            -- request song toi buoc transport. Bat buoc co chu thich canh bao o
+            -- logger de nguoi doc log khong hieu `-` la "da do, ket qua rong".
+            local lg = slurp(SRC .. "async/logger.lua") or ""
+            local tpos = order["transport_layer"] or 0
+            if tpos > 0 and not lg:find("transport", 1, true) then
+                bad("  SAI  [25] async/logger.lua ghi cot transport (ja3/tls13/h2) ma\n" ..
+                    "       KHONG nhac `transport` o chu thich. Transport la buoc %d nen\n" ..
+                    "       moi request thoat som ghi `-`/`nil`; thieu canh bao thi phep\n" ..
+                    "       do se doc `-` thanh \"da do, am\" thay vi \"chua do\".\n", tpos)
+            else
+                pass = pass + 1
+            end
+        end
+    end
 end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

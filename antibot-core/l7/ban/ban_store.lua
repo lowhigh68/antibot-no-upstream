@@ -115,21 +115,28 @@ function _M.run(ctx)
         -- HTML (XHR/static) rơi xuống seal cứng bên dưới — nhưng navigation đầu
         -- tiên đã verify nên các request sau được cookie fast-path tha.
         --
-        -- ⚠️ 2026-09-19 — NHÁNH NÀY LÀ CODE CHẾT, CỐ Ý CHƯA VÁ. Đoạn mô tả ở
-        -- trên nói về một cơ chế KHÔNG hoạt động; đừng tin nó khi đọc.
-        --   `ctx.ip_shared` do `detection/ip_tour.lua:134` ghi, mà `ip_tour` là
-        --   BƯỚC 10 của STEPS_COMMON còn đường `ip_ban_check` (gọi file này) là
-        --   BƯỚC 6 ⇒ ở đây cờ LUÔN `false` (khởi tạo `core/ctx/init.lua:86`).
-        --   Tệ hơn: request bị cấm `ngx.exit(403)` ngay tại bước 6 nên không bao
-        --   giờ tới bước 10 ⇒ `iptour:ua:<ip>` không bao giờ được PFADD cho
-        --   chính IP đang bị cấm ⇒ identity đã bị cấm thì VĨNH VIỄN không thể
-        --   tích luỹ bằng chứng để được tha. Đo 19-09: PFCOUNT = 0 trên cả ba
-        --   IP đỉnh bảng, hai máy.
-        -- VÌ SAO KHÔNG VÁ: nhóm hưởng lợi đầu tiên đo được là một đàn bot xoay
-        --   UA (50 UA / 1 domain / 12-13 identity, ~950 lượt/50 phút mỗi IP), và
-        --   `cfg.pow.difficulty="000"` nên PoW không chặn được máy. Chưa đo được
-        --   văn phòng thật nào bị kẹt mà Fix A không cứu. Xem `l7/CLAUDE.md`
-        --   2026-09-19 để biết điều kiện xét lại.
+        -- ĐÍNH CHÍNH 2026-09-19 (bản trước của khối này SAI, đã commit ở
+        -- `d83758d` rồi sửa lại ở đây — giữ lại để không ai dựng lại lập luận đó):
+        --   Tôi đã viết "nhánh này là CODE CHẾT vì `ctx.ip_shared` ghi ở bước 10
+        --   mà file này đọc ở bước 6". **Sai.** File này KHÔNG chạy ở bước 6:
+        --   `ip_ban_check.lua` (bước 6) chỉ đọc `ban:<ip>` và không gọi tới đây.
+        --   `ban_store.run` được `l7/init.lua` gọi, tức `l7_layer` — chạy SAU khi
+        --   phân lớp, tức sau cả 13 bước của STEPS_COMMON. `ip_tour` ở bước 11
+        --   ⇒ **nơi ghi chạy TRƯỚC nơi đọc, thứ tự ĐÚNG.**
+        --   Nguyên nhân đọc sai: hai file nằm cùng `l7/ban/` nên tôi gán vị trí
+        --   của `ip_ban_check` cho file này mà không truy đường gọi.
+        --
+        --   `PFCOUNT iptour:ua:<ip>` = 0 cũng KHÔNG chứng minh gì: khoá đó TTL
+        --   **90 giây** (`cfg.ip_tour.window`), mà phép đo chạy nhiều giờ sau cửa
+        --   sổ log. `0` nghĩa là "90 giây qua IP này không gửi request".
+        --
+        -- Nhánh vẫn hiếm kích hoạt trong thực địa vì `ctx.ip_shared` đòi
+        -- `distinct-UA >= 6` trong cửa sổ 90 giây TRÊN CÙNG MỘT IP — điều kiện
+        -- hẹp. Chưa đo được văn phòng thật nào kẹt ở đây mà Fix A (`richness >=
+        -- 0.5`) không cứu, nên chưa đổi gì. Nếu định nới: nhóm hưởng lợi đầu tiên
+        -- đo được 19-09 là một đàn bot xoay UA (50 UA / 1 domain / 12-13 identity,
+        -- ~950 lượt/50 phút mỗi IP) — và `cfg.pow.difficulty="000"` nên PoW không
+        -- chặn được máy.
         local accept = (ctx.req and ctx.req.accept) or ngx.var.http_accept or ""
         if ctx.ip_shared and accept:find("text/html", 1, true) then
             pool.safe_set("ban:hit:" .. id, tostring(ngx.time()), 300)
