@@ -102,7 +102,15 @@ io.write("\n[5] PHAI BAN — ten file cau hinh\n")
 -- Nhom nay la ly do P1 ton tai: KHONG file nao o day chua `<?php`, nen
 -- `waf_body_php` (trong so 50, da chay) mu hoan toan voi chung.
 eq(".htaccess",                   "upload_apache_config", "AddType bien .jpg thanh PHP")
-eq(".HTACCESS",                   "upload_apache_config", "khong phan biet hoa thuong")
+-- `.HTACCESS` DA CHUYEN sang muc [8] voi nhan `upload_config_case`.
+--
+-- Dong cu o day khang dinh `.HTACCESS` -> `upload_apache_config`, va no da CHAN
+-- MOT BAN DEPLOY: toi them nhan moi o muc [8] nhung de nguyen assertion cu o
+-- day, nen hai muc trong CUNG MOT FILE noi nguoc nhau.
+--
+-- Khong phai loi logic — loi QUET SOT. Bai hoc cu the: khi doi gia tri tra ve
+-- cua mot ham, phai `grep` TEN DAU VAO tren toan bo bo test, khong chi them ca
+-- moi. Mot assertion cu con song la mot hop dong con song.
 eq(".user.ini",                   "upload_php_config", "PHP doc .user.ini")
 eq("php.ini",                     "upload_php_config", "php.ini")
 eq("web.config",                  "upload_foreign_config", "IIS")

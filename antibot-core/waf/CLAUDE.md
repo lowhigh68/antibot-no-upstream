@@ -942,6 +942,13 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
 ## Update log
+- 2026-09-20 — **Cổng `[3b]` chặn bản `0a3f7a0`: hai mục trong CÙNG một file test khẳng định hai giá trị cho cùng một đầu vào.**
+  - **Lỗi:** `SAI .HTACCESS cho=upload_apache_config duoc=upload_config_case`. Tôi thêm nhãn `upload_config_case` ở mục **[8]** nhưng **để nguyên** assertion cũ ở mục **[5]** (`.HTACCESS` → `upload_apache_config`). Không phải lỗi logic — code đúng, đã thử phá xong. Lỗi **quét sót**: tôi thêm ca mới mà không tìm lại các ca cũ trên cùng đầu vào.
+  - **Sửa:** gỡ dòng ở [5] (mục [8] đã phủ đủ), không phải sửa giá trị nó.
+  - **Bài học cụ thể, không phải "cẩn thận hơn":** khi đổi **giá trị trả về** của một hàm, phải `grep` **tên ĐẦU VÀO** trên toàn bộ bộ test, không chỉ thêm ca mới. Một assertion cũ còn sống là một **hợp đồng** còn sống, và nó thắng ở cổng deploy.
+  - **`waf/scripts/upload_selfcheck.pl` — bắt đúng lớp lỗi đó, chạy được trên máy dev.** Máy dev không có Lua nên `upload_test.lua` chỉ chạy ở `[3b]` trên máy thật; file này chạy tại chỗ và kiểm hai điều: (1) mọi `eq(...)` khớp bản mô phỏng của `check_filename`; (2) hai dòng khẳng định **khác nhau** trên cùng đầu vào → báo ngay. Thử phá: thêm lại đúng dòng vừa gây lỗi → **đỏ cả hai cách**. Hiện tại: **65 khớp, 0 xung đột**.
+  - **Giới hạn của nó, ghi ngay trong file vì nó nặng:** đây là bản **mô phỏng perl** của logic Lua, không phải chính logic đó. Đổi `upload.lua` mà không đổi file này thì nó **báo xanh trên code sai** — đúng kiểu thất bại đã gỡ ba lớp kiểm của `luacheck` hôm qua. Quy tắc: đổi `upload.lua` thì đổi cả nó; `[3b]` vẫn là thước đo thật.
+  - **Cũng quét luôn thứ tôi vừa nói phải quét:** mọi đầu vào xuất hiện hơn một lần trong `upload_test.lua` — còn `.htaccess` và `web.config`, cả hai **khớp nhau** ở hai chỗ nên chỉ là trùng lặp vô hại, không xung đột. Để nguyên, không dọn dẹp ngoài phạm vi.
 - 2026-09-19 (8) — **Phản biện từ người vận hành: hai lỗi làm lọt tín hiệu upload. Cả hai ĐÚNG, đã sửa ở BA tầng. Hai điểm khác tôi phản biện lại.**
   - **Điểm 1 — `fn_rule` sớm làm bỏ qua part phía sau. ĐÚNG, và là đường né thật.** `scan_disposition_headers` và `scan_one_boundary` đều `return` ngay khi `check_args` khớp:
     ```
