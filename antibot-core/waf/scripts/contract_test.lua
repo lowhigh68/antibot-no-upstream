@@ -1958,5 +1958,46 @@ do
         end
     end
 end
+
+-- [26] Moi `slurp(` trong CHINH file test nay phai neo vao `SRC`.
+--
+-- Bat bien hep, nhung dung cho file DUY NHAT da mac loi nay: ngay 19-09-2026 bon
+-- muc moi cua toi viet `slurp("antibot-core/detection/...")` thay vi
+-- `slurp(SRC .. "detection/...")`. Duong dan tuong doi phu thuoc cwd, ma:
+--   `run.sh` dat cwd = thu muc chua no
+--   `deploy.sh` goi tu `$REPO_DIR`
+--   toi thu bang perl tu goc repo
+-- Ba noi, ba ket qua. Tren may dev no "chay dung" nen toi commit, roi cong [3b]
+-- chan deploy voi bon dong "SAI thieu file" cho file dang ton tai.
+--
+-- DA THU va DA GO mot lop tuong tu trong `luacheck.pl`: kiem o muc TOAN CAY thi
+-- hoac bao xanh cho dung loi can bat (neu kiem "file ton tai"), hoac sinh 18
+-- false positive (neu kiem "co ghep voi bieu thuc neo") — vi file nay giu duong
+-- dan trong BANG DU LIEU roi moi ghep `SRC .. $f` luc dung, ma theo vet bien
+-- qua bang va vong lap la viec cua parser chu khong phai regex.
+-- Gac o day thi pham vi hep, khong bao sai, va van chan dung loi da xay ra.
+do
+    local self = slurp(SRC .. "waf/scripts/contract_test.lua")
+    if not self then
+        bad("  SAI  [26] khong tu doc duoc contract_test.lua\n")
+    else
+        local bad_n = 0
+        -- Moi lan goi `slurp(` phai la `slurp(SRC` hoac `slurp(<bien>`; chuoi
+        -- van thuan dang `slurp("..."` la loi.
+        -- Bo COMMENT truoc khi quet: chu thich o tren CO Y viet vi du dang
+        -- `slurp(` kem chuoi, va mot phep kiem khop ca comment se bao do vinh
+        -- vien. Da mac dung loi nay o muc [23] hom nay (assertion `set_real_ip`
+        -- khop chinh dong chu thich giai thich vi sao khong dung no).
+        local code = self:gsub("%-%-[^\n]*", "")
+        for lit in code:gmatch('slurp%(%s*"([^"]*)"') do
+            bad_n = bad_n + 1
+            bad("  SAI  [26] `slurp(\"%s\")` dung duong dan TUONG DOI, khong neo\n" ..
+                "       vao SRC. Chay tu cwd khac la vo — `run.sh` va `deploy.sh`\n" ..
+                "       dat cwd khac nhau. Sua thanh `slurp(SRC .. \"%s\")`.\n",
+                lit, lit)
+        end
+        if bad_n == 0 then pass = pass + 1 end
+    end
+end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
