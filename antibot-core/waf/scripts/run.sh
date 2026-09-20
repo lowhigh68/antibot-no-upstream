@@ -23,8 +23,8 @@ fi
 # [3b] cua deploy.sh se cho qua mot ban hong.
 rc=0
 
-echo "── wp_paths ──────────────────────────────────────────"
-"$RESTY" --shdict "antibot_cache 1m" "$HERE/wp_paths_test.lua" || rc=1
+echo "── wordpress/paths ──────────────────────────────────────────"
+"$RESTY" --shdict "antibot_cache 1m" "$HERE/wordpress_paths_test.lua" || rc=1
 
 echo
 echo "── hop dong giua cac module ──────────────────────────"

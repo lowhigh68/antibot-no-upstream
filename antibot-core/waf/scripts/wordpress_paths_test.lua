@@ -1,4 +1,4 @@
--- T — bo test cho waf/wp_paths.lua
+-- T — bo test cho waf/wordpress/paths.lua
 --
 -- CHAY: ./test/run.sh   (can OpenResty; dung `resty`, KHONG phai luajit tran)
 --
@@ -54,7 +54,7 @@ end
 -- lai dang kiem: GHI DUNG KHOA, va CHI ghi shdict khi Redis da nhan.
 ngx.timer.at = function(_, fn) fn(false) return true end
 
-local wp = dofile(SRC .. "waf/wp_paths.lua")
+local wp = dofile(SRC .. "waf/wordpress/paths.lua")
 local ex = dofile(SRC .. "waf/exposed.lua")
 
 local WP    = "wp.test"       -- host DA duoc danh dau la WordPress O GOC

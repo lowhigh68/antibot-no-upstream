@@ -1,5 +1,10 @@
 local _M = {}
-local wp_paths = require "antibot.waf.wp_paths"
+-- `wordpress/` la OVERLAY, khong phai nen mong. Xem `CLAUDE.md` muc "Generic vs
+-- WordPress overlay": nen mong la bat bien cua HTTP/PHP/web server (`exposed`,
+-- `args`, `body`, `upload`) — dung bat ke site chay CMS nao; `wordpress/paths`
+-- chi giu nhung gi THUC SU xuat phat tu cau truc WordPress. Thu muc con ton tai
+-- de ranh gioi do doc duoc TU CAY FILE chu khong phai tu mot doan chu thich.
+local wp_paths = require "antibot.waf.wordpress.paths"
 local exposed  = require "antibot.waf.exposed"
 local args     = require "antibot.waf.args"
 local body     = require "antibot.waf.body"

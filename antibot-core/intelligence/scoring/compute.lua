@@ -117,7 +117,7 @@ local DEFAULT_WEIGHTS = {
 
     swarm_attack        = 120,
 
-    -- waf_wp_path: luật đường dẫn WordPress KHÔNG chặn (waf/wp_paths.lua).
+    -- waf_wp_path: luật đường dẫn WordPress KHÔNG chặn (waf/wordpress/paths.lua).
     -- Hai luật chặn ở đó thoát ngay tại access phase nên không bao giờ tới đây;
     -- chỉ hai luật `signal` đổ vào signal này.
     -- Cân trọng số theo ngưỡng của engine.lua (MONITOR=25, CHALLENGE=55):

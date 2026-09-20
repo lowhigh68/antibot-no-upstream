@@ -62,7 +62,7 @@ GROUP_MAX=5
 # mot dau cho khop voi no se lam LECH KHOA, tuc FIM danh dau mot noi con WAF
 # doc mot noi, hong trong IM LANG. Su that o duoi (dong `SETEX`) va o
 # `waf/init.lua`: ca hai dung `document_root .. script_path(uri)`.
-# `waf/scripts/wp_paths_test.lua` ghim dieu nay; `fim.sh` con tu doc nguoc mot
+# `waf/scripts/wordpress_paths_test.lua` ghim dieu nay; `fim.sh` con tu doc nguoc mot
 # key vua ghi de xac minh vong tron.
 # `waf/init.lua` doc key nay khi mot luat
 # `signal` ban va nang tin hieu len. KHONG phai chan: luat WAF dong gop tin hieu,

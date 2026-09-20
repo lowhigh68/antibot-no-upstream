@@ -253,7 +253,7 @@ local function check_rules(file, label, rules_file, fn)
     end
 end
 
-check_rules("waf/wp_paths.lua",  "wp_paths")
+check_rules("waf/wordpress/paths.lua",  "wp_paths")
 check_rules("waf/exposed.lua",   "exposed")
 check_rules("waf/body_core.lua", "args (loi dung chung)", "waf/args.lua",
             "check_args_lower")

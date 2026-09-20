@@ -35,12 +35,12 @@ Tín hiệu WAF phá được `verified`, **không phá được `whitelisted`**
 |---|---|---|
 | `init.lua` | Điều phối. `run_pre` (access, chỉ đọc) → `run_log` (log, sở hữu `io.open` duy nhất và phép ghi WP-host duy nhất) | access + log |
 | `exposed.lua` | 2 luật, cả hai `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed` | access |
-| `wp_paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
+| `wordpress/paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
 | `args.lua` | 3 luật `signal` soi **query string**: `arg_traversal`, `arg_php_wrapper`, `arg_null_byte` | access |
 | `upload.lua` | **P1** — 3 luật `signal` soi **TÊN FILE** upload: `upload_exec_ext`, `upload_exec_double`, `upload_config`. Lua thuần (chạy trong worker thread) | access |
 | `body.lua` | **Giai đoạn 1 — chỉ quan sát, KHÔNG luật nào bắn.** Đọc body an toàn, điền `ctx.waf_body` | access |
 | `scripts/fim.sh` | **Nửa ngoài-request của tầng này.** Cron, giám sát toàn vẹn file | ngoài request |
-| `scripts/wp_paths_test.lua` + `run.sh` | 72 assertion. `deploy.sh` bước `[3b]` gác trên nó | build |
+| `scripts/wordpress_paths_test.lua` + `run.sh` | 72 assertion. `deploy.sh` bước `[3b]` gác trên nó | build |
 | `async/waf_logger.lua` *(ở `async/`)* | Ghi `/var/log/antibot/waf.log`. **Không** nối vào `antibot.log` | log |
 
 ### Thứ tự dispatch trong `init.lua`
@@ -60,7 +60,7 @@ Một request khớp **nhiều nhất một luật**.
 
 `RX_DOTFILE = "(?:^|/)\\.[^/.]"` viết bằng chuỗi có nháy chứ **không** phải `[[...]]`: `[^/.]]]` sẽ đóng long bracket sớm.
 
-### `wp_paths.lua` — 8 luật
+### `wordpress/paths.lua` — 8 luật
 
 | rule_id | action | score | Ghi chú |
 |---|---|---|---|
@@ -524,7 +524,7 @@ Câu hỏi thật là **nginx có biết trước độ dài body không**: bi�
 - **`run_pre` chỉ đọc.** Mọi phép ghi (đĩa, Redis WP-host) thuộc `run_log`.
 - **Không miễn loopback.** Miễn trừ cũ không mua được gì: lưu lượng 127.0.0.1 thật sự chỉ có wp-cron gọi `/wp-cron.php` (đã trong `WP_ROOT_OK`) và health check gọi `/`. Đổi lại nó mở đúng một đường: SSRF, hoặc PHP của tài khoản khác trên hosting chia sẻ curl về localhost.
 - **Test bắt buộc chạy dưới `resty`, không phải `luajit`.** Luật quyết định bằng `ngx.re.find` với lookahead PCRE `(?=[/;.\\]|$)` — Lua pattern không diễn đạt được. `deploy.sh` bước `[3b]` gác; `SKIP_TEST=1` để vượt.
-- **Thêm luật mới:** thêm mục vào `RULES` + nhánh trong `check()` + assertion trong `wp_paths_test.lua`. Luật `signal` phải có score trong `[0,1]`; trọng số nằm ở `compute.lua` (`waf_wp_path = 50`).
+- **Thêm luật mới:** thêm mục vào `RULES` + nhánh trong `check()` + assertion trong `wordpress_paths_test.lua`. Luật `signal` phải có score trong `[0,1]`; trọng số nằm ở `compute.lua` (`waf_wp_path = 50`).
 
 ## Giới hạn — đo được, không vá bằng Lua
 
@@ -1030,7 +1030,7 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 
 | Mục | Trạng thái | Bằng chứng trong mã |
 |---|---|---|
-| P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wp_paths.lua` 469 |
+| P0 — luật đường dẫn | **xong** | `exposed.lua` 68 + `wordpress/paths.lua` 469 |
 | F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
 | T — test | **một phần** | `scripts/*.lua` 3.684 dòng test / 2.355 dòng mã. Cổng `deploy.sh [3b]` |
@@ -1044,7 +1044,7 @@ Lệnh đo lại, chạy từ `antibot-core/`:
 
 ```bash
 cat waf/args.lua waf/body.lua waf/body_core.lua waf/body_worker.lua \
-    waf/exposed.lua waf/init.lua waf/wp_paths.lua waf/upload.lua | wc -l   # mã: 2355
+    waf/exposed.lua waf/init.lua waf/wordpress/paths.lua waf/upload.lua | wc -l   # mã: 2355
 cat waf/scripts/*.lua | wc -l                                # test: 3684
 grep -o 'return "arg_[a-z_]*' waf/body_core.lua | sort -u   # 3 rule_id tham so
 grep -o 'return "upload_[a-z_]*' waf/upload.lua | sort -u   # 7 rule_id ten file
@@ -1079,9 +1079,34 @@ lưu lượng thì đo ra 0, và số 0 đó không nói gì về mối đe do�
 
 ## Generic vs WordPress overlay — bản đồ đúng của tầng này
 
-**`wp_paths.lua` KHÔNG phải nền móng của WAF. Nó là một overlay độ chính xác
+**`wordpress/paths.lua` KHÔNG phải nền móng của WAF. Nó là một overlay độ chính xác
 cao.** Nền móng là những bất biến của HTTP, PHP và web server — thứ đúng bất kể
 site chạy WordPress, Joomla, Drupal hay code tự viết.
+
+Từ 21-09 **cây file nói ra điều đó**, không chỉ đoạn chú thích này:
+
+```
+waf/
+├── init.lua          điều phối
+├── exposed.lua       generic — dotfile/dump/VCS bị expose
+├── args.lua          generic
+├── body.lua          generic
+├── body_core.lua     generic
+├── body_worker.lua   generic
+├── upload.lua        generic — PHP/Apache, pure Lua (chạy trong worker thread)
+└── wordpress/
+    └── paths.lua     OVERLAY — 8 luật riêng WordPress
+```
+
+Lý do đổi chỗ chứ không chỉ ghi chú: chính tài liệu này đã ghi *"bảng trạng thái
+sai vì đọc kế hoạch thay vì grep mã nguồn"*. Một ranh giới kiến trúc chỉ tồn tại
+trong văn bản thì lần sau vẫn bị đọc nhầm. Nằm trong cây file thì `ls` là đủ.
+
+**Chưa làm, và biết là chưa:** `path_utils.lua` (gom `basename`/`strip_tail`/
+`extensions` hiện nằm trong `upload.lua`) và `generic_paths.lua`. Cái thứ hai
+chưa có nội dung — `exposed.lua` đã phủ dotfile/dump theo nguyên tắc, còn
+traversal/NUL/wrapper nằm ở `body_core` áp cho args+body. Không tạo file rỗng
+cho đúng sơ đồ; khi có luật path generic thật thì mới tách.
 
 Ranh giới đó không phải chuyện phân loại cho gọn. Nó quyết định **được phép giả
 định gì**. Generic **không được** đặt những giả định kiểu:
@@ -1110,7 +1135,7 @@ rõ đã **loại bỏ** cách tiếp cận theo tên thư mục, vì `cache/` �
 | Method / CT / body bất nhất | — | **không có, và dân số = 0** (xem dưới) |
 
 **WordPress overlay** — chỉ giữ thứ thực sự xuất phát từ cấu trúc WordPress:
-`wp_paths.lua` 8 luật (PHP trong `uploads`, `wp-admin`/`wp-includes`,
+`wordpress/paths.lua` 8 luật (PHP trong `uploads`, `wp-admin`/`wp-includes`,
 plugins/themes, file core không nên truy cập thẳng) · `detection/wp_hardening.lua`
 (`xmlrpc.php`, `wp-login.php`) · `fim.sh audit` bốn nhánh WordPress · các ngoại
 lệ hợp lệ để giảm FP.

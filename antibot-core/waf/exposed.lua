@@ -2,7 +2,7 @@ local _M = {}
 
 -- Luật phơi bày file — KHÔNG phụ thuộc WordPress.
 --
--- Khác `wp_paths.lua` ở phạm vi: những luật này áp cho MỌI site trên máy, kể cả
+-- Khác `wordpress/paths.lua` ở phạm vi: những luật này áp cho MỌI site trên máy, kể cả
 -- site code tự viết mà bảy luật WordPress cố tình không đụng tới. Cũng vì vậy
 -- chúng không đi qua cổng `is_wp_root`.
 --

@@ -161,7 +161,7 @@ function _M.run(ctx)
     --
     -- PHAM VI HEP CO CHU Y. Chi go DUNG tin hieu nay. `ip_shared`,
     -- `ip_shared_verified`, phat hien tour, cham diem, gioi han toc do, va toan
-    -- bo tang WAF (`waf/exposed.lua` dotfile/dump, `waf/wp_paths.lua`) deu KHONG
+    -- bo tang WAF (`waf/exposed.lua` dotfile/dump, `waf/wordpress/paths.lua`) deu KHONG
     -- doi — chung chay o buoc 0, truoc ca cookie fast-path. Mot site bi chiem
     -- roi dung de tan cong hang xom cung may van bi soi day du. Day KHONG phai
     -- whitelist: khong short-circuit, khong mien tru gi khac.
