@@ -333,14 +333,22 @@ fi
 # cap nhat core 2.000 file se sinh 4.000 tien trinh con. Da tra gia cho dung sai
 # lam do mot lan (script khao sat chay 11 phut 21 giay), khong lap lai.
 #
-# uploads/ va mu-plugins/: khong co ly do chinh dang nao de PHP MOI xuat hien.
-# wp-includes/ va wp-admin/: thu vien core, chi doi khi cap nhat core — ma cap
-# nhat core cham hang tram file nen roi vao nhanh gom nhom, khong gay nhieu.
+# mu-plugins/: BAC RIENG, xem `sev()`. uploads/: khong co ly do chinh dang nao
+# de PHP MOI xuat hien. wp-includes/ va wp-admin/: thu vien core, chi doi khi
+# cap nhat core — ma cap nhat core cham hang tram file nen roi vao nhanh gom
+# nhom, khong gay nhieu.
 # plugins/ va themes/: doi thuong xuyen va hop le nen ha xuong ROUTINE.
 # Con lai (web root, wp-config.php, .htaccess ngoai cung) la HIGH.
 #
 # Sap xep theo chuoi muc do cho ra dung thu tu can doc:
-#   CRITICAL < HIGH < ROUTINE < STATE   (STATE = file trang thai, xem $PREVCHG)
+#   1MUPLUG < 2CRITICAL < 3HIGH < 4ROUTINE < 5STATE
+#
+# TIEN TO SO la BAT BUOC, khong phai trang tri. Ban truoc dua vao thu tu chu
+# cai va no DUNG chi vi tinh co: C < H < R < S. Them `MUPLUG` la lo ra ngay —
+# `sort` xep M vao GIUA (C, H, M, R, S), tuc bac nang nhat nam thu ba trong
+# bao cao. Da kiem bang `printf ... | sort` chu khong suy luan.
+# Tien to bi cat khi in (xem `lbl()`), nen nguoi doc khong thay no.
+# (STATE = file trang thai, xem $PREVCHG.)
 marks=$(mktemp) || exit 2
 trap 'rm -f "$new_scan" "$diff_out" "$marks"' EXIT
 
@@ -352,17 +360,39 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
             while ((getline _pl < prevfile) > 0) prev[_pl] = 1
     }
     function sev(p, t) {
-        # Ha bac TRUOC moi phep phan vung: file trang thai nam trong wp-includes/
-        # thi van la file trang thai. CHI ap cho CHG — NEW khong bao gio bi ha.
-        if (t == "CHG" && (p in prev))       return "STATE"
-        if (p ~ /\/wp-content\/uploads\//)    return "CRITICAL"
-        if (p ~ /\/wp-content\/mu-plugins\//) return "CRITICAL"
-        if (p ~ /\/wp-includes\//)            return "CRITICAL"
-        if (p ~ /\/wp-admin\//)               return "CRITICAL"
-        if (p ~ /\/wp-content\/plugins\//)    return "ROUTINE"
-        if (p ~ /\/wp-content\/themes\//)     return "ROUTINE"
-        return "HIGH"
+        # mu-plugins/ DUNG TRUOC phep ha bac, va day la ca ly do no co bac rieng.
+        #
+        # WordPress `include` MOI .php o day tren MOI request, truoc ca khi plugin
+        # bao mat khoi dong — nen Wordfence khong thay no (do 20-09: 13 file song
+        # hai thang tren mot site CO Wordfence). Khong co request HTTP nao go vao
+        # duong dan do de WAF chan. FIM la phong tuyen duy nhat.
+        #
+        # Do tren dan may 20-09: 16/18 site co DUNG MOT file o day, khong doi tu
+        # thang 2. Hai site nhiem co 8 va 14. Thu muc nay ve ban chat KHONG DOI.
+        #
+        # Vi vay bat bien "doi hai lan lien tiep = file trang thai" ($PREVCHG)
+        # DUNG voi wflogs/ va cache, SAI hoan toan o day: khong ung dung hop le
+        # nao ghi lien tuc vao mu-plugins. De dong `prev` chay truoc la de ho mot
+        # duong ne that — sua mot file mu-plugin hai lan lien tiep thi lan thu hai
+        # xuong STATE, `crit` khong dem STATE, tuc KHONG mail va `exit 0`.
+        #
+        # CHG o day dang ngo ngang NEW, va kin hon: chen dong vao
+        # `dev-ci-lint-...php` co san khong lam so file thay doi.
+        if (p ~ /\/wp-content\/mu-plugins\//) return "1MUPLUG"
+        # Ha bac TRUOC moi phep phan vung con lai: file trang thai nam trong
+        # wp-includes/ thi van la file trang thai. CHI ap cho CHG — NEW khong
+        # bao gio bi ha.
+        if (t == "CHG" && (p in prev))       return "5STATE"
+        if (p ~ /\/wp-content\/uploads\//)    return "2CRITICAL"
+        if (p ~ /\/wp-includes\//)            return "2CRITICAL"
+        if (p ~ /\/wp-admin\//)               return "2CRITICAL"
+        if (p ~ /\/wp-content\/plugins\//)    return "4ROUTINE"
+        if (p ~ /\/wp-content\/themes\//)     return "4ROUTINE"
+        return "3HIGH"
     }
+    # Cat tien to so khi in. Tien to chi ton tai de `sort` cho ra dung thu tu
+    # doc; nguoi doc bao cao khong can thay no.
+    function lbl(s) { return substr(s, 2) }
     function dirn(p,   i) {
         i = length(p)
         while (i > 1 && substr(p, i, 1) != "/") i--
@@ -391,19 +421,36 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         key = sev($2, $1) "\t" $1 "\t" gkey($2)
         n[key]++
         if (n[key] <= max) item[key] = item[key] $2 "\n"
-        # Giu MOI duong dan NEW, khong chi max cai dau — de END con danh dau het.
-        if ($1 == "NEW" && markfile != "") allnew[key] = allnew[key] $2 "\n"
+        # Giu MOI duong dan dang danh dau, khong chi max cai dau — de END con
+        # danh dau het.
+        #
+        # NEW o moi noi; CHG CHI o mu-plugins. Ly do khac nhau cho hai ve:
+        # `CHG` o plugins/themes la cap nhat phan mem, danh dau se thanh nhieu
+        # lien tuc. O mu-plugins thi khong co "cap nhat" — file o day khong doi.
+        if (markfile != "" && ($1 == "NEW" || ($1 == "CHG" && $2 ~ /\/wp-content\/mu-plugins\//)))
+            allnew[key] = allnew[key] $2 "\n"
     }
     END {
         for (k in n) {
             split(k, f, "\t")
             bulk = (n[k] > max)
             if (bulk)
-                printf "%-8s %-3s %4d file trong %s  (nhieu kha nang la cap nhat)\n", \
-                       f[1], f[2], n[k], f[3]
+                # Chu thich cua dong gom KHAC NHAU theo vung, va day khong phai
+                # chuyen cau chu. "nhieu kha nang la cap nhat" dan tren mot dot
+                # file vao mu-plugins la dan dung cau khien nguoi doc bo qua no:
+                # o thu muc do khong co cap nhat phan mem nao, mot dot dong nghia
+                # la NANG HON mot file le, khong phai nhe hon. Do la chinh hinh
+                # dang vu 20-09 (13 file).
+                {
+                    note = "(nhieu kha nang la cap nhat)"
+                    if (f[1] == "1MUPLUG")
+                        note = "(MOT DOT — o day khong co cap nhat hop le)"
+                    printf "%-8s %-3s %4d file trong %s  %s\n", \
+                           lbl(f[1]), f[2], n[k], f[3], note
+                }
             else {
                 m = split(item[k], L, "\n")
-                for (i = 1; i < m; i++) printf "%-8s %-3s %s\n", f[1], f[2], L[i]
+                for (i = 1; i < m; i++) printf "%-8s %-3s %s\n", lbl(f[1]), f[2], L[i]
             }
             if (markfile != "" && (k in allnew)) {
                 m = split(allnew[k], L, "\n")
@@ -415,7 +462,14 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
 
 # Chi dem cac dong DUOC LIET KE TUNG FILE. Dong tom tat cua mot nhom dong la cap
 # nhat phan mem — bao dong o do la bien script thanh thu khong ai doc nua.
+#
+# `MUPLUG` la NGOAI LE cua cau tren: no dem CA dong gom nhom. Mot dot 6 file la
+# vao mu-plugins KHONG phai "nhieu kha nang la cap nhat" — do la chinh hinh dang
+# cua vu 20-09 (13 file tren mot site). Nguong gom nhom sinh ra de chong nhieu
+# tu cap nhat phan mem, ma o thu muc nay thi khong co cap nhat phan mem nao.
 crit=$(printf '%s\n' "$report" | grep -E '^(CRITICAL|HIGH) ' | grep -vc 'cap nhat')
+muplug=$(printf '%s\n' "$report" | grep -c '^MUPLUG ' || :)
+crit=$((crit + muplug))
 
 # ── Day danh dau sang Redis cho WAF ───────────────────────────────────
 # Bo qua o --dry: --dry nghia la "xem thu", ma ghi Redis la tac dong that.
@@ -487,6 +541,62 @@ header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dan
 # LOG luon nhan day du, ke ca ROUTINE: khi dieu tra mot vu thi lich su cap nhat
 # plugin lai la thu can doi chieu.
 { echo "$header"; printf '%s\n' "$report"; } >> "$LOG"
+
+# ── Duong bao thu hai: file rieng cho trang admin ─────────────────────
+#
+# VI SAO CAN DUONG THU HAI, va day la bai hoc dat nhat cua vu 20-09:
+# `fim.sh` DA phat hien va DA bao. `ea_f9543a7c.php` la NEW trong mu-plugins,
+# CRITICAL, den mot minh — dung nhanh `crit > 0` nen da in ra stdout va cron da
+# gui mail. Co che chay du. No hong o cho mail cron tren shared hosting gan nhu
+# luon la mot ho den: 13 lan bao trong hai thang, khong ai mo.
+#
+# Nen day KHONG phai "them mot canh bao nua". Do la doi NOI canh bao di toi, ve
+# mot cho co the mo bang trinh duyet (`admin/init.lua` route /antibot-admin/fim).
+#
+# CHI ghi MUPLUG va CRITICAL. Khong ROUTINE. File nay phai DOC HET TRONG 10
+# GIAY — dai ra thi no thanh ho den thu hai, va luc do ta da tra gia hai lan
+# cho cung mot bai hoc.
+#
+# `cap nhat` (dong gom nhom) bi loai o CRITICAL nhung KHONG o MUPLUG — cung
+# ngoai le da ghi o `crit` ben tren, va bo sot no thi chinh ca that bi loc ra:
+# 13 file cua vu 20-09 vuot GROUP_MAX=5 nen thanh mot dong gom, va mot `grep -v`
+# dat nham cho se bo dung no khoi file nay.
+CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
+critlines=$(printf '%s\n' "$report" \
+    | grep -E '^(MUPLUG|CRITICAL) ' \
+    | grep -vE '^CRITICAL .*cap nhat' || :)
+if [ -n "$critlines" ]; then
+    {
+        echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] ==="
+        printf '%s\n' "$critlines"
+        # LEO THANG. 13 file trong hai thang da sinh ra 13 lan bao GIONG HET
+        # nhau. Dong nay noi dung thu ma lan bao truoc khong noi duoc: NO VAN
+        # CON DO. Dem TRANG THAI HIEN TAI, khong phai thay doi cua lan nay —
+        # hai con so khac nhau va con dang bao dong la con thu nhat.
+        #
+        # Dem tu `$new_scan`, KHONG tu `$MANIFEST`: manifest chi duoc `cp` o
+        # cuoi script nen o day no con la anh chup CU. Phep thu tai cho da bat
+        # dung loi nay — bao "tong cong 1 file" ngay sau khi 6 webshell xuat
+        # hien, tuc con so leo thang noi nguoc voi dong ngay tren no.
+        mu_now=$(grep -c '/wp-content/mu-plugins/' "$new_scan" 2>/dev/null || :)
+        [ "${mu_now:-0}" -gt 0 ] && \
+            echo "  [trang thai] tong cong $mu_now file .php trong mu-plugins tren toan may"
+    } >> "$CRITLOG"
+    # umask 077 (dong 221) da lo file MOI; dong nay cho file da sinh ra tren may
+    # cu, cung ly do voi chmod o dong 228.
+    chmod 0600 "$CRITLOG" 2>/dev/null || :
+
+    # CAT VONG TAI CHO, khong giao cho logrotate. File nay chi co gia tri neu
+    # DOC HET DUOC TRONG 10 GIAY; de no phinh la bien no thanh ho den thu hai,
+    # dung cai ma no vua duoc sinh ra de thay the. Giu 400 dong cuoi.
+    #
+    # Khong dung logrotate vi mot file phu thuoc cau hinh ngoai la mot file se
+    # dung tren may nay va khong dung tren may sau.
+    if [ "$(wc -l < "$CRITLOG" 2>/dev/null || echo 0)" -gt 400 ]; then
+        tail -n 400 "$CRITLOG" > "$CRITLOG.tmp" 2>/dev/null &&
+            mv "$CRITLOG.tmp" "$CRITLOG" || rm -f "$CRITLOG.tmp"
+    fi
+fi
 
 # stdout — tuc mail cua cron — CHI khi co gi dang chu y. Cap nhat plugin dinh ky
 # ma cung gui mail thi vai tuan nua khong ai mo mail cua no nua.

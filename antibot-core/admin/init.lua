@@ -1098,6 +1098,22 @@ tr:hover td{background:#1c2129}
       <div class="sc"><div class="sv" id="s-verif">—</div><div class="sl">Phiên đã xác minh</div></div>
     </div>
 
+    <!-- FIM. Đặt ở Overview, KHÔNG phải một tab riêng, và đó là cả điểm của nó:
+         cảnh báo này đã từng kêu đúng 13 lần trong hai tháng vào mail cron mà
+         không ai mở (vụ 20-09). Một tab phải bấm vào mới thấy là một hòm thư
+         thứ hai. Card tự ẩn khi không có gì — xem `renderFim()`. -->
+    <div class="card" id="fim-card" style="display:none;border-left:3px solid var(--color-red,#f85149)">
+      <h2 style="margin:0 0 8px">🛡️ File lạ có thể chạy được <span id="fim-count" class="tag tag-red">0</span></h2>
+      <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">
+        Từ <b>fim.sh</b> (cron, ngoài luồng request). <b>MUPLUG</b> = <code>wp-content/mu-plugins/</code> —
+        WordPress <code>include</code> mọi <code>.php</code> ở đó trên <b>mọi</b> request, trước cả khi plugin
+        bảo mật khởi động, và <b>không có request HTTP nào để WAF chặn</b>. Một file lạ ở đây đang chạy rồi.
+        <b>CRITICAL</b> = uploads/ · wp-includes/ · wp-admin/.<br>
+        Cập nhật plugin/theme không hiện ở đây. Đầy đủ: <code>/var/log/antibot/fim.log</code>.
+      </div>
+      <pre id="fim-lines" class="mono" style="font-size:11px;line-height:1.5;margin:0;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all"></pre>
+    </div>
+
     <div class="card">
       <div style="font-size:12px;color:var(--color-text-secondary);line-height:1.7">
         <b>Overview chỉ giữ số tổng.</b> Mọi danh sách chi tiết nằm ở đúng tab của nó, không lặp lại ở đây:<br>
@@ -1526,8 +1542,48 @@ function whitelistId(id){
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
 
+// ── FIM: canh bao file la ─────────────────────────────────────
+// FETCH RIENG, khong gop vao `/antibot-admin/data`, va day la quyet dinh co y:
+// `/data` chay ~18 lenh SCAN sang Redis va da tung that bai ca khoi khi Redis
+// nghen. Gop vao do nghia la Redis nghen thi canh bao XAM NHAP bien mat cung.
+// Hai nguon du lieu doc lap (file vs Redis) thi giu hai duong doc lap.
+function renderFim(){
+  fetch('/antibot-admin/fim', {credentials:'include'})
+  .then(r => r.ok ? r.json() : null)
+  .then(d => {
+    var card = document.getElementById('fim-card')
+    if(!card) return
+    if(!d){ card.style.display='none'; return }
+
+    // PHAN BIET "khong doc duoc" voi "khong co canh bao". Gop hai cai lai la ve
+    // mot trang bao sach trong khi that ra khong nhin thay gi — dung loi da
+    // giet `wp_paths.mark()` 4 thang.
+    if(d.exists === false){
+      card.style.display=''
+      setText('fim-count','?')
+      setHTML('fim-lines','KHONG DOC DUOC '+ (d.reason||'') +
+        '\n\nfim.sh chua chay lan nao co canh bao, HOAC khong co quyen doc.' +
+        '\nKiem: ls -la /var/log/antibot/fim_critical.log')
+      return
+    }
+    var n = (d.muplug||0) + (d.critical||0)
+    if(n === 0){ card.style.display='none'; return }
+
+    card.style.display=''
+    setText('fim-count', d.muplug ? (d.muplug+' mu-plugins / '+n+' tong') : String(n))
+    // textContent, KHONG innerHTML: moi dong nay chua DUONG DAN FILE do ke tan
+    // cong dat ten. Mot ten file chua `<img onerror=...>` se chay trong trang
+    // admin dang dang nhap neu dung innerHTML.
+    var pre = document.getElementById('fim-lines')
+    if(pre) pre.textContent = (d.lines||[]).join('\n') +
+      (d.truncated ? '\n\n… con '+(d.total-d.shown)+' dong cu hon, xem fim_critical.log' : '')
+  })
+  .catch(()=>{})
+}
+
 // ── Main data load ─────────────────────────────────────────────
 function load(){
+  renderFim()
   fetch('/antibot-admin/data', {credentials:'include'})
   .then(r=>{
     if(!r.ok) throw new Error('HTTP '+r.status)
@@ -2215,6 +2271,80 @@ load()
 </html>]])
 end
 
+-- ── FIM: canh bao CRITICAL/MUPLUG tu `waf/scripts/fim.sh` ─────────────
+--
+-- VI SAO ROUTE NAY TON TAI. Vu 20-09-2026: 13 webshell trong `mu-plugins` song
+-- hai thang tren mot site. `fim.sh` DA phat hien va DA bao dung ngay dau — no
+-- in ra stdout, cron gui mail, `exit 1`. Co che chay du. No hong o cho mail cron
+-- tren shared hosting la mot ho den: 13 lan bao, khong ai mo.
+--
+-- Nen day KHONG phai mot canh bao nua, ma la doi NOI canh bao di toi. `fim.sh`
+-- ghi `fim_critical.log` (chi MUPLUG + CRITICAL, tu cat vong o 400 dong); trang
+-- nay doc file do.
+--
+-- `io.open` HOP LE o day: router chay trong `content_by_lua`, khong phai
+-- `log_by_lua`. Luat cam cosocket o log phase khong ap vao day, va day la doc
+-- file chu khong phai Redis.
+--
+-- KHONG dung `lua_shared_dict` moi: file la nguon su that duy nhat, va them mot
+-- ban sao trong shm la them mot cho de hai ben lech nhau.
+local FIM_CRITLOG = "/var/log/antibot/fim_critical.log"
+local FIM_MAX_LINES = 200
+
+local function render_fim()
+    ngx.header["Content-Type"] = "application/json"
+
+    local fh, oerr = io.open(FIM_CRITLOG, "r")
+    if not fh then
+        -- PHAN BIET "khong co canh bao" voi "khong doc duoc". Gop hai cai lai la
+        -- dung loi da giet `wp_paths.mark()` 4 thang: mot trang bao "sach" trong
+        -- khi that ra no khong nhin thay gi. `exists=false` de UI noi duoc dieu
+        -- do, thay vi ve mot bang rong.
+        ngx.say(cjson.encode({
+            exists = false,
+            reason = tostring(oerr),
+            lines  = setmetatable({}, cjson.array_mt),
+        }))
+        return
+    end
+
+    -- Doc het roi giu N dong CUOI. File da bi `fim.sh` cat o 400 dong nen day la
+    -- gioi han thu hai, khong phai gioi han duy nhat.
+    local all, n = {}, 0
+    for line in fh:lines() do
+        n = n + 1
+        all[n] = line
+    end
+    fh:close()
+
+    local from = n - FIM_MAX_LINES + 1
+    if from < 1 then from = 1 end
+    local out, m = {}, 0
+    for i = from, n do
+        m = m + 1
+        out[m] = all[i]
+    end
+
+    -- Dem theo BAC, de trang chinh hien duoc mot con so ma khong phai doc het.
+    -- Chi dem dong liet ke/gom nhom that (co nhan o dau dong), khong dem dong
+    -- tieu de `=== ... ===` lan dong `[trang thai]`.
+    local muplug, crit = 0, 0
+    for i = 1, m do
+        if out[i]:find("^MUPLUG ")        then muplug = muplug + 1
+        elseif out[i]:find("^CRITICAL ")  then crit   = crit + 1 end
+    end
+
+    ngx.say(cjson.encode({
+        exists   = true,
+        total    = n,
+        shown    = m,
+        truncated = (from > 1),
+        muplug   = muplug,
+        critical = crit,
+        lines    = (m > 0) and out or setmetatable({}, cjson.array_mt),
+    }))
+end
+
 function _M.router()
     if not auth() then return end
 
@@ -2229,6 +2359,9 @@ function _M.router()
     end
     if uri == "/antibot-admin/wl" and method == "POST" then
         return handle_whitelist_api()
+    end
+    if uri == "/antibot-admin/fim" then
+        return render_fim()
     end
 
     ngx.status = 404
