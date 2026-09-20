@@ -1034,9 +1034,9 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | F1a — đọc body an toàn | **xong** | `body.lua` 149 gọi từ `init.lua:111` trong `run_pre` |
 | F1b — soi thân request | **xong** | `init.lua:137` áp `args.check` lên `ctx.waf_body`; spill đi qua `body_core.lua` 596 + `body_worker.lua` 56 trên thread pool `antibot_waf_io` |
 | T — test | **một phần** | `scripts/*.lua` 3.684 dòng test / 2.355 dòng mã. Cổng `deploy.sh [3b]` |
-| P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
+| P2/F2 — luật payload | **một phần, phần còn lại GÁC LẠI** | **3 luật** tham số trong `body_core.lua:143-150` (kể cả mã hoá hai lớp). Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã. Gác vì dân số: body+args = 283 / 18 879 URI = **1,5%**, đo trên cả 5 máy 20-09 |
 | P1 — chặn upload webshell | **một phần** | `upload.lua` — **7 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
-| F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
+| F3 — chính sách theo domain | **gác lại, không có bài toán** | đo 20-09: phân bố "tập trung" hoá ra do **1 IP**. `proxy_origin.lua` mới có một khoá tập toàn cục `waf:proxyhosts` |
 | A — admin UI cho WAF | **một phần** | route `/antibot-admin/fim` + card FIM ở tab Overview (`21a81cb`). Chỉ đọc `fim_critical.log`; chưa có trang nào cho `waf.log` hay luật |
 | FIM — giám sát ngoài request | **xong (mu-plugins)** | `fim.sh`: bậc `MUPLUG`, `audit`, ngưỡng tồn đọng. Xem mục 20-09 ở trên |
 
@@ -1063,10 +1063,11 @@ khỏi 0 — đếm "ba luật `args` nên ba tín hiệu trọng số 0" là tr
 nhau: số *luật* không bằng số *tín hiệu*. Con số này đổi mỗi lần thêm tín hiệu,
 nên **đọc bằng lệnh ở trên**, đừng đọc câu này.
 
-**Việc kế tiếp là P1, rồi F3.** P1 trước vì nền đã có sẵn trong `body_core` nên
-phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **công cụ chữa FP**:
-6 host sau reverse proxy cần chính sách khác 68 host còn lại, và P2/F2 — mục duy
-nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
+**~~Việc kế tiếp là P1, rồi F3.~~** *(Câu này viết trước khi có số đo. P1 trước
+vì nền đã có sẵn trong `body_core`; F3 sau vì nó là công cụ chữa FP — 6 host sau
+reverse proxy cần chính sách khác 68 host còn lại. Giữ lại để thấy lập luận cũ,
+nhưng **đừng dùng nó làm thứ tự ưu tiên**: xem đính chính ngay dưới và mục "Năm
+đề xuất bị số liệu bác bỏ".)*
 
 **Đính chính 20-09:** câu trên viết trước khi có số đo. P1 **đã** làm xong phần
 tên file, và số đo cho thấy nó nằm ở nơi gần như không có lưu lượng (1 multipart
@@ -1076,7 +1077,83 @@ nhưng nó là P2/F2 về bản chất. Thứ đã chứng minh được giá tr
 HTTP. Khi cân nhắc việc tiếp theo, nhớ rằng **một tầng đúng đặt ở nơi không có
 lưu lượng thì đo ra 0, và số 0 đó không nói gì về mối đe doạ**.
 
+## Generic vs WordPress overlay — bản đồ đúng của tầng này
+
+**`wp_paths.lua` KHÔNG phải nền móng của WAF. Nó là một overlay độ chính xác
+cao.** Nền móng là những bất biến của HTTP, PHP và web server — thứ đúng bất kể
+site chạy WordPress, Joomla, Drupal hay code tự viết.
+
+Ranh giới đó không phải chuyện phân loại cho gọn. Nó quyết định **được phép giả
+định gì**. Generic **không được** đặt những giả định kiểu:
+
+- mọi `/uploads/` đều không được chạy PHP
+- mọi `/cache/` đều là file tĩnh
+- mọi `/admin/` đều nhạy cảm
+
+vì tên và ngữ nghĩa các thư mục đó khác nhau giữa các ứng dụng. `exposed.lua`
+đã theo đúng nguyên tắc này: nó chặn theo **bất biến** (`(?:^|/)\.[^/.]` — bất
+kỳ thành phần đường dẫn nào bắt đầu bằng dấu chấm) và chú thích trong file ghi
+rõ đã **loại bỏ** cách tiếp cận theo tên thư mục, vì `cache/` được phục vụ thật
+(W3TC, Autoptimize, Divi).
+
+| Bất biến generic | Ở đâu | Trạng thái 20-09 |
+|---|---|---|
+| Traversal, NUL, wrapper | `body_core.lua` 3 luật | có; **kể cả mã hoá hai lớp** (`%252e`, `%2500`) — `args_test.lua:77,94` |
+| Argument/body patterns | `args.lua` → `body_core` | có, trọng số 0 |
+| Multipart + filename nguy hiểm | `upload.lua` 7 nhãn | có, trọng số 0 |
+| Đuôi **thực sự** được PHP-FPM chạy | `upload.lua` `PHP_EXT` | có, đã đo trên fleet (74/0/0 FPM) |
+| `.htaccess` / `.user.ini` / handler | `upload.lua` 3 nhãn config | có **ở upload**; không có cho URI |
+| Dotfile, VCS, backup, dump | `exposed.lua` 2 luật | có, theo nguyên tắc chứ không theo tên |
+| Request tới file FIM vừa báo | `waf:fimnew:` | có — **nâng** điểm, không chặn |
+| Bot, rate, transport, JA3 | `l7/`, `transport/`, `detection/` | có, ngoài `waf/` |
+| Trạng thái quét không đầy đủ | `fntr=`, `scan=` | có (telemetry) |
+| Method / CT / body bất nhất | — | **không có, và dân số = 0** (xem dưới) |
+
+**WordPress overlay** — chỉ giữ thứ thực sự xuất phát từ cấu trúc WordPress:
+`wp_paths.lua` 8 luật (PHP trong `uploads`, `wp-admin`/`wp-includes`,
+plugins/themes, file core không nên truy cập thẳng) · `detection/wp_hardening.lua`
+(`xmlrpc.php`, `wp-login.php`) · `fim.sh audit` bốn nhánh WordPress · các ngoại
+lệ hợp lệ để giảm FP.
+
+**`fim.sh audit` theo đúng ranh giới này kể từ `3c77f3b`:** bộ `[GENERIC]` chạy
+trên mọi webroot, bộ `[WORDPRESS]` chỉ chạy khi tìm thấy `wp-includes/version.php`
+**trên đĩa**. Máy không có WordPress thì nói rõ là bỏ qua, thay vì in bảng rỗng.
+
+### Năm đề xuất bị số liệu bác bỏ trong một ngày
+
+Đừng mở lại mục nào dưới đây nếu không có số đo mới. Mỗi dòng là một lần tôi đề
+xuất từ suy luận rồi bị đo đạc bác bỏ:
+
+| Đề xuất | Bác bỏ bởi |
+|---|---|
+| Nâng `waf_upload` khỏi 0 | 1 multipart / 7 447 dòng body (28-246) |
+| P2/F2 — luật payload body/args | body+args = **1,5%** lưu lượng, đo trên cả 5 máy (283 / 18 879) |
+| F3 — chính sách per-domain | phân bố "tập trung" hoá ra do **1 IP** (`103.253.27.24` → 3 242 lượt vào `rtc.edu.vn`) |
+| Luật method / CT / body bất nhất | GET-có-body = **0**, `cl`+`te` cùng lúc = **0**, cả 5 máy |
+| Luật XML-RPC | `detection/wp_hardening.lua` **đã có** — chặn 17 235/17 266 = 99,8% |
+
+Bài học chung, và nó đắt hơn cả năm mục cộng lại: **lộ trình này được viết từ
+danh mục mối đe doạ lý thuyết, còn mối đe doạ thật trên dàn máy này không đi qua
+HTTP request.** 25 webshell tìm được trong ngày đều do `fim.sh`, không một cái
+nào do luật WAF.
+
+Hai sai lầm cụ thể đáng nhớ:
+
+- **Tra sai file log.** Đọc `rule=-` 2 583 lượt trong `waf.log` thành "không
+  tầng nào nhìn thấy", rồi đề xuất luật mới. Kết cục thật nằm ở `antibot.log`
+  (`action=block` 17 235). `waf.log` không mang phán quyết của tầng khác.
+- **Không `grep` trước khi đề xuất.** Suýt xây lại `wp_hardening.lua` vì tin
+  rằng thứ không thấy trong `waf/` thì không tồn tại ở đâu cả.
+
+`web.config` / `php.ini` qua URI: **đã cân nhắc và loại.** `web.config` là IIS,
+vô nghĩa trên OpenResty+Apache; PHP-FPM không đọc `php.ini` từ webroot
+(DirectAdmin đặt cấu hình ở `php-fpm*.conf` per-user). Cả hai chỉ đáng bắt ở
+**upload** — đã có `upload_foreign_config` / `upload_php_config`.
+
 ## Update log
+- 2026-09-20 (`183366a`) — **Nhánh `[GENERIC]` của `audit` đếm HAI LẦN.** `audit` báo 20/16/10/8 file cấu hình world-writable, `find` trực tiếp ra 10/8/5/4 — tỷ lệ 2:1 **chính xác** trên bốn máy khác nhau. Nguyên nhân: mỗi nhánh chạy hai `find` (`$ROOTS/...` và `$ROOTS/*/...`, cái sau phủ WordPress trong thư mục con), và với `-maxdepth 2` thì `$ROOTS` **đã** phủ tới `public_html/*/x.php`. Khoanh vùng bằng phép thử từng nhánh, không đoán: chỉ nhánh `-maxdepth 2` hỏng (`cũ=2 mới=1`), bốn nhánh `-maxdepth 1` và `mu-plugins` đều không. `sort -u` đặt **trong** `audit_list` nên năm nhánh cùng được bảo vệ. Tự đính chính: lượt trước tôi nghi con số 2:1 là ảo do lệnh verify của mình kém — lệnh đó kém thật, nhưng con số thì đúng; lỗi ở **cả hai** chỗ.
+- 2026-09-20 (`3c77f3b`) — **`audit` tách HAI BỘ: `[GENERIC]` mọi CMS, `[WORDPRESS]` theo dấu hiệu trên đĩa.** Tìm thêm 3 webshell trên `thegioibds.online` (168-101), bị chiếm từ **2022**: `wp-content/themes.php` 29B `chmod 777` = `<?php system($_GET['vk']); ?>` (có bản sao ở `themes/themes.php`), `cfunteuvom.php` 166KB = **FoxAutoV5 / Leaf PHP Mailer** (`anonymousfox.co`, bộ gửi spam), `JFYUvWNTPCy.php` 36KB ghép tên hàm từ chỉ số ký tự của một câu tiếng Anh. Cộng `wp-blockup.php` + `icVp.php`: **5 file, 3 vị trí**, và site này không có file nào trong `mu-plugins` nên bản `audit` trước mù với nó. **Hai trục "độc lập CMS" đã thử và bị 5 máy bác bỏ:** (a) tên CamelCase → **196 134** file trên 171-96 = 52% toàn bộ `.php` (Composer/PSR-4 bắt buộc CamelCase); (b) execute bit → 7 195/1 066/11/0/0, phân bố không đồng nhất, phần lớn là rác `__MACOSX/._*`. Kết luận: **không có trục nào phân biệt được webshell mà không biết cấu trúc site** — webshell là file PHP hợp lệ ở nơi hợp lệ, thứ duy nhất sai là *nó không thuộc về phần mềm nào đang cài*. Với CMS khác và code tay, phòng tuyến là `check` (so với manifest của chính site đó, không cần biết CMS).
+- 2026-09-20 (`5b62354`) — **`audit` soi `uploads/`: trục phân biệt là ĐỘ SÂU.** ~424 file `.php` trong `uploads/` toàn dàn → **5 file** nằm thẳng trong `uploads/` (bỏ `index.php`), lọc 98,8%, giữ tỷ lệ trên **cả 5 máy**. Trong 5: 3 là Really Simple SSL (`code-execution.php` 150B, đã đọc nội dung xác minh), **2 là webshell** — `wp-blockup.php` 416B (RCE có mật khẩu `md5($_REQUEST['lt'])`, ghép `base64_decode` bằng `chr()` để né grep, `unlink` file tạm ngay sau khi chạy) và `icVp.php` 0B (mtime 2023-03 nhưng ctime 2024-07, **lệch 16 tháng** = có người đặt lại mtime). Lý do trục đúng: WordPress **bắt** plugin ghi vào thư mục riêng (`sucuri/`, `wpo/`, `smush/`, `woocommerce_uploads/`); kẻ tấn công thả webshell nơi URL ngắn nhất. Khác biệt về **cách làm**, không về tên — nên không cần biết plugin nào tên gì. **Trục bị bác bỏ:** "hash trùng trên ≥2 site = lành" — 62% file là **duy nhất** trên 28-246, vì Sucuri ghi **dữ liệu riêng từng site** vào file `.php`.
 - 2026-09-20 (`21a81cb`) — **Ngưỡng TỒN ĐỌNG: báo cả khi KHÔNG có thay đổi nào.** `audit` chỉ nói khi có người gõ lệnh; với mô hình "đường vào là việc của enduser" thì con số tồn đọng chỉ có một chiều — tăng. Ngưỡng chạy **trước** nhánh `total -eq 0`, tức đúng chỗ `check` thoát sớm. Ngưỡng **theo site** (`MU_MAX=3`, giữa hai dân số đã đo: 16/18 site có 1 file, hai site nhiễm có 8 và 14). Chống lặp bằng md5 danh sách — không có nó là 288 dòng giống hệt mỗi ngày, tức hố đen thứ ba. `tee` ra **cả** stdout (mail) **và** `$CRITLOG` (trang admin) vì hai đường thất bại khác nhau. Tự bắt: bản đầu viết `tee -a "$CRITLOG_EARLY_OK"` — biến **bịa ra**, và `$CRITLOG` thật thì định nghĩa ở *sau* điểm đó ⇒ đường báo thứ hai chết trong im lặng. Chuyển định nghĩa lên dòng 48.
 - 2026-09-20 (`073a8b5`) — **Chế độ `audit`, và quyền đọc cho endpoint.** `check --hot` trên 28-246 trả `exit=0` im lặng trong khi máy có 37 file `.php` ở `mu-plugins`, 21 là webshell — chúng vào manifest từ tháng 7 nên không còn `NEW`. **Tôi đã ghi vào commit message của `bf6b6c5` rằng "hai site đã nhiễm sẽ báo `MUPLUG` cho toàn bộ file cũ ngay lần chạy đầu" — SAI**, câu đó chỉ đúng nếu manifest bị xoá; tôi suy luận từ *ý định* của code thay vì đường đi của nó rồi ghi phỏng đoán đó ra như sự thật. `audit` = liệt kê hiện trạng, không đọc manifest, không ghi gì, không cần `flock`. Kèm: `fim_critical.log` đổi `0600 root` → `0640 root:nginx` vì worker chạy user `nginx` (`nginx.conf:19`) — endpoint trả `Permission denied`. **`exists:false` đã cứu đúng chỗ:** nó tách "không đọc được" khỏi "không có cảnh báo"; gộp lại thì trang báo sạch trong khi không nhìn thấy gì.
 - 2026-09-20 (`bf6b6c5`) — **`mu-plugins` thành bậc `MUPLUG`, và bịt đường né `STATE`.** Xem mục *"Phát hiện đúng, báo vào nơi không ai mở"*. Sửa kèm: nhãn bậc thêm **tiền tố số** — bản trước dựa vào thứ tự chữ cái và nó đúng **chỉ vì tình cờ** (`C < H < R < S`); thêm `MUPLUG` là lộ ra ngay vì `sort` xếp `M` vào **giữa**. Kiểm bằng `printf | sort` chứ không suy luận.
