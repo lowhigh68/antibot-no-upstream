@@ -306,14 +306,14 @@ if [ "$mode" = "audit" ]; then
                  -o -name 'settings.php'  -o -name 'config.php'        \
                  -o -name 'LocalSettings.php' -o -name '.env' \) )
 
-    echo "### [GENERIC] File cau hinh world-writable — moi CMS ###"
+    echo "### [GENERIC] File cau hinh world-writable -- moi CMS ###"
     audit_list <<EOF
 $(find $ROOTS   -maxdepth 2 "${CONF_NAMES[@]}" -type f -perm -o+w -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/* -maxdepth 2 "${CONF_NAMES[@]}" -type f -perm -o+w -printf '%p|%s|%T@\n' 2>/dev/null || :)
 EOF
     conf_n=$AUDIT_N
     echo
-    echo "tong: $conf_n file — 0 la binh thuong. File nay chua mat khau database."
+    echo "tong: $conf_n file -- 0 la binh thuong. File nay chua mat khau database."
 
     # ══ BO WORDPRESS ══════════════════════════════════════════════════
     #
@@ -329,15 +329,15 @@ EOF
 
     echo
     if [ "${wp_count:-0}" -eq 0 ]; then
-        echo "### [WORDPRESS] khong tim thay WordPress nao — bo qua ###"
+        echo "### [WORDPRESS] khong tim thay WordPress nao -- bo qua ###"
         echo "(dau hieu: wp-includes/version.php. Site khong-WordPress dua vao"
         echo " 'fim.sh check', xem chu thich bo GENERIC o tren.)"
         exit 0
     fi
-    echo "### [WORDPRESS] $wp_count webroot — cac nhanh duoi CHI ap cho WordPress ###"
+    echo "### [WORDPRESS] $wp_count webroot -- cac nhanh duoi CHI ap cho WordPress ###"
     echo
 
-    echo "### mu-plugins — WordPress include MOI .php o day tren MOI request ###"
+    echo "### mu-plugins -- WordPress include MOI .php o day tren MOI request ###"
     audit_list <<EOF
 $(find $ROOTS/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/*/wp-content/mu-plugins "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :)
@@ -347,7 +347,7 @@ EOF
     # DOC SO NAY THE NAO — ghi ra day vi con so tran khong tu noi gi. Do 20-09:
     # site sach co DUNG MOT file (cua SEO agency, ~7.316 byte, xem
     # memory/project_muplugins_agency_file.md). Site nhiem co 8 va 14.
-    echo "tong: $mu_n file — site LANH thuong 0-1. Nhieu hon la dang xem tung file."
+    echo "tong: $mu_n file -- site LANH thuong 0-1. Nhieu hon la dang xem tung file."
 
     # ── uploads/ — CHI TANG MOT, va do la ca thiet ke ─────────────────
     #
@@ -383,14 +383,14 @@ EOF
     # 2/5 la that. Do la ty le tin hieu/nhieu cao nhat trong moi phep do cua
     # ngay hom do.
     echo
-    echo "### uploads/ — CHI tang 1, bo index.php (xem chu thich: truc phan biet) ###"
+    echo "### uploads/ -- CHI tang 1, bo index.php (xem chu thich: truc phan biet) ###"
     audit_list <<EOF
 $(find $ROOTS/wp-content/uploads   -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/*/wp-content/uploads -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :)
 EOF
     up_n=$AUDIT_N
     echo
-    echo "tong: $up_n file — 0 la binh thuong. Bat ky file nao o day cung dang doc."
+    echo "tong: $up_n file -- 0 la binh thuong. Bat ky file nao o day cung dang doc."
 
     # ── wp-content/ tang 1 — DROP-IN la mot tap DONG ──────────────────
     #
@@ -418,14 +418,14 @@ EOF
              ! -name 'wp-cache-config.php' ! -name 'advanced-headers.php' )
 
     echo
-    echo "### wp-content/ tang 1 — tru index.php + 7 drop-in core + 2 ten cache ###"
+    echo "### wp-content/ tang 1 -- tru index.php + 7 drop-in core + 2 ten cache ###"
     audit_list <<EOF
 $(find $ROOTS/wp-content   -maxdepth 1 "${NAMES[@]}" -type f "${DROPIN[@]}" -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/*/wp-content -maxdepth 1 "${NAMES[@]}" -type f "${DROPIN[@]}" -printf '%p|%s|%T@\n' 2>/dev/null || :)
 EOF
     wpc_n=$AUDIT_N
     echo
-    echo "tong: $wpc_n file — 0 la binh thuong. WordPress KHONG nap file nao khac o day."
+    echo "tong: $wpc_n file -- 0 la binh thuong. WordPress KHONG nap file nao khac o day."
 
     # ── themes/ tang 1 — khong thuoc theme nao ────────────────────────
     #
@@ -435,17 +435,17 @@ EOF
     # `themes/themes.php` tren `thegioibds.online` — ban sao cua webshell 29
     # byte o tren.
     echo
-    echo "### themes/ tang 1 — file khong thuoc theme nao, tru index.php ###"
+    echo "### themes/ tang 1 -- file khong thuoc theme nao, tru index.php ###"
     audit_list <<EOF
 $(find $ROOTS/wp-content/themes   -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/*/wp-content/themes -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :)
 EOF
     th_n=$AUDIT_N
     echo
-    echo "tong: $th_n file — 0 la binh thuong."
+    echo "tong: $th_n file -- 0 la binh thuong."
 
     echo
-    echo "audit KHONG phan biet duoc lanh/doc — no chi liet ke. Thu muc con cua"
+    echo "audit KHONG phan biet duoc lanh/doc -- no chi liet ke. Thu muc con cua"
     echo "uploads/ va tung theme KHONG duoc soi (do la noi plugin/theme ghi hop"
     echo "le); dung 'find <duong-dan> -name \"*.php\"' neu can nhin het."
     exit 0
@@ -531,7 +531,7 @@ if [ "$mode" = "baseline" ]; then
     # manifest rong ton tai thi lan `check` sau se coi MOI file la NEW.
     if [ "$n" -eq 0 ]; then
         rm -f "$MANIFEST"
-        echo "quet ra 0 file — khong ghi manifest. Kiem FIM_ROOTS=$ROOTS" >&2
+        echo "quet ra 0 file -- khong ghi manifest. Kiem FIM_ROOTS=$ROOTS" >&2
         exit 2
     fi
     # Manifest moi thi moi so sanh CHG truoc do het nghia.
@@ -565,7 +565,7 @@ scan > "$new_scan" || { echo "quet that bai" >&2; exit 2; }
 # file, nen mot nguong theo TY LE se chan ca thao tac hop le; con 0 file thi
 # khong the la ket qua that khi manifest dang co san hang tram nghin.
 if [ ! -s "$new_scan" ]; then
-    echo "quet ra 0 file trong khi manifest co $(wc -l < "$MANIFEST") — coi la" >&2
+    echo "quet ra 0 file trong khi manifest co $(wc -l < "$MANIFEST") -- coi la" >&2
     echo "LOI QUET, khong phai xoa hang loat. Manifest giu nguyen." >&2
     echo "Kiem FIM_ROOTS=$ROOTS va quyen doc cua user dang chay." >&2
     exit 2
