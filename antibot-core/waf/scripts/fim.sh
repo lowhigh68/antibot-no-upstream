@@ -218,6 +218,21 @@ done
 if [ "$mode" = "audit" ]; then
     # Mot ham, nhieu vung, vi chung khac nhau o DO SAU chu khong o cach doc.
     # Doc tu stdin, tra so dong qua $AUDIT_N (bash khong tra duoc so tu ham).
+    # `sort -u` TRONG ham, khong o tung cho goi — va day la mot loi THAT da lot
+    # ra production 20-09, khong phai phong thu thua.
+    #
+    # Moi nhanh chay HAI `find`: `$ROOTS/...` va `$ROOTS/*/...` (nhanh thu hai
+    # phu WordPress cai trong thu muc con cua public_html). Voi `-maxdepth 2` thi
+    # `$ROOTS` DA phu toi `public_html/*/x.php`, nen `$ROOTS/*` quet lai CHINH
+    # vung do va moi file bi dem HAI LAN.
+    #
+    # Trieu chung khi do tren may that: `audit` dem 20 / 16 / 10 / 8 trong khi
+    # `find` truc tiep ra 10 / 8 / 5 / 4 — ty le 2:1 CHINH XAC tren bon may khac
+    # nhau. Mot con so gap doi deu dan nhu vay khong bao gio la trung hop; do la
+    # dau hieu quet chong.
+    #
+    # Dat o DAY chu khong o tung cho goi: bon nhanh + nhanh GENERIC deu co cung
+    # hinh dang, va sua o mot cho thi khong the sot cho nao.
     audit_list() {
         printf '%-6s %-9s %s\n' 'SO' 'KICH CO' 'DUONG DAN'
         local n=0 p s _t
@@ -229,7 +244,7 @@ if [ "$mode" = "audit" ]; then
             [ -n "$p" ] || continue
             n=$((n + 1))
             printf '%-6s %-9s %s\n' "$n" "$s" "$p"
-        done
+        done < <(sort -u)
         AUDIT_N=$n
     }
 
