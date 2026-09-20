@@ -199,16 +199,24 @@ done
 # `check` tra loi "co gi doi", `audit` tra loi "dang co gi". Cau thu hai la cau
 # phai hoi khi nghi may DA bi xam nhap, va no khong doc manifest mot dong nao.
 #
-# Chi soi `mu-plugins/`, co y. Do 20-09 tren dan may: 16/18 site co DUNG MOT
-# file o day, khong doi tu thang 2 — nen mot danh sach day du van DOC DUOC bang
-# mat. `plugins/` co hang nghin file hop le nen liet ke tron la vo dung; do la
-# viec cua `check`.
+# HAI BO, va do la kien truc chu khong phai mot ghi chu:
+#   [GENERIC]   chay tren MOI webroot, ke ca site khong dung CMS nao. Hien chi
+#               co mot nhanh — file cau hinh world-writable — vi hai truc doc
+#               lap CMS khac da THU va BI BAC BO tren 5 may (so lieu o trong).
+#   [WORDPRESS] chi chay o webroot co `wp-includes/version.php` tren dia. Bon
+#               nhanh: mu-plugins, uploads/ tang 1, wp-content/ tang 1,
+#               themes/ tang 1.
+# May khong co WordPress nao thi bo thu hai bi BO QUA va noi ro la bo qua, thay
+# vi in bon bang rong gay tuong la "da soi va sach".
+#
+# Moi nhanh deu la `-maxdepth`-co-chu-dich: `plugins/` va tung theme co hang
+# nghin file hop le nen liet ke tron la vo dung — do la viec cua `check`.
 #
 # KHONG doc/ghi manifest, KHONG ghi Redis, KHONG ghi $CRITLOG: `audit` la mot
 # phep DOC. Chay no bao nhieu lan cung khong doi trang thai gi — nen no an toan
 # de chay giua luc dieu tra, khac `baseline` (quyet dinh bao mat).
 if [ "$mode" = "audit" ]; then
-    # Mot ham, hai vung, vi chung khac nhau o DO SAU chu khong o cach doc.
+    # Mot ham, nhieu vung, vi chung khac nhau o DO SAU chu khong o cach doc.
     # Doc tu stdin, tra so dong qua $AUDIT_N (bash khong tra duoc so tu ham).
     audit_list() {
         printf '%-6s %-9s %s\n' 'SO' 'KICH CO' 'DUONG DAN'
@@ -224,6 +232,95 @@ if [ "$mode" = "audit" ]; then
         done
         AUDIT_N=$n
     }
+
+    # ══ BO GENERIC — moi CMS, va moi site KHONG CMS ═══════════════════
+    #
+    # VI SAO PHAI TACH THANH HAI BO chu khong ghi mot dong chu thich: cac nhanh
+    # WordPress ben duoi mu HOAN TOAN voi Drupal, Joomla, Magento, Laravel va
+    # site code tay. Do 20-09: may 183-139 (code tay) tra 0 cho MOI nhanh
+    # WordPress — `audit` khong nhin thay gi tren ca mot may.
+    #
+    # HAI TRUC "doc lap CMS" DA THU VA BI BAC BO tren ca 5 may. Ghi ra day voi
+    # con so de khong ai xay lai:
+    #
+    #   (a) Ten file co chu HOA lan THUONG  ->  196.134 file tren 171-96 (52%
+    #       toan bo .php), 76k-89k tren cac may khac. Composer/PSR-4 BAT BUOC
+    #       CamelCase cho class file (`ClassLoader.php`,
+    #       `ActionScheduler_Action.php`). Truc nay khong phan biet duoc gi.
+    #
+    #   (b) File .php co execute bit  ->  7.195 / 1.066 / 11 / 0 / 0. Phan bo
+    #       khong dong nhat giua cac may nen khong phai truc on dinh; phan lon
+    #       la rac `__MACOSX/._*` tu zip giai nen tren macOS.
+    #
+    # Ket luan rut ra, va no la ly do bo GENERIC nho the nay: KHONG co truc nao
+    # phan biet duoc webshell ma khong biet cau truc site. Webshell la file PHP
+    # hop le dat o noi hop le ve filesystem — thu duy nhat sai la NO KHONG THUOC
+    # VE PHAN MEM NAO DANG CAI, va cau do chi tra loi duoc khi biet phan mem gi.
+    # Tren site code tay thi khai niem do khong ton tai: `msmobile.vn` co
+    # `CopyOfvertical.php`, `Lib+/`, `alepay-installment_____/` — lap trinh vien
+    # de lai file nhap, va moi truc "ten bat thuong" se bao het.
+    #
+    # Nen voi CMS khac va site code tay, phong tuyen la `fim.sh check`: no KHONG
+    # can biet CMS, no so voi manifest cua CHINH site do. File moi la file moi,
+    # bat ke Drupal hay code tay. Do dung la thu bat duoc 20 webshell 20-09.
+    # `audit` chi bo sung cho ca webshell DA nam trong manifest tu truoc.
+    #
+    # Truc duy nhat o bo nay da chung minh gia tri: file CAU HINH world-writable.
+    # Do 20-09: 6 site co `wp-config.php` mode o+w tren 3 may. Do la file chua
+    # mat khau database. `open_basedir` chan PHP cua user khac nhung KHONG chan
+    # SSH/cron cua chinh user do. Ap cho moi CMS vi moi CMS deu co file cau hinh.
+    # Ten file cau hinh cua cac CMS pho bien. Danh sach nay KHONG can day du —
+    # no chi can phu cai dang chay tren dan may, va mo rong duoc khi gap CMS moi.
+    #   wp-config.php      WordPress
+    #   configuration.php  Joomla
+    #   settings.php       Drupal
+    #   LocalSettings.php  MediaWiki
+    #   config.php         Magento/phpBB/nhieu framework va site code tay
+    #   .env               Laravel/Symfony
+    #
+    # CHUA THU DUOC TAI CHO: may dev la Git Bash tren Windows, `chmod` khong doi
+    # duoc bit `o+w` nen khong dung duoc mot file world-writable de doi chieu.
+    # Da kiem cu phap `-perm -o+w` chay khong loi va nhanh `find` tim dung file
+    # khi bo dieu kien perm; phan LOC thi chi xac minh duoc tren may that.
+    # Lenh doi chieu tren may that:
+    #   find /home/*/domains/*/public_html -maxdepth 2 -name 'wp-config.php' \
+    #        -type f -perm -o+w
+    # phai ra dung 6 file da do 20-09 (3 may). Ra 0 thi nhanh nay CAM, khong
+    # phai "khong co file nao" — phan biet hai cai do truoc khi tin.
+    CONF_NAMES=( \( -name 'wp-config.php' -o -name 'configuration.php' \
+                 -o -name 'settings.php'  -o -name 'config.php'        \
+                 -o -name 'LocalSettings.php' -o -name '.env' \) )
+
+    echo "### [GENERIC] File cau hinh world-writable — moi CMS ###"
+    audit_list <<EOF
+$(find $ROOTS   -maxdepth 2 "${CONF_NAMES[@]}" -type f -perm -o+w -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/* -maxdepth 2 "${CONF_NAMES[@]}" -type f -perm -o+w -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    conf_n=$AUDIT_N
+    echo
+    echo "tong: $conf_n file — 0 la binh thuong. File nay chua mat khau database."
+
+    # ══ BO WORDPRESS ══════════════════════════════════════════════════
+    #
+    # CHI chay khi tim thay WordPress that tren dia. Dau hieu la
+    # `wp-includes/version.php` — file core, moi ban WordPress deu co, va khong
+    # doan theo ten thu muc. Neu may khong co WordPress nao thi cac nhanh duoi
+    # bi bo qua hoan toan thay vi in ba bang rong gay tuong la "da soi va sach".
+    wp_roots=$(
+        { find $ROOTS   -maxdepth 2 -path '*/wp-includes/version.php' -type f 2>/dev/null || :
+          find $ROOTS/* -maxdepth 2 -path '*/wp-includes/version.php' -type f 2>/dev/null || :
+        } | sed 's#/wp-includes/version\.php$##' | sort -u)
+    wp_count=$(printf '%s\n' "$wp_roots" | grep -c . || :)
+
+    echo
+    if [ "${wp_count:-0}" -eq 0 ]; then
+        echo "### [WORDPRESS] khong tim thay WordPress nao — bo qua ###"
+        echo "(dau hieu: wp-includes/version.php. Site khong-WordPress dua vao"
+        echo " 'fim.sh check', xem chu thich bo GENERIC o tren.)"
+        exit 0
+    fi
+    echo "### [WORDPRESS] $wp_count webroot — cac nhanh duoi CHI ap cho WordPress ###"
+    echo
 
     echo "### mu-plugins — WordPress include MOI .php o day tren MOI request ###"
     audit_list <<EOF
@@ -279,10 +376,63 @@ EOF
     up_n=$AUDIT_N
     echo
     echo "tong: $up_n file — 0 la binh thuong. Bat ky file nao o day cung dang doc."
+
+    # ── wp-content/ tang 1 — DROP-IN la mot tap DONG ──────────────────
+    #
+    # WordPress tu `include` dung 7 ten o day, va danh sach do nam trong CORE
+    # chu khong phu thuoc plugin nao: advanced-cache, object-cache, db,
+    # db-error, install, maintenance, sunrise. Mot file .php khac o tang 1 thi
+    # WordPress KHONG nap — no chi chay khi co HTTP request go thang vao.
+    #
+    # Do 20-09 tren 4 may WordPress: ngoai `index.php` va 7 drop-in tren, chi
+    # con `wp-cache-config.php` (WP Super Cache, 5 site) va `advanced-headers.php`
+    # (plugin cache, 1 site) — hai ten nay them vao danh sach tha vi da do duoc.
+    # Sau khi tru het: 3 file, TAT CA tren cung mot site.
+    #
+    #   `JFYUvWNTPCy.php`  36KB  ghep ten ham tu chi so ky tu cua mot cau tieng
+    #                            Anh -> ne moi phep grep chu ky
+    #   `cfunteuvom.php`  166KB  FoxAutoV5 / Leaf PHP Mailer (anonymousfox.co)
+    #                            — bo gui spam
+    #   `themes.php`        29B  `<?php system($_GET['vk']); ?>` va chmod 777.
+    #                            Khong mat khau, khong che giau.
+    # Site do (`thegioibds.online`) bi chiem tu 2022 — ba nam.
+    DROPIN=( ! -name 'index.php'         ! -name 'advanced-cache.php' \
+             ! -name 'object-cache.php'  ! -name 'db.php'             \
+             ! -name 'db-error.php'      ! -name 'install.php'        \
+             ! -name 'maintenance.php'   ! -name 'sunrise.php'        \
+             ! -name 'wp-cache-config.php' ! -name 'advanced-headers.php' )
+
+    echo
+    echo "### wp-content/ tang 1 — tru index.php + 7 drop-in core + 2 ten cache ###"
+    audit_list <<EOF
+$(find $ROOTS/wp-content   -maxdepth 1 "${NAMES[@]}" -type f "${DROPIN[@]}" -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/*/wp-content -maxdepth 1 "${NAMES[@]}" -type f "${DROPIN[@]}" -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    wpc_n=$AUDIT_N
+    echo
+    echo "tong: $wpc_n file — 0 la binh thuong. WordPress KHONG nap file nao khac o day."
+
+    # ── themes/ tang 1 — khong thuoc theme nao ────────────────────────
+    #
+    # File .php nam THANG trong `themes/` thi khong thuoc theme nao ca —
+    # WordPress khong sinh ra thu do. Do 20-09 tren 4 may: 39-45 file/may va
+    # TAT CA la `index.php` (chong liet ke thu muc), tru dung MOT ngoai le:
+    # `themes/themes.php` tren `thegioibds.online` — ban sao cua webshell 29
+    # byte o tren.
+    echo
+    echo "### themes/ tang 1 — file khong thuoc theme nao, tru index.php ###"
+    audit_list <<EOF
+$(find $ROOTS/wp-content/themes   -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/*/wp-content/themes -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    th_n=$AUDIT_N
+    echo
+    echo "tong: $th_n file — 0 la binh thuong."
+
     echo
     echo "audit KHONG phan biet duoc lanh/doc — no chi liet ke. Thu muc con cua"
-    echo "uploads/ KHONG duoc soi (do la noi plugin ghi hop le); dung 'find"
-    echo "<uploads> -name \"*.php\"' neu can nhin het."
+    echo "uploads/ va tung theme KHONG duoc soi (do la noi plugin/theme ghi hop"
+    echo "le); dung 'find <duong-dan> -name \"*.php\"' neu can nhin het."
     exit 0
 fi
 
