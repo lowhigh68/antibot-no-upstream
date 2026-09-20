@@ -77,8 +77,9 @@ REDIS_CLI="${FIM_REDIS_CLI:-redis-cli}"
 REDIS_DB="${FIM_REDIS_DB:-0}"
 MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 
-# `audit` khong nhan co nao: no khong co tier (chi soi mu-plugins), khong ghi gi
-# nen `--dry` vo nghia, va luon in day du nen `-v` cung vay.
+# `audit` khong nhan co nao: no khong co tier (soi mot tap co dinh — mu-plugins
+# tron do sau, uploads chi tang 1), khong ghi gi nen `--dry` vo nghia, va luon in
+# day du nen `-v` cung vay.
 usage() { echo "dung: $0 {baseline|check|audit} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
@@ -207,27 +208,81 @@ done
 # phep DOC. Chay no bao nhieu lan cung khong doi trang thai gi — nen no an toan
 # de chay giua luc dieu tra, khac `baseline` (quyet dinh bao mat).
 if [ "$mode" = "audit" ]; then
-    printf '%-6s %-9s %s\n' 'SO' 'KICH CO' 'DUONG DAN'
-    n=0
-    # KHONG them `sort`: bash bung glob `$ROOTS` theo thu tu da sap xep nen cac
-    # file cung mot site von da lien nhau, va "site nao co bao nhieu file" — hinh
-    # dang cua mot vu xam nhap — doc duoc ngay. Da kiem bang phep thu chu khong
-    # gia dinh; mot `sort` them vao day chi la lop khong lam gi.
-    while IFS='|' read -r p s _t; do
-        [ -n "$p" ] || continue
-        n=$((n + 1))
-        printf '%-6s %-9s %s\n' "$n" "$s" "$p"
-    done <<EOF
+    # Mot ham, hai vung, vi chung khac nhau o DO SAU chu khong o cach doc.
+    # Doc tu stdin, tra so dong qua $AUDIT_N (bash khong tra duoc so tu ham).
+    audit_list() {
+        printf '%-6s %-9s %s\n' 'SO' 'KICH CO' 'DUONG DAN'
+        local n=0 p s _t
+        # KHONG them `sort`: bash bung glob `$ROOTS` theo thu tu da sap xep nen
+        # cac file cung mot site von da lien nhau, va "site nao co bao nhieu
+        # file" — hinh dang cua mot vu xam nhap — doc duoc ngay. Da kiem bang
+        # phep thu chu khong gia dinh.
+        while IFS='|' read -r p s _t; do
+            [ -n "$p" ] || continue
+            n=$((n + 1))
+            printf '%-6s %-9s %s\n' "$n" "$s" "$p"
+        done
+        AUDIT_N=$n
+    }
+
+    echo "### mu-plugins — WordPress include MOI .php o day tren MOI request ###"
+    audit_list <<EOF
 $(find $ROOTS/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :
   find $ROOTS/*/wp-content/mu-plugins "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :)
 EOF
+    mu_n=$AUDIT_N
     echo
-    echo "tong: $n file co the chay duoc trong mu-plugins"
     # DOC SO NAY THE NAO — ghi ra day vi con so tran khong tu noi gi. Do 20-09:
     # site sach co DUNG MOT file (cua SEO agency, ~7.316 byte, xem
     # memory/project_muplugins_agency_file.md). Site nhiem co 8 va 14.
-    echo "de doc: mot site LANH thuong co 0-1 file. Nhieu hon la dang xem tung file."
-    echo "        audit KHONG phan biet duoc lanh/doc — no chi liet ke."
+    echo "tong: $mu_n file — site LANH thuong 0-1. Nhieu hon la dang xem tung file."
+
+    # ── uploads/ — CHI TANG MOT, va do la ca thiet ke ─────────────────
+    #
+    # `-maxdepth 1` khong phai de re. No la TRUC PHAN BIET, rut ra tu do
+    # 20-09 tren ca 5 may:
+    #
+    #   ~424 file .php trong uploads/ toan dan  ->  CHI 5 file nam THANG trong
+    #   uploads/ (da bo index.php). Ty le loc 98,8%, va giu duoc tren CA 5 MAY.
+    #
+    # Ly do no dung: WordPress bat plugin ghi vao THU MUC RIENG cua no —
+    # `sucuri/`, `wpo/`, `smush/`, `woocommerce_uploads/`, `smile_fonts/`,
+    # `wp-staging/`. Ke tan cong tha webshell o noi URL NGAN NHAT va chac chan
+    # ton tai. Day la khac biet ve CACH LAM chu khong ve ten file, nen khong
+    # can biet plugin nao ten gi — dung cai khong bao gio biet het duoc.
+    #
+    # TRUC DA BI BAC BO, ghi lai de khong ai xay lai: "file trung hash tren
+    # >=2 site la lanh". Do 5 may bac bo — 62% file la DUY NHAT tren 28-246,
+    # 30% tren 168-101. Vi plugin bao mat (Sucuri) ghi DU LIEU RIENG cua tung
+    # site vao file .php (audit log, failed login, settings) nen moi site mot
+    # hash. Trung lap KHONG phai dau hieu lanh tinh.
+    #
+    # `index.php` bi loai: WordPress chuan, 0 byte, chong liet ke thu muc — 58
+    # cai chi rieng 171-96.
+    #
+    # KET QUA THAT cua 5 file loc duoc (20-09): 3 la Really Simple SSL
+    # (`code-execution.php`, 150 byte, da xac minh noi dung), 2 la WEBSHELL:
+    #   `wp-blockup.php` 416B — RCE co MAT KHAU (md5 cua $_REQUEST[lt]), ghep
+    #       `base64_decode` bang chr() de ne grep, ghi file tam roi `unlink`
+    #       ngay sau khi chay => chong phap chung.
+    #   `icVp.php` 0B — ten 4 ky tu ngau nhien, mtime 2023-03 nhung ctime
+    #       2024-07: LECH 16 THANG, tuc co nguoi dat lai mtime cho khop file
+    #       xung quanh. Plugin hop le khong lam vay.
+    # 2/5 la that. Do la ty le tin hieu/nhieu cao nhat trong moi phep do cua
+    # ngay hom do.
+    echo
+    echo "### uploads/ — CHI tang 1, bo index.php (xem chu thich: truc phan biet) ###"
+    audit_list <<EOF
+$(find $ROOTS/wp-content/uploads   -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/*/wp-content/uploads -maxdepth 1 "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    up_n=$AUDIT_N
+    echo
+    echo "tong: $up_n file — 0 la binh thuong. Bat ky file nao o day cung dang doc."
+    echo
+    echo "audit KHONG phan biet duoc lanh/doc — no chi liet ke. Thu muc con cua"
+    echo "uploads/ KHONG duoc soi (do la noi plugin ghi hop le); dung 'find"
+    echo "<uploads> -name \"*.php\"' neu can nhin het."
     exit 0
 fi
 
