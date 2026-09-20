@@ -73,7 +73,9 @@ REDIS_CLI="${FIM_REDIS_CLI:-redis-cli}"
 REDIS_DB="${FIM_REDIS_DB:-0}"
 MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 
-usage() { echo "dung: $0 {baseline|check} [--hot] [--dry] [-v]" >&2; exit 2; }
+# `audit` khong nhan co nao: no khong co tier (chi soi mu-plugins), khong ghi gi
+# nen `--dry` vo nghia, va luon in day du nen `-v` cung vay.
+usage() { echo "dung: $0 {baseline|check|audit} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
@@ -179,6 +181,51 @@ for a in "$@"; do
         *)            usage ;;
     esac
 done
+
+# ── audit: HIEN TRANG, khong phai THAY DOI ────────────────────────────
+#
+# VI SAO CAN MOT CHE DO RIENG, va day la lo hong cua chinh ban `MUPLUG` vua
+# them: `check` chi bao NEW/CHG so voi manifest. 20-09, sau khi deploy `MUPLUG`
+# len 28-246, `check --hot` tra `exit=0` va khong in gi — dung trong khi may do
+# dang co 20 webshell trong `mu-plugins`. Khong phai loi: 20 file da vao
+# `manifest.hot.txt` tu thang 7 nen chung khong con la NEW. Mot may do THAY DOI
+# thi mot webshell da nam trong anh chup se im lang VINH VIEN.
+#
+# `check` tra loi "co gi doi", `audit` tra loi "dang co gi". Cau thu hai la cau
+# phai hoi khi nghi may DA bi xam nhap, va no khong doc manifest mot dong nao.
+#
+# Chi soi `mu-plugins/`, co y. Do 20-09 tren dan may: 16/18 site co DUNG MOT
+# file o day, khong doi tu thang 2 — nen mot danh sach day du van DOC DUOC bang
+# mat. `plugins/` co hang nghin file hop le nen liet ke tron la vo dung; do la
+# viec cua `check`.
+#
+# KHONG doc/ghi manifest, KHONG ghi Redis, KHONG ghi $CRITLOG: `audit` la mot
+# phep DOC. Chay no bao nhieu lan cung khong doi trang thai gi — nen no an toan
+# de chay giua luc dieu tra, khac `baseline` (quyet dinh bao mat).
+if [ "$mode" = "audit" ]; then
+    printf '%-6s %-9s %s\n' 'SO' 'KICH CO' 'DUONG DAN'
+    n=0
+    # KHONG them `sort`: bash bung glob `$ROOTS` theo thu tu da sap xep nen cac
+    # file cung mot site von da lien nhau, va "site nao co bao nhieu file" — hinh
+    # dang cua mot vu xam nhap — doc duoc ngay. Da kiem bang phep thu chu khong
+    # gia dinh; mot `sort` them vao day chi la lop khong lam gi.
+    while IFS='|' read -r p s _t; do
+        [ -n "$p" ] || continue
+        n=$((n + 1))
+        printf '%-6s %-9s %s\n' "$n" "$s" "$p"
+    done <<EOF
+$(find $ROOTS/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/*/wp-content/mu-plugins "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    echo
+    echo "tong: $n file co the chay duoc trong mu-plugins"
+    # DOC SO NAY THE NAO — ghi ra day vi con so tran khong tu noi gi. Do 20-09:
+    # site sach co DUNG MOT file (cua SEO agency, ~7.316 byte, xem
+    # memory/project_muplugins_agency_file.md). Site nhiem co 8 va 14.
+    echo "de doc: mot site LANH thuong co 0-1 file. Nhieu hon la dang xem tung file."
+    echo "        audit KHONG phan biet duoc lanh/doc — no chi liet ke."
+    exit 0
+fi
 
 # MANIFEST RIENG CHO TUNG TIER, va day la yeu cau DUNG DAN chu khong phai gon
 # gang: tang nong quet mot tap con: doi chieu no voi manifest day du se bao MOI
@@ -582,9 +629,24 @@ if [ -n "$critlines" ]; then
         [ "${mu_now:-0}" -gt 0 ] && \
             echo "  [trang thai] tong cong $mu_now file .php trong mu-plugins tren toan may"
     } >> "$CRITLOG"
-    # umask 077 (dong 221) da lo file MOI; dong nay cho file da sinh ra tren may
-    # cu, cung ly do voi chmod o dong 228.
-    chmod 0600 "$CRITLOG" 2>/dev/null || :
+    # 0640 root:nginx — KHAC 0600 cua $LOG va $MANIFEST, va co ly do.
+    #
+    # File nay TON TAI de `admin/init.lua` doc, ma OpenResty worker chay user
+    # `nginx` (nginx.conf:19). Voi 0600 root thi endpoint /antibot-admin/fim tra
+    # `Permission denied` — da gap that 20-09 ngay sau khi deploy.
+    #
+    # KHONG noi thanh 0644. Khac biet voi $MANIFEST la o NOI DUNG: manifest la
+    # danh muc day du duong dan file cua MOI khach tren may (13.636 dong), con
+    # file nay chi co dong CRITICAL/MUPLUG. Nhung "it hon" khong phai "duoc phep
+    # doc boi moi khach" — PHP cua bat ky khach nao doc duoc 0644, va mot dong
+    # MUPLUG van chi ra duong dan tuyet doi cua site khac.
+    #
+    # `chgrp` co the that bai (khong co group `nginx`, hoac OS khac): `|| :` de
+    # khong lam chet ca lan quet, va `chmod` chay sau de it nhat khong noi rong
+    # hon 0640. Neu chgrp truot thi endpoint van bao `exists:false` — tuc bao ra,
+    # khong im lang.
+    chgrp nginx "$CRITLOG" 2>/dev/null || :
+    chmod 0640 "$CRITLOG" 2>/dev/null || :
 
     # CAT VONG TAI CHO, khong giao cho logrotate. File nay chi co gia tri neu
     # DOC HET DUOC TRONG 10 GIAY; de no phinh la bien no thanh ho den thu hai,
