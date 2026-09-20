@@ -42,6 +42,10 @@ set -uo pipefail
 ROOTS="${FIM_ROOTS:-/home/*/domains/*/public_html}"
 STATE="${FIM_STATE:-/var/lib/antibot/fim}"
 LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
+# Duong bao thu hai, cho `admin/init.lua` doc — xem khoi ghi o cuoi file. Dat o
+# DAY cung voi cac duong dan khac, khong o cho dung: nguong ton dong mu-plugins
+# ghi vao no TRUOC diem do.
+CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
 # MANIFEST dat sau khi biet tier — xem chu thich tai cho gan.
 
 # Nguong gom nhom. Mot ban cap nhat plugin hoac core cham hang tram file cung
@@ -360,6 +364,59 @@ awk -F'|' '
     END { for (p in old) if (!(p in seen)) print "DEL|" p }
 ' "$MANIFEST" "$new_scan" > "$diff_out"
 
+# ── NGUONG TON DONG mu-plugins ────────────────────────────────────────
+#
+# VI SAO PHAI CHAY TRUOC NHANH `total -eq 0`: 20-09 tren 28-246, `check --hot`
+# tra exit=0 va im lang trong khi may do dang co 37 file .php trong mu-plugins,
+# 21 trong so do la webshell. Khong sai: chung da vao manifest tu thang 7 nen
+# khong con la NEW. Nhung mot may chi bao THAY DOI thi mot ton dong da nam san
+# se im lang vinh vien, va `audit` chi noi khi co nguoi go lenh.
+#
+# Day la duong bao KHONG can ai nho gi: `check` dang chay san moi 5 phut.
+#
+# NGUONG THEO SITE, khong theo may, va con so den TU DO chu khong tu cam giac:
+# do 20-09 tren dan may — 16/18 site co DUNG MOT file (cua SEO agency, xem
+# memory/project_muplugins_agency_file.md), hai site nhiem co 8 va 14. Nen 3 la
+# nguong dat giua hai dan so da quan sat, khong phai so chon bua.
+#
+# CHONG LAP: chi bao khi con so DOI so voi lan truoc. Khong co no thi day la 288
+# dong giong het nhau moi ngay, tuc mot ho den thu ba — dung thu ma ca ban nay
+# duoc viet ra de thay the.
+MU_MAX="${FIM_MU_MAX:-3}"
+MUSTATE="$STATE/mucount.$tier.txt"
+
+mu_over=$(awk -F'|' -v max="$MU_MAX" '
+    # Khoa la THU MUC mu-plugins, tuc mot dong cho mot site. Cat tai
+    # "/wp-content/mu-plugins/" chu khong dung dirname: WordPress cai trong thu
+    # muc con cung phai gop dung ve site cua no.
+    {
+        i = index($1, "/wp-content/mu-plugins/")
+        if (i == 0) next
+        n[substr($1, 1, i - 1)]++
+    }
+    END { for (s in n) if (n[s] >= max) printf "%d|%s\n", n[s], s }
+' "$new_scan" | sort -t'|' -k1,1rn)
+
+if [ -n "$mu_over" ]; then
+    mu_sig=$(printf '%s\n' "$mu_over" | md5sum 2>/dev/null | cut -d' ' -f1)
+    mu_prev=$(cat "$MUSTATE" 2>/dev/null || :)
+    if [ "$mu_sig" != "$mu_prev" ]; then
+        {
+            echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] TON DONG mu-plugins ==="
+            printf '%s\n' "$mu_over" | while IFS='|' read -r c s; do
+                printf '  %3d file  %s\n' "$c" "$s"
+            done
+            echo "  (nguong $MU_MAX/site; site lanh thuong 0-1. Liet ke: fim.sh audit)"
+        # `tee`: stdout de cron mail thay, VA vao $CRITLOG de trang admin thay.
+        # Hai duong vi chung that bai khac nhau — mail thi chim, file thi co the
+        # mat quyen doc (da gap 20-09).
+        } | tee -a "$CRITLOG" 2>/dev/null || :
+        chgrp nginx "$CRITLOG" 2>/dev/null || :
+        chmod 0640 "$CRITLOG" 2>/dev/null || :
+        [ $dry -eq 0 ] && printf '%s\n' "$mu_sig" > "$MUSTATE"
+    fi
+fi
+
 total=$(wc -l < "$diff_out")
 if [ "$total" -eq 0 ]; then
     [ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
@@ -608,7 +665,8 @@ header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dan
 # ngoai le da ghi o `crit` ben tren, va bo sot no thi chinh ca that bi loc ra:
 # 13 file cua vu 20-09 vuot GROUP_MAX=5 nen thanh mot dong gom, va mot `grep -v`
 # dat nham cho se bo dung no khoi file nay.
-CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
+# $CRITLOG dinh nghia o dong 48, khong lap lai o day: nguong ton dong
+# mu-plugins ghi vao no truoc diem nay.
 critlines=$(printf '%s\n' "$report" \
     | grep -E '^(MUPLUG|CRITICAL) ' \
     | grep -vE '^CRITICAL .*cap nhat' || :)
