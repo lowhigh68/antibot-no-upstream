@@ -613,6 +613,43 @@ của khách.
 
 **Cổng vào để nâng khỏi 0:** đọc `uprule=` trong `waf.log` vài ngày.
 
+#### Số đo 20-09-2026 — cổng vẫn đóng, nhưng vì lý do khác hẳn dự đoán
+
+Sau khi `e197a8c` chạy trên cả 5 máy:
+
+| Máy | dòng `[waf-body]` | `uprule=` khác `-` |
+|---|---|---|
+| 28-246 | 7 447 | **0** |
+| 186-126 | 3 568 | **0** |
+| 171-96 | 1 086 | **0** |
+| 168-101 | 45 | **0** |
+| 183-139 (code tay) | 12 | **0** |
+
+Trên 28-246: **7 446 dòng `fntr=-`** (không phải multipart) và **1 dòng
+`fntr=0`**. `grep -c 'ct=multipart'` = **1**, `smp=20`.
+
+**Dân số multipart gần bằng 0 — 1 request trên 7 447.** `uprule=0` không nói gì
+về webshell; nó nói rằng luật này đặt ở nơi không có lưu lượng. P1 đúng đắn về
+kỹ thuật nhưng đo một đường vào mà thực tế không ai dùng: 20 webshell của vụ
+cùng ngày vào bằng **credential admin**, không qua HTTP upload.
+
+Giữ trọng số **0**. Không có gì để hiệu chỉnh, và 1 mẫu không nói được gì về
+phân bố tên file.
+
+**Hai lỗi của chính lệnh đo, ghi lại vì cùng một họ:**
+
+`grep -o 'fntr=[a-z0-9]*'` ăn mất dấu `-` (không có trong lớp ký tự), nên
+7 446 dòng `fntr=-` hiện ra thành `fntr=` rỗng và suýt kết luận "cột câm". Lớp
+đúng là `[a-z0-9-]`. **Công cụ đo hỏng trả về số trông hợp lý và không báo lỗi
+gì** — cùng họ với `wp_paths.mark()` chết 4 tháng, chỉ khác là lần này thứ hỏng
+nằm trong lệnh chứ không trong mã.
+
+`BODY_SAMPLE` lấy mẫu 1/20 các dòng **không** `notable`, mà một multipart sạch
+thì không notable (`fn_trunc == false`, `false or …` đi tiếp). Tức **mẫu số bị
+lấy mẫu còn tử số ghi đủ 100%**. Vô hại khi tử số bằng 0; sẽ cắn đúng lúc có dữ
+liệu thật. Chưa sửa — sửa thì `notable` phải thêm `b.family == "multipart"`,
+đổi lượng I/O trên site WooCommerce.
+
 ### `up_rule` là KÊNH RIÊNG, không tranh chỗ `return` với `arg_rule`
 
 `filename="shell.php"` **không** khớp mẫu nào của `check_args` — không `..`,
@@ -775,63 +812,13 @@ grep -c 'fntr=hdr'   /var/log/antibot/waf.log
 grep -E 'fntr=(n|hdr)' /var/log/antibot/waf.log | tr ' ' '\n' | grep '^rown=' | sort | uniq -c | sort -rn | head
 ```
 
-### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
+**GÁC VĨNH VIỄN — đo 20-09-2026.** Điều kiện ghi ngay trên đã thoả: `fntr=n` và
+`fntr=hdr` đều **0** trên cả 5 máy. Trên 28-246 chỉ có **1** request multipart
+trong 7 447 dòng `[waf-body]`, và nó `fntr=0` (đã soi trọn). Không có vùng mù
+nào để vá vì gần như không có multipart nào chạy qua.
 
-`.svg` **không** nằm trong bảng đuôi của P1. Không phải vì nó vô hại — ngược lại
-— mà vì nó là loại nguy hiểm **khác**, nên cả ngưỡng FP lẫn chỗ chữa đều khác.
-
-| | Webshell `.php` | `.svg` |
-|---|---|---|
-| Chạy ở đâu | **server**, trong tiến trình PHP | **trình duyệt** nạn nhân |
-| Là gì | RCE | XSS khi phục vụ trực tiếp |
-| Bản sao hợp lệ trong upload của khách | gần như không có | **logo, icon — có thật, nhiều** |
-| Chữa bằng WAF được không | được, chặn lúc upload | **không** — xem dưới |
-
-SVG là XML nên mang được `<script>`, `on*=`, `<foreignObject>`,
-`<use href="data:…">`, `xlink:href="javascript:…"`, `<style>` kèm `@import`.
-Blocklist thẻ/thuộc tính **luôn thua**; phải allowlist (bản làm đúng: SVG
-Sanitizer của DOMPurify).
-
-**Bốn lớp phòng vệ, xếp theo sức mạnh thật — không theo thứ tự hay được nhắc:**
-
-1. **Sanitize lúc upload** — biện pháp gốc, xử lý nguyên nhân.
-2. **Phục vụ từ origin KHÔNG dùng chung cookie** — mạnh nhất trong các lớp
-   *không* cần sửa file, vì nó vô hiệu hoá **hậu quả** thay vì đoán trước
-   payload: script có chạy cũng không đọc được cookie phiên, không gọi được API
-   dưới danh nghĩa nạn nhân. Cùng nguyên lý `googleusercontent.com` tồn tại.
-3. **Chỉ nhúng bằng `<img>`** — trong `<img>` thì script trong SVG **không chạy**
-   (chế độ non-animated/non-interactive của spec). Nhưng nó **chỉ bảo vệ trang
-   nhúng**; mở thẳng `/wp-content/uploads/x.svg` thì vô tác dụng, mà WordPress
-   cho mở thẳng.
-4. **CSP** — **yếu nhất, và hay bị tưởng là mạnh nhất.** Lý do không phải CSP
-   dở, mà là nó **không áp dụng được vào đúng ca đáng lo**: `Content-Security-Policy`
-   là response header của **tài liệu**, còn khi nạn nhân mở thẳng URL thì tài
-   liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. CSP chỉ có
-   tác dụng nếu gắn lên **chính response phục vụ file upload**, tức việc của
-   nginx.
-
-**Rẻ hơn cả ba lớp trên, và chưa ai nhắc: `Content-Disposition: attachment`.**
-Mở thẳng URL thì tải về chứ không render; `<img>` vẫn nhúng bình thường. Trên
-dàn 74 domain đây là tỉ lệ phòng-vệ/chi-phí tốt nhất vì **không cần sửa gì trong
-WordPress của khách**:
-
-```nginx
-location ~* /wp-content/uploads/.*\.svg$ {
-    add_header Content-Disposition "attachment" always;
-    add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'" always;
-    add_header X-Content-Type-Options nosniff always;
-}
-```
-
-**Vì sao đây KHÔNG phải việc của tầng WAF.** Cả bốn lớp đều là **cấu hình phục
-vụ file**, không phải luật soi request. Một luật WAF chặn upload `.svg` sẽ chặn
-đúng thứ khách hàng làm hợp lệ hàng ngày (logo, icon) để đổi lấy việc **không**
-bảo vệ được các file SVG **đã nằm trên đĩa từ trước** — tức trả giá FP cao nhất
-cho vùng phủ nhỏ nhất. Đó là hình dạng của một luật sai chỗ.
-
-**Trạng thái: hạng mục riêng, chưa làm, không thuộc P1.** Cổng vào là số đo —
-bao nhiêu `.svg` thật đang được upload và phục vụ trên dàn máy, để biết đặt
-`Content-Disposition` có phá giao diện site nào không.
+Đừng mở lại mục này nếu không có số `fntr=n`/`fntr=hdr` khác 0 — lưu ý dùng lớp
+ký tự `[a-z0-9-]` khi bóc giá trị, xem hai lỗi lệnh đo ở mục trọng số 0.
 
 ### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
 
@@ -890,6 +877,145 @@ cho vùng phủ nhỏ nhất. Đó là hình dạng của một luật sai chỗ
 **Trạng thái: hạng mục riêng, chưa làm, không thuộc P1.** Cổng vào là số đo —
 bao nhiêu `.svg` thật đang được upload và phục vụ trên dàn máy, để biết đặt
 `Content-Disposition` có phá giao diện site nào không.
+
+### `.svg` — tách khỏi P1 có chủ ý, và vì sao WAF không phải chỗ chữa
+
+`.svg` **không** nằm trong bảng đuôi của P1. Không phải vì nó vô hại — ngược lại
+— mà vì nó là loại nguy hiểm **khác**, nên cả ngưỡng FP lẫn chỗ chữa đều khác.
+
+| | Webshell `.php` | `.svg` |
+|---|---|---|
+| Chạy ở đâu | **server**, trong tiến trình PHP | **trình duyệt** nạn nhân |
+| Là gì | RCE | XSS khi phục vụ trực tiếp |
+| Bản sao hợp lệ trong upload của khách | gần như không có | **logo, icon — có thật, nhiều** |
+| Chữa bằng WAF được không | được, chặn lúc upload | **không** — xem dưới |
+
+SVG là XML nên mang được `<script>`, `on*=`, `<foreignObject>`,
+`<use href="data:…">`, `xlink:href="javascript:…"`, `<style>` kèm `@import`.
+Blocklist thẻ/thuộc tính **luôn thua**; phải allowlist (bản làm đúng: SVG
+Sanitizer của DOMPurify).
+
+**Bốn lớp phòng vệ, xếp theo sức mạnh thật — không theo thứ tự hay được nhắc:**
+
+1. **Sanitize lúc upload** — biện pháp gốc, xử lý nguyên nhân.
+2. **Phục vụ từ origin KHÔNG dùng chung cookie** — mạnh nhất trong các lớp
+   *không* cần sửa file, vì nó vô hiệu hoá **hậu quả** thay vì đoán trước
+   payload: script có chạy cũng không đọc được cookie phiên, không gọi được API
+   dưới danh nghĩa nạn nhân. Cùng nguyên lý `googleusercontent.com` tồn tại.
+3. **Chỉ nhúng bằng `<img>`** — trong `<img>` thì script trong SVG **không chạy**
+   (chế độ non-animated/non-interactive của spec). Nhưng nó **chỉ bảo vệ trang
+   nhúng**; mở thẳng `/wp-content/uploads/x.svg` thì vô tác dụng, mà WordPress
+   cho mở thẳng.
+4. **CSP** — **yếu nhất, và hay bị tưởng là mạnh nhất.** Lý do không phải CSP
+   dở, mà là nó **không áp dụng được vào đúng ca đáng lo**: `Content-Security-Policy`
+   là response header của **tài liệu**, còn khi nạn nhân mở thẳng URL thì tài
+   liệu **chính là file SVG** — WordPress/Apache không gắn CSP cho nó. CSP chỉ có
+   tác dụng nếu gắn lên **chính response phục vụ file upload**, tức việc của
+   nginx.
+
+**Rẻ hơn cả ba lớp trên, và chưa ai nhắc: `Content-Disposition: attachment`.**
+Mở thẳng URL thì tải về chứ không render; `<img>` vẫn nhúng bình thường. Trên
+dàn 74 domain đây là tỉ lệ phòng-vệ/chi-phí tốt nhất vì **không cần sửa gì trong
+WordPress của khách**:
+
+```nginx
+location ~* /wp-content/uploads/.*\.svg$ {
+    add_header Content-Disposition "attachment" always;
+    add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'" always;
+    add_header X-Content-Type-Options nosniff always;
+}
+```
+
+**Vì sao đây KHÔNG phải việc của tầng WAF.** Cả bốn lớp đều là **cấu hình phục
+vụ file**, không phải luật soi request. Một luật WAF chặn upload `.svg` sẽ chặn
+đúng thứ khách hàng làm hợp lệ hàng ngày (logo, icon) để đổi lấy việc **không**
+bảo vệ được các file SVG **đã nằm trên đĩa từ trước** — tức trả giá FP cao nhất
+cho vùng phủ nhỏ nhất. Đó là hình dạng của một luật sai chỗ.
+
+**Trạng thái: hạng mục riêng, chưa làm, không thuộc P1.** Cổng vào là số đo —
+bao nhiêu `.svg` thật đang được upload và phục vụ trên dàn máy, để biết đặt
+`Content-Disposition` có phá giao diện site nào không.
+
+## Phát hiện đúng, báo vào nơi không ai mở — vụ 20-09-2026
+
+**Đây là bài học đáng giá nhất của ngày hôm đó, hơn mọi con số `uprule=`.**
+
+Tìm thấy **20 webshell** trong `wp-content/mu-plugins/` trên hai site của
+cloud28-246 (`thegioisay` 13, `bhachau` 7), file cũ nhất **25-07** — sống gần
+hai tháng.
+
+`fim.sh` **đã phát hiện và đã báo, đúng từ ngày đầu.** Kiểm lại trong mã: file
+mới trong `mu-plugins` là `NEW` + `CRITICAL` + đến một mình ⇒ `crit > 0` ⇒ in ra
+stdout ⇒ cron gửi mail ⇒ `exit 1`. Cơ chế chạy đủ, không có dòng nào hỏng.
+
+Nó hỏng ở chỗ **mail cron trên shared hosting là một hố đen**. 13 lần báo trong
+hai tháng, không ai mở. Một cảnh báo đúng gửi vào nơi không ai đọc thì bằng
+không có cảnh báo — và tệ hơn, nó để lại dấu vết khiến người sau tưởng lớp
+phòng thủ đó đã được kiểm.
+
+Ba điều rút ra, đã sửa ở `bf6b6c5` / `073a8b5` / `21a81cb`:
+
+**1. `STATE` hạ bậc được `mu-plugins` — lỗ hổng thật.** `sev()` chạy
+`if (t == "CHG" && (p in prev)) return "STATE"` **trước** mọi phép phân vùng, và
+`crit` không đếm `STATE`. Nghĩa là sửa một file mu-plugin **hai lần liên tiếp**
+thì lần thứ hai im lặng hoàn toàn. Bất biến *"đổi hai lần liên tiếp = file trạng
+thái"* đúng với `wflogs/` và cache, **sai hoàn toàn** ở nơi 16/18 site có đúng
+một file không đổi từ tháng 2. Nay `mu-plugins` xét trước `prev`, miễn nhiễm với
+hạ bậc.
+
+**2. Máy dò THAY ĐỔI không trả lời được câu "đang có gì".** Sau khi deploy bản
+`MUPLUG`, `fim.sh check --hot` trên 28-246 trả **`exit=0`, không in gì** — đúng
+lúc máy đó có 37 file `.php` trong `mu-plugins`, 21 là webshell. Không sai: 20
+file đã vào `manifest.hot.txt` từ tháng 7 nên không còn là `NEW`. **Một webshell
+đã nằm trong ảnh chụp thì im lặng vĩnh viễn.**
+
+Sinh ra hai thứ: chế độ `audit` (liệt kê hiện trạng, không đọc manifest) và
+**ngưỡng tồn đọng** chạy *trước* nhánh `total -eq 0` của `check`, nên nó báo cả
+khi không có thay đổi nào.
+
+**3. Ngưỡng phải theo SITE và phải đến từ đo.** 16/18 site có **đúng một** file
+(của SEO agency — xem `memory/project_muplugins_agency_file.md`), hai site nhiễm
+có 8 và 14. `MU_MAX = 3` nằm giữa hai dân số đã quan sát. Đổi bằng `FIM_MU_MAX`.
+
+### Vì sao `mu-plugins` là hạng riêng, không phải một thư mục như bao thư mục
+
+| | |
+|---|---|
+| WordPress `include` **mọi** `.php` ở đây trên **mọi** request | không có request nào để WAF chặn |
+| Nạp **trước** khi plugin bảo mật khởi động | site này **có** Wordfence, nó không thấy gì trong hai tháng |
+| 16/18 site chỉ có 1 file, không đổi từ tháng 2 | khác hẳn `plugins/` — cho phép ngưỡng mà thư mục khác không chịu được |
+
+### Payload: vì sao `grep` chữ ký PHP trả về 0
+
+```php
+$c = wp_get_current_user()->has_cap('edit_posts') ? 1 : 0;
+if ($c == 0) { echo '<script>…'; }
+```
+
+Chỉ bắn khi người xem **không** đăng nhập được với quyền `edit_posts` — chủ site
+và admin vào thì trang sạch. Payload là XOR hai chuỗi base64 rồi
+`createElement("script")`: **không** `eval`, **không** `base64_decode` phía PHP,
+toàn bộ giải mã ở client. `grep -cE 'eval|base64_decode|gzinflate'` trả về **0**.
+
+**Một `grep` chữ ký ra 0 không phải bằng chứng sạch.**
+
+### Đường vào — và vì sao nó nằm ngoài phạm vi tầng này
+
+`wp-file-manager` **8.0.4**, đã vá CVE-2020-25213. Nhưng `mtime` thư mục plugin
+trùng **phút** với webshell đầu tiên trên **cả hai** site (`thegioisay`
+25-07 08:59, `bhachau` 24-07 22:01/22:07). Chiều nhân quả đảo lại: kẻ tấn công
+**đã có quyền admin** rồi tự cài plugin làm công cụ ghi file. Plugin là *hệ quả*,
+không phải *nguyên nhân*.
+
+Cách ly user còn nguyên: `open_basedir` được DirectAdmin đặt trong
+`php-fpm*.conf` **của từng user**, giới hạn ở `/home/<user>/` chứ không phải
+`/home/`. Một site bị chiếm **không** đọc được `wp-config.php` của site khác.
+Nên đây là sự cố của hai khách, không phải của máy.
+
+**Phạm vi đã chốt (20-09):** xử lý credential/user là việc của enduser. Tầng này
+lo phần hệ thống, và vì đường vào phải **giả định luôn mở**, thiết kế đúng là
+"một site bị chiếm không được hại site khác" — điều `open_basedir` đã bảo đảm —
+cộng với "máy tự nói khi tồn đọng vượt ngưỡng", điều `21a81cb` vừa thêm.
 
 ## Trạng thái tầng WAF — đo bằng code, không đọc bảng kế hoạch
 
@@ -911,7 +1037,8 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | P2/F2 — luật payload | **một phần** | **3 luật** tham số trong `body_core.lua:143-150`. Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã |
 | P1 — chặn upload webshell | **một phần** | `upload.lua` — **7 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
 | F3 — chính sách theo domain | **chưa** | `proxy_origin.lua` mới có **một** khoá tập toàn cục `waf:proxyhosts` |
-| A — admin UI cho WAF | **chưa** | `admin/init.lua` chưa có trang nào của tầng này |
+| A — admin UI cho WAF | **một phần** | route `/antibot-admin/fim` + card FIM ở tab Overview (`21a81cb`). Chỉ đọc `fim_critical.log`; chưa có trang nào cho `waf.log` hay luật |
+| FIM — giám sát ngoài request | **xong (mu-plugins)** | `fim.sh`: bậc `MUPLUG`, `audit`, ngưỡng tồn đọng. Xem mục 20-09 ở trên |
 
 Lệnh đo lại, chạy từ `antibot-core/`:
 
@@ -941,7 +1068,18 @@ phần còn lại là luật, không phải hạ tầng. F3 sau vì nó là **c�
 6 host sau reverse proxy cần chính sách khác 68 host còn lại, và P2/F2 — mục duy
 nhất có rủi ro FP cao — phải xếp sau khi đã có F3 để gỡ.
 
+**Đính chính 20-09:** câu trên viết trước khi có số đo. P1 **đã** làm xong phần
+tên file, và số đo cho thấy nó nằm ở nơi gần như không có lưu lượng (1 multipart
+/ 7 447 dòng body). Phần P1 còn lại — luật theo *nội dung* file — vẫn đáng làm,
+nhưng nó là P2/F2 về bản chất. Thứ đã chứng minh được giá trị trong ngày đó là
+**`fim.sh`**: nó là tầng duy nhất nhìn thấy 20 webshell, vì chúng không đi qua
+HTTP. Khi cân nhắc việc tiếp theo, nhớ rằng **một tầng đúng đặt ở nơi không có
+lưu lượng thì đo ra 0, và số 0 đó không nói gì về mối đe doạ**.
+
 ## Update log
+- 2026-09-20 (`21a81cb`) — **Ngưỡng TỒN ĐỌNG: báo cả khi KHÔNG có thay đổi nào.** `audit` chỉ nói khi có người gõ lệnh; với mô hình "đường vào là việc của enduser" thì con số tồn đọng chỉ có một chiều — tăng. Ngưỡng chạy **trước** nhánh `total -eq 0`, tức đúng chỗ `check` thoát sớm. Ngưỡng **theo site** (`MU_MAX=3`, giữa hai dân số đã đo: 16/18 site có 1 file, hai site nhiễm có 8 và 14). Chống lặp bằng md5 danh sách — không có nó là 288 dòng giống hệt mỗi ngày, tức hố đen thứ ba. `tee` ra **cả** stdout (mail) **và** `$CRITLOG` (trang admin) vì hai đường thất bại khác nhau. Tự bắt: bản đầu viết `tee -a "$CRITLOG_EARLY_OK"` — biến **bịa ra**, và `$CRITLOG` thật thì định nghĩa ở *sau* điểm đó ⇒ đường báo thứ hai chết trong im lặng. Chuyển định nghĩa lên dòng 48.
+- 2026-09-20 (`073a8b5`) — **Chế độ `audit`, và quyền đọc cho endpoint.** `check --hot` trên 28-246 trả `exit=0` im lặng trong khi máy có 37 file `.php` ở `mu-plugins`, 21 là webshell — chúng vào manifest từ tháng 7 nên không còn `NEW`. **Tôi đã ghi vào commit message của `bf6b6c5` rằng "hai site đã nhiễm sẽ báo `MUPLUG` cho toàn bộ file cũ ngay lần chạy đầu" — SAI**, câu đó chỉ đúng nếu manifest bị xoá; tôi suy luận từ *ý định* của code thay vì đường đi của nó rồi ghi phỏng đoán đó ra như sự thật. `audit` = liệt kê hiện trạng, không đọc manifest, không ghi gì, không cần `flock`. Kèm: `fim_critical.log` đổi `0600 root` → `0640 root:nginx` vì worker chạy user `nginx` (`nginx.conf:19`) — endpoint trả `Permission denied`. **`exists:false` đã cứu đúng chỗ:** nó tách "không đọc được" khỏi "không có cảnh báo"; gộp lại thì trang báo sạch trong khi không nhìn thấy gì.
+- 2026-09-20 (`bf6b6c5`) — **`mu-plugins` thành bậc `MUPLUG`, và bịt đường né `STATE`.** Xem mục *"Phát hiện đúng, báo vào nơi không ai mở"*. Sửa kèm: nhãn bậc thêm **tiền tố số** — bản trước dựa vào thứ tự chữ cái và nó đúng **chỉ vì tình cờ** (`C < H < R < S`); thêm `MUPLUG` là lộ ra ngay vì `sort` xếp `M` vào **giữa**. Kiểm bằng `printf | sort` chứ không suy luận.
 - 2026-09-20 — **Cổng `[3b]` chặn bản `0a3f7a0`: hai mục trong CÙNG một file test khẳng định hai giá trị cho cùng một đầu vào.**
   - **Lỗi:** `SAI .HTACCESS cho=upload_apache_config duoc=upload_config_case`. Tôi thêm nhãn `upload_config_case` ở mục **[8]** nhưng **để nguyên** assertion cũ ở mục **[5]** (`.HTACCESS` → `upload_apache_config`). Không phải lỗi logic — code đúng, đã thử phá xong. Lỗi **quét sót**: tôi thêm ca mới mà không tìm lại các ca cũ trên cùng đầu vào.
   - **Sửa:** gỡ dòng ở [5] (mục [8] đã phủ đủ), không phải sửa giá trị nó.
