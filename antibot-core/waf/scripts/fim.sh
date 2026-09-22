@@ -392,6 +392,48 @@ EOF
     echo
     echo "tong: $up_n file -- 0 la binh thuong. Bat ky file nao o day cung dang doc."
 
+    # ── uploads/YYYY/MM/ — THU MUC MEDIA, bat bien khac han tang 1 ─────
+    #
+    # Nhanh tren loc theo DO SAU va gia thuyet "ke tan cong muon URL ngan".
+    # Dung cho webshell go tay, SAI cho thu tu cai: no khong can ai go URL.
+    # Do 22-09 bat duoc dung cho mu: `easypost-1781527859-2818.php` 144KB nam
+    # o `uploads/2026/06/` — DO SAU 3, nhanh tren mu hoan toan suot 3 thang.
+    #
+    # Truc o day khong phai do sau ma la NGHIA CUA THU MUC: `uploads/YYYY/MM/`
+    # la noi WordPress bo MEDIA (anh, pdf). Plugin ghi vao thu muc rieng cua
+    # no, khong ai ghi .php vao thu muc anh theo thang. Bat bien hep va kiem
+    # duoc — khac han "moi /uploads/ deu khong chay PHP" (gia thuyet rong,
+    # da bi bac).
+    #
+    # DAN SO DO TRUOC KHI VIET, 5 may, moi do sau: 9 file.
+    #   6 la `index.php` (chot chan liet ke thu muc, WordPress rai khap noi
+    #     — da mien tu 02-09 o `wp_theme_direct`), bi loai o day.
+    #   3 con lai DEU dang bao:
+    #     `easypost-1781266669-2828.php` 31KB + `...2818.php` 144KB — endpoint
+    #        tu nap wp-load.php (do len 6 cap), doc header tuy y, xac thuc bang
+    #        token, va co PUBLIC KEY de nhan ban cap nhat ky so (OTA). Chay
+    #        NGOAI index.php nen moi plugin bao mat va moi hook deu bi bo qua.
+    #        Do plugin `wp-content/plugins/easypost/` tu ghi ra bang
+    #        `file_put_contents(base64_decode(...))`.
+    #     `zgepd_oddsd.php` 0 byte tu 2020 — cung dang 0 byte voi `icVp.php`.
+    # => 3 dong/5 may, KHONG FP. Ty le sach hon ca truc tang 1.
+    #
+    # NHANH DA XET VA BAC cung ngay: "thu muc LA o wp-content/ tang 1". Do
+    # 171-96 tra ve hon 20 thu muc ten PLUGIN (`contact-form-7`, `woocommerce`,
+    # `classic-editor`, `duplicator`, `really-simple-ssl`) nam sai cap — giai
+    # nen hong hoac ban sao luu, khong phai xam nhap. Viet luat do thi
+    # `easypost` chim trong 20 dong nhieu. Do dung la bai toan liet ke ten da
+    # bac o `exposed.lua`, chi khac la liet ke phia cho phep.
+    echo
+    echo "### uploads/YYYY/MM/ -- thu muc MEDIA, .php o day khong co ly do chinh dang ###"
+    audit_list <<EOF
+$(find $ROOTS/wp-content/uploads   -regextype posix-extended -regex '.*/uploads/20[0-9]{2}/[0-9]{2}/.*' "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :
+  find $ROOTS/*/wp-content/uploads -regextype posix-extended -regex '.*/uploads/20[0-9]{2}/[0-9]{2}/.*' "${NAMES[@]}" -type f ! -name 'index.php' -printf '%p|%s|%T@\n' 2>/dev/null || :)
+EOF
+    med_n=$AUDIT_N
+    echo
+    echo "tong: $med_n file -- 0 la binh thuong. Do 5 may: 3 file, ca 3 deu dang bao."
+
     # ── wp-content/ tang 1 — DROP-IN la mot tap DONG ──────────────────
     #
     # WordPress tu `include` dung 7 ten o day, va danh sach do nam trong CORE
