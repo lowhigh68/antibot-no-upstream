@@ -33,7 +33,13 @@
 #     -v     in ca khi khong co gi (mac dinh im lang de cron khong spam mail)
 #
 # Ma thoat: 0 = khong co gi dang chu y   1 = co phat hien CRITICAL/HIGH
-#           2 = khong chay duoc
+#           2 = KHONG CHAY DUOC (thieu flock, scan rong, manifest bat thuong)
+#           3 = chay duoc, khong co file moi, NHUNG co TON DONG mu-plugins
+#
+# 3 tach rieng khoi 2 mot cach co y: 2 nghia la "khong do duoc", 3 nghia la "do
+# duoc va co su co". Tron lai thi mot may hong va mot may nhiem webshell tra ve
+# cung mot ma. Tach rieng khoi 1 vi 1 doc `$crit` — so file MOI — ma ton dong
+# theo dinh nghia la thu KHONG con moi nua.
 set -uo pipefail
 
 # Ba bien cho phep ghi de bang moi truong CHI de chay thu tren cay gia. Mac dinh
@@ -678,7 +684,13 @@ mu_over=$(awk -F'|' -v max="$MU_MAX" '
     END { for (s in n) if (n[s] >= max) printf "%d|%s\n", n[s], s }
 ' "$new_scan" | sort -t'|' -k1,1rn)
 
+# CO THOAT, dat NGOAI khoi chong lap mot cach co y. `mu_over` co gia tri moi
+# lan con site vuot nguong; phan IN RA thi chi chay khi con so DOI. Neu dat co
+# nay ben trong khoi chong lap thi lan chay thu hai tra exit=0 trong khi 5 site
+# van dang nhiem — dung cai sai ma no sinh ra de va.
+mu_pending=0
 if [ -n "$mu_over" ]; then
+    mu_pending=1
     mu_sig=$(printf '%s\n' "$mu_over" | md5sum 2>/dev/null | cut -d' ' -f1)
     mu_prev=$(cat "$MUSTATE" 2>/dev/null || :)
     if [ "$mu_sig" != "$mu_prev" ]; then
@@ -709,6 +721,17 @@ if [ "$total" -eq 0 ]; then
     # phai theo ma thoat — in "khong co thay doi" moi 15 phut la 96 mail/ngay,
     # va hop thu bi nhan chim thi canh bao that cung chim theo.
     [ $verbose -eq 1 ] && echo "khong co thay doi nao"
+    # TON DONG van la su co, du khong co file NAO MOI. Do 23-09 tren 186-126:
+    # `check --hot` in 5 site ton dong (3 trong so do la webshell da xac minh)
+    # roi tra exit=0 — vi khoi ton dong o tren doc `$mu_over`, con nhanh nay chi
+    # doc `$total` (so file MOI). Duong ra thu ba — ma thoat — cam han, nen bat
+    # ky script giam sat nao doc `$?` deu ket luan la sach.
+    #
+    # 3 chu KHONG phai 2: `exit 2` o script nay da co nghia "KHONG DO DUOC"
+    # (thieu flock, scan ra rong, manifest bat thuong). Ton dong la "DO DUOC, va
+    # co su co" — nghia nguoc han. Tron hai cai lai thi mot may HONG va mot may
+    # NHIEM WEBSHELL tra ve cung mot ma.
+    [ "$mu_pending" -eq 1 ] && exit 3
     exit 0
 fi
 
@@ -1012,4 +1035,8 @@ if [ $dry -eq 0 ]; then
 fi
 
 [ "$crit" -gt 0 ] && exit 1
+# Cung ly do nhu nhanh `total -eq 0` o tren: ton dong mu-plugins la su co ke ca
+# khi dot nay khong co file nao dang bao. Khong co dong nay thi mot ban cap nhat
+# plugin binh thuong (crit=0) se che mat 5 site dang nhiem.
+[ "$mu_pending" -eq 1 ] && exit 3
 exit 0
