@@ -638,13 +638,32 @@ awk -F'|' '
 #
 # NGUONG THEO SITE, khong theo may, va con so den TU DO chu khong tu cam giac:
 # do 20-09 tren dan may — 16/18 site co DUNG MOT file (cua SEO agency, xem
-# memory/project_muplugins_agency_file.md), hai site nhiem co 8 va 14. Nen 3 la
-# nguong dat giua hai dan so da quan sat, khong phai so chon bua.
+# memory/project_muplugins_agency_file.md), hai site nhiem co 8 va 14.
+#
+# 3 -> 2 (do lai 23-09, 4 may WordPress). Nguong 3 SAI VA DA BO SOT THAT:
+# `dichthuattienganh.org` co dung 2 file, CA HAI la webshell, va `2 >= 3` la
+# sai nen khong mail, khong ghi $CRITLOG — site nhiem hoan toan, canh bao im
+# lang. Nguong 3 rong hon dan so mot bac: site lanh la 0-1, nen no bo trong
+# han vung "2 file" va webshell roi dung vao do.
+#
+# PHAN BO TOAN DAN 23-09, 4 may:
+#     1 file -> 36 site (SEO agency, da xac minh khong phai malware)
+#     2 file ->  3 site -> CA 3 DEU NHIEM, khong mot site lanh nao
+#     3 file ->  2 site | 8 file -> 1 | 14 file -> 1
+# Vung "dung 2 file" khong co site lanh nao => ha xuong 2 thi FP du kien = 0.
+#
+# Ba site 2-file la cung mot bo: `wp2shell-batch-guard.php` DUNG 1967 byte tren
+# ca ba (chep nguyen), `firewall.php` 983/997/1004 (lech vai byte — nhung phan
+# rieng theo site). Chung di THEO CAP: mot file la shell, mot file giu cho.
+# Do la ly do ky thuat khien nguong le (3) bo sot mot lop tan cong di chan (2).
+#
+# KHONG ha xuong 1: 36 site lanh dang co dung 1 file => nguong 1 = 36 dong
+# nhieu moi lan chay, dung cai ho den ma ban nay duoc viet ra de thay the.
 #
 # CHONG LAP: chi bao khi con so DOI so voi lan truoc. Khong co no thi day la 288
 # dong giong het nhau moi ngay, tuc mot ho den thu ba — dung thu ma ca ban nay
 # duoc viet ra de thay the.
-MU_MAX="${FIM_MU_MAX:-3}"
+MU_MAX="${FIM_MU_MAX:-2}"
 MUSTATE="$STATE/mucount.$tier.txt"
 
 mu_over=$(awk -F'|' -v max="$MU_MAX" '
