@@ -509,6 +509,41 @@ Câu hỏi thật là **nginx có biết trước độ dài body không**: bi�
 
 `action=` cũng không mang thông tin — nó là hằng số của **luật** (`signal`/`block`), không phải phán quyết. Phán quyết là `final=`.
 
+#### `exists=1` KHÔNG phải chỉ báo FP — đo 2026-09-22 trên 168-101
+
+Phép đo FP đầu tiên của tầng này. Cửa sổ 30 ngày, `zgrep` trên `waf.log*`,
+**127.904** dòng có cột `exists=`. Bốn luật `block` của overlay WordPress:
+
+| Luật | `exists=1` | Đọc ra gì |
+|---|---|---|
+| `wp_includes_exec` | 471 | quét dò — 53 IP × 5 file core × **đúng 1 lượt mỗi cặp** |
+| `wp_admin_includes_exec` | 43 | quét dò — `includes/admin.php`, `includes/file.php` |
+| `wp_content_exec` | 7 | quét dò — `index.php` + `advanced-cache.php` (drop-in hợp lệ) |
+| `wp_upload_exec` | **0** | không lượt nào chạm file có thật |
+
+**0 FP.** Nhưng suýt đọc ngược, nên ghi lại cách đọc:
+
+Giả thuyết ban đầu — "`exists=0` là quét dò vô hại, `exists=1` là đáng ngờ" —
+**sai trên luật đường dẫn WordPress**. Scanner nhắm vào **core**, nên tên nó gõ
+luôn tồn tại: `exists=1` là **kỳ vọng**, không phải bất thường. Cột `exists=`
+phân biệt được webshell (`plugins/shell/about.php`) với tên gõ bừa; nó **không**
+phân biệt được quét-dò-core với khách thật.
+
+Thứ phân biệt được là **cấu trúc tần suất**. Năm file `user.php` `post.php`
+`option.php` `functions.php` `class-wp.php` mỗi file **đúng 53 lượt**, và có
+**đúng 53 IP** — mỗi IP gõ mỗi file đúng một lần. Đó là danh sách cứng trong
+scanner. Khách thật không gõ HTTP vào `wp-includes/option.php`: WordPress
+`include` nó từ PHP, không có link nào trỏ tới. Cùng dạng ở cụm
+`blocks/search.php|rss.php|latest-posts.php` — đúng 32 mỗi file.
+
+Phép đúng cho câu "FP hay không": chéo `ip=` với `domain=`. **Ít IP × nhiều
+domain** = bot quét, chặn là đúng. **Nhiều IP × một domain** = khách của site đó
+đang bị chặn, là FP phải sửa. Cùng con số 471, hai kết luận trái ngược.
+
+`wp_upload_exec = 0` cũng sửa một kết luận cũ: một ca lẻ `uploads/index.php`
+`exists=1` thấy ngày 21-09 trên máy khác **không** phải hình mẫu — trên 748 lượt
+của máy này nó chưa từng chạm file có thật.
+
 `matched=` là dữ liệu **kẻ tấn công điều khiển hoàn toàn** đi vào file log. Lọc về ASCII in được **trước**, rồi mới cắt độ dài — làm ngược thứ tự thì vẫn có thể cắt giữa một chuỗi nhiều byte và để lại rác. (Đã gặp thật: gawk báo `Invalid multibyte data` khi đọc `antibot.log`.)
 
 ## ctx
