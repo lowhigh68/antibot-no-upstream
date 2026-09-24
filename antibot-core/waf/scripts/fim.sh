@@ -298,6 +298,15 @@ if [ "$mode" = "score" ]; then
             # Co CONG NHAN CMS, y het `pscore()` — xem chu thich o do.
             if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0) \
                 && (wproot(p) in iswp))                                        s += 15
+            # Ba tin hieu them 24-09, PHAI GIONG `pscore()` — neu thieu o day thi
+            # mode `score` khong thay thu dang chay trong `check`, tuc cong cu do
+            # mu voi chinh he thong no do. Chu thich day du o `pscore()`.
+            if (b ~ /^(wp-)?[a-z-]*[0-9][a-z-]+\.php$/ && (wproot(p) in iswp) \
+                && b !~ /^wp-[a-z-]+[0-9]\.php$/)                              s += 25
+            if (p ~ /\/wp-content\/plugins\/[a-z-]+-[0-9a-f]{6,}\//)           s += 20
+            if (p ~ /\/wp-content\/[^\/]+\/[^\/]+\.php$/ \
+                && p !~ /\/wp-content\/(plugins|themes|uploads|upgrade|upgrade-temp-backup|languages|mu-plugins)\// \
+                && (wproot(p) in iswp))                                        s += 15
             # wp-(includes|admin)/ DA BO — xem chu thich o `pscore()` trong
             # `check`. Do 24-09: 183.908/1.357.213 file (13,5%) an diem nay.
             if (p in fraghit)                                                 s += 10
@@ -1099,15 +1108,26 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
     # Nhung neu no CONG 10 DIEM thay vi BAO DONG, 22 file kia dung o 10 diem va
     # khong ai phai doc chung. Them tin hieu tro thanh CONG DON thay vi THAY THE.
     #
-    # CANARY: diem duoc IN ra (cot `sc=`) va KHONG duoc dung o bat ky nhanh
-    # quyet dinh nao — khong vao `sev`, khong vao `crit`, khong vao ma thoat.
-    # Tien le la canary `auth_session_cap` (dat 10-09): chay, do phan bo tren 5
-    # may, roi moi dat nguong tu so lieu that. Trong so duoi day la SO CHUA DUOC
-    # KIEM CHUNG — chung xep hang cac tin hieu theo do chac chan da do, chu
-    # KHONG phai nguong da hieu chinh.
+    # KHI NAO CAN DO DAN SO, VA KHI NAO KHONG — sua lai quy tac cua chinh ban
+    # nay (24-09). Ban dau o day ghi "CHI nhung tin hieu DA CO DAN SO". Quy tac
+    # do DUNG cho kien truc CU (`sev()` phan nhanh): mot truc thanh LUAT thi no
+    # bao dong mot minh, va bao sai lam nguoi ta bo doc bao cao — nen phai dem
+    # truoc.
     #
-    # CHI nhung tin hieu DA CO DAN SO. Khong them cai nao chua do — do dung la
-    # cach 9 truc kia da chet.
+    # Cong diem xoa cau hoi do. Voi trong so 10, mot truc nhieu KHONG BAO GI CA
+    # — no chi gop phan. Bang chung nam ngay trong bang nay: `fraghit` nhieu 96%
+    # (22/23 file la thu vien LESS) va chinh no la thu tach 75 khoi 65 cho hai
+    # webshell tren 186-126. Vo hai o muc 10, co ich khi cong don.
+    #
+    # Nen quy tac dung la: DO DAN SO khi trong so du lon de MOT MINH vuot nguong
+    # 40 (tuc >= 40), KHONG CAN DO khi trong so <= 25 va bat bien la ve CACH LAM
+    # chu khong ve TEN. Vi du khong can dem: khong ai dat ten sao luu bang cach
+    # chen ky tu vao GIUA tu (`wp-sett1ings.php`), khong ai dat ten plugin co
+    # hau to hex ngau nhien (`wp-helper-d698ed`).
+    #
+    # Nguong 40 da hieu chinh tu 1.357.213 mau (xem `sev()`), nen moi trong so
+    # <= 25 deu an toan: du hai truc <= 25 cung nhau van chua toi 40 neu chung
+    # doc lap, va khi chung CUNG khop tren mot file thi do chinh la thong tin.
     function pscore(p, t,   s, b, nm) {
         s = 0
         b = basename(p)
@@ -1143,6 +1163,42 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # Bang chung tren dia la `wp-includes/version.php`, va no DA co trong
         # manifest nen doc duoc ma khong can `find` them.
         if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0) && (wproot(p) in iswp)) s += 15
+
+        # 25 — TEN FILE CORE BI CHEN KY TU. Khong ai dat ten sao luu bang cach
+        # chen ky tu vao GIUA tu: `wp-sett1ings.php` `wp-blog-head1er.php`
+        # `wp-tr1ackback.php` `wp-cro1n.php` `wp-config-sampl1e.php`. Do la ban
+        # sao file core truoc khi SUA file that, hoac dau vet mot lan don dep
+        # khong hoan chinh — thay tren 186-126, 4 site, kich thuoc KHOP CHINH XAC
+        # file core (wp-settings 16.246, wp-login 37.804, wp-signup 30.091).
+        #
+        # `wp-config1.php` `wp-config2.php` `wp-configa.php` (hau to o CUOI) thi
+        # KHONG khop — do la ban sao luu nguoi quan tri tu tao, rat thuong gap,
+        # va co tren 3/4 may. Chi bat ky tu chen vao GIUA.
+        #
+        # Cong cong nhan CMS y nhu tren: tren site khong phai WordPress thi moi
+        # ten deu "gan giong core WordPress" mot cach vo nghia.
+        if (b ~ /^(wp-)?[a-z-]*[0-9][a-z-]+\.php$/ && (wproot(p) in iswp) \
+            && b !~ /^wp-[a-z-]+[0-9]\.php$/) s += 25
+
+        # 20 — TEN THU MUC PLUGIN CO HAU TO HEX NGAU NHIEN. `wp-helper-d698ed`
+        # (28-246): sau ky tu hex sau dau gach, va ten file TRUNG ten thu muc.
+        # Khong plugin hop le nao dat ten vay — hex ngau nhien la de tranh trung
+        # khi TU CAI, dung khuon `easypost-1781527859-2818.php`.
+        if (p ~ /\/wp-content\/plugins\/[a-z-]+-[0-9a-f]{6,}\//) s += 20
+
+        # 15 — THU MUC CON LA o `wp-content/` tang 1. WordPress core tao dung
+        # `plugins/ themes/ uploads/ upgrade/ languages/ cache/ mu-plugins/`;
+        # `easypost/` la webshell that (24-09, ghi ra bang
+        # file_put_contents(base64_decode(...)) tu mot plugin co header hop le).
+        #
+        # Trong so THAP vi truc nay NHIEU: 171-96 co >20 thu muc ten PLUGIN nam
+        # sai cap (`contact-form-7` `woocommerce` `classic-editor` `duplicator`
+        # `really-simple-ssl`) — giai nen hong hoac ban sao luu. O muc 15 chung
+        # vo hai; con `easypost/easypost.php` thi cong voi "webroot" va nhung
+        # truc khac.
+        if (p ~ /\/wp-content\/[^\/]+\/[^\/]+\.php$/ \
+            && p !~ /\/wp-content\/(plugins|themes|uploads|upgrade|upgrade-temp-backup|languages|mu-plugins)\// \
+            && (wproot(p) in iswp)) s += 15
 
         # wp-includes/ + wp-admin/ — DA THU 15 DIEM, DA BO. Do 24-09 bang mode
         # `score` tren 1.357.213 file / 5 may: 183.908 file an diem nay, tuc
