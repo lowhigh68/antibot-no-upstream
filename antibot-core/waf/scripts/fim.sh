@@ -285,11 +285,22 @@ if [ "$mode" = "score" ]; then
             if (i == 0) return ""
             return substr(p, 1, i + 11)
         }
+        # Y het `del1_core` trong `check` — xem chu thich o do (regex cu cho
+        # 4.101 duong tinh gia).
+        function del1_core(b,   L, j, cand, dot) {
+            if (b in core0) return 0
+            L = length(b); dot = L - 4
+            for (j = 1; j <= L; j++) {
+                cand = substr(b, 1, j - 1) substr(b, j + 1)
+                if (cand in core0) return (j == dot) ? 1 : 2
+            }
+            return 0
+        }
         # BAN SAO cua `pscore()` trong `check`, bo hai nhanh phu thuoc `t`.
         # Trung lap co y: mot ham dung chung phai nam trong file awk rieng, va
         # mot file phu thuoc ngoai la mot file se dung tren may nay va khong
         # dung tren may sau (cung ly do da khong dung logrotate).
-        function base_score(p,   s, b) {
+        function base_score(p,   s, b, nm) {
             s = 0; b = basename(p)
             if (p in pwhit)                                                   s += 50
             if (p ~ /\/uploads\/20[0-9][0-9]\/[0-9][0-9]\// && b != "index.php") s += 25
@@ -301,8 +312,11 @@ if [ "$mode" = "score" ]; then
             # Ba tin hieu them 24-09, PHAI GIONG `pscore()` — neu thieu o day thi
             # mode `score` khong thay thu dang chay trong `check`, tuc cong cu do
             # mu voi chinh he thong no do. Chu thich day du o `pscore()`.
-            if (b ~ /^(wp-)?[a-z-]*[0-9][a-z-]+\.php$/ && (wproot(p) in iswp) \
-                && b !~ /^wp-[a-z-]+[0-9]\.php$/)                              s += 25
+            if ((wproot(p) in iswp)) {
+                nm = del1_core(b)
+                if (nm == 2)      s += 25
+                else if (nm == 1) s += 10
+            }
             if (p ~ /\/wp-content\/plugins\/[a-z-]+-[0-9a-f]{6,}\//)           s += 20
             if (p ~ /\/wp-content\/[^\/]+\/[^\/]+\.php$/ \
                 && p !~ /\/wp-content\/(plugins|themes|uploads|upgrade|upgrade-temp-backup|languages|mu-plugins)\// \
@@ -1164,21 +1178,33 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # manifest nen doc duoc ma khong can `find` them.
         if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0) && (wproot(p) in iswp)) s += 15
 
-        # 25 — TEN FILE CORE BI CHEN KY TU. Khong ai dat ten sao luu bang cach
-        # chen ky tu vao GIUA tu: `wp-sett1ings.php` `wp-blog-head1er.php`
-        # `wp-tr1ackback.php` `wp-cro1n.php` `wp-config-sampl1e.php`. Do la ban
-        # sao file core truoc khi SUA file that, hoac dau vet mot lan don dep
-        # khong hoan chinh — thay tren 186-126, 4 site, kich thuoc KHOP CHINH XAC
-        # file core (wp-settings 16.246, wp-login 37.804, wp-signup 30.091).
+        # 25 — TEN FILE CORE BI CHEN MOT KY TU. `wp-sett1ings.php`
+        # `wp-blog-head1er.php` `wp-tr1ackback.php` `wp-cro1n.php`. Ban sao file
+        # core truoc khi SUA file that, hoac dau vet mot lan don dep khong hoan
+        # chinh — thay tren 186-126, 4 site, kich thuoc KHOP CHINH XAC file core
+        # (wp-settings 16.246, wp-login 37.804, wp-signup 30.091).
         #
-        # `wp-config1.php` `wp-config2.php` `wp-configa.php` (hau to o CUOI) thi
-        # KHONG khop — do la ban sao luu nguoi quan tri tu tao, rat thuong gap,
-        # va co tren 3/4 may. Chi bat ky tu chen vao GIUA.
+        # BAN DAU LA MOT REGEX, VA SO LIEU BAC NGAY. `^(wp-)?[a-z-]*[0-9][a-z-]+`
+        # cho **4.101 file** tren 186-126 (do 24-09) — no khong kiem "giong ten
+        # core", no chi kiem "co chu so o giua ten". `md5.php` `base64.php`
+        # `h5ai.php` `file2html.php` `bootstrap4.php` deu khop. Toi mo ta dung bat
+        # bien trong commit message ("sai dung mot ky tu so voi ten core") roi
+        # KHONG viet dieu do ra trong code.
         #
-        # Cong cong nhan CMS y nhu tren: tren site khong phai WordPress thi moi
-        # ten deu "gan giong core WordPress" mot cach vo nghia.
-        if (b ~ /^(wp-)?[a-z-]*[0-9][a-z-]+\.php$/ && (wproot(p) in iswp) \
-            && b !~ /^wp-[a-z-]+[0-9]\.php$/) s += 25
+        # Phep dung la khoang cach xoa-mot-ky-tu toi tap `core0`: bo lan luot
+        # tung ky tu cua ten, neu ra mot ten core thi khop. Thu tren 26 ten that:
+        # 13/13 ten chen ky tu khop, 13/13 ten hop le khong khop.
+        #
+        # Cong cong nhan CMS: tren site khong phai WordPress thi moi ten deu
+        # "gan giong core WordPress" mot cach vo nghia.
+        if ((wproot(p) in iswp)) {
+            nm = del1_core(b)
+            # Chen GIUA (vi tri xoa khong phai ky tu cuoi truoc `.php`) dang ngo
+            # hon HAU TO CUOI: `wp-config1.php` `xmlrpc1.php` la ban sao luu
+            # nguoi quan tri tu tao, co tren 3/4 may. Tach hai muc.
+            if (nm == 2)      s += 25
+            else if (nm == 1) s += 10
+        }
 
         # 20 — TEN THU MUC PLUGIN CO HAU TO HEX NGAU NHIEN. `wp-helper-d698ed`
         # (28-246): sau ky tu hex sau dau gach, va ten file TRUNG ten thu muc.
@@ -1245,6 +1271,23 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         i = index(p, "/public_html")
         if (i == 0) return ""
         return substr(p, 1, i + 11)
+    }
+    # Bo DUNG MOT ky tu khoi `b`; neu ra mot ten trong `core0` thi tra:
+    #   2 = ky tu bi xoa nam GIUA ten (`wp-sett1ings.php`)
+    #   1 = ky tu bi xoa nam ngay truoc `.php` (`wp-config1.php` — hau to cuoi)
+    #   0 = khong khop
+    # Thay cho mot regex tung cho 4.101 duong tinh gia — xem chu thich o
+    # `pscore()`. O(n) voi n = do dai ten file, chi chay cho file tang 0 cua
+    # webroot WordPress nen dan so rat nho.
+    function del1_core(b,   L, j, cand, dot) {
+        if (b in core0) return 0
+        L = length(b)
+        dot = L - 4          # vi tri ky tu cuoi truoc ".php"
+        for (j = 1; j <= L; j++) {
+            cand = substr(b, 1, j - 1) substr(b, j + 1)
+            if (cand in core0) return (j == dot) ? 1 : 2
+        }
+        return 0
     }
     # Cat tien to so khi in. Tien to chi ton tai de `sort` cho ra dung thu tu
     # doc; nguoi doc bao cao khong can thay no.
