@@ -32,6 +32,10 @@
 #     --dry  bao cao nhung KHONG cap nhat manifest
 #     -v     in ca khi khong co gi (mac dinh im lang de cron khong spam mail)
 #
+# COT `sc=` — CANARY, diem CHUA quyet dinh gi. Cong diem nhieu bat bien thay cho
+# `sev()` phan nhanh mot chieu. Doc `pscore()` de biet vi sao va bang trong so.
+# Dang o giai doan do phan bo; khong noi vao `crit`, `sev` hay ma thoat.
+#
 # Ma thoat: 0 = khong co gi dang chu y   1 = co phat hien CRITICAL/HIGH
 #           2 = KHONG CHAY DUOC (thieu flock, scan rong, manifest bat thuong)
 #           3 = chay duoc, khong co file moi, NHUNG co TON DONG mu-plugins
@@ -593,7 +597,13 @@ fi
 
 new_scan=$(mktemp) || exit 2
 diff_out=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out"' EXIT
+# Ba file phu cho cot `sc=` (cham diem canary). Khai bao o day chu khong o cho
+# `$marks` vi `$SZSAME` phai ton tai TRUOC awk diff — do la noi duy nhat co ca
+# kich thuoc cu va moi trong tay.
+SZSAME=$(mktemp) || exit 2
+PWFILE=$(mktemp) || exit 2
+FRAGFILE=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$SZSAME" "$PWFILE" "$FRAGFILE"' EXIT
 
 scan > "$new_scan" || { echo "quet that bai" >&2; exit 2; }
 
@@ -622,11 +632,20 @@ fi
 # Mot luot awk: NEW (duong dan chua tung thay), CHG (kich thuoc hoac mtime doi),
 # DEL (bien mat). So sanh theo DUONG DAN chu khong theo dong, nen mot file doi
 # noi dung ra dung mot dong CHG chu khong phai mot NEW cong mot DEL.
-awk -F'|' '
-    NR==FNR { old[$1] = $2 "|" $3; next }
+#
+# `szfile`: danh sach duong dan CHG ma KICH THUOC khong doi (chi mtime doi).
+# Sinh ngay o day vi day la cho duy nhat co CA hai gia tri trong tay — lam o awk
+# bao cao thi phai doc lai ca `$MANIFEST` va `$new_scan`, hai file 317k dong.
+# Dung cho cot `sc=` (cham diem canary): `wp-cron-vosi.php` doi mtime 4 lan
+# trong 2 ngay ma luon 1.659 byte — co cai gi dang `touch` no.
+awk -F'|' -v szfile="$SZSAME" '
+    NR==FNR { old[$1] = $2 "|" $3; olds[$1] = $2; next }
     {
         if (!($1 in old))              print "NEW|" $1
-        else if (old[$1] != $2 "|" $3) print "CHG|" $1
+        else if (old[$1] != $2 "|" $3) {
+            print "CHG|" $1
+            if (olds[$1] == $2) print $1 > szfile
+        }
         seen[$1] = 1
     }
     END { for (p in old) if (!(p in seen)) print "DEL|" p }
@@ -777,6 +796,15 @@ if [ "$tier" = "full" ]; then
         # nen cung tra exit 3. Dat NGOAI khoi chong lap, cung ly do.
         mu_pending=1
     fi
+    # Cho cot `sc=`: dung lai ket qua o tren, KHONG grep lai lan hai.
+    printf '%s\n' "$pw_hits" > "$PWFILE"
+
+    # Ten ham ghep tu manh chuoi. TRUC NAY DA BI BAC lam luat (22/23 file la thu
+    # vien LESS/framework hop le) va CHINH VI THE no o day: voi trong so 10 no
+    # vo hai, con mot file co CA no VA md5x3 thi tong la 60. Do la diem cua co
+    # che cong diem — truc nhieu van dung duoc, khong phai bo di.
+    grep -rlE "'ba'\s*\.|'base'\s*\.\s*'64|'str'\s*\.\s*'rev'|'str'\s*\.\s*'_'" \
+        $ROOTS --include='*.php' 2>/dev/null | sort > "$FRAGFILE" || :
 fi
 
 total=$(wc -l < "$diff_out")
@@ -827,14 +855,35 @@ fi
 # Tien to bi cat khi in (xem `lbl()`), nen nguoi doc khong thay no.
 # (STATE = file trang thai, xem $PREVCHG.)
 marks=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$marks"' EXIT
+trap 'rm -f "$new_scan" "$diff_out" "$marks" "$SZSAME" "$PWFILE" "$FRAGFILE"' EXIT
 
-report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" '
+report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
+             -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
         # lan chay dau tien (chua co prevchg) di thang qua day.
         if (prevfile != "")
             while ((getline _pl < prevfile) > 0) prev[_pl] = 1
+
+        # Ba bang cho cot `sc=`. Cung ly do nhu tren: file rong hay khong ton
+        # tai thi `getline` tra <=0 va vong lap khong chay lan nao — `--hot`
+        # khong sinh $PWFILE/$FRAGFILE nen o tang nong ba bang nay rong, va do
+        # la dung: hai tin hieu noi dung chi do o tier day du.
+        if (pwfile   != "") while ((getline _x < pwfile)   > 0) if (_x != "") pwhit[_x] = 1
+        if (fragfile != "") while ((getline _x < fragfile) > 0) if (_x != "") fraghit[_x] = 1
+        if (szfile   != "") while ((getline _x < szfile)   > 0) if (_x != "") samesize[_x] = 1
+
+        # Tap DONG cac file .php WordPress core dat o webroot tang 0. Danh sach
+        # nam trong core, khong phu thuoc plugin nao — cung loai bat bien da cho
+        # drop-in `wp-content/` ty le loc cao. `wp-config.php` va
+        # `wp-config-sample.php` deu hop le (do 186-126: 21/78 dong la
+        # wp-config-sample.php, 3.339 byte giong nhau tren 20 site).
+        split("index.php wp-config.php wp-config-sample.php wp-login.php " \
+              "wp-settings.php wp-load.php wp-blog-header.php wp-cron.php " \
+              "wp-links-opml.php wp-mail.php wp-signup.php wp-trackback.php " \
+              "wp-activate.php wp-comments-post.php xmlrpc.php " \
+              "wp-admin.php wordfence-waf.php", _c0, " ")
+        for (_i in _c0) core0[_c0[_i]] = 1
     }
     function sev(p, t) {
         # mu-plugins/ DUNG TRUOC phep ha bac, va day la ca ly do no co bac rieng.
@@ -866,6 +915,83 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         if (p ~ /\/wp-content\/plugins\//)    return "4ROUTINE"
         if (p ~ /\/wp-content\/themes\//)     return "4ROUTINE"
         return "3HIGH"
+    }
+    # ── CHAM DIEM — CANARY, DIEM CHUA QUYET DINH GI ──────────────────
+    #
+    # `sev()` o tren phan nhanh MOT CHIEU: ai khop truoc thi thoi. Do la ly do
+    # `wp-cron-vosi.php` — webshell that, uploader ghi file bat ky, xac thuc
+    # bang cookie `pwd` — bi ha xuong `5STATE` (bac THAP NHAT, `crit` khong dem,
+    # khong mail) chi vi no doi mtime hai lan lien tiep. Mot bac duy nhat phai
+    # vua la "o dau" vua la "la gi", nen no khong the la ca hai.
+    #
+    # Cong diem thi khong co chuyen do: moi bat bien gop phan cua no, va mot
+    # truc NHIEU van dung duoc voi trong so THAP. Do la khac biet quan trong
+    # nhat — no doi cach lam viec: bon ngay qua 12 truc duoc de xuat, 9 bi bac
+    # vi cau hoi luon la "truc nay MOT MINH co du sach de bao dong khong?".
+    # Voi `less.php` (22 file thu vien LESS hop le) thi cau tra loi la khong.
+    # Nhung neu no CONG 10 DIEM thay vi BAO DONG, 22 file kia dung o 10 diem va
+    # khong ai phai doc chung. Them tin hieu tro thanh CONG DON thay vi THAY THE.
+    #
+    # CANARY: diem duoc IN ra (cot `sc=`) va KHONG duoc dung o bat ky nhanh
+    # quyet dinh nao — khong vao `sev`, khong vao `crit`, khong vao ma thoat.
+    # Tien le la canary `auth_session_cap` (dat 10-09): chay, do phan bo tren 5
+    # may, roi moi dat nguong tu so lieu that. Trong so duoi day la SO CHUA DUOC
+    # KIEM CHUNG — chung xep hang cac tin hieu theo do chac chan da do, chu
+    # KHONG phai nguong da hieu chinh.
+    #
+    # CHI nhung tin hieu DA CO DAN SO. Khong them cai nao chua do — do dung la
+    # cach 9 truc kia da chet.
+    function pscore(p, t,   s, b, nm) {
+        s = 0
+        b = basename(p)
+
+        # 50 — noi dung: khuon xac thuc webshell. Do 5 may: 2 file, ca 2 la
+        # webshell da doc ma, 0 FP. Danh sach nam trong $PWFILE (tier day du).
+        if (p in pwhit) s += 50
+
+        # 25 — uploads/YYYY/MM la thu muc MEDIA. Do 5 may moi do sau: 9 file,
+        # 6 la index.php (loai), 3 con lai DEU dang bao.
+        if (p ~ /\/uploads\/20[0-9][0-9]\/[0-9][0-9]\// && b != "index.php") s += 25
+
+        # 25 — mu-plugins: WordPress `include` moi .php o day tren MOI request.
+        # Do 20-09: 36/40 site lanh co DUNG 1 file, khong doi tu thang 2.
+        if (p ~ /\/wp-content\/mu-plugins\//) s += 25
+
+        # 20 — uploads/ tang 1. Do 20-09: ~424 file .php trong uploads/ toan
+        # dan -> CHI 5 file nam thang o tang 1. Ty le loc 98,8%.
+        if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php") s += 20
+
+        # 15 — webroot tang 0, ten khong thuoc core WordPress. Tap dong: core co
+        # dung ~13 file .php o day. Do 186-126: 78 dong, 21 la
+        # wp-config-sample.php HOP LE (3.339 byte tren 20 site) — day la ly do
+        # trong so THAP chu khong phai bo truc.
+        if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0)) s += 15
+
+        # 15 — wp-includes/ va wp-admin/: core WordPress, file la o day la la.
+        if (p ~ /\/wp-(includes|admin)\//) s += 15
+
+        # 10 — ten ham ghep tu manh chuoi. TRUC DA BI BAC lam LUAT (22/23 file
+        # la thu vien hop le: `less.php` compiler theme g5plus tren 8 site/3
+        # may, `cs-framework/helpers.php` theme RT tren 2 site). Giu lai o day
+        # DUNG DE chung minh co che: voi trong so 10 no vo hai, va neu mot file
+        # co CA no VA md5x3 thi tong la 60 chu khong phai 10.
+        if (p in fraghit) s += 10
+
+        # 10 — CHG ma kich thuoc KHONG doi. `wp-cron-vosi.php` doi mtime 4 lan
+        # trong 2 ngay, luon 1.659 byte — co cai gi dang `touch` no.
+        if (t == "CHG" && (p in samesize)) s += 10
+
+        # -20 — file trang thai da biet ($PREVCHG). Day la phep HA BAC cu, nhung
+        # o dang CONG DIEM AM thay vi `return "5STATE"` chan het moi bat bien
+        # khac. Nho vay webshell o webroot khong con bien mat khi no doi hai lan.
+        if (t == "CHG" && (p in prev)) s -= 20
+
+        return s
+    }
+    function basename(p,   i) {
+        i = length(p)
+        while (i > 1 && substr(p, i, 1) != "/") i--
+        return substr(p, i + 1)
     }
     # Cat tien to so khi in. Tien to chi ton tai de `sort` cho ra dung thu tu
     # doc; nguoi doc bao cao khong can thay no.
@@ -927,7 +1053,13 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                 }
             else {
                 m = split(item[k], L, "\n")
-                for (i = 1; i < m; i++) printf "%-8s %-3s %s\n", lbl(f[1]), f[2], L[i]
+                # `sc=` di o CUOI dong, khong phai dau. Hai cho phu thuoc vao
+                # dinh dang nay: `sort` o cuoi pipeline (sap theo bac, phai giu
+                # tien to o dau) va `crit=` doc bang grep neo dau dong
+                # CRITICAL/HIGH — chen vao dau dong la hong ca hai.
+                for (i = 1; i < m; i++)
+                    printf "%-8s %-3s %s  sc=%d\n", \
+                           lbl(f[1]), f[2], L[i], pscore(L[i], f[2])
             }
             if (markfile != "" && (k in allnew)) {
                 m = split(allnew[k], L, "\n")
