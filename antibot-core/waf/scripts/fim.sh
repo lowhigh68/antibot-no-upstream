@@ -56,6 +56,31 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 # DAY cung voi cac duong dan khac, khong o cho dung: nguong ton dong mu-plugins
 # ghi vao no TRUOC diem do.
 CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
+
+# TAO VA DAT QUYEN NGAY O DAY, mot cho duy nhat. Truoc ban nay co BA cho goi
+# `chgrp nginx` + `chmod 0640`, va ca ba deu nam SAU `tee` cua nhanh chung —
+# tuc chi chay khi DUNG NHANH DO co canh bao. Do 24-09 tren 5 may:
+#     168-101  -rw-------  root root   50.066 byte  <- CAM
+#     28-246   -rw-------  root root   34.132 byte  <- CAM
+#     171-96   -rw-r-----  root nginx  16.776 byte
+#     186-126  -rw-r-----  root nginx  29.100 byte
+#     183-139  -rw-r-----  root nginx        0 byte
+# Hai may co 50KB va 34KB canh bao ma worker `nginx` KHONG MO DUOC. Co che sinh
+# ra loi: mot nhanh (`tee` voi umask mac dinh) tao file 0600 root:root, roi nhanh
+# CO `chgrp` khong bao gio chay de sua. Day la lan THU BA cua cung ho loi
+# (memory feedback_alert_reaches_nobody): canh bao dung, di vao noi khong ai doc.
+#
+# `|| :` vi script cung chay duoi user khong phai root khi test; that bai o day
+# khong duoc lam chet phan phat hien.
+# `2>/dev/null` PHAI o day va `|| :` mot minh KHONG du: loi cua `: > file` la loi
+# REDIRECT cua shell, khong phai ma thoat cua lenh, nen `|| :` khong bat duoc.
+# Da thay that khi chay thu voi $CRITLOG tro vao thu muc khong ton tai — mot dong
+# stderr o cron la mot mail rac moi 5 phut.
+if [ ! -e "$CRITLOG" ]; then
+    { : > "$CRITLOG"; } 2>/dev/null || :
+fi
+chgrp nginx "$CRITLOG" 2>/dev/null || :
+chmod 0640  "$CRITLOG" 2>/dev/null || :
 # MANIFEST dat sau khi biet tier — xem chu thich tai cho gan.
 
 # Nguong gom nhom. Mot ban cap nhat plugin hoac core cham hang tram file cung
@@ -255,6 +280,11 @@ if [ "$mode" = "score" ]; then
             while (i > 1 && substr(p, i, 1) != "/") i--
             return substr(p, i + 1)
         }
+        function wproot(p,   i) {
+            i = index(p, "/public_html")
+            if (i == 0) return ""
+            return substr(p, 1, i + 11)
+        }
         # BAN SAO cua `pscore()` trong `check`, bo hai nhanh phu thuoc `t`.
         # Trung lap co y: mot ham dung chung phai nam trong file awk rieng, va
         # mot file phu thuoc ngoai la mot file se dung tren may nay va khong
@@ -265,11 +295,21 @@ if [ "$mode" = "score" ]; then
             if (p ~ /\/uploads\/20[0-9][0-9]\/[0-9][0-9]\// && b != "index.php") s += 25
             if (p ~ /\/wp-content\/mu-plugins\//)                             s += 25
             if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php")      s += 20
-            if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0))            s += 15
+            # Co CONG NHAN CMS, y het `pscore()` — xem chu thich o do.
+            if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0) \
+                && (wproot(p) in iswp))                                        s += 15
             # wp-(includes|admin)/ DA BO — xem chu thich o `pscore()` trong
             # `check`. Do 24-09: 183.908/1.357.213 file (13,5%) an diem nay.
             if (p in fraghit)                                                 s += 10
             return s
+        }
+        # Manifest truyen HAI LAN: luot dau thu `iswp` (webroot nao co
+        # `wp-settings.php`), luot hai moi cham diem. Can hai luot vi mot file o
+        # dau manifest phai biet webroot cua no co WordPress khong, ma bang chung
+        # do co the nam o dong bat ky phia sau.
+        NR == FNR {
+            if ($1 ~ /\/public_html\/wp-settings\.php$/) iswp[wproot($1)] = 1
+            next
         }
         {
             s = base_score($1)
@@ -300,7 +340,7 @@ if [ "$mode" = "score" ]; then
             print "nguong tai dong do. Nguong dat duoc la nguong ma so do du nho"
             print "de nguoi that doc het, VA khong bo sot file da biet la webshell."
         }
-    ' "$MANIFEST"
+    ' "$MANIFEST" "$MANIFEST"
     exit 0
 fi
 
@@ -830,6 +870,8 @@ if [ -n "$mu_over" ]; then
         # Hai duong vi chung that bai khac nhau — mail thi chim, file thi co the
         # mat quyen doc (da gap 20-09).
         } | tee -a "$CRITLOG" 2>/dev/null || :
+        # Du thua sau ban 24-09 (quyen dat mot cho o dau file), GIU LAI: neu ai
+        # xoa file bang tay giua hai lan chay thi nhanh nay tu sua.
         chgrp nginx "$CRITLOG" 2>/dev/null || :
         chmod 0640 "$CRITLOG" 2>/dev/null || :
         [ $dry -eq 0 ] && printf '%s\n' "$mu_sig" > "$MUSTATE"
@@ -1090,7 +1132,17 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # dung ~13 file .php o day. Do 186-126: 78 dong, 21 la
         # wp-config-sample.php HOP LE (3.339 byte tren 20 site) — day la ly do
         # trong so THAP chu khong phai bo truc.
-        if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0)) s += 15
+        # 15 — webroot tang 0, ten khong thuoc core WordPress. CO CONG NHAN CMS:
+        # `core0` la danh sach WordPress, ap len site KHONG phai WordPress thi
+        # MOI file deu "la". Do 24-09 tren 183-139 (code tay): 15 file an diem
+        # nay, va `router.php` `provinces.php` `kqxs.php` `dashboard.php` deu la
+        # file HOP LE cua ho. Cung ho loi voi trong so `wp-includes/` vua bo —
+        # gia dinh WordPress dat vao cho khong co cong nhan dien
+        # (memory feedback_generic_vs_overlay).
+        #
+        # Bang chung tren dia la `wp-includes/version.php`, va no DA co trong
+        # manifest nen doc duoc ma khong can `find` them.
+        if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0) && (wproot(p) in iswp)) s += 15
 
         # wp-includes/ + wp-admin/ — DA THU 15 DIEM, DA BO. Do 24-09 bang mode
         # `score` tren 1.357.213 file / 5 may: 183.908 file an diem nay, tuc
@@ -1130,6 +1182,14 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         while (i > 1 && substr(p, i, 1) != "/") i--
         return substr(p, i + 1)
     }
+    # Cat tai `/public_html` de lay webroot. KHONG dung `dirn()`: file o tang 0
+    # thi dirname DA la webroot, nhung ham nay con duoc goi cho duong dan sau
+    # nay neu them tin hieu khac, nen cat theo MOC co dinh thi dung ca hai ca.
+    function wproot(p,   i) {
+        i = index(p, "/public_html")
+        if (i == 0) return ""
+        return substr(p, 1, i + 11)
+    }
     # Cat tien to so khi in. Tien to chi ton tai de `sort` cho ra dung thu tu
     # doc; nguoi doc bao cao khong can thay no.
     function lbl(s) { return substr(s, 2) }
@@ -1161,6 +1221,21 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         if (p ~ /\/wp-content\/mu-plugins\//)       return bulk ? "0.75" : "1.0"
         if (p ~ /\/wp-content\/(plugins|themes)\//) return bulk ? "0.35" : "0.75"
         return bulk ? "0.5" : "1.0"
+    }
+    # File DAU TIEN la `$new_scan` (dinh dang `duong|kich thuoc|mtime`), chi de
+    # thu bang `iswp`: webroot nao CO `wp-includes/version.php` tren dia. Do la
+    # cong nhan CMS cho tin hieu "webroot tang 0 ten la" — khong doan theo ten
+    # thu muc. Khong in gi o luot nay.
+    NR == FNR {
+        # `wp-settings.php` chu KHONG phai `wp-includes/version.php`:
+        # `scan_hot` KHONG quet `wp-includes/` (chi webroot tang 1,
+        # `wp-content/` tang 1, `mu-plugins/`), nen dung version.php se lam
+        # `iswp` RONG o tier nong va tin hieu tat cam — dung loai hoi quy im
+        # lang ma ca ban nay duoc viet ra de tranh. `wp-settings.php` nam o
+        # webroot TANG 0, co o CA HAI tier, va WordPress khong chay duoc neu
+        # thieu no.
+        if ($1 ~ /\/public_html\/wp-settings\.php$/) iswp[wproot($1)] = 1
+        next
     }
     {
         key = sev($2, $1) "\t" $1 "\t" gkey($2)
@@ -1209,7 +1284,7 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                     printf "%s|%s\n", boost(L[i], bulk), L[i] > markfile
             }
         }
-    }' "$diff_out" | sort)
+    }' "$new_scan" "$diff_out" | sort)
 
 # Chi dem cac dong DUOC LIET KE TUNG FILE. Dong tom tat cua mot nhom dong la cap
 # nhat phan mem — bao dong o do la bien script thanh thu khong ai doc nua.
