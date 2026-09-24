@@ -710,6 +710,75 @@ if [ -n "$mu_over" ]; then
     fi
 fi
 
+# ── KHUON XAC THUC md5(md5(md5( ────────────────────────────────────────
+#
+# NHANH DUY NHAT DOC NOI DUNG FILE. Header script dat nguyen tac "METADATA CHU
+# KHONG BAM NOI DUNG" va nguyen tac do van dung — day la ngoai le co can do,
+# khong phai bo nguyen tac: `grep -l` DUNG o match dau tien moi file va doc tuan
+# tu, khac han sha256sum phai doc het moi byte cua 150k file.
+#
+# VI SAO PHAI DOC NOI DUNG O DAY, khi moi nhanh khac chi xem metadata: webshell
+# `wp-cron-vosi.php` (23-09, phiendichquocte.net) KHONG the phat hien bang ten
+# hay vi tri — ten giong WordPress, nam o webroot depth 0 cung cho voi 13 file
+# core hop le. Chi noi dung to no ra.
+#
+# VI SAO `md5(md5(md5(` chu khong phai `eval`/`base64_decode`: file do ghi
+#     $b = 'ba'.'s'.'e'.'6'.'4_'.'de'.'co'.'de';
+# nen `grep 'base64_decode'` TRUOT HOAN TOAN — da thu, tra ve rong. Ten ham
+# ghep duoc tu manh chuoi; `md5(md5(md5(` la CU PHAP, khong ghep duoc.
+#
+# DAN SO DO TRUOC KHI VIET, 5 may:
+#     186-126 -> 2 file (cung 1 site) | 168-101, 171-96, 28-246, 183-139 -> 0
+# Ca 2 file deu la webshell da doc ma: `wp-cron-vosi.php` (uploader ghi file bat
+# ky vao duong dan bat ky, xac thuc bang cookie `pwd`, giai 4 lop
+# rot13->strrev->base64->gzuncompress, tra 500 khi sai mat khau de trong nhu loi
+# server) va `filefuns.php` cung site. KHONG mot false positive nao.
+#
+# Bam ba lan khong co ly do chinh dang: mot lan la du cho moi muc dich hop le;
+# ba lan chi de lam cham viec do mat khau bang bang tra.
+#
+# NHANH DA XET VA BAC cung ngay, ghi lai de khong ai xay lai:
+#   - "ten ham ghep tu manh chuoi" (`'ba'.'s'.'e'...`) — 22/23 file la THU VIEN
+#     HOP LE: `less.php` compiler (theme g5plus `innovation` tren 8 site/3 may),
+#     `cs-framework/helpers.php` (theme RT, 2 site). Compiler DICH ma nen ghep
+#     ten ham la viec that cua no. Lap luan cu dua tren Y DINH ("ghep manh = ne
+#     grep"), ma bat bien phai dua tren CAU TRUC.
+#   - "thu muc ten ngau nhien 6-9 ky tu trong uploads" — `revslider/templates/`
+#     co hang chuc: `filmstrip` `snowscene` `clubflyer` `rockband` `deskscene`.
+#   - "ten file core bi chen ky tu" (`wp-sett1ings.php`, `wp-blog-head1er.php`)
+#     — khuon that va rat dang ngo, NHUNG chi co tren 1 may (4 site, mtime
+#     2015-2019). Khong xay luat tu mau mot may.
+#
+# CHI TIER DAY DU: do tren 186-126 — ca cay PHP 67 giay, webroot depth 0-1 chi
+# 1,8 giay, CUNG ket qua. Nhung `--hot` chay moi 5 phut nen 67 giay la 22% thoi
+# gian may; con depth 0-1 thi bo sot
+# `uploads/pxgqsbu/zq1vgje/vo1rqbf/index.php` (depth 5) da tim thay that. Tier
+# day du chay 30-60 phut/lan va da ton 27 giay cho `find`, nen 67 giay o nhip do
+# la chap nhan duoc.
+if [ "$tier" = "full" ]; then
+    pw_hits=$(grep -rl 'md5(md5(md5(' $ROOTS --include='*.php' 2>/dev/null | sort || :)
+    if [ -n "$pw_hits" ]; then
+        pw_sig=$(printf '%s\n' "$pw_hits" | md5sum 2>/dev/null | cut -d' ' -f1)
+        pw_prev=$(cat "$STATE/pwcount.txt" 2>/dev/null || :)
+        if [ "$pw_sig" != "$pw_prev" ]; then
+            {
+                echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] KHUON XAC THUC md5x3 ==="
+                printf '%s\n' "$pw_hits" | while read -r f; do
+                    [ -n "$f" ] || continue
+                    printf '  %7s  %s\n' "$(stat -c '%s' "$f" 2>/dev/null || echo '?')" "$f"
+                done
+                echo "  (md5(md5(md5( = mat khau webshell; do 5 may: 2 file, ca 2 deu la webshell)"
+            } | tee -a "$CRITLOG" 2>/dev/null || :
+            chgrp nginx "$CRITLOG" 2>/dev/null || :
+            chmod 0640 "$CRITLOG" 2>/dev/null || :
+            [ $dry -eq 0 ] && printf '%s\n' "$pw_sig" > "$STATE/pwcount.txt"
+        fi
+        # Dung chung co voi ton dong mu-plugins: ca hai la "do duoc, co su co"
+        # nen cung tra exit 3. Dat NGOAI khoi chong lap, cung ly do.
+        mu_pending=1
+    fi
+fi
+
 total=$(wc -l < "$diff_out")
 if [ "$total" -eq 0 ]; then
     [ $dry -eq 0 ] && cp "$new_scan" "$MANIFEST"
