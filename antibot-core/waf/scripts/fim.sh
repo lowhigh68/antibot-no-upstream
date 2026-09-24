@@ -266,7 +266,8 @@ if [ "$mode" = "score" ]; then
             if (p ~ /\/wp-content\/mu-plugins\//)                             s += 25
             if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php")      s += 20
             if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0))            s += 15
-            if (p ~ /\/wp-(includes|admin)\//)                                s += 15
+            # wp-(includes|admin)/ DA BO — xem chu thich o `pscore()` trong
+            # `check`. Do 24-09: 183.908/1.357.213 file (13,5%) an diem nay.
             if (p in fraghit)                                                 s += 10
             return s
         }
@@ -952,7 +953,7 @@ fi
 # Con lai (web root, wp-config.php, .htaccess ngoai cung) la HIGH.
 #
 # Sap xep theo chuoi muc do cho ra dung thu tu can doc:
-#   1MUPLUG < 2CRITICAL < 3HIGH < 4ROUTINE < 5STATE
+#   0SCORE < 1MUPLUG < 2CRITICAL < 3HIGH < 4ROUTINE < 5STATE
 #
 # TIEN TO SO la BAT BUOC, khong phai trang tri. Ban truoc dua vao thu tu chu
 # cai va no DUNG chi vi tinh co: C < H < R < S. Them `MUPLUG` la lo ra ngay —
@@ -1010,6 +1011,24 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         #
         # CHG o day dang ngo ngang NEW, va kin hon: chen dong vao
         # `dev-ci-lint-...php` co san khong lam so file thay doi.
+        # DIEM >= 40 THANG MOI PHAN NHANH VI TRI, va day la cho cot `sc=` thoi
+        # la canary. Nguong den TU SO LIEU: mode `score` tren 1.357.213 file / 5
+        # may (24-09) cho dung 2 file tren 40 diem, ca hai la webshell da doc ma
+        # (`wp-cron-vosi.php` 75, `filefuns.php` 65), 0 false positive. Ba may
+        # khong co site nhiem tra ve 0.
+        #
+        # 40 khong phai so chon bua: phan bo co KHOANG TRONG 40 DIEM giua 25
+        # (161 file: uploads/YYYY/MM + mu-plugins) va 65. Nguong nam giua mot
+        # khoang trong thi on dinh; nguong cat giua dam dong thi khong.
+        #
+        # Phai dat TRUOC nhanh `mu-plugins` va truoc phep ha bac `prev`: ca hai
+        # webshell nay nam o WEBROOT depth 0, va `wp-cron-vosi.php` doi mtime 4
+        # lan trong 2 ngay nen no DA vao `prev` — dung duong ne ma nhanh nay sinh
+        # ra de dong.
+        # Bac RIENG `0SCORE`, khong dung lai `1MUPLUG`: nhan in ra la chu sau
+        # tien to, nen `MUPLUG` se bao nguoi doc di tim trong mu-plugins — ma ca
+        # hai file do nam o WEBROOT. Tien to `0` cho no sap TRUOC MUPLUG.
+        if (pscore(p, t) >= 40)               return "0SCORE"
         if (p ~ /\/wp-content\/mu-plugins\//) return "1MUPLUG"
         # Ha bac TRUOC moi phep phan vung con lai: file trang thai nam trong
         # wp-includes/ thi van la file trang thai. CHI ap cho CHG — NEW khong
@@ -1073,8 +1092,20 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # trong so THAP chu khong phai bo truc.
         if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0)) s += 15
 
-        # 15 — wp-includes/ va wp-admin/: core WordPress, file la o day la la.
-        if (p ~ /\/wp-(includes|admin)\//) s += 15
+        # wp-includes/ + wp-admin/ — DA THU 15 DIEM, DA BO. Do 24-09 bang mode
+        # `score` tren 1.357.213 file / 5 may: 183.908 file an diem nay, tuc
+        # 13,5% TOAN BO tap. Moi file core WordPress cua moi site deu nam o do.
+        #
+        # Va van de KHONG phai do lon — ha xuong 5 thi 183.908 file an 5 diem,
+        # van vo nghia, chi nho hon. Van de la tin hieu nay KHONG MANG THONG TIN:
+        # no dung voi moi file core, tuc khong phan biet duoc gi. No chi noi "day
+        # la site WordPress".
+        #
+        # `sev()` dung `wp-includes/` lam 2CRITICAL va do DUNG cho CHG — mot file
+        # core bi SUA la dang ngo that. Nhung `pscore` tinh ca NEW, va o do no
+        # thanh nhieu. Tin hieu dung phai la "file LA trong wp-includes/", khong
+        # phai "file trong wp-includes/" — va do la tin hieu CHUA DO, nen khong
+        # them.
 
         # 10 — ten ham ghep tu manh chuoi. TRUC DA BI BAC lam LUAT (22/23 file
         # la thu vien hop le: `less.php` compiler theme g5plus tren 8 site/3
@@ -1122,6 +1153,11 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
     # GROUP_MAX la nguong CONG KHAI, ke tan cong chi can tha 6 file la thoat sach.
     # Ha muc tin cay thi khong co nguong nao de vuot qua.
     function boost(p, bulk) {
+        # >= 40 diem: 1.0 BAT KE `bulk`. Nguong gom nhom sinh ra de chong nhieu
+        # tu cap nhat phan mem — ma o muc diem nay khong co cap nhat nao (do
+        # 24-09: 2 file tren 1.357.213). Khong ha muc tin cay chi vi no den cung
+        # luc voi file khac.
+        if (pscore(p, "NEW") >= 40)                 return "1.0"
         if (p ~ /\/wp-content\/mu-plugins\//)       return bulk ? "0.75" : "1.0"
         if (p ~ /\/wp-content\/(plugins|themes)\//) return bulk ? "0.35" : "0.75"
         return bulk ? "0.5" : "1.0"
@@ -1184,6 +1220,13 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
 # tu cap nhat phan mem, ma o thu muc nay thi khong co cap nhat phan mem nao.
 crit=$(printf '%s\n' "$report" | grep -E '^(CRITICAL|HIGH) ' | grep -vc 'cap nhat')
 muplug=$(printf '%s\n' "$report" | grep -c '^MUPLUG ' || :)
+# `SCORE` la NGOAI LE cung ly do nhu `MUPLUG`, va phai dem RIENG: `crit=` o tren
+# chi neo `CRITICAL|HIGH`, nen mot dong `SCORE` khong khop cai nao — in ra roi
+# `crit=0`, khong mail, `exit 0`. Dung cai lo vua sua 23-09 (ton dong mu-plugins
+# tra exit=0), lap lai o nhanh moi. Bac nay la >= 40 diem, tuc 2 file tren
+# 1.357.213 do duoc: neu no khong dem thi khong co gi dang dem.
+score_n=$(printf '%s\n' "$report" | grep -c '^SCORE ' || :)
+crit=$((crit + score_n))
 crit=$((crit + muplug))
 
 # ── Day danh dau sang Redis cho WAF ───────────────────────────────────
