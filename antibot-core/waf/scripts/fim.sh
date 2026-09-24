@@ -81,6 +81,26 @@ if [ ! -e "$CRITLOG" ]; then
 fi
 chgrp nginx "$CRITLOG" 2>/dev/null || :
 chmod 0640  "$CRITLOG" 2>/dev/null || :
+
+# Tap "ma CORE WordPress nam o tang 0 webroot". Dung cho nhanh `del1_core`:
+# mot ten cach core dung mot ky tu MA noi dung la core thi KHONG phai ke gia
+# dang — do la ban cach ly/sao luu. Do 24-09 tren 186-126: 17/20 file >=40 la
+# loai nay, tat ca tren DUNG 2 site, mtime 2016-2017, tuc MOT su kien lich su
+# (mot cong cu quet da doi ten toan bo entry point core) chu khong phai 17 phat
+# hien. `fim.sh` la may do THAY DOI; 17 file bat dong 9 nam khong thuoc pham vi
+# no, va giu chung o 40 diem thi 85% $CRITLOG la nhieu co dinh -> nguoi doc bo
+# qua ca 3 file that.
+#
+# Chi quet `$ROOTS/*.php` (tang 0, KHONG `-r`): dan so 441 file tren 186-126.
+# Hai dieu kien phai CUNG co — `@package WordPress` mot minh co trong ca plugin
+# hop le, con `wp-load|wp-blog-header|wp-config` mot minh co trong moi webshell
+# muon nap WordPress.
+core_like_list() {
+    grep -l '@package WordPress' $ROOTS/*.php 2>/dev/null \
+    | while IFS= read -r _f; do
+        grep -qE 'wp-load|wp-blog-header|wp-config' "$_f" 2>/dev/null && printf '%s\n' "$_f"
+      done | sort || :
+}
 # MANIFEST dat sau khi biet tier — xem chu thich tai cho gan.
 
 # Nguong gom nhom. Mot ban cap nhat plugin hoac core cham hang tram file cung
@@ -253,7 +273,12 @@ if [ "$mode" = "score" ]; then
     # tier day du, cung ly do nhu trong `check`.
     PWFILE=$(mktemp) || exit 2
     FRAGFILE=$(mktemp) || exit 2
-    trap 'rm -f "$PWFILE" "$FRAGFILE"' EXIT
+    CLFILE=$(mktemp) || exit 2
+    trap 'rm -f "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+    # KHONG gioi han o tier day du: chi quet tang 0 (441 file tren 186-126), re
+    # bang mot phan nghin lan `grep -r`, va o tier nong thieu no thi 17 file cach
+    # ly lai an 25 diem.
+    core_like_list > "$CLFILE" || :
     if [ "$tier" = "full" ]; then
         grep -rl 'md5(md5(md5(' $ROOTS --include='*.php' 2>/dev/null | sort > "$PWFILE" || :
         grep -rlE "'ba'\s*\.|'base'\s*\.\s*'64|'str'\s*\.\s*'rev'|'str'\s*\.\s*'_'" \
@@ -264,10 +289,11 @@ if [ "$mode" = "score" ]; then
     # tin hieu phu thuoc `t` (samesize +10, prev -20) vi vay KHONG tinh o day —
     # do la dieu phai biet khi doc so: phan bo nay la diem NEN cua tung file,
     # chua co phan dong hoc.
-    awk -F'|' -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v det="$verbose" '
+    awk -F'|' -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v clfile="$CLFILE" -v det="$verbose" '
         BEGIN {
             if (pwfile   != "") while ((getline _x < pwfile)   > 0) if (_x != "") pwhit[_x] = 1
             if (fragfile != "") while ((getline _x < fragfile) > 0) if (_x != "") fraghit[_x] = 1
+            if (clfile   != "") while ((getline _x < clfile)   > 0) if (_x != "") corelike[_x] = 1
             split("index.php wp-config.php wp-config-sample.php wp-login.php " \
                   "wp-settings.php wp-load.php wp-blog-header.php wp-cron.php " \
                   "wp-links-opml.php wp-mail.php wp-signup.php wp-trackback.php " \
@@ -312,7 +338,8 @@ if [ "$mode" = "score" ]; then
             # Ba tin hieu them 24-09, PHAI GIONG `pscore()` — neu thieu o day thi
             # mode `score` khong thay thu dang chay trong `check`, tuc cong cu do
             # mu voi chinh he thong no do. Chu thich day du o `pscore()`.
-            if ((wproot(p) in iswp)) {
+            # `corelike` = 0 diem, y het `pscore()` — chu thich day du o do.
+            if ((wproot(p) in iswp) && !(p in corelike)) {
                 nm = del1_core(b)
                 if (nm == 2)      s += 25
                 else if (nm == 1) s += 10
@@ -773,7 +800,11 @@ diff_out=$(mktemp) || exit 2
 SZSAME=$(mktemp) || exit 2
 PWFILE=$(mktemp) || exit 2
 FRAGFILE=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$SZSAME" "$PWFILE" "$FRAGFILE"' EXIT
+CLFILE=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+# NGOAI khoi `tier = full`: 17 file cach ly nam o tang 0 webroot, ma `scan_hot`
+# CO quet tang 0 — thieu o day thi tier nong lai cham 25 diem cho chung.
+core_like_list > "$CLFILE" || :
 
 scan > "$new_scan" || { echo "quet that bai" >&2; exit 2; }
 
@@ -1027,10 +1058,11 @@ fi
 # Tien to bi cat khi in (xem `lbl()`), nen nguoi doc khong thay no.
 # (STATE = file trang thai, xem $PREVCHG.)
 marks=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$marks" "$SZSAME" "$PWFILE" "$FRAGFILE"' EXIT
+trap 'rm -f "$new_scan" "$diff_out" "$marks" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
 
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
-             -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" '
+             -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
+             -v clfile="$CLFILE" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
         # lan chay dau tien (chua co prevchg) di thang qua day.
@@ -1043,6 +1075,7 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # la dung: hai tin hieu noi dung chi do o tier day du.
         if (pwfile   != "") while ((getline _x < pwfile)   > 0) if (_x != "") pwhit[_x] = 1
         if (fragfile != "") while ((getline _x < fragfile) > 0) if (_x != "") fraghit[_x] = 1
+        if (clfile   != "") while ((getline _x < clfile)   > 0) if (_x != "") corelike[_x] = 1
         if (szfile   != "") while ((getline _x < szfile)   > 0) if (_x != "") samesize[_x] = 1
 
         # Tap DONG cac file .php WordPress core dat o webroot tang 0. Danh sach
@@ -1197,7 +1230,31 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         #
         # Cong cong nhan CMS: tren site khong phai WordPress thi moi ten deu
         # "gan giong core WordPress" mot cach vo nghia.
-        if ((wproot(p) in iswp)) {
+        # `corelike` TRU TOAN BO truc nay, khong ha bac. Do 24-09 tren 186-126:
+        # 17/20 file >= 40 diem la ten cach core mot ky tu MA noi dung LA core —
+        # `wp-m1ail.php` `wp-cro1n.php` `wp-sett1ings.php` `wp-activ1ate.php`...
+        # tuc gan DU tap entry point core tang 0, tren DUNG 2 site, mtime
+        # 2016-2017. Mot ke tan cong khong doi ten `wp-settings.php` (site chet
+        # ngay); day la MOT cong cu quet da cach ly ca loat, tuc MOT su kien lich
+        # su bat dong 9 nam — khong phai 17 phat hien.
+        #
+        # Tai sao 0 chu khong phai 20: `fim.sh` la may do THAY DOI. 17 file khong
+        # doi tu 2017 nen chung khong thuoc pham vi no; giu o 20 thi chung hien
+        # trong `score` mai mai va $CRITLOG co 85% nhieu co dinh — dung benh
+        # "canh bao dung ma khong ai doc" da mac. Ba webshell that trong cung tap
+        # (`filefuns.php` `wp-cron-vosi.php`) KHONG khop `del1_core`; chung dat 40
+        # bang truc khac, nen bo truc nay khong bo sot gi da biet.
+        #
+        # RUI RO da nhan: ke tan cong dat webshell ten `wp-m1ail.php` CO them hai
+        # chuoi core vao dau file thi duoc mien 25 diem nay. Chap nhan vi (a) 25
+        # mot minh khong dat 40 nen day khong phai luat chan, (b) neu file do co
+        # md5x3 hay nam trong uploads thi cac truc kia van cong du, (c) doi lai la
+        # $CRITLOG doc duoc.
+        #
+        # Cai con nguy that — 17 ban core WP 4.x goi duoc qua HTTP, dung ngoai moi
+        # lan update — thuoc tang URI (`waf/wordpress/paths.lua`), khong thuoc day:
+        # rui ro nam o REQUEST toi chung, khong o viec file ton tai.
+        if ((wproot(p) in iswp) && !(p in corelike)) {
             nm = del1_core(b)
             # Chen GIUA (vi tri xoa khong phai ky tu cuoi truoc `.php`) dang ngo
             # hon HAU TO CUOI: `wp-config1.php` `xmlrpc1.php` la ban sao luu
