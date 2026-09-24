@@ -90,7 +90,7 @@ MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 # `audit` khong nhan co nao: no khong co tier (soi mot tap co dinh — mu-plugins
 # tron do sau, uploads chi tang 1), khong ghi gi nen `--dry` vo nghia, va luon in
 # day du nen `-v` cung vay.
-usage() { echo "dung: $0 {baseline|check|audit} [--hot] [--dry] [-v]" >&2; exit 2; }
+usage() { echo "dung: $0 {baseline|check|audit|score} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
@@ -196,6 +196,112 @@ for a in "$@"; do
         *)            usage ;;
     esac
 done
+
+# ── score: HIEU CHINH TRONG SO tren tap DA CO, khong doi ngay nao ─────
+#
+# VI SAO CAN MODE NAY — no sua mot loi phuong phap cua chinh toi. Khi them cot
+# `sc=` toi sao chep quy trinh canary cua `auth_session_cap` (dat 10-09): chay
+# 1-2 tuan, doc phan bo, roi dat nguong. Nhung canary do do REQUEST — hang nghin
+# mau moi gio. Con day do FILE TREN DIA: tap gan nhu tinh, 317k file ma chi vai
+# chuc cai doi moi ngay. Doi "dan so tu nhien" xuat hien la doi vo han.
+#
+# Va tap du lieu DA NAM SAN. Cot `sc=` chi cham diem `$diff_out` — nhung 317.343
+# file kia deu cham diem duoc NGAY BAY GIO. Mode nay doc manifest co san, cham
+# diem het, in phan bo. Vai giay, 317k mau thay vi vai chuc.
+#
+# OWASP CRS lam chuyen tuong duong the nao: CRS cung cong diem (anomaly scoring,
+# CRITICAL=5 ERROR=4 WARNING=3 NOTICE=2, nguong mac dinh 5) nhung KHONG doi tuan
+# nao de hieu chinh — no ship san Paranoia Level 1-4, PL1 chi bat luat gan nhu
+# khong FP, PL4 bat ca luat nhieu. Nguoi van hanh CHON MUC. Diem CRS khong ap
+# duoc o day la no cham REQUEST (su kien doc lap, do phan bo nhanh); tap file thi
+# tinh, nen phai do NGUOC — cham diem ca tap co san mot luot.
+#
+# KHONG ghi gi: khong manifest, khong Redis, khong $CRITLOG. Chi doc va in.
+if [ "$mode" = "score" ]; then
+    MANIFEST="$STATE/manifest.$tier.txt"
+    if [ ! -s "$MANIFEST" ]; then
+        echo "khong co $MANIFEST -- chay 'baseline' truoc." >&2
+        exit 2
+    fi
+
+    # Hai tin hieu NOI DUNG phai grep thuc su (manifest chi co metadata). Chi o
+    # tier day du, cung ly do nhu trong `check`.
+    PWFILE=$(mktemp) || exit 2
+    FRAGFILE=$(mktemp) || exit 2
+    trap 'rm -f "$PWFILE" "$FRAGFILE"' EXIT
+    if [ "$tier" = "full" ]; then
+        grep -rl 'md5(md5(md5(' $ROOTS --include='*.php' 2>/dev/null | sort > "$PWFILE" || :
+        grep -rlE "'ba'\s*\.|'base'\s*\.\s*'64|'str'\s*\.\s*'rev'|'str'\s*\.\s*'_'" \
+            $ROOTS --include='*.php' 2>/dev/null | sort > "$FRAGFILE" || :
+    fi
+
+    # `t` truyen la "NEW" cho moi dong: manifest khong co khai niem NEW/CHG. Hai
+    # tin hieu phu thuoc `t` (samesize +10, prev -20) vi vay KHONG tinh o day —
+    # do la dieu phai biet khi doc so: phan bo nay la diem NEN cua tung file,
+    # chua co phan dong hoc.
+    awk -F'|' -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v det="$verbose" '
+        BEGIN {
+            if (pwfile   != "") while ((getline _x < pwfile)   > 0) if (_x != "") pwhit[_x] = 1
+            if (fragfile != "") while ((getline _x < fragfile) > 0) if (_x != "") fraghit[_x] = 1
+            split("index.php wp-config.php wp-config-sample.php wp-login.php " \
+                  "wp-settings.php wp-load.php wp-blog-header.php wp-cron.php " \
+                  "wp-links-opml.php wp-mail.php wp-signup.php wp-trackback.php " \
+                  "wp-activate.php wp-comments-post.php xmlrpc.php " \
+                  "wp-admin.php wordfence-waf.php", _c0, " ")
+            for (_i in _c0) core0[_c0[_i]] = 1
+        }
+        function basename(p,   i) {
+            i = length(p)
+            while (i > 1 && substr(p, i, 1) != "/") i--
+            return substr(p, i + 1)
+        }
+        # BAN SAO cua `pscore()` trong `check`, bo hai nhanh phu thuoc `t`.
+        # Trung lap co y: mot ham dung chung phai nam trong file awk rieng, va
+        # mot file phu thuoc ngoai la mot file se dung tren may nay va khong
+        # dung tren may sau (cung ly do da khong dung logrotate).
+        function base_score(p,   s, b) {
+            s = 0; b = basename(p)
+            if (p in pwhit)                                                   s += 50
+            if (p ~ /\/uploads\/20[0-9][0-9]\/[0-9][0-9]\// && b != "index.php") s += 25
+            if (p ~ /\/wp-content\/mu-plugins\//)                             s += 25
+            if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php")      s += 20
+            if (p ~ /\/public_html\/[^\/]+\.php$/ && !(b in core0))            s += 15
+            if (p ~ /\/wp-(includes|admin)\//)                                s += 15
+            if (p in fraghit)                                                 s += 10
+            return s
+        }
+        {
+            s = base_score($1)
+            hist[s]++
+            tot++
+            if (s >= 40) top[$1] = s
+        }
+        END {
+            printf "=== PHAN BO DIEM NEN tren %d file ===\n", tot
+            # KHONG dung `asorti`: no la gawk-only va day la cho DUY NHAT trong
+            # ca script can sap xep khoa. Script goi `awk` khong dinh danh, nen
+            # tren may co mawk/BWK awk thi `asorti` hong CAM — dung cai loi im
+            # lang ma ca ban nay duoc viet ra de tranh. Diem la boi so cua 5 va
+            # co chan tren, nen dem xuoi tu cao xuong thap la du.
+            cum = 0
+            for (k = 160; k >= 0; k -= 5) {
+                if (!(k in hist)) continue
+                cum += hist[k]
+                printf "  sc=%-4d %8d file   (tu diem nay tro len: %d)\n", k, hist[k], cum
+            }
+            print ""
+            print "=== FILE >= 40 DIEM ==="
+            m = 0
+            for (p in top) { printf "  sc=%-4d %s\n", top[p], p; m++ }
+            if (m == 0) print "  (khong co)"
+            print ""
+            print "DOC SO NAY THE NAO: cot cuoi la so file se bi bao neu dat"
+            print "nguong tai dong do. Nguong dat duoc la nguong ma so do du nho"
+            print "de nguoi that doc het, VA khong bo sot file da biet la webshell."
+        }
+    ' "$MANIFEST"
+    exit 0
+fi
 
 # ── audit: HIEN TRANG, khong phai THAY DOI ────────────────────────────
 #
