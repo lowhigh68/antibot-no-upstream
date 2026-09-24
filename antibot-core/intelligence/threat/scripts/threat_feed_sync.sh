@@ -24,7 +24,13 @@
 set -uo pipefail
 
 # ─── Config ───────────────────────────────────────────────────
-REDIS_CLI="/usr/local/bin/redis-cli"
+# Duong dan TUYET DOI `/usr/local/bin/redis-cli` da lam script chet tren mot may
+# (24-09): binary o cho khac, va thong bao loi lai la "Cannot connect to Redis at
+# 127.0.0.1:6379" — tuc mot loi THIEU LENH bao thanh loi MANG. Hai nguyen nhan
+# khac han nhau, cung mot dong log, nen nguoi doc di kiem Redis chu khong kiem
+# duong dan. Dung khuon cua `fim.sh:111`: ten tran cho `$PATH` tim, va cho ghi de
+# bang bien moi truong.
+REDIS_CLI="${ANTIBOT_REDIS_CLI:-redis-cli}"
 REDIS_HOST="127.0.0.1"
 REDIS_PORT="6379"
 REDIS_DB="0"
@@ -365,9 +371,18 @@ sync_abuseipdb() {
 # MAIN
 # ============================================================
 
-# Test Redis
+# Test Redis — HAI phep kiem RIENG, khong gop.
+#
+# Ban truoc chi co phep thu hai, nen mot may THIEU `redis-cli` bao "Cannot connect
+# to Redis at 127.0.0.1:6379" (24-09). Nguoi doc di kiem Redis, kiem port, kiem
+# firewall — trong khi Redis chay hoan toan binh thuong va van de la duong dan
+# binary. Mot thong bao sai dia chi ton nhieu thoi gian hon khong co thong bao.
+if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
+    log "ERROR: khong tim thay '$REDIS_CLI' trong PATH. Dat ANTIBOT_REDIS_CLI=<duong dan> neu binary o cho khac."
+    exit 1
+fi
 if ! RC PING >/dev/null 2>&1; then
-    log "ERROR: Cannot connect to Redis at ${REDIS_HOST}:${REDIS_PORT}"
+    log "ERROR: Cannot connect to Redis at ${REDIS_HOST}:${REDIS_PORT} (binary '$REDIS_CLI' co, nhung PING that bai — kiem service, requirepass, hoac unixsocket)"
     exit 1
 fi
 
