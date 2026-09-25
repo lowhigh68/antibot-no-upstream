@@ -23,6 +23,13 @@ fi
 # [3b] cua deploy.sh se cho qua mot ban hong.
 rc=0
 
+# `policy_test` chay DAU TIEN: registry/policy/telemetry la nen cua moi phan con
+# lai, va mot registry lech detector thi bon bo test sau se bao loi kho doc thay
+# vi chi ra dung nguyen nhan.
+echo "── policy / registry / telemetry ────────────────────────────"
+"$RESTY" --shdict "antibot_cache 1m" "$HERE/policy_test.lua" || rc=1
+
+echo
 echo "── wordpress/paths ──────────────────────────────────────────"
 "$RESTY" --shdict "antibot_cache 1m" "$HERE/wordpress_paths_test.lua" || rc=1
 
