@@ -20,7 +20,9 @@
 -- BA TRẠNG THÁI:
 --   true  = request mang ít nhất một tên trong sổ của host
 --   false = sổ đã ĐỦ TRƯỞNG THÀNH và request không mang tên nào trong đó
---   nil   = chưa biết — host chưa có sổ, HOẶC sổ còn non (< `min_names`)
+--   nil   = chưa biết — host chưa có sổ, sổ còn non (< `min_names`), HOẶC sổ
+--           không ĐẠI DIỆN cho không gian cookie của request (domain alias —
+--           xem `book_represents_request()`)
 --
 -- `nil` có hai nguồn, và nguồn thứ hai là bài học phải trả giá. Sự cố
 -- bestcargo.vn 2026-09-12: sổ mới học được ĐÚNG MỘT tên (`wp-saving-post`,
@@ -89,6 +91,56 @@ local function host_key()
     if not h or h == "" or h == "_" then h = ngx.var.host end
     if not h or h == "" then return nil end
     return h
+end
+
+-- Sổ của host này có ĐẠI DIỆN cho không gian cookie của request này không.
+--
+-- `ngx.var.server_name` trả về tên ĐẦU TIÊN trong chỉ thị `server_name`, KHÔNG
+-- phải tên đã khớp. Một vhost
+--     server_name quatructuyen.com www.quatructuyen.com quatructuyen.vn www.quatructuyen.vn;
+-- cho `server_name = quatructuyen.com` kể cả khi khách vào `.vn`. Cùng docroot
+-- nên dùng chung sổ là ĐÚNG, nhưng cookie KHÔNG theo docroot — cookie theo
+-- DOMAIN. Magento đặt `frontend`/`store` với `cookie_domain` theo store view,
+-- nên khách trên `.vn` và khách trên `.com` mang tên cookie khác nhau, cùng ghi
+-- vào một sổ, rồi bên nào không khớp thì ăn `false`.
+--
+-- Sự cố 25-09 trên cloud168-123: sổ `waf:ckn:quatructuyen.com` học đủ 5 tên
+-- (`frontend,frontend_cid,store,external_no_cache,antibot_fp`) nên vượt
+-- `min_names` và ĐƯỢC PHÉP trả `false`. Khách Chrome thật vào `quatructuyen.vn`
+-- (`rown=0.80` `fp_quality=1.00` `h2=true` `dev=desktop_chrome` `sclients=1`)
+-- ăn `ckn=false` 642 lần → mất `auth_session_cap` → `swarm_attack` đẩy
+-- `eff=86.0` qua ngưỡng 85 → 403. Cùng IP, cùng phút, 8.926 request khác đi
+-- qua bình thường vì `swarm_attack` là cửa sổ 60 giây.
+--
+-- `min_names` KHÔNG cứu được ca này: nó đo SỐ LƯỢNG tên, không đo TÍNH ĐẠI
+-- DIỆN. Sổ 5 tên là trưởng thành, nhưng trưởng thành về một không gian cookie
+-- khác. Đây đúng là cùng lỗi với bestcargo.vn 12-09, chỉ khác đường vào.
+--
+-- VÌ SAO KHÔNG khoá sổ theo `ngx.var.host`: `Host` do client gửi. Một
+-- `Host: victim.com` giả sẽ ghi tên cookie vào sổ của victim — đúng lỗ đã làm
+-- hỏng việc đánh dấu host WordPress trước đây.
+--
+-- VÌ SAO AN TOÀN: phép này chỉ chặn câu trả lời `false`, tức chỉ nới cực
+-- fail-OPEN. `Host` giả làm kết quả thành `nil` — MẤT một lớp siết, KHÔNG được
+-- thêm đặc quyền nào. `ban_store_write.lua` đọc `== true` nên `nil` vẫn không
+-- được miễn `ban:<ip>`; cực fail-CLOSED không bị chạm.
+--
+-- ĐÁNH ĐỔI đã nhận: mọi domain alias trên fleet mất lớp siết `ckn=false`. Dân
+-- số bị ảnh hưởng, đo 14-09: 11.245 lệnh chặn không cookie / 62 có cookie =
+-- 0,55%, và chỉ phần trong đó đến bằng tên alias. `swarm_attack` (120 điểm),
+-- rate limit, `ip_risk`, graph, cluster, WAF path rules đều không phụ thuộc
+-- `ckn` nên không đổi.
+local function book_represents_request()
+    local sn = ngx.var.server_name
+    -- Catch-all hoặc rỗng: `host_key()` đã lùi về `host`, nên sổ khoá theo đúng
+    -- tên request đến. Đại diện.
+    if not sn or sn == "" or sn == "_" then return true end
+    local h = ngx.var.host
+    if not h or h == "" then return false end
+    -- `www.` KHÔNG phải alias — cùng không gian cookie, vì cookie đặt trên
+    -- `.domain` áp cho cả hai. So sau khi bỏ tiền tố.
+    local function bare(x) return (x:gsub("^www%.", "")) end
+    return bare(h) == bare(sn)
 end
 
 -- Tên cookie trong một chuỗi `Set-Cookie`: phần trước dấu `=` đầu tiên.
@@ -222,6 +274,11 @@ function _M.known(ctx, cookie_header)
     -- "cookie ngoai lai" ma chi la "khong khop ten nao ta TINH CO hoc duoc" —
     -- va hau qua la go mat `auth_session_cap` cua dung nguoi dang dang nhap.
     if n < (cfg.cookie_registry.min_names or 3) then return nil end
+    -- Sổ trưởng thành NHƯNG có thể không đại diện: xem
+    -- `book_represents_request()`. `min_names` đo SỐ LƯỢNG, phép này đo TÍNH
+    -- ĐẠI DIỆN. Thiếu nó, một khách thật trên domain alias bị đọc thành "cookie
+    -- ngoại lai" — sự cố 25-09, 642 lần 403.
+    if not book_represents_request() then return nil end
     return false
 end
 
