@@ -119,6 +119,19 @@ function _M.run_body(ctx)
     -- `scan ~= "ok"` cung la notable: mot lan KHONG SOI DUOC la thong tin, va
     -- lay mau no di thi ty le "chua soi" trong so lieu thap di 20 lan — dung
     -- luc con so do la thu quyet dinh co nen bat `thread_pool` hay khong.
+    --
+    -- NHUNG `empty` KHONG PHAI "khong soi duoc": do la than request RONG THAT
+    -- (`get_body_file()` tra nil, `len = 0`). Mot POST `api_callback` khong co
+    -- than la chuyen binh thuong — admin-ajax dat tham so o query string. Do tren
+    -- nam may 25-09: 247/247 luot `body_scan_incomplete` la `empty`, khong mot
+    -- luot `spill_*` nao, va no chiem hon mot nua toan bo dong V2.
+    --
+    -- Nen coi `empty` la notable khien MOI than rong duoc ghi 100% thay vi 1/20:
+    -- I/O thua va nhieu log, dung thu cot `smp=` sinh ra de tranh. Loai no o day
+    -- la LOAI KHOI TAP notable, khong phai loai khoi log — mot than rong van ra
+    -- dong `[waf-body]` khi trung nhip lay mau, va van dem trong
+    -- `waf:v2:scan:empty`. Cung phan biet da lam o `waf/init.lua` cho viec phat
+    -- luat: "khong co gi de soi" khac "co ma soi khong noi".
     -- `up_rule` (P1) cung KHONG sinh dong `[waf]` — dung ly do da ghi cho
     -- `fn_rule` ngay tren: no la kenh rieng, khong tao `waf_hits`. Bo sot no o
     -- day thi BODY_SAMPLE vut 19/20 luot upload ten file chay duoc, va so lieu
@@ -126,7 +139,7 @@ function _M.run_body(ctx)
     -- se noi "khong co gi" ve dung thu no duoc sinh ra de dem.
     local notable = b.php or b.arg_rule or b.fn_rule or b.fn_trunc or b.spill
                  or b.up_rule
-                 or (b.scan and b.scan ~= "ok")
+                 or (b.scan and b.scan ~= "ok" and b.scan ~= "empty")
     if not notable then
         body_seen = body_seen + 1
         if body_seen % BODY_SAMPLE ~= 0 then return end

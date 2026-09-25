@@ -290,6 +290,45 @@ function _M.init_worker()
     local mem_guard = require "antibot.async.memory_guard"
     mem_guard.start()
 
+    -- Nap cau hinh runtime cua WAF V2.
+    --
+    -- MOI WORKER, khong phai chi worker 0: `waf/init.lua` giu `compiled_config` o
+    -- cap module, tuc mot ban RIENG trong tung tien trinh worker. Goi o worker 0
+    -- thi cac worker khac van chay mac dinh, va lua luong se chia doi giua hai
+    -- chinh sach — dung loai lech am tham khong the doc ra tu log.
+    --
+    -- Thieu buoc nay thi co che per-domain/exception/profile chi TON TAI trong ma
+    -- nguon chu khong co hieu luc: do la trang thai truoc 25-09, mot lop cau hinh
+    -- trong nhu da chay. `waf.configure()` chi duoc test goi, khong noi nao khac.
+    --
+    -- `pcall` vi file cau hinh la thu NGUOI VAN HANH SUA: mot dau phay thieu
+    -- khong duoc lam nginx khong khoi dong duoc. Khi no hong thi WAF chay mac
+    -- dinh — an toan hon ban cau hinh moi theo dinh nghia, vi mac dinh la thu da
+    -- chay tren dan may.
+    --
+    -- KHONG dung `ngx.timer.at`: `configure()` khong cham Redis lan DNS, no chi
+    -- doc mot bang Lua. Defer no se de mot khoang thoi gian dau doi worker chay
+    -- bang cau hinh mac dinh, va khoang do khong quan sat duoc.
+    do
+        local ok_cfg, runtime = pcall(require, "antibot.waf.runtime_config")
+        if not ok_cfg then
+            ngx.log(ngx.ERR, "[waf-v2] config: khong nap duoc ",
+                    "waf/runtime_config.lua, dung MAC DINH: ", tostring(runtime))
+        else
+            local ok_ap, errors = waf_layer.configure(runtime)
+            if not ok_ap then
+                -- Ghi TUNG loi, khong gop: mot dong "cau hinh sai" khong noi
+                -- duoc sai o dau, va nguoi doc log la nguoi vua sua file do.
+                local list = type(errors) == "table" and errors or { tostring(errors) }
+                for i = 1, #list do
+                    ngx.log(ngx.ERR, "[waf-v2] config: ", tostring(list[i]))
+                end
+                ngx.log(ngx.ERR, "[waf-v2] config: GIU cau hinh cu (mac dinh). ",
+                        "Khong ap mot phan nao — sua file roi reload.")
+            end
+        end
+    end
+
     -- Seed default good-bot DNS registry vào Redis (worker 0 only).
     -- core/data/goodbot.json đi cùng repo → git pull sync list.
     -- Admin override qua redis-cli SET không bị ghi đè.

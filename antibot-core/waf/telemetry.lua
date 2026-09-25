@@ -1,7 +1,26 @@
 local _M = {}
 
+-- Dong ho co DO PHAN GIAI THAT, va day la diem quyet dinh cua ca phep do do tre.
+--
+-- `ngx.now()` tra thoi gian duoc CACHE theo request: trong OpenResty no khong doi
+-- trong suot mot request tru khi goi `ngx.update_time()`. Va `telemetry.start()`
+-- lan `telemetry.finish()` deu chay trong `run_pre`, tuc CUNG MOT request va cung
+-- mot phase — nen `finish - start` bang DUNG 0, luon luon, bat ke don vi.
+--
+-- Do la ly do cot `latency_avg_ms` tu truoc den nay ra 0: khong phai "WAF chay
+-- duoi mot phan nghin giay" ma la "phep do khong he chay". Mot cot tra ve 0 vi
+-- khong do duoc, doc lan voi 0 that — dung ho loi da mac nhieu lan trong repo
+-- nay, va lan nay no nam trong chinh cong cu dung de do.
+--
+-- `ngx.update_time()` cap nhat dong ho cache do. No re (mot loi goi
+-- `gettimeofday`) nhung KHONG mien phi, nen chi goi o hai moc cua phep do chu
+-- khong rai trong ma.
 local function now(rt)
+    if rt and rt.update_time then rt.update_time() end
     if rt and rt.now then return rt.now() end
+    -- `os.clock()` la thoi gian CPU, khong phai thoi gian troi qua. Chi dung cho
+    -- test va cho moi truong khong co `ngx` — o do hai thu xap xi nhau va khong
+    -- co phep do nao phu thuoc vao no.
     return os.clock()
 end
 
@@ -117,13 +136,20 @@ function _M.finish(ctx, rt)
     local opts = config.telemetry or {}
     local prefix = opts.prefix or "waf:v2:"
     local dict = dict_for(config, rt)
-    -- Milliseconds are accumulated as integers so averages can be calculated
-    -- without storing one key per request.
+    -- MICROGIAY, khong phai miligiay. `shared_dict:incr` chi cong so nguyen nen
+    -- don vi quyet dinh do phan giai: `run_pre` la may phep khop regex tren URI
+    -- cong vai phep tra bang, nen tinh theo ms thi MOI mau lam tron ve 0 va
+    -- `latency_avg_ms` ra 0,00 bat ke that su bao nhieu.
+    --
+    -- Doi TEN khoa chu khong giu ten cu voi don vi moi: mot khoa cu con sot trong
+    -- shm se bi cong lan voi gia tri don vi khac va khong ai phat hien.
+    --
     -- Hai counter nay cung dem loi ghi. Truoc do chung khong truyen `stats` nen
     -- mot `antibot_cache` day lam chung that bai IM LANG trong khi `write_errors`
     -- van bang 0 — tuc bo dem loi noi "khong co loi" trong luc dang co loi.
     local stats = {}
-    incr(dict, prefix .. "latency_ms_sum", math.floor(elapsed + 0.5), stats)
+    incr(dict, prefix .. "latency_us_sum",
+         math.floor(elapsed * 1000 + 0.5), stats)
     incr(dict, prefix .. "latency_count", 1, stats)
     if (stats.errors or 0) > 0 then
         incr(dict, prefix .. "write_errors", stats.errors)
@@ -132,18 +158,6 @@ end
 
 -- ── DUONG RA. Thieu ham nay thi toan bo module tren la write-only ────────────
 --
--- `shared_dict:get_keys()` co hai gioi han that, va ca hai deu duoc xu ly o day
--- chu khong bo qua:
---
---   1. No KHOA toan bo dict trong luc quet. Nen `max` co mac dinh huu han, va
---      ham nay CHI duoc goi tu admin API (do nguoi van hanh bam), khong bao gio
---      tu duong request.
---   2. Voi `max = 0` no tra MOI khoa — tren mot dict dung chung voi du lieu van
---      hanh thi do la hang chuc nghin khoa. Nen `max` mac dinh 2048 va ham bao
---      ra `truncated` de nguoi doc biet minh dang xem mot phan.
---
--- Loc theo `prefix` sau khi quet chu khong truoc: shared_dict khong co API quet
--- theo tien to.
 -- Doc theo DANH SACH KHOA BIET TRUOC, khong quet dict.
 --
 -- Ban dau ham nay goi `get_keys(max)` roi loc theo tien to SAU khi quet. Hai lo,
@@ -167,7 +181,11 @@ end
 -- can quet, va chi quet khi `per_host` dang bat.
 local ACTIONS = { "allow", "block", "signal", "observe" }
 local FIXED = {
-    "requests", "latency_ms_sum", "latency_count",
+    -- `latency_ms_sum` la khoa CU (don vi ms). Doc ca hai de bang so lieu khong
+    -- trong rong ngay sau khi deploy, va de thay duoc chinh xac van de:
+    -- `latency_ms_sum` co gia tri trong khi `latency_us_sum` vang nghia la may
+    -- nay chua nap ban moi.
+    "requests", "latency_us_sum", "latency_ms_sum", "latency_count",
     "body_bytes_sum", "body_spill", "write_errors",
 }
 -- `scan` lay tu `body.lua`: `ok` cong cac ly do khong soi duoc. Liet ke thay vi
@@ -240,9 +258,18 @@ function _M.snapshot(config, rt, max)
     end
 
     -- Trung binh do tre tinh o day chu khong luu mot khoa moi request.
-    local sum   = tonumber(out.latency_ms_sum)
-    local count = tonumber(out.latency_count)
-    local avg   = (sum and count and count > 0) and (sum / count) or nil
+    --
+    -- Uu tien khoa MICROGIAY; `latency_ms_sum` chi de doc may chua deploy ban moi.
+    local count  = tonumber(out.latency_count)
+    local sum_us = tonumber(out.latency_us_sum)
+    local sum_ms = tonumber(out.latency_ms_sum)
+    local avg_us, avg
+    if sum_us and count and count > 0 then
+        avg_us = sum_us / count
+        avg    = avg_us / 1000
+    elseif sum_ms and count and count > 0 then
+        avg = sum_ms / count
+    end
 
     return {
         prefix      = prefix,
@@ -254,6 +281,11 @@ function _M.snapshot(config, rt, max)
         scanned     = scanned,
         truncated   = truncated,
         latency_avg_ms = avg,
+        -- Con so DUNG de tra loi cau hoi hot-key: `run_pre` ton bao nhieu
+        -- microgiay, trong do co ~5 luot `shared_dict:incr`. So no voi
+        -- `$request_time` cua nginx (don vi giay) de biet telemetry co dang toi uu
+        -- hay khong — TRUOC khi toi uu.
+        latency_avg_us = avg_us,
         -- Ba con so doc kem nhau tra loi duy nhat cau hoi cua giai doan bong:
         -- `action:allow` la so request KHONG bi chan, `would:block` la so se bi
         -- chan neu bat enforce. Ti le giua chung la con so quyet dinh.

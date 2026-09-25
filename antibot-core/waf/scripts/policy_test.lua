@@ -222,7 +222,12 @@ do
     eq("telemetry records request once", values["waf:v2:requests"], 1)
     eq("telemetry records rule once", values["waf:v2:rule:arg_traversal"], 1)
     eq("telemetry records latency once", values["waf:v2:latency_count"], 1)
-    eq("telemetry latency ms", values["waf:v2:latency_ms_sum"], 12)
+    -- MICROGIAY: `tick` di tu 10 den 10.012 giay = 12 ms = 12.000 us. Don vi nay
+    -- la bat buoc vi `run_pre` chay duoi 1 ms, nen tinh theo ms thi moi mau lam
+    -- tron ve 0 va cot do tre bao 0,00 bat ke that su bao nhieu.
+    eq("telemetry latency us", values["waf:v2:latency_us_sum"], 12000)
+    eq("telemetry KHONG con ghi khoa ms cu",
+       values["waf:v2:latency_ms_sum"], nil)
 end
 
 do
@@ -453,6 +458,35 @@ do
         if blind_ctx.waf_hits[i].rule == "body_scan_incomplete" then blind = true end
     end
     eq("scan=spill_thread VAN phat body_scan_incomplete", blind, true)
+end
+
+-- ── `waf/runtime_config.lua` la file NGUOI VAN HANH SUA, nen phai kiem no ────
+--
+-- File do di qua `configure()` o `init_worker` tren MOI worker. Mot dau phay
+-- thieu khong lam nginx hong (co `pcall`), nhung mot khoa go sai thi WAF chay mac
+-- dinh trong khi nguoi van hanh tuong da ap — dung lop loi ma `reject_unknown`
+-- duoc them de chan. Nen ban dang nam trong repo phai LUON qua validator.
+do
+    local ok_load, runtime = pcall(dofile, SRC .. "waf/runtime_config.lua")
+    eq("runtime_config.lua nap duoc", ok_load, true)
+    if ok_load then
+        eq("runtime_config.lua tra mot bang", type(runtime), "table")
+        local ok_v, errs = config.validate(config.compile(runtime))
+        if not ok_v then
+            for i = 1, #(errs or {}) do
+                io.write("      ", tostring(errs[i]), "\n")
+            end
+        end
+        eq("runtime_config.lua qua validator", ok_v, true)
+
+        -- Ban dang deploy PHAI khong doi phan quyet: giai doan nay chi bat duong
+        -- cau hinh, khong doi chinh sach. Neu mot ngay nao do doi that thi test
+        -- nay phai duoc sua CO Y — do la muc dich cua no.
+        eq("runtime_config: mode van enforce", runtime.mode, "enforce")
+        eq("runtime_config: score_enforcement van tat",
+           runtime.score_enforcement, false)
+        eq("runtime_config: chua co exception nao", #(runtime.exceptions or {}), 0)
+    end
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))
