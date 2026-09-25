@@ -261,6 +261,63 @@ do
     ok = config.validate(config.compile({ thresholds = { blok = 10 } }))
     eq("typo trong thresholds bi tu choi", ok, false)
 
+    -- `compile()` NORMALIZE roi `validate()` moi doc — nen nhung truong bi bien
+    -- dang trong buoc do phai duoc kiem tren ban RAW. Ba ca duoi day deu tung
+    -- vuot qua validator:
+    --
+    --   `exceptions = "invalid"` -> `append()` bo gia tri khong phai table, con
+    --                               lai `{}`, va `{}` thi hop le
+    --   mang THUA                -> `#src` dung o lo trong dau tien, phan tu sau
+    --                               do bi bo LANG LE
+    --   khoa khong phai chi so   -> `append()` khong bao gio thay
+    ok = config.validate(config.compile({ exceptions = "invalid" }))
+    eq("exceptions khong phai mang bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({
+        exceptions = { [1] = { id = "a", rule = "arg_traversal" },
+                       [3] = { id = "b", rule = "arg_traversal" } },
+    }))
+    eq("exceptions mang THUA bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({
+        exceptions = { nope = { id = "a", rule = "arg_traversal" } },
+    }))
+    eq("exceptions khoa khong phai chi so bi tu choi", ok, false)
+
+    -- Exception chi co `id` khop MOI luat: `id` la ten de truy nguoc trong log,
+    -- no khong loc gi ca. Do la cach de nhat de tat toan bo WAF bang mot dong
+    -- trong nhu vo hai.
+    ok = config.validate(config.compile({ exceptions = { { id = "chi-co-id" } } }))
+    eq("exception khong co selector bi tu choi", ok, false)
+
+    -- Ho luat phai ton tai trong registry, khong thi exception im lang vo tac
+    -- dung (`exception_matches` so voi moi `rule.family` va khong bao gio khop).
+    ok = config.validate(config.compile({
+        exceptions = { { id = "a", family = "expsure" } },
+    }))
+    eq("exception voi family khong ton tai bi tu choi", ok, false)
+    ok = config.validate(config.compile({
+        exceptions = { { id = "a", family = "exposure" } },
+    }))
+    eq("exception voi family CO THAT van qua", ok, true)
+
+    -- `domains` long trong mot domain scope: `resolve()` khong bao gio doc no.
+    ok = config.validate(config.compile({
+        domains = { ["a.test"] = { domains = { ["b.test"] = { mode = "shadow" } } } },
+    }))
+    eq("domains long hai cap bi tu choi", ok, false)
+
+    -- `__raw` la khoa noi bo. Nguoi viet cau hinh go no phai bi tu choi, khong thi
+    -- `merge` se ghi de ban raw that va luot kiem raw doc mot ban ke do chon.
+    ok = config.validate(config.compile({ __raw = { mode = "shadow" } }))
+    eq("`__raw` do nguoi viet bi tu choi", ok, false)
+
+    -- Va ban raw phai di theo `resolve()`: neu mat thi luot kiem raw bi bo qua
+    -- trong im lang tren moi ban da resolve.
+    local compiled = config.compile({ exceptions = "invalid" })
+    ok = config.validate(config.resolve(compiled, "a.test"))
+    eq("luot kiem raw con hieu luc sau resolve()", ok, false)
+
     -- Va ban hop le phai VAN qua: mot validator tu choi tat ca thi vo dung.
     ok = config.validate(config.compile({
         mode = "shadow",

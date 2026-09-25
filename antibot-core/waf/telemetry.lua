@@ -119,8 +119,15 @@ function _M.finish(ctx, rt)
     local dict = dict_for(config, rt)
     -- Milliseconds are accumulated as integers so averages can be calculated
     -- without storing one key per request.
-    incr(dict, prefix .. "latency_ms_sum", math.floor(elapsed + 0.5))
-    incr(dict, prefix .. "latency_count", 1)
+    -- Hai counter nay cung dem loi ghi. Truoc do chung khong truyen `stats` nen
+    -- mot `antibot_cache` day lam chung that bai IM LANG trong khi `write_errors`
+    -- van bang 0 — tuc bo dem loi noi "khong co loi" trong luc dang co loi.
+    local stats = {}
+    incr(dict, prefix .. "latency_ms_sum", math.floor(elapsed + 0.5), stats)
+    incr(dict, prefix .. "latency_count", 1, stats)
+    if (stats.errors or 0) > 0 then
+        incr(dict, prefix .. "write_errors", stats.errors)
+    end
 end
 
 -- ── DUONG RA. Thieu ham nay thi toan bo module tren la write-only ────────────
@@ -137,6 +144,39 @@ end
 --
 -- Loc theo `prefix` sau khi quet chu khong truoc: shared_dict khong co API quet
 -- theo tien to.
+-- Doc theo DANH SACH KHOA BIET TRUOC, khong quet dict.
+--
+-- Ban dau ham nay goi `get_keys(max)` roi loc theo tien to SAU khi quet. Hai lo,
+-- va review chi ra ca hai:
+--
+--   1. `antibot_cache` dung chung voi du lieu van hanh khac. Neu no co hang chuc
+--      nghin khoa thi 2.048 khoa dau CO THE khong chua mot counter WAF nao —
+--      endpoint tra `summary` toan 0 kem `truncated = true`, va nguoi doc van de
+--      hieu la "khong co su kien". Dung ho loi mot phep do tra ve 0 vi khong do
+--      duoc, khong phai vi bang 0.
+--   2. `get_keys` KHOA toan bo dict trong luc quet, va `?max=0` thi quet het.
+--
+-- Tap khoa cua module nay HUU HAN va BIET TRUOC: counter co dinh, cong
+-- `rule:<id>` / `excepted:<id>` voi id lay tu REGISTRY, cong `action:<a>` /
+-- `would:<a>` voi a thuoc mot tap bon gia tri. Nen doc thang tung khoa bang
+-- `dict:get()` — khong khoa dict, khong phu thuoc dict lon bao nhieu, va khong
+-- bao gio "khong thay" mot counter dang ton tai.
+--
+-- `host:<host>:action:<a>` la ngoai le duy nhat: khoa do sinh theo DU LIEU
+-- (`per_host = true`, mac dinh tat) nen khong liet ke truoc duoc. Chi nhom do
+-- can quet, va chi quet khi `per_host` dang bat.
+local ACTIONS = { "allow", "block", "signal", "observe" }
+local FIXED = {
+    "requests", "latency_ms_sum", "latency_count",
+    "body_bytes_sum", "body_spill", "write_errors",
+}
+-- `scan` lay tu `body.lua`: `ok` cong cac ly do khong soi duoc. Liet ke thay vi
+-- quet, va mot gia tri moi xuat hien trong `body.lua` ma quen them o day thi chi
+-- MAT mot dong trong bang, khong lam sai con so nao khac.
+local SCANS = {
+    "ok", "empty", "spill_thread", "spill_worker", "nothread", "unknown",
+}
+
 function _M.snapshot(config, rt, max)
     local opts = (config and config.telemetry) or {}
     local prefix = opts.prefix or "waf:v2:"
@@ -145,24 +185,56 @@ function _M.snapshot(config, rt, max)
         return nil, "shared dict " .. tostring(opts.shared_dict or "antibot_cache") ..
                     " khong co, hoac telemetry.enabled = false"
     end
-    if type(dict.get_keys) ~= "function" then
-        return nil, "shared dict khong ho tro get_keys"
-    end
-
-    max = tonumber(max) or 2048
-    local ok, keys = pcall(dict.get_keys, dict, max)
-    if not ok or type(keys) ~= "table" then
-        return nil, "get_keys that bai: " .. tostring(keys)
+    if type(dict.get) ~= "function" then
+        return nil, "shared dict khong ho tro get"
     end
 
     local out, n = {}, 0
-    for i = 1, #keys do
-        local key = keys[i]
-        if key:sub(1, #prefix) == prefix then
-            local v = dict:get(key)
-            if v ~= nil then
-                n = n + 1
-                out[key:sub(#prefix + 1)] = v
+    local function take(suffix)
+        local v = dict:get(prefix .. suffix)
+        if v ~= nil then
+            n = n + 1
+            out[suffix] = v
+        end
+    end
+
+    for i = 1, #FIXED do take(FIXED[i]) end
+    for i = 1, #SCANS do take("scan:" .. SCANS[i]) end
+    for i = 1, #ACTIONS do
+        take("action:" .. ACTIONS[i])
+        take("would:" .. ACTIONS[i])
+    end
+
+    -- `rule:` va `excepted:` theo tung id cua registry; `decision:`/`shadow:`
+    -- ghep action voi rule nen cung liet ke duoc day du.
+    local ok_reg, registry = pcall(require, "antibot.waf.registry")
+    local rules = (ok_reg and registry and registry.all) and registry.all() or {}
+    for id in pairs(rules) do
+        take("rule:" .. id)
+        take("excepted:" .. id)
+        take("shadow:" .. id)
+        for i = 1, #ACTIONS do take("decision:" .. ACTIONS[i] .. ":" .. id) end
+    end
+
+    -- Chi nhom per-host moi phai quet, va chi khi no dang bat.
+    local scanned, truncated = 0, false
+    if opts.per_host and type(dict.get_keys) == "function" then
+        max = tonumber(max) or 2048
+        if max < 1 then max = 1 elseif max > 4096 then max = 4096 end
+        local ok, keys = pcall(dict.get_keys, dict, max)
+        if ok and type(keys) == "table" then
+            scanned = #keys
+            truncated = (#keys >= max)
+            local want = prefix .. "host:"
+            for i = 1, #keys do
+                local key = keys[i]
+                if key:sub(1, #want) == want then
+                    local v = dict:get(key)
+                    if v ~= nil then
+                        n = n + 1
+                        out[key:sub(#prefix + 1)] = v
+                    end
+                end
             end
         end
     end
@@ -176,10 +248,11 @@ function _M.snapshot(config, rt, max)
         prefix      = prefix,
         counters    = out,
         counted     = n,
-        -- `#keys == max` nghia la CO THE con khoa chua quet. Noi ro thay vi de
-        -- nguoi doc tuong day la toan bo.
-        truncated   = (#keys >= max),
-        scanned     = #keys,
+        -- `scanned`/`truncated` gio CHI noi ve nhom per-host. Khi `per_host` tat
+        -- thi chung la 0/false va do la su that: khong quet gi vi khong can quet.
+        per_host    = opts.per_host and true or false,
+        scanned     = scanned,
+        truncated   = truncated,
         latency_avg_ms = avg,
         -- Ba con so doc kem nhau tra loi duy nhat cau hoi cua giai doan bong:
         -- `action:allow` la so request KHONG bi chan, `would:block` la so se bi

@@ -1487,6 +1487,73 @@ do
     end
 end
 
+-- ── `SCANS` trong telemetry phai phu moi gia tri `scan` cua body.lua ────────
+--
+-- `telemetry.snapshot()` doc theo DANH SACH KHOA BIET TRUOC chu khong quet dict
+-- (quet co hai lo: `antibot_cache` dung chung nen 2.048 khoa dau co the khong
+-- chua counter WAF nao, va `get_keys` khoa dict).
+--
+-- Cai gia cua viec do la mot TAP CUNG: mot ly do `scan` moi them vao `body.lua`
+-- ma quen them vao `SCANS` thi bang so lieu MAT mot dong — khong sai con so nao
+-- khac, nhung lang le thieu. Chinh xac loai loi chi chu thich khong chan duoc.
+--
+-- Nen ghim bang mot phep kiem: moi chuoi chu trong `unscanned(...)` cua body.lua
+-- phai co mat trong `SCANS`. Day la phep kiem NGUON nen no khong chung minh duoc
+-- chieu con lai (mot ten trong SCANS khong con ai ghi thi chi la mot dong 0), va
+-- do la du.
+io.write("\nhop dong: SCANS cua telemetry phu het ly do scan cua body.lua\n")
+do
+    local body = slurp(SRC .. "waf/body.lua") or ""
+    local tele = slurp(SRC .. "waf/telemetry.lua") or ""
+
+    local allowed = {}
+    local block = tele:match("local SCANS = {(.-)}")
+    if not block then
+        bad("  SAI  khong tim thay `local SCANS = {...}` trong telemetry.lua\n")
+    else
+        for name in block:gmatch('"([%w_]+)"') do allowed[name] = true end
+    end
+
+    -- `core.scan()` luon dat "ok"; cac ly do con lai di qua `unscanned(...)`.
+    --
+    -- HAI DANG, va chi tim dang thu nhat la BO SOT dung mot nua:
+    --
+    --   truc tiep   unscanned(family, false, "empty", 0)
+    --   qua bien    local reason = tostring(payload or "spill_thread")
+    --               if reason ~= "nothread" then reason = "spill_thread" end
+    --               unscanned(family, true, reason)
+    --
+    -- `spill_thread` va `nothread` chi xuat hien o dang thu hai. Mot phep kiem
+    -- chi quet `unscanned%(...)` bao XANH trong khi khong he kiem hai ten do —
+    -- dung loai "phep do hong tra so trong-co-ly" da mac bay lan trong mot buoi.
+    -- Nen quet CA chuoi gan vao `reason`, va bao ra so ten tim duoc de doc log
+    -- thay ngay neu con sot.
+    local seen = {}
+    for reason in body:gmatch('unscanned%([^)]-"([%w_]+)"') do seen[reason] = true end
+    for reason in body:gmatch('reason%s*=%s*"([%w_]+)"') do seen[reason] = true end
+    for reason in body:gmatch('reason%s*~=%s*"([%w_]+)"') do seen[reason] = true end
+    for reason in body:gmatch('payload%s+or%s+"([%w_]+)"') do seen[reason] = true end
+
+    local n = 0
+    for reason in pairs(seen) do
+        n = n + 1
+        if not allowed[reason] then
+            bad("  SAI  `body.lua` sinh `scan = \"%s\"` nhung `SCANS` cua\n" ..
+                "       telemetry.lua khong co ten do — counter\n" ..
+                "       `waf:v2:scan:%s` se KHONG BAO GIO duoc doc ra.\n",
+                reason, reason)
+        else pass = pass + 1 end
+    end
+    if not allowed["ok"] then
+        bad("  SAI  `SCANS` thieu \"ok\" — do la gia tri cua moi than da soi xong\n")
+    else pass = pass + 1 end
+    if n == 0 then
+        io.write("  (khong tim thay loi goi unscanned nao — muc nay khong kiem gi)\n")
+    else
+        io.write(string.format("  %d ly do scan trong body.lua, deu co trong SCANS\n", n))
+    end
+end
+
 -- ── 4d. `max_field` chi duoc dat ten field CO TRONG compute.lua ──────
 --
 -- Muc tren nhan dang gan gian tiep `max_field(ctx, "<ten>", v)`. Dieu do mo mot

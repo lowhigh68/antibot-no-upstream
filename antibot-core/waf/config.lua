@@ -135,9 +135,37 @@ do
     end
 end
 
+-- Ho luat hop le, cung lay tu registry nhu `VALID_PROFILE`. `pcall` vi
+-- `config.lua` phai nap duoc doc lap trong test; khi khong nap duoc thi ham tra
+-- `true` (khong chan) chu khong tra `false` (chan het) — mot validator hong khong
+-- duoc bien thanh mot validator tu choi moi thu.
+-- Khoa giu ban raw trong bang da compile.
+--
+-- PHAI la CHUOI, khong duoc la bang: `copy()` lam `out[copy(k, seen)] = ...` nen
+-- mot khoa bang bi SAO CHEP thanh bang moi, va `resolve()` (goi `copy(compiled)`)
+-- se tra ve mot bang khong con khoa nao bang `RAW_KEY` — `validate()` tren ban
+-- resolved thay `nil` va bo qua luot kiem raw TRONG IM LANG. Da can nhac cach
+-- dung bang lam khoa va bo vi dung ly do do.
+--
+-- Ten co dau `__` va duoc khai bao trong `SCOPE_KEYS`, nen `reject_unknown`
+-- khong bao chinh no la khoa la.
+local RAW_KEY = "__raw"
+
+local function registry_has_family(name)
+    local ok, registry = pcall(require, "antibot.waf.registry")
+    if not (ok and registry and registry.has_family) then return true end
+    return registry.has_family(name) and true or false
+end
+
 local function reject_unknown(tbl, allowed, path, errors, what)
     for k in pairs(tbl) do
-        if not allowed[k] then
+        -- `RAW_KEY` bi bo qua o day chu KHONG duoc dua vao `SCOPE_KEYS`. Neu dua
+        -- vao thi no thanh mot khoa HOP LE cho nguoi viet cau hinh, va mot
+        -- `__raw = {...}` trong mot domain scope se duoc `merge` GHI DE len ban
+        -- raw that — tuc luot kiem raw doc mot ban do ke viet cau hinh chon. Bo
+        -- qua o day thi no khong bao loi oan cho khoa do `compile()` dat, ma van
+        -- khong mo duong cho ai go no vao.
+        if k ~= RAW_KEY and not allowed[k] then
             errors[#errors + 1] = string.format(
                 "%s.%s la khoa KHONG duoc biet (%s) — go sai chinh ta?",
                 path, tostring(k), what)
@@ -278,9 +306,45 @@ local function validate_scope(scope, path, errors, allow_domains)
                         errors[#errors + 1] = path .. ".exceptions." .. i ..
                                               ".enabled must be boolean"
                     end
+                    -- `family` phai TON TAI trong registry. Mot ho viet sai
+                    -- (`expsure`) lam `exception_matches` so no voi moi
+                    -- `rule.family` va khong bao gio khop — exception im lang
+                    -- khong co tac dung, va nguoi van hanh tuong da co.
+                    if ex.family ~= nil and type(ex.family) == "string" and
+                       not registry_has_family(ex.family) then
+                        errors[#errors + 1] = path .. ".exceptions." .. i ..
+                            ".family = " .. ex.family ..
+                            " KHONG ton tai trong registry"
+                    end
+                    -- PHAI co it nhat mot SELECTOR. `id` chi la ten de truy
+                    -- nguoc trong log, no khong loc gi ca — nen mot exception
+                    -- chi co `id` se khop MOI luat tren MOI host. Do la cach de
+                    -- nhat de tat toan bo WAF bang mot dong trong nhu vo hai, va
+                    -- cung ho voi lo `uri_prefx` da chan o tren.
+                    do
+                        local has = false
+                        for _, sel in ipairs({ "rule", "family", "host",
+                                               "method", "target", "uri",
+                                               "uri_prefix" }) do
+                            if ex[sel] ~= nil then has = true; break end
+                        end
+                        if not has then
+                            errors[#errors + 1] = path .. ".exceptions." .. i ..
+                                " khong co selector nao (rule/family/host/" ..
+                                "method/target/uri/uri_prefix) — no se khop MOI" ..
+                                " luat; `id` khong phai selector"
+                        end
+                    end
                 end
             end
         end
+    end
+    -- `domains` trong mot domain scope: allowlist chap nhan khoa nay (vi
+    -- SCOPE_KEYS dung chung cho ca hai cap) nhung `resolve()` KHONG BAO GIO doc
+    -- no. Neu khong bao thi mot cau hinh long hai cap trong nhu da ap.
+    if not allow_domains and scope.domains ~= nil then
+        errors[#errors + 1] = path .. ".domains khong duoc long trong mot domain" ..
+            " scope — `resolve()` chi doc `domains` o cap goc"
     end
     if allow_domains and scope.domains ~= nil then
         if type(scope.domains) ~= "table" then
@@ -293,8 +357,69 @@ local function validate_scope(scope, path, errors, allow_domains)
     end
 end
 
+-- Kiem cac truong mà `compile()` NORMALIZE, tuc nhung truong bi bien dang truoc
+-- khi `validate_scope` kip nhin thay.
+--
+-- Lo that: `compile()` lam `out.exceptions = {}` roi `append(...)`, va `append`
+-- BO QUA gia tri khong phai table. Nen `exceptions = "invalid"` bien thanh `{}`
+-- va vuot qua validator — fail-silent o dung cho toi vua lam fail-loud. Cung the
+-- voi `exceptions` thua (`{ [1] = ..., [3] = ... }`): `#src` dung o phan tu nil
+-- dau tien nen phan tu thu 3 bi bo, im lang.
+local function validate_raw(runtime, errors)
+    if runtime == nil then return end
+    if type(runtime) ~= "table" then
+        errors[#errors + 1] = "config must be a table"
+        return
+    end
+
+    local function check_exceptions(src, path)
+        if src == nil then return end
+        if type(src) ~= "table" then
+            errors[#errors + 1] = path .. " must be an array, got " .. type(src)
+            return
+        end
+        -- Dem khoa so de bat mang THUA. `#src` khong noi duoc dieu nay: voi
+        -- `{ [1]=a, [3]=b }` thi `#src` co the la 1, va phan tu thu 3 bi `append`
+        -- bo lai ma khong ai bao.
+        local max_index, count = 0, 0
+        for k in pairs(src) do
+            if type(k) == "number" and k == math.floor(k) and k >= 1 then
+                count = count + 1
+                if k > max_index then max_index = k end
+            else
+                errors[#errors + 1] = path .. " co khoa khong phai chi so mang: " ..
+                                      tostring(k)
+            end
+        end
+        if max_index ~= count then
+            errors[#errors + 1] = string.format(
+                "%s la mang THUA (%d phan tu, chi so lon nhat %d) — `append()` se" ..
+                " bo cac phan tu sau lo trong", path, count, max_index)
+        end
+    end
+
+    check_exceptions(runtime.exceptions, "config.exceptions")
+    if type(runtime.domains) == "table" then
+        for host, domain in pairs(runtime.domains) do
+            if type(domain) == "table" then
+                check_exceptions(domain.exceptions,
+                    "config.domains." .. tostring(host) .. ".exceptions")
+            end
+        end
+    end
+end
+
+-- HAI LUOT, co y, va thu tu quan trong:
+--   `validate_raw`  doc ban NGUOI VAN HANH VIET, truoc khi `compile` chuan hoa.
+--   `validate_scope` doc ban DA compile, noi moi truong da co gia tri mac dinh.
+-- Chi luot thu hai thi bo sot dung cac truong bi normalize lam mat dau vet.
 function _M.validate(compiled)
     local errors = {}
+    -- DA CAN NHAC va bo: thiet ke `validate(compiled, runtime)`. No trong sach hon
+    -- nhung lam CHIN noi goi hien co VAN CHAY trong khi bo qua luot kiem moi —
+    -- mot tham so tuy chon khong bao gio bat ai them no vao. Giu chu ky mot tham
+    -- so de moi noi goi, ke ca noi viet truoc ban nay, tu dong duoc ca hai luot.
+    validate_raw(type(compiled) == "table" and compiled[RAW_KEY] or nil, errors)
     validate_scope(compiled, "config", errors, true)
     return #errors == 0, errors
 end
@@ -316,6 +441,10 @@ function _M.compile(runtime)
     out.exceptions = {}
     append(out.exceptions, DEFAULT.exceptions)
     append(out.exceptions, runtime.exceptions)
+    -- Giu ban NGUOI VAN HANH VIET de `validate()` kiem duoc nhung truong ma chinh
+    -- `compile()` vua chuan hoa: `exceptions = "invalid"` da thanh `{}` o tren, va
+    -- mot mang thua da bi `append` cat bot — ca hai khong con dau vet trong `out`.
+    out[RAW_KEY] = runtime
     return out
 end
 

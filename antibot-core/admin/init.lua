@@ -2367,8 +2367,22 @@ local function render_waf_v2()
         return
     end
 
-    local snap, err = telemetry.snapshot(config.defaults(), ngx,
-                                         tonumber(ngx.var.arg_max))
+    -- Cau hinh DANG CHAY, khong phai mac dinh. `config.defaults()` dung khi chua
+    -- ai goi `waf.configure()`, nhung SAI ngay khi co: no se doc mot dict/prefix
+    -- khac voi cai dang duoc ghi, va bao "khong co su kien" — mot phep do tra 0
+    -- vi khong do duoc, khong phai vi bang 0. Lui ve `defaults()` chi khi khong
+    -- nap duoc `waf.init`.
+    local ok_w, waf = pcall(require, "antibot.waf.init")
+    local cfg = (ok_w and waf.active_config) and waf.active_config()
+                or config.defaults()
+
+    -- `max` CHI con y nghia cho nhom per-host (nhom duy nhat phai quet). Clamp o
+    -- `snapshot()`, nhung chan `?max=0` ngay tu day: `get_keys(0)` quet TOAN dict
+    -- va khoa no lau hon du kien.
+    local want_max = tonumber(ngx.var.arg_max)
+    if want_max ~= nil and want_max < 1 then want_max = nil end
+
+    local snap, err = telemetry.snapshot(cfg, ngx, want_max)
     if not snap then
         -- PHAN BIET "chua co so lieu" voi "khong doc duoc". Gop hai cai lai la
         -- dung loi da giet `wp_paths.mark()` 4 thang.
@@ -2376,7 +2390,6 @@ local function render_waf_v2()
         return
     end
 
-    local ok_w, waf = pcall(require, "antibot.waf.init")
     snap.available     = true
     snap.registry_ok   = ok_w and waf.registry_ok or nil
     snap.registry_errors = (ok_w and waf.registry_errors and

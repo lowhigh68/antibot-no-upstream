@@ -468,6 +468,17 @@ function _M.run_log(ctx)
     if wp ~= nil and exists == true then wp_paths.mark(host, wp) end
 end
 
+-- Cau hinh DANG CHAY, cho nguoi doc so lieu.
+--
+-- Admin truoc day goi `config.defaults()` de biet dict/prefix cua telemetry —
+-- dung khi chua ai goi `configure()`, nhung SAI ngay khi co: no se doc mot dict
+-- khac voi dict dang duoc ghi va bao "khong co su kien". Ham nay tra ban that.
+--
+-- Tra ban SAO: nguoi doc khong sua duoc cau hinh dang chay qua duong nay.
+function _M.active_config()
+    return config.copy(compiled_config)
+end
+
 _M.registry_ok = registry_ok
 _M.registry_errors = registry_errors
 
