@@ -312,10 +312,30 @@ do
     }))
     eq("domains long hai cap bi tu choi", ok, false)
 
-    -- `__raw` la khoa noi bo. Nguoi viet cau hinh go no phai bi tu choi, khong thi
-    -- `merge` se ghi de ban raw that va luot kiem raw doc mot ban ke do chon.
+    -- `__raw` la khoa NOI BO cua `compile()`. Hai duong, va ban dau toi chi nghi
+    -- ra duong thu nhat roi viet mot `reject_unknown` bo qua khoa nay o MOI cap —
+    -- tuc tu mo dung duong thu hai trong luc dinh chan duong thu nhat.
+    --
+    --   cap goc      `compile()` dat `out[RAW_KEY]` SAU `merge`, nen mot
+    --                `__raw` nguoi viet bi ghi de — vo hai, nhung la mot khoa
+    --                nguoi viet tuong da co tac dung. `validate_raw` bao ra.
+    --   domain scope `merge(out, domain)` trong `resolve()` KHONG loai khoa nay
+    --                (no chi loai `domains` va `exceptions`), nen
+    --                `domains["a"].__raw` GHI DE ban raw that tren ban resolved —
+    --                luot kiem raw doc mot ban do ke viet cau hinh chon.
     ok = config.validate(config.compile({ __raw = { mode = "shadow" } }))
-    eq("`__raw` do nguoi viet bi tu choi", ok, false)
+    eq("`__raw` o cap goc bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({
+        domains = { ["a.test"] = { __raw = { mode = "shadow" } } },
+    }))
+    eq("`__raw` trong domain scope bi tu choi", ok, false)
+
+    -- Va chieu nguoc: khoa do `compile()` tu dat KHONG duoc bao loi oan. Thieu
+    -- phep kiem nay thi mot ban sua lam moi cau hinh hop le thanh khong hop le, va
+    -- `configure()` se giu mac dinh mai mai trong im lang.
+    ok = config.validate(config.compile({ mode = "shadow" }))
+    eq("khoa noi bo do compile() dat khong bao loi oan", ok, true)
 
     -- Va ban raw phai di theo `resolve()`: neu mat thi luot kiem raw bi bo qua
     -- trong im lang tren moi ban da resolve.

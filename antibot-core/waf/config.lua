@@ -157,15 +157,24 @@ local function registry_has_family(name)
     return registry.has_family(name) and true or false
 end
 
-local function reject_unknown(tbl, allowed, path, errors, what)
+-- `internal_ok` noi rang scope nay LA ban da compile, tuc noi `compile()` tu dat
+-- `RAW_KEY`. Chi o do khoa nay duoc bo qua.
+--
+-- Ban dau toi bo qua `RAW_KEY` o MOI cap, va do la sai theo dung huong minh dang
+-- tim cach chan: `domains.<host>.__raw` cung duoc bo qua, roi `merge(out, domain)`
+-- trong `resolve()` GHI DE `out.__raw` — nen luot kiem raw doc mot ban do ke viet
+-- cau hinh chon. `merge` khong loai khoa nay (no chi loai `domains` va
+-- `exceptions`).
+--
+-- Con o cap goc thi ghi de khong xay ra vi `compile()` dat `out[RAW_KEY]` SAU
+-- `merge`, nhung do la mot bao dam ve THU TU trong mot ham khac — khong nen dua
+-- vao no khi co the chan thang.
+local function reject_unknown(tbl, allowed, path, errors, what, internal_ok)
     for k in pairs(tbl) do
-        -- `RAW_KEY` bi bo qua o day chu KHONG duoc dua vao `SCOPE_KEYS`. Neu dua
-        -- vao thi no thanh mot khoa HOP LE cho nguoi viet cau hinh, va mot
-        -- `__raw = {...}` trong mot domain scope se duoc `merge` GHI DE len ban
-        -- raw that — tuc luot kiem raw doc mot ban do ke viet cau hinh chon. Bo
-        -- qua o day thi no khong bao loi oan cho khoa do `compile()` dat, ma van
-        -- khong mo duong cho ai go no vao.
-        if k ~= RAW_KEY and not allowed[k] then
+        if k == RAW_KEY and not internal_ok then
+            errors[#errors + 1] = path .. "." .. RAW_KEY ..
+                " la khoa NOI BO cua compile(), khong duoc dat tay"
+        elseif k ~= RAW_KEY and not allowed[k] then
             errors[#errors + 1] = string.format(
                 "%s.%s la khoa KHONG duoc biet (%s) — go sai chinh ta?",
                 path, tostring(k), what)
@@ -178,7 +187,9 @@ local function validate_scope(scope, path, errors, allow_domains)
         errors[#errors + 1] = path .. " must be a table"
         return
     end
-    reject_unknown(scope, SCOPE_KEYS, path, errors, "scope")
+    -- `allow_domains` dung nghia "day la scope GOC", va scope goc la ban da
+    -- compile — noi duy nhat `RAW_KEY` duoc phep ton tai.
+    reject_unknown(scope, SCOPE_KEYS, path, errors, "scope", allow_domains)
     if scope.mode ~= nil and not VALID_MODE[scope.mode] then
         errors[#errors + 1] = path .. ".mode is invalid"
     end
@@ -396,6 +407,14 @@ local function validate_raw(runtime, errors)
                 "%s la mang THUA (%d phan tu, chi so lon nhat %d) — `append()` se" ..
                 " bo cac phan tu sau lo trong", path, count, max_index)
         end
+    end
+
+    -- `__raw` do NGUOI VIET dat o cap goc: `compile()` se ghi de no nen khong gay
+    -- hai, nhung mot khoa im lang bi ghi de la mot khoa nguoi viet tuong da co
+    -- tac dung. Bao ra.
+    if runtime[RAW_KEY] ~= nil then
+        errors[#errors + 1] = "config." .. RAW_KEY ..
+            " la khoa NOI BO cua compile(), khong duoc dat tay"
     end
 
     check_exceptions(runtime.exceptions, "config.exceptions")
