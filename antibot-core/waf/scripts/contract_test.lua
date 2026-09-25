@@ -1546,29 +1546,10 @@ do
         end
     end
 
-    -- Giao thuc phai nang phien ban khi them truong: `unpack` gac bang so truong,
-    -- nen mot `pack` moi gap `unpack` cu tra `bad_payload` TRONG IM LANG.
-    local nfields = 0
-    local packblk = core_src:match('return table%.concat%({%s*"V%d"(.-)}, SEP%)')
-    if packblk then
-        for _ in packblk:gmatch("enc%(") do nfields = nfields + 1 end
-    end
-    local ver = core_src:match('return table%.concat%({%s*"(V%d)"')
-    local gate, gaten = core_src:match('f%[1%] ~= "(V%d)" or #f ~= (%d+)')
-    if not (ver and gate) then
-        bad("  SAI  khong doc duoc phien ban giao thuc trong body_core.lua\n")
-    elseif ver ~= gate then
-        bad("  SAI  `pack` ghi %s nhung `unpack` gac o %s — mot ban se luon\n" ..
-            "       tra `bad_payload`.\n", ver, gate)
-    elseif tonumber(gaten) ~= nfields + 1 then
-        bad("  SAI  `pack` ghi %d truong (cong ma phien ban = %d) nhung `unpack`\n" ..
-            "       gac o %s. Lech mot o lam moi truong sau do doc SAI GIA TRI.\n",
-            nfields, nfields + 1, gaten)
-    else
-        pass = pass + 1
-        io.write(string.format("  giao thuc %s: %d truong, unpack gac dung\n",
-                 ver, nfields + 1))
-    end
+    -- Phien ban giao thuc KHONG kiem o day: muc `[27c]` ben duoi da ghim ca ba
+    -- dieu (pack/unpack cung phien ban, cung so truong, va lech mot truong thi
+    -- than spill tra `bad_payload`). Hai phep kiem cung mot bat bien nghia la khi
+    -- bat bien doi thi phai sua HAI cho, va mot trong hai se bi bo sot.
 end
 
 -- ── `body_core.SCAN_STATUS` phai phu MOI ma `scan` cua BA file ──────────────
@@ -2304,28 +2285,70 @@ do
     else
         local code = core:gsub("%-%-[^\n]*", "")
 
-        -- 27a. Moi `return` trong `scan_one_boundary` phai co 3 gia tri.
-        -- Ham nay tra `rule, status, up_rule`; mot `return nil, status` con sot
-        -- lai la mot loi ra danh roi P1.
+        -- 27a. Moi `return` trong `scan_one_boundary` phai co 5 gia tri.
+        --
+        -- Ham nay tra `rule, status, up_rule, arg_field, arg_content`. Mot
+        -- `return nil, status` con sot lai la mot loi ra danh roi P1 HOAC danh roi
+        -- hai kenh V4 — va ca hai deu mat tin hieu TRONG IM LANG o dung nhom do.
+        --
+        -- CON SO 5 DOI THEO V4 (25-09): ban truoc ghim 3 va do la mot bai hoc rieng
+        -- — mot hop dong dem SO LUONG gia tri se phai sua moi lan ham doi chu ky,
+        -- va neu ai do sua no thanh so moi MA KHONG doc lai thi phep kiem van xanh
+        -- trong khi mot loi ra co the da danh roi dung truong vua them. Nen muc nay
+        -- kiem CA VI TRI: `up_rule` phai la gia tri thu BA o moi loi ra, khong chi
+        -- "co mat dau do".
+        --
+        -- `return` nhieu dong: `fn:gmatch("return ([^\n]+)")` chi lay dong dau, nen
+        -- mot loi ra ngat dong se bi dem thieu. Gop dong truoc khi dem.
         local fn = code:match("local function scan_one_boundary.-\nend")
         if not fn then
             bad("  SAI  [27a] khong tim thay `scan_one_boundary`\n")
         else
+            -- Gop moi `return ...` thanh mot dong: bo dau dong tiep noi khi dong
+            -- truoc ket thuc bang dau phay.
+            local joined = fn:gsub(",%s*\n%s*", ", ")
             local bad_n = 0
-            for ret in fn:gmatch("return ([^\n]+)") do
-                -- dem dau phay o muc ngoac 0
+            for ret in joined:gmatch("return ([^\n]+)") do
                 local depth, commas = 0, 0
+                local parts = {}
+                local cur = ""
                 for ch in ret:gmatch(".") do
-                    if ch == "(" then depth = depth + 1
-                    elseif ch == ")" then depth = depth - 1
-                    elseif ch == "," and depth == 0 then commas = commas + 1 end
+                    if ch == "(" then depth = depth + 1; cur = cur .. ch
+                    elseif ch == ")" then depth = depth - 1; cur = cur .. ch
+                    elseif ch == "," and depth == 0 then
+                        commas = commas + 1
+                        parts[#parts + 1] = cur
+                        cur = ""
+                    else cur = cur .. ch end
                 end
-                if commas ~= 2 then
+                parts[#parts + 1] = cur
+                if commas ~= 4 then
                     bad_n = bad_n + 1
                     bad("  SAI  [27a] `scan_one_boundary` co `return %s`\n" ..
-                        "       => %d gia tri, phai la 3 (rule, status, up_rule).\n" ..
-                        "       Mot loi ra danh roi up_rule lam P1 mat tin hieu IM LANG.\n",
+                        "       => %d gia tri, phai la 5 (rule, status, up_rule,\n" ..
+                        "       arg_field, arg_content). Mot loi ra danh roi mot\n" ..
+                        "       trong ba truong sau lam tin hieu mat IM LANG.\n",
                         ret, commas + 1)
+                else
+                    -- Ghim VI TRI, khong chi so luong: mot loi ra tra du 5 gia tri
+                    -- nhung dat `up_rule` sai o se lam `filename_rule` doc mot
+                    -- truong khac — va vi ca hai deu la chuoi hoac nil, loi se
+                    -- trong nhu mot loi du lieu chu khong nhu mot loi thu tu.
+                    --
+                    -- `nil` TUONG MINH la hop le o vi tri nay: mot loi ra som (vi
+                    -- du "khong tim thay dau phan cach nao") chac chan chua co
+                    -- `up_rule`, va viet `nil` ra la dung. Chi mot TEN BIEN KHAC
+                    -- moi la loi. Ban dau toi doi chuoi nay phai chua `up_rule`, va
+                    -- phep kiem do bao HONG tren mot loi ra hoan toan dung — mot
+                    -- hop dong chat hon thuc te no can kiem.
+                    local third = (parts[3] or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                    third = third:gsub("%s*end%s*$", "")
+                    if third ~= "nil" and not third:find("up_rule", 1, true) then
+                        bad_n = bad_n + 1
+                        bad("  SAI  [27a] gia tri thu BA cua `return` la `%s`, phai\n" ..
+                            "       la `up_rule` hoac `nil` tuong minh.\n" ..
+                            "       `filename_rule` doc theo VI TRI.\n", third)
+                    end
                 end
             end
             if bad_n == 0 then pass = pass + 1 end

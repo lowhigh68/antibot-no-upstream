@@ -572,7 +572,11 @@ local function scan_one_boundary(body, boundary, initial_status)
     -- da phai sua bang `worse_up` o ba tang.
     local arg_field, arg_content = nil, nil
     local kind, at, after = next_delimiter(body, 1, delim)
-    if not kind then return nil, worse(status, "bd"), nil end
+    -- NAM gia tri o MOI loi ra, ke ca loi ra nay noi ca hai kenh chac chan la
+    -- `nil`. Viet du ra la mot rang buoc de doc va de hop dong [27a] ghim duoc:
+    -- neu mot loi ra duoc phep ngan hon, thi khi ai do them mot truong thu sau se
+    -- khong con cach nao phan biet "co y bo qua" voi "quen".
+    if not kind then return nil, worse(status, "bd"), nil, nil, nil end
 
     local nparts, saw_open = 0, false
     while kind do
@@ -650,9 +654,10 @@ end
 
 -- Tra ve `fn_rule, status, up_rule`.
 local function filename_rule(body, family, ct)
-    if family ~= "multipart" then return nil, nil, nil end
+    -- NAM gia tri o moi loi ra, cung ly le nhu `scan_one_boundary`.
+    if family ~= "multipart" then return nil, nil, nil, nil, nil end
     local boundaries, status = boundaries_of(ct)
-    if #boundaries == 0 then return nil, status, nil end
+    if #boundaries == 0 then return nil, status, nil, nil, nil end
 
     local combined = status or false
     local up_rule = nil
