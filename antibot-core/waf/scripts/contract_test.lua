@@ -1455,7 +1455,24 @@ do
             n_checked = n_checked + 1
             -- `%f[%W]` neo bien tu: khong co no thi `ctx.waf_arg =` khop nham
             -- vao `ctx.waf_arg_x =`, tuc mot lan BAO XANH SAI.
-            if not setters:find("ctx%." .. name .. "%f[%W]%s*=") then
+            --
+            -- HAI DANG GAN, va ca hai deu hop le:
+            --   truc tiep   `ctx.waf_body_php = 1`
+            --   gian tiep   `max_field(ctx, "waf_wp_path", n)` -> `ctx[field] = v`
+            --
+            -- Dang gian tiep xuat hien tu ban khung V2: `waf_wp_path` duoc nhieu
+            -- nhanh dat va phai giu GIA TRI LON NHAT, nen no di qua mot ham chung
+            -- thay vi gan thang. Phep kiem cu chi tim dang truc tiep va bao do
+            -- OAN — tin hieu CO duoc gan, chi khong gan thang.
+            --
+            -- Nhan dang gian tiep bang `"<ten>"` trong chuoi: do la doi so cua
+            -- `max_field`, va muc 4d duoi day ghim rang `max_field` chi nhan ten
+            -- field thuoc mot danh sach dong. Thieu muc 4d thi cho nay se nhan ca
+            -- mot ten viet sai chinh ta nam trong bat ky chuoi nao.
+            local direct   = setters:find("ctx%." .. name .. "%f[%W]%s*=")
+            local indirect = setters:find('"' .. name .. '"', 1, true) and
+                             setters:find("ctx%[field%]%s*=")
+            if not direct and not indirect then
                 bad("  SAI  `%s` co trong so %s nhung KHONG CHO NAO gan\n" ..
                     "       `ctx.%s = ...` trong waf/. Tin hieu se vinh vien\n" ..
                     "       bang 0 va hop dong hai chieu van bao xanh.\n",
@@ -1467,6 +1484,40 @@ do
         bad("  SAI  khong tin hieu waf_* nao co trong so > 0 — muc nay khong kiem gi\n")
     else
         io.write(string.format("  %d tin hieu co trong so, deu co noi gan\n", n_checked))
+    end
+end
+
+-- ── 4d. `max_field` chi duoc dat ten field CO TRONG compute.lua ──────
+--
+-- Muc tren nhan dang gan gian tiep `max_field(ctx, "<ten>", v)`. Dieu do mo mot
+-- duong hong moi: mot ten viet sai chinh ta (`waf_wp_paths`, `waf_wp_path2`) van
+-- lam muc tren bao XANH trong khi `compute.lua` doc mot khoa khong ai ghi — dung
+-- lop loi ma ca hai muc sinh ra de chan.
+--
+-- Nen ghim nguoc lai: MOI ten chuoi truyen cho `max_field` phai la mot tin hieu
+-- co that trong `DEFAULT_WEIGHTS`. Day la phep kiem NGUON nen no khong chung
+-- minh duoc chieu con lai, nhung no bat duoc dung cai loi go sai.
+io.write("\nhop dong: max_field chi dat ten field co trong compute.lua\n")
+do
+    local waf_init = slurp(SRC .. "waf/init.lua") or ""
+    local known = {}
+    for name in compute:gmatch("\n%s*(waf_[%w_]+)%s*=%s*[%d%.]+") do
+        known[name] = true
+    end
+    local n = 0
+    for name in waf_init:gmatch('max_field%([^,]+,%s*"([%w_]+)"') do
+        n = n + 1
+        if not known[name] then
+            bad("  SAI  `max_field(ctx, \"%s\", ...)` — `%s` KHONG co trong\n" ..
+                "       `DEFAULT_WEIGHTS` cua compute.lua. `compute.lua` se doc\n" ..
+                "       mot khoa khong ai ghi, va tin hieu vinh vien bang 0.\n",
+                name, name)
+        else pass = pass + 1 end
+    end
+    if n == 0 then
+        io.write("  (khong co loi goi max_field nao — muc nay khong kiem gi)\n")
+    else
+        io.write(string.format("  %d loi goi max_field, ten deu hop le\n", n))
     end
 end
 
