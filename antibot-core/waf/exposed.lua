@@ -27,6 +27,14 @@ local _M = {}
 local RX_DOTFILE = "(?:^|/)\\.[^/.]"
 local WELL_KNOWN = "/.well-known/"
 
+-- Đuôi thực thi PHP. BẢN SAO CÓ Ý của `RX_PHP_EXEC` trong `wordpress/paths.lua`:
+-- `exposed.lua` cố tình không phụ thuộc module WordPress (nó chạy TRƯỚC, không có
+-- cổng host, và phải dùng được trên máy không có CMS nào — 183-139 là code tay).
+-- Hai bản phải giống nhau; sửa một thì sửa cả hai.
+--
+-- `(?=[/;.\]|$)` bắt cả PATH_INFO (`/x.php/y`) và `;` của một số server.
+local RX_PHP_EXEC = [[\.(?:php[0-9]?|phtml|phar|pht|phps)(?=[/;.\\]|$)]]
+
 -- ── File dump / backup ───────────────────────────────────────────────
 -- Chỉ những đuôi KHÔNG BAO GIỜ là nội dung web hợp lệ. Một `.sql` rò ra là mất
 -- trọn database — nặng hơn webshell, vì webshell còn phải chạy được mới gây hại.
@@ -46,6 +54,8 @@ local RULES = {
         why = "Dotfile (.env / .git/ / .htpasswd) khong bao gio duoc phuc vu" },
     dump_exposed    = { action = "block", score = 0,
         why = "Dump/backup (.sql .wpress .bak) — ro ra la mat tron database" },
+    wellknown_exec  = { action = "block", score = 0,
+        why = "PHP trong /.well-known/ — RFC 8615 chi chua metadata tinh" },
 }
 _M.RULES = RULES
 
@@ -59,7 +69,49 @@ function _M.check(uri)
 
     if ngx.re.find(low, RX_DUMP, "jo") then return "dump_exposed" end
 
-    if low:sub(1, #WELL_KNOWN) == WELL_KNOWN then return nil end
+    -- `/.well-known/` được miễn `dotfile_exposed` — nhưng CHỈ cho nội dung tĩnh.
+    --
+    -- Ngoại lệ ACME là bắt buộc (mất nó = không gia hạn được chứng chỉ, hỏng
+    -- lặng lẽ tới đúng ngày hết hạn), nhưng nó đã QUÁ RỘNG: miễn cả cây nghĩa là
+    -- miễn luôn mọi `.php` đặt trong đó.
+    --
+    -- Đo 25-09 trên SÁU máy, và cấu trúc giống nhau ở cả sáu:
+    --   TRÊN ĐĨA, toàn bộ nội dung `/.well-known/` thật của cả fleet là 23 file:
+    --     19 `.txt` (token ACME + security.txt), 2 không đuôi, 1 `.json`, 1 `.html`
+    --     `.php`: **0 file** trên 6/6 máy.
+    --   TRONG LOG, hàng nghìn request `.php` mỗi máy:
+    --     `gecko-litespeed.php` 2636/2026/1996/113/84/50
+    --     `about.php` 4985/4218/4970/488 · `admin.php` 1190/1182/1081/126
+    --     `index.php` 1924/1741/1845/206 · `wp-conflg.php`, `caches.php`,
+    --     `classwithtostring.php`, `radio.php`, `content.php`, `file.php`
+    --   Và BÊN TRONG `acme-challenge/`, nơi đáng lẽ chỉ có token:
+    --     `/.well-known/acme-challenge/index.php` 1911/317/321/209
+    --     `/.well-known/acme-challenge/xmrlpc.php?p=` 21
+    --     `/adminfuns.php/.well-known/acme-challenge/file.php` trên CẢ SÁU máy,
+    --       cùng một hình dạng — một bộ công cụ ghép ba thủ đoạn: tên webshell,
+    --       PATH_INFO, và đường miễn trừ này.
+    --
+    -- ACME thật KHÔNG BAO GIỜ yêu cầu `.php`: token Let's Encrypt là chuỗi
+    -- base64url không đuôi. Mọi `.php` trong `acme-challenge/` là dò, 100%.
+    --
+    -- Bất biến (RFC 8615): `/.well-known/` chứa METADATA TĨNH — `.json`, `.txt`,
+    -- token không đuôi. Không có URI `/.well-known/` chuẩn nào thực thi PHP. Đây
+    -- là bất biến về giao thức, KHÔNG phải danh sách tên file cần bảo trì.
+    --
+    -- KHÔNG thu hẹp ngoại lệ thành `/.well-known/acme-challenge/`: đo cho thấy
+    -- `security.txt`, `assetlinks.json`, `apple-app-site-association`,
+    -- `traffic-advice`, `passkey-endpoints`, `openid-configuration`, `gpc.json`,
+    -- `tdmrep.json`, `change-password`, `jwks.json` đều có lưu lượng THẬT trên
+    -- fleet. Chặn theo đuôi thực thi thì không cần biết tên nào hợp lệ — đó là lý
+    -- do nó không quay về bài toán liệt kê mà kế hoạch đã bác.
+    --
+    -- `/.well-known/resource-that-should-not-exist-whose-status-code-should-not-be-200`
+    -- (82 + 16 lần) là phép tự kiểm soft-404 của Chrome. Không đuôi `.php` nên
+    -- luật này không chạm tới nó.
+    if low:sub(1, #WELL_KNOWN) == WELL_KNOWN then
+        if ngx.re.find(low, RX_PHP_EXEC, "jo") then return "wellknown_exec" end
+        return nil
+    end
     if ngx.re.find(low, RX_DOTFILE, "jo") then return "dotfile_exposed" end
 
     return nil

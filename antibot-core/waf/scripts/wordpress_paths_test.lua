@@ -210,7 +210,36 @@ local EXPOSED_CASES = {
 {"/.well-known/acme-challenge/aBc123", nil, nil,
  "NGOAI LE BAT BUOC: chan nham day la MOI domain tren may khong gia han duoc " ..
  "chung chi, va no hong lang le toi tan ngay het han"},
-{"/.well-known/security.txt", nil, nil, "moi thu duoi .well-known deu di qua"},
+{"/.well-known/security.txt", nil, nil,
+ "NOI DUNG TINH duoi .well-known di qua — do 25-09 tren 6 may: 552-3430 " ..
+ "request/may, va tren dia toan fleet chi co 19 .txt + 2 khong duoi + 1 .json " ..
+ "+ 1 .html. Khong mot .php nao."},
+{"/.well-known/assetlinks.json",  nil, nil, "1687 request/168-123, hop le"},
+{"/.well-known/traffic-advice",   nil, nil, "19036 request/28-246, hop le"},
+{"/.well-known/passkey-endpoints",nil, nil, "7565 request/168-123, hop le"},
+{"/.well-known/apple-app-site-association", nil, nil, "759 request, hop le"},
+{"/.well-known/resource-that-should-not-exist-whose-status-code-should-not-be-200",
+ nil, nil, "phep tu kiem soft-404 cua Chrome — khong duoi .php nen di qua"},
+
+-- NGOAI LE .well-known DA BI THU HEP: tinh thi qua, THUC THI thi chan.
+-- ACME that KHONG BAO GIO yeu cau .php (token Let's Encrypt la base64url khong
+-- duoi), nen moi .php trong acme-challenge la do, 100%.
+{"/.well-known/acme-challenge/index.php", nil, "wellknown_exec",
+ "1911 lan tren 171-96, 317/321/209 tren cac may khac"},
+{"/.well-known/acme-challenge/file.php",  nil, "wellknown_exec", ""},
+{"/.well-known/gecko-litespeed.php",      nil, "wellknown_exec",
+ "2636/2026/1996/113/84/50 — cung hinh dang tren CA SAU may"},
+{"/.well-known/about.php",                nil, "wellknown_exec", "4985 lan/168-101"},
+{"/.well-known/wp-conflg.php",            nil, "wellknown_exec",
+ "wp-config.php voi i->l; scanner do ten gan-giong-core"},
+{"/.well-known/x.phtml",                  nil, "wellknown_exec", "duoi thuc thi khac"},
+{"/.well-known/x.php5",                   nil, "wellknown_exec", ""},
+{"/.well-known/x.php/y",                  nil, "wellknown_exec", "PATH_INFO"},
+{"/.well-known/acme-challenge/db.sql",    nil, "dump_exposed",
+ "dump_exposed chay TRUOC nen no thang — nhan dung hon cho nguoi doc log"},
+{"/adminfuns.php/.well-known/acme-challenge/file.php", nil, "dotfile_exposed",
+ "KHONG duoc mien: ngoai le chi khop khi /.well-known/ o DAU uri. Ghep ba thu " ..
+ "doan (ten webshell + PATH_INFO + duong mien tru), thay tren CA SAU may"},
 {"/style.css",  nil, nil, "dau cham khong dung sau dau /"},
 {"/backup.sql", nil, "dump_exposed", "mot .sql ro ra la mat tron database"},
 {"/db.sql.gz",  nil, "dump_exposed", ""},

@@ -34,7 +34,7 @@ Tín hiệu WAF phá được `verified`, **không phá được `whitelisted`**
 | File | Vai trò | Phase |
 |---|---|---|
 | `init.lua` | Điều phối. `run_pre` (access, chỉ đọc) → `run_log` (log, sở hữu `io.open` duy nhất và phép ghi WP-host duy nhất) | access + log |
-| `exposed.lua` | 2 luật, cả hai `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed` | access |
+| `exposed.lua` | 3 luật, cả ba `block`, **không riêng WordPress**: `dotfile_exposed`, `dump_exposed`, `wellknown_exec` | access |
 | `wordpress/paths.lua` | 8 luật riêng WordPress: 4 `block`, 4 `signal`. Giữ luôn cổng `is_wp_host` | access + log |
 | `args.lua` | 3 luật `signal` soi **query string**: `arg_traversal`, `arg_php_wrapper`, `arg_null_byte` | access |
 | `upload.lua` | **P1** — 3 luật `signal` soi **TÊN FILE** upload: `upload_exec_ext`, `upload_exec_double`, `upload_config`. Lua thuần (chạy trong worker thread) | access |
@@ -554,7 +554,7 @@ của máy này nó chưa từng chạm file có thật.
 
 ## Quy tắc
 
-- **Mọi `ngx.exit` phải đặt `ctx.action` + `ctx.action_reason` trước.** `log_by_lua` chạy **sau** `ngx.exit`, nếu không `antibot.log` ra `reason=-`. Sáu `action_reason` của tầng này: `wp_upload_exec`, `wp_content_exec`, `wp_includes_exec`, `wp_admin_includes_exec`, `dotfile_exposed`, `dump_exposed`.
+- **Mọi `ngx.exit` phải đặt `ctx.action` + `ctx.action_reason` trước.** `log_by_lua` chạy **sau** `ngx.exit`, nếu không `antibot.log` ra `reason=-`. Bảy `action_reason` của tầng này: `wp_upload_exec`, `wp_content_exec`, `wp_includes_exec`, `wp_admin_includes_exec`, `dotfile_exposed`, `dump_exposed`, `wellknown_exec`.
 - **`ngx.ERR` chứ không `ngx.WARN`.** `da_to_openresty.sh` sinh `error_log <path>;` **không kèm mức** ⇒ nginx lấy mặc định `error` ⇒ WARN bị lọc sạch trong mọi server block per-domain. Ghi ở WARN nghĩa là hỏng trong im lặng.
 - **`run_pre` chỉ đọc.** Mọi phép ghi (đĩa, Redis WP-host) thuộc `run_log`.
 - **Không miễn loopback.** Miễn trừ cũ không mua được gì: lưu lượng 127.0.0.1 thật sự chỉ có wp-cron gọi `/wp-cron.php` (đã trong `WP_ROOT_OK`) và health check gọi `/`. Đổi lại nó mở đúng một đường: SSRF, hoặc PHP của tài khoản khác trên hosting chia sẻ curl về localhost.
