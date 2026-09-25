@@ -399,15 +399,36 @@ local function classify_name(name)
     return nil
 end
 
+-- `worse_up` GIUA CAC VIEW, khong phai "view nao khop truoc thi thang".
+--
+-- `canonical_views(raw)` sinh nhieu cach doc cung mot ten — cat o NUL, cat o
+-- `;`, bo khoang trang/dau cham cuoi, v.v. Moi view la mot gia thuyet ve cach
+-- filesystem SE hieu ten do, va ta khong biet truoc gia thuyet nao dung.
+--
+-- Tra view dau tien khop lam mat nhan nang hon o view sau:
+--     "web.config\0/.htaccess"
+--       view 1 -> "web.config"  -> upload_foreign_config  (UP_RANK 1)
+--       view 2 -> ".htaccess"   -> upload_apache_config   (UP_RANK 7)
+-- Ban cu tra `upload_foreign_config` va nhan `apache_config` bien mat. Do nguoc
+-- dung huong an toan: `web.config` tren Linux gan nhu vo hai (dau hieu scanner),
+-- con `.htaccess` doi handler cua MOI file trong thu muc.
+--
+-- `worse_up` da ton tai va da duoc dung dung o hai cho khac (giua cac part
+-- multipart, va giua cac bien the filename). Thieu no o DAY la mot cho sot, khong
+-- phai mot quyet dinh.
+--
+-- HIEN CHUA DOI PHAN QUYET vi `waf_upload` = 0 — nhung telemetry la thu dung de
+-- quyet dinh co nang trong so hay khong, nen mot nhan bi ha cap lam chinh phep do
+-- do lech. Sua truoc khi do, khong sua sau.
 function _M.check_filename(raw)
     if type(raw) ~= "string" or raw == "" then return nil end
 
     local views = canonical_views(raw)
+    local worst = nil
     for i = 1, #views do
-        local rule = classify_name(views[i])
-        if rule then return rule end
+        worst = _M.worse_up(worst, classify_name(views[i]))
     end
-    return nil
+    return worst
 end
 
 _M.PHP_EXT        = PHP_EXT

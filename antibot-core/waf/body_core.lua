@@ -376,6 +376,32 @@ local function filename_variants(p)
             add(percent_decode_once(p.semantic))
             add((decoded_raw:gsub("\\(.)", "%1")))
         end
+        -- TACH CAU TRUC RFC 5987 — mot view THEM, khong thay view tren.
+        --
+        -- RFC 5987 dinh nghia gia tri la `charset'language'value`, nen
+        --     filename*=UTF-8''%2Ehtaccess
+        -- ma chi percent-decode ca chuoi thi ra `UTF-8''.htaccess` — KHONG khop
+        -- `.htaccess` trong `APACHE_CONFIG`. Cac ten co DUOI thi van bat duoc nho
+        -- `extensions()` (`%2Ephp` -> `.php` van co duoi `php`), nhung ten cau
+        -- hinh thi so khop CHINH XAC ca ten, nen tien to lam no truot:
+        --     filename*=UTF-8''%2Ehtaccess   -> truot APACHE_CONFIG
+        --     filename*=UTF-8''%2Euser%2Eini -> truot PHP_CONFIG
+        --
+        -- THEM view chu khong SUA view cu: mot client that co the gui gia tri
+        -- khong dung dinh dang RFC (thieu hai dau `'`), va view `decoded_raw` o
+        -- tren la cai bat duoc truong hop do. Bo no di la doi mot lo hong nay lay
+        -- mot lo hong khac.
+        --
+        -- `percent_decode_once` DUNG MOT LAN tren phan value, y het cac view khac
+        -- — xem chu thich ve `x%2500.jpg` ngay tren ham nay. Khong giai hai lan.
+        --
+        -- Chi ap cho `filename*`, KHONG ap cho `filename=` thuong: mot ten file
+        -- hop le duoc phep chua dau `'` (`john's-cv.pdf`), nen cat o dau `'` thu
+        -- hai cua `filename=` se lam bien mat phan dau cua ten that.
+        local lang_stripped = p.raw:match("^[^']*'[^']*'(.*)$")
+        if lang_stripped then
+            add(percent_decode_once(lang_stripped))
+        end
     else
         add(p.raw)
         if p.quoted then add(p.semantic) end
