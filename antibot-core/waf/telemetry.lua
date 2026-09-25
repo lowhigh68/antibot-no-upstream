@@ -82,6 +82,19 @@ function _M.record(ctx, state, decision, rt)
     incr(dict, prefix .. "requests", 1, stats)
     incr(dict, prefix .. "action:" .. safe_component(decision.action), 1, stats)
     incr(dict, prefix .. "would:" .. safe_component(decision.would_action), 1, stats)
+    -- HAI NHOM COUNTER cho hai truc, khong tron:
+    --
+    --   `decision:<action>:<reason>`  quyet dinh THAT. Tu ban 25-09 `reason` chi
+    --                                 ton tai khi `action ~= "allow"`, nen nhom
+    --                                 nay dem dung cac request BI CHAN. Truoc do
+    --                                 `reason` roi ve candidate cua che do bong,
+    --                                 nen `decision:allow:<rule>` bi ghi cho
+    --                                 request KHONG bi chan — mot nhom counter noi
+    --                                 ve mot thu khac voi ten cua no.
+    --   `shadow:<would_reason>`       quyet dinh GIA DINH: se chan neu moi luat
+    --                                 duoc enforce. `decision.shadow` la co
+    --                                 `action ~= would_action`, nen nhom nay chi
+    --                                 dem dung phan CHENH giua hai truc.
     if decision.reason then
         incr(dict, prefix .. "decision:" .. safe_component(decision.action) .. ":" ..
                    safe_component(decision.reason), 1, stats)

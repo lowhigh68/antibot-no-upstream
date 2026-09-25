@@ -228,14 +228,41 @@ function _M.decide(state, with_correlations)
         actual_action = enforce_candidate.action
     end
 
+    -- ── HAI TRUC DOC LAP, khong tron ────────────────────────────────────────
+    --
+    -- Ban truoc tron chung: `reason` uu tien `enforce_candidate` roi ROI VE
+    -- `candidate`, con `rule_mode` thi LUON lay tu `candidate`. Nen hai truong
+    -- hop sai cung luc:
+    --
+    --   `action = "allow"` van mang mot `reason` — tu candidate cua che do bong.
+    --   Doc log se thay mot request khong bi chan nhung co ly do chan.
+    --
+    --   `reason = dotfile_exposed` (tu enforce candidate) di cung
+    --   `rule_mode = shadow` (tu mot candidate KHAC, manh hon nhung o che do
+    --   bong). Hai gia tri mo ta HAI RULE khac nhau tren cung mot dong.
+    --
+    -- Hom nay chua sai vi moi luat deu `enforce` nen hai candidate trung nhau.
+    -- No sai dung luc co mot luat shadow manh hon — tuc dung luc bat dau
+    -- promotion, dung luc can doc log chinh xac nhat.
+    --
+    -- QUY UOC: `reason`/`rule_mode` chi mo ta candidate tao ra PHAN QUYET THAT.
+    -- Khi `action = "allow"` thi ca hai la `nil`, va bang chung cua che do bong
+    -- nam o nhom `would_*`. Nhu vay khong con cach nao doc lan hai truc: mot
+    -- `reason` ton tai nghia la mot request THAT SU bi chan.
+    local verdict = (actual_action ~= "allow") and enforce_candidate or nil
+
     local decision = {
+        -- truc THAT: chuyen gi da xay ra
         action       = actual_action,
-        would_action = would_action,
-        reason       = (actual_action ~= "allow" and enforce_candidate and
-                        enforce_candidate.rule) or (candidate and candidate.rule) or nil,
-        would_reason = candidate and candidate.rule or nil,
+        reason       = verdict and verdict.rule or nil,
+        rule_mode    = verdict and verdict.mode or nil,
+
+        -- truc GIA DINH: chuyen gi se xay ra neu moi luat duoc enforce
+        would_action     = would_action,
+        would_reason     = candidate and candidate.rule or nil,
+        would_rule_mode  = candidate and candidate.mode or nil,
+
         mode         = global_mode,
-        rule_mode    = candidate and candidate.mode or nil,
         score        = state.score,
         shadow       = actual_action ~= would_action,
     }

@@ -516,5 +516,62 @@ do
     end
 end
 
+-- ── Hai truc cua `decide()` khong duoc tron ─────────────────────────────────
+--
+-- `reason`/`rule_mode` mo ta candidate tao ra PHAN QUYET THAT.
+-- `would_reason`/`would_rule_mode` mo ta candidate manh nhat neu moi luat enforce.
+--
+-- Ban truoc tron chung: `reason` roi ve `candidate` khi khong co enforce
+-- candidate, va `rule_mode` LUON lay tu `candidate`. Hai he qua:
+--   · `action = "allow"` van mang mot `reason` — doc log thay request khong bi
+--     chan nhung co ly do chan.
+--   · `reason` tu enforce candidate di cung `rule_mode` tu mot candidate KHAC —
+--     hai gia tri mo ta hai rule khac nhau tren cung mot dong.
+do
+    -- (1) Luat shadow ban mot minh: se chan, nhung KHONG chan.
+    local runtime = { rules = { dotfile_exposed = { mode = "shadow" } } }
+    local _, st = state(runtime)
+    policy.emit(st, "dotfile_exposed", { target = "URI" })
+    local d = policy.decide(st)
+    eq("shadow mot minh -> action allow", d.action, "allow")
+    eq("shadow mot minh -> would_action block", d.would_action, "block")
+    eq("action=allow thi reason phai NIL", d.reason, nil)
+    eq("action=allow thi rule_mode phai NIL", d.rule_mode, nil)
+    eq("bang chung bong nam o would_reason", d.would_reason, "dotfile_exposed")
+    eq("would_rule_mode noi ro no dang shadow", d.would_rule_mode, "shadow")
+    eq("shadow=true khi hai truc lech", d.shadow, true)
+
+    -- (2) Luat enforce ban mot minh: hai truc TRUNG nhau, va do la truong hop
+    --     thuong gap nhat hom nay (moi luat deu enforce).
+    local _, st2 = state()
+    policy.emit(st2, "dotfile_exposed", { target = "URI" })
+    local d2 = policy.decide(st2)
+    eq("enforce -> action block", d2.action, "block")
+    eq("enforce -> reason co gia tri", d2.reason, "dotfile_exposed")
+    eq("enforce -> rule_mode la enforce", d2.rule_mode, "enforce")
+    eq("enforce -> would trung voi that", d2.would_reason, "dotfile_exposed")
+    eq("enforce -> shadow=false", d2.shadow, false)
+
+    -- (3) CA HAI cung ban: mot luat shadow diem CAO HON mot luat enforce.
+    --     Day la ca ma ban truoc tron hai truc — `reason` lay tu enforce
+    --     candidate (`wellknown_exec`) nhung `rule_mode` lay tu candidate manh
+    --     nhat (`dotfile_exposed`, shadow). Hai gia tri mo ta HAI RULE.
+    local runtime3 = {
+        rules = {
+            dotfile_exposed = { mode = "shadow", score = 500 },
+        },
+    }
+    local _, st3 = state(runtime3)
+    policy.emit(st3, "dotfile_exposed", { target = "URI" })
+    policy.emit(st3, "wellknown_exec", { target = "URI" })
+    local d3 = policy.decide(st3)
+    eq("ca hai ban -> chan bang luat ENFORCE", d3.action, "block")
+    eq("reason la luat da chan THAT", d3.reason, "wellknown_exec")
+    eq("rule_mode thuoc CUNG luat do", d3.rule_mode, "enforce")
+    -- `would_*` mo ta candidate manh nhat, tuc luat shadow diem cao hon.
+    eq("would_reason la luat shadow manh hon", d3.would_reason, "dotfile_exposed")
+    eq("would_rule_mode thuoc CUNG luat do", d3.would_rule_mode, "shadow")
+end
+
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
