@@ -357,12 +357,45 @@ function _M.run(ctx)
     -- CHAC bao nhieu — ba cau khac nhau.
     local fim = ctx.waf_fim_new and string.format("%.2f", ctx.waf_fim_new) or "0"
 
+    -- ── Phan quyet cua policy V2 ────────────────────────────────────────────
+    --
+    -- VI SAO BAT BUOC. Truoc ban nay, dong log chi mang `action=` — tuc hanh
+    -- dong ma LUAT muon, mot hang so theo rule_id. Ba truong hop khac han nhau
+    -- do ra mot dong y het nhau:
+    --
+    --   · luat hard-block bi mot exception chan  -> van ghi sev=critical
+    --   · correlation dang o che do bong          -> van ghi action=block
+    --   · luat that su da chan request            -> cung the
+    --
+    -- Nghia la KHONG the do FP tu `waf.log`: khong phan biet duoc "se chan"
+    -- voi "da chan", va khong truy duoc exception nao da suppress luat nao. Che
+    -- do bong ma khong doc duoc so lieu bong thi khong con la che do bong.
+    --
+    -- Bon cot duoi day khong phai dac diem moi, chung la thu policy DA TINH va
+    -- da nam san tren tung `hit` (`policy.lua:140-155`) — logger chi khong in
+    -- ra. `wscore`/`wact`/`pver` thi o cap request nen giong nhau moi dong.
+    local dec   = ctx.waf_decision or {}
+    local wact  = dec.action or "-"          -- policy DA lam gi
+    local wwould = dec.would_action or "-"   -- policy SE lam gi neu enforce
+    local wscore = tonumber(dec.score)
+    local wscore_s = wscore and string.format("%.2f", wscore) or "-"
+    local pver  = (ctx.waf_v2 or {}).version or "-"
+
     for i = 1, #hits do
         local h = hits[i]
+        -- Mode cua CHINH luat nay: `enforce` = duoc phep chan, `shadow`/
+        -- `observe` = chi dem. Doc kem `wact`: `mode=shadow wact=allow` la mot
+        -- luat dang hoc, `mode=enforce wact=block` la mot luat dang chan.
+        local hmode = h.mode or "-"
+        -- Exception da chan luat nay chua, va exception NAO. `exc=-` = khong
+        -- co. Thieu cot nay thi mot exception go sai (xem `config.lua`
+        -- SCOPE_KEYS) khong de lai dau vet nao trong log.
+        local hexc  = h.excepted and (h.exception_id or "1") or "-"
         fh:write(string.format(
             "[%s] [waf] ts=%d rid=%s id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
-            .. " richness=%s wpauth=%d vfy=%d status=%d exists=%s final=%s fim=%s\n",
+            .. " richness=%s wpauth=%d vfy=%d status=%d exists=%s final=%s fim=%s"
+            .. " mode=%s exc=%s wact=%s would=%s wscore=%s pver=%s\n",
             stamp,
             now,
             req_id(),
@@ -371,7 +404,12 @@ function _M.run(ctx)
             scrub(ctx.ip or ngx.var.remote_addr, 45),
             h.rule or "-",
             h.target or "-",
-            h.action == "block" and "critical" or "notice",
+            -- `sev=` doc CA `excepted`. Mot luat hard-block bi exception chan
+            -- thi khong con la su kien critical — no la mot su kien bi bo qua co
+            -- chu y. Truoc ban nay cot nay chi doc `h.action` nen hai thu do ra
+            -- giong het nhau, va bat ky canh bao nao gac tren `sev=critical` se
+            -- keu vi mot luat CO Y khong chan.
+            (h.action == "block" and not h.excepted) and "critical" or "notice",
             0,                       -- paranoia level: 0 = luật gốc, chưa phải CRS
             scrub(h.matched, 160),
             h.score or 0,
@@ -399,7 +437,13 @@ function _M.run(ctx)
             status,
             exists_for(h.target),
             final,
-            fim))
+            fim,
+            hmode,
+            scrub(hexc, 40),
+            wact,
+            wwould,
+            wscore_s,
+            scrub(pver, 16)))
     end
 
     fh:close()

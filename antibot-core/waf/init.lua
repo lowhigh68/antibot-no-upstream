@@ -126,7 +126,20 @@ local function record_arg(state, rule_id, target, matched, factor)
     -- affect the old scoring path and the policy would only look configurable.
     if not hit or hit.excepted or hit.action == "observe" then return end
     local field = target == "BODY" and "waf_body_arg" or "waf_arg"
-    max_field(state.ctx, field, rule.score)
+    -- `factor` phai di qua ca cau nay. Cau truyen `rule.score` o thang detector
+    -- `[0,1]` (khong phai thang registry) de `compute.lua` nhan y nguyen, nhung
+    -- neu bo `factor` thi mot request da duoc policy ha xuong 5% van nap DU
+    -- diem vao duong cham diem cu. Hien tai `waf_arg`/`waf_body_arg` deu o
+    -- trong so 0 nen khong ai thay; dung luc nao bat trong so len thi factor
+    -- bien mat trong im lang — dung ho loi "hai duong, mot duong khong duoc
+    -- cap nhat" da mat bon thang o `wp_paths.mark()`.
+    local bridged = rule.score
+    if factor ~= nil then
+        local n = tonumber(factor) or 1
+        if n < 0 then n = 0 elseif n > 1 then n = 1 end
+        bridged = bridged * n
+    end
+    max_field(state.ctx, field, bridged)
 end
 
 local function find_uri_rule(uri, host, resolved)
@@ -193,28 +206,47 @@ end
 --
 -- BA TRUC, va moi truc la mot bat bien chu khong phai mot nguong hieu chinh:
 --
---   1. `spill` — than request da ra FILE TAM. Mot tan cong tham so khong can
---      megabyte; con mot file dinh kem thi luon can. 9/9 ca FP deu `spill=1`.
---   2. `multipart` — dinh dang danh cho FILE. `../` trong than multipart nam
---      trong noi dung file voi xac suat ap dao; do 05-09 da ghi dieu tuong tu
---      cho `arg_null_byte` (67/67 luot nam trong noi dung file).
---   3. `len` rat lon — mot payload traversal that dai vai tram byte. Nhom botnet
---      do duoc: 77..242 byte, buoc 15. Nhom FP: 1,1-2,0 MB.
+--   1. `multipart` — dinh dang danh cho FILE, va la truc DUY NHAT duoc dung.
+--      `../` trong than multipart nam trong noi dung file voi xac suat ap dao;
+--      do 05-09 da ghi dieu tuong tu cho `arg_null_byte` (67/67 luot nam trong
+--      noi dung file). Ke gui khong doi duoc dinh dang ma khong doi ban chat
+--      request: mot than `multipart/form-data` phai co boundary va part hop le
+--      moi den duoc day, va khi do `../` trong part content dung la thu luat
+--      nay dang noi sai ve.
+--   2. (DA GO) `spill` — xem dinh chinh (1) ben duoi.
+--   3. (KHONG hien thuc hoa) `len` rat lon — nhom botnet do duoc 77..242 byte,
+--      buoc 15; nhom FP 1,1-2,0 MB. Dan so 9 ca la qua it de dat nguong.
 --
--- `0.05` chu KHONG phai `0`: factor 0 lam diem bang 0 va nhan BIEN MAT khoi
--- `state.labels`, nen mot correlation ve sau khong con thay bang chung nay nua.
--- Giu mot phan nho de nhan van ton tai va telemetry van dem duoc — dung tinh
--- than "observe" cua registry.
+-- DINH CHINH 25-09, hai cho, ca hai do review phat hien:
+--
+-- (1) `spill` DA BI GO khoi danh sach nay. `spill` nghia la "than request da ra
+--     file tam vi vuot buffer" — mot dieu kien KE GUI DIEU KHIEN DUOC. Chi can
+--     nhoi padding cho mot than urlencoded hoac JSON vuot `client_body_buffer_
+--     size` la moi payload traversal trong do tu 35 diem con 1,75. Do la mot
+--     duong ha diem MO CHO NGUOI NGOAI, va no te hon han cai FP no chua: truc 1
+--     trong lap luan ban dau ("tan cong tham so khong can megabyte") dung theo
+--     chieu quan sat nhung sai theo chieu dieu khien — ke tan cong khong bi
+--     buoc phai giu payload nho. Con lai `multipart`, thu ma dinh dang chu
+--     khong phai kich thuoc quyet dinh.
+--
+--     Chin ca FP do duoc deu la `multipart` VA `spill`, nen go `spill` khong
+--     mat ca nao: `family == "multipart"` van phu du 9/9.
+--
+-- (2) Ly do "0.05 chu khong 0 de nhan khong mat" tung ghi o day la SAI. Doc
+--     `policy.lua:162`: `add_labels` duoc goi khi `not excepted and action ~=
+--     "observe"` — no khong doc `score` mot lan nao. Factor 0 lam diem bang 0
+--     nhung nhan VAN vao `state.labels`, nen correlation van thay. Giu 0.05
+--     thi bay gio la mot lua chon khac: de telemetry phan biet duoc "luat co
+--     no nhung bi ha" voi "luat khong no", va de mot nguong diem tuong lai van
+--     nhin thay mot phan nho. Khong con la mot rang buoc ky thuat.
 --
 -- CHUA HIEU CHINH NGUONG `len`: 2 MB la mot moc lay tu dan so 9 ca, va 9 ca la
--- QUA IT de dat nguong. Nen truc 3 co tinh KHONG duoc dung mot minh — no chi
--- cong them khi da co `spill` hoac `multipart`. Khi telemetry V2 chay du lau,
--- `waf:v2:rule:arg_traversal` cong voi `waf:v2:scan:*` se cho phan bo that.
+-- QUA IT de dat nguong. Truc 3 vi vay KHONG duoc hien thuc hoa. Khi telemetry
+-- V2 chay du lau, `waf:v2:rule:arg_traversal` cong voi `waf:v2:scan:*` se cho
+-- phan bo that.
 local function arg_factor_body(b)
     if not b then return nil end
-    local family = tostring(b.family or "")
-    if b.spill == true or b.spill == 1 then return 0.05 end
-    if family == "multipart" then return 0.05 end
+    if tostring(b.family or "") == "multipart" then return 0.05 end
     return nil
 end
 
@@ -302,7 +334,16 @@ local function run_pre(ctx, rt)
         if early.action == "block" then return terminate(ctx, state, early, rt) end
     end
 
-    body.probe(ctx)
+    -- Di qua `rt` chu khong goi `body.probe(ctx)` thang: `probe` doc `ngx.var`
+    -- va `ngx.req` tu global, nen mot test dua `rt` gia lap van bi no doc global
+    -- that — helper `_run_pre_with_runtime` khi do KHONG con tinh xac dinh voi
+    -- request co than. `rt.waf_body_probe` la mot diem chen chi test dat; production
+    -- khong dat nen nhanh duoi chay y nhu truoc.
+    if rt.waf_body_probe then
+        rt.waf_body_probe(ctx)
+    else
+        body.probe(ctx)
+    end
 
     local qs = rt.var.args
     if qs and qs ~= "" then

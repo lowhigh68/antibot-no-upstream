@@ -2345,6 +2345,45 @@ local function render_fim()
     }))
 end
 
+-- Doc bo dem telemetry cua khung WAF V2.
+--
+-- VI SAO CAN MOT ENDPOINT. `waf/telemetry.lua` ghi vao `antibot_cache` tu duong
+-- request. Truoc ban nay khong co MOT noi nao doc lai, nen giai doan bong ghi so
+-- lieu vao mot cho khong ai xem — dung ho loi "canh bao khong den ai": kiem
+-- DUONG RA chu khong chi kiem phat hien.
+--
+-- Chi doc, khong ghi, khong xoa. `snapshot()` KHOA dict trong luc quet nen no chi
+-- duoc goi tu day (nguoi van hanh bam), khong bao gio tu duong request.
+local function render_waf_v2()
+    ngx.header["Content-Type"] = "application/json"
+
+    local ok_t, telemetry = pcall(require, "antibot.waf.telemetry")
+    local ok_c, config     = pcall(require, "antibot.waf.config")
+    if not (ok_t and ok_c) then
+        ngx.say(cjson.encode({
+            available = false,
+            reason    = "khong nap duoc antibot.waf.telemetry / .config",
+        }))
+        return
+    end
+
+    local snap, err = telemetry.snapshot(config.defaults(), ngx,
+                                         tonumber(ngx.var.arg_max))
+    if not snap then
+        -- PHAN BIET "chua co so lieu" voi "khong doc duoc". Gop hai cai lai la
+        -- dung loi da giet `wp_paths.mark()` 4 thang.
+        ngx.say(cjson.encode({ available = false, reason = tostring(err) }))
+        return
+    end
+
+    local ok_w, waf = pcall(require, "antibot.waf.init")
+    snap.available     = true
+    snap.registry_ok   = ok_w and waf.registry_ok or nil
+    snap.registry_errors = (ok_w and waf.registry_errors and
+                            #waf.registry_errors > 0) and waf.registry_errors or nil
+    ngx.say(cjson.encode(snap))
+end
+
 function _M.router()
     if not auth() then return end
 
@@ -2362,6 +2401,9 @@ function _M.router()
     end
     if uri == "/antibot-admin/fim" then
         return render_fim()
+    end
+    if uri == "/antibot-admin/waf" then
+        return render_waf_v2()
     end
 
     ngx.status = 404

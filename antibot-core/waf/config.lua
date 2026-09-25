@@ -79,11 +79,78 @@ end
 local VALID_MODE = { observe = true, shadow = true, enforce = true }
 local VALID_ACTION = { observe = true, signal = true, block = true }
 
+-- ── DANH SACH KHOA DUOC PHEP, va vi sao no bat buoc ──────────────────────────
+--
+-- Ban dau validator chi kiem GIA TRI cua khoa no biet, va bo qua khoa la trong
+-- im lang. Hau qua khong phai "cau hinh khong an" — la "cau hinh trong nhu da
+-- an". Bon ca that, do review 25-09 tim ra:
+--
+--   mod = "shadow"            -> he thong giu mode = "enforce"
+--   mdoe = "shadow"           -> rule override khong co hieu luc
+--   wordpres = false          -> profile WordPress van bat
+--   uri_prefx = "/admin/"     -> exception KHONG con rang buoc URI nao ca,
+--                                tuc no ap cho TOAN BO luat tren host do
+--
+-- Ca thu tu la nguy hiem nhat va nguy hiem theo chieu NGUOC voi ba cai kia: ba
+-- cai dau lam cau hinh KHONG duoc ap (an toan hon y muon), cai thu tu lam
+-- exception RONG HON y muon. Mot go sai chinh ta mo mot lo tren WAF.
+--
+-- Nen tu day: khoa la = LOI, o moi scope. Day la lua chon fail-loud co chu y —
+-- `configure()` tra `false` va giu cau hinh cu, chu khong im lang chay tiep.
+local SCOPE_KEYS = {
+    version = true, mode = true, profiles = true,
+    score_enforcement = true, threshold_mode = true, thresholds = true,
+    rules = true, families = true, correlations = true, exceptions = true,
+    domains = true, telemetry = true,
+    -- `host` do `resolve()` gan vao ban da resolve. `validate()` chay tren ban
+    -- COMPILE nen thuong khong thay, nhung chap nhan de goi validate tren mot
+    -- ban resolved khong bao loi oan.
+    host = true,
+}
+local OVERRIDE_KEYS = {
+    mode = true, action = true, enabled = true, score = true,
+}
+local EXCEPTION_KEYS = {
+    id = true, rule = true, family = true, host = true, method = true,
+    target = true, uri = true, uri_prefix = true, enabled = true,
+}
+local TELEMETRY_KEYS = {
+    enabled = true, shared_dict = true, prefix = true, per_host = true,
+    host_limit = true,
+}
+local THRESHOLD_KEYS = { block = true }
+
+-- Tap `profiles` hop le lay TU REGISTRY chu khong hardcode: neu mai them mot
+-- profile thi cho nay tu biet, va nguoc lai `profiles.wordpres = false` bi bat
+-- ngay. Nap trong pcall vi `config.lua` phai nap duoc doc lap trong test.
+local VALID_PROFILE = { generic = true, wordpress = true }
+do
+    local ok, registry = pcall(require, "antibot.waf.registry")
+    if ok and registry and registry.all then
+        local found = {}
+        for _, rule in pairs(registry.all()) do
+            if rule.profile then found[rule.profile] = true end
+        end
+        if next(found) then VALID_PROFILE = found end
+    end
+end
+
+local function reject_unknown(tbl, allowed, path, errors, what)
+    for k in pairs(tbl) do
+        if not allowed[k] then
+            errors[#errors + 1] = string.format(
+                "%s.%s la khoa KHONG duoc biet (%s) — go sai chinh ta?",
+                path, tostring(k), what)
+        end
+    end
+end
+
 local function validate_scope(scope, path, errors, allow_domains)
     if type(scope) ~= "table" then
         errors[#errors + 1] = path .. " must be a table"
         return
     end
+    reject_unknown(scope, SCOPE_KEYS, path, errors, "scope")
     if scope.mode ~= nil and not VALID_MODE[scope.mode] then
         errors[#errors + 1] = path .. ".mode is invalid"
     end
@@ -97,6 +164,14 @@ local function validate_scope(scope, path, errors, allow_domains)
         if type(scope.telemetry) ~= "table" then
             errors[#errors + 1] = path .. ".telemetry must be a table"
         else
+            reject_unknown(scope.telemetry, TELEMETRY_KEYS,
+                           path .. ".telemetry", errors, "telemetry")
+            if scope.telemetry.host_limit ~= nil and
+               (type(scope.telemetry.host_limit) ~= "number" or
+                scope.telemetry.host_limit < 0) then
+                errors[#errors + 1] = path ..
+                    ".telemetry.host_limit must be a non-negative number"
+            end
             if scope.telemetry.enabled ~= nil and
                type(scope.telemetry.enabled) ~= "boolean" then
                 errors[#errors + 1] = path .. ".telemetry.enabled must be boolean"
@@ -117,8 +192,13 @@ local function validate_scope(scope, path, errors, allow_domains)
     if scope.thresholds ~= nil then
         if type(scope.thresholds) ~= "table" then
             errors[#errors + 1] = path .. ".thresholds must be a table"
-        elseif type(scope.thresholds.block) ~= "number" or scope.thresholds.block < 0 then
-            errors[#errors + 1] = path .. ".thresholds.block must be non-negative"
+        else
+            reject_unknown(scope.thresholds, THRESHOLD_KEYS,
+                           path .. ".thresholds", errors, "thresholds")
+            if type(scope.thresholds.block) ~= "number" or
+               scope.thresholds.block < 0 then
+                errors[#errors + 1] = path .. ".thresholds.block must be non-negative"
+            end
         end
     end
     if scope.profiles ~= nil then
@@ -126,6 +206,11 @@ local function validate_scope(scope, path, errors, allow_domains)
             errors[#errors + 1] = path .. ".profiles must be a table"
         else
             for profile, enabled in pairs(scope.profiles) do
+                if not VALID_PROFILE[profile] then
+                    errors[#errors + 1] = path .. ".profiles." ..
+                        tostring(profile) .. " la profile KHONG ton tai trong" ..
+                        " registry — `wordpres = false` se khong tat gi ca"
+                end
                 if type(enabled) ~= "boolean" then
                     errors[#errors + 1] = path .. ".profiles." .. tostring(profile) ..
                                           " must be boolean"
@@ -144,6 +229,8 @@ local function validate_scope(scope, path, errors, allow_domains)
                     if type(override) ~= "table" then
                         errors[#errors + 1] = item .. " must be a table"
                     else
+                        reject_unknown(override, OVERRIDE_KEYS, item, errors,
+                                       section_name .. " override")
                         if override.mode ~= nil and not VALID_MODE[override.mode] then
                             errors[#errors + 1] = item .. ".mode is invalid"
                         end
@@ -172,6 +259,12 @@ local function validate_scope(scope, path, errors, allow_domains)
                     errors[#errors + 1] = path .. ".exceptions." .. i ..
                                           " must be a table"
                 else
+                    -- Go sai o exception la ca duy nhat lam WAF YEU DI chu
+                    -- khong phai chi "khong co hieu luc": `uri_prefx` bi bo qua
+                    -- nghia la exception mat rang buoc URI va ap cho moi luat.
+                    reject_unknown(ex, EXCEPTION_KEYS,
+                                   path .. ".exceptions." .. i, errors,
+                                   "exception")
                     for _, field in ipairs({
                         "id", "rule", "family", "host", "method", "target",
                         "uri", "uri_prefix",

@@ -33,6 +33,61 @@ printf 'cuoi : %s\n' "$(tail -1 "$LOG" | cut -c1-20)"
 ls -l "$LOG"* 2>/dev/null
 
 echo
+echo "=== 0b. Phan quyet policy V2 (chi co tu ban af0040f tro di) ==="
+# Sau `af0040f` moi dong `[waf]` mang them sau cot: mode= exc= wact= would=
+# wscore= pver=. Dong CU khong co chung, nen muc nay tu bao ra co bao nhieu dong
+# doc duoc — thieu buoc do se chia cho mot mau nho hon thuc te ma khong biet.
+V2=$(grep -F '[waf]' "$LOG" | grep -c ' pver=')
+TOT=$(grep -cF '[waf]' "$LOG")
+printf 'dong co cot policy : %s / %s\n' "$V2" "$TOT"
+if [ "$V2" -eq 0 ]; then
+    echo '  (chua co dong nao — hoac ban cu, hoac chua co luu luong sau deploy)'
+else
+grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
+{delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
+{
+    # CAU HOI DUY NHAT cua giai doan bong: luat nay SE chan bao nhieu neu bat
+    # enforce, va trong so do bao nhieu ban vao phien DANG NHAP (tuc FP).
+    key = f["rule"] "  mode=" f["mode"] "  wact=" f["wact"] "  would=" f["would"]
+    c[key]++
+    # `wpauth=1` hoac `richness>=0.5` = phien nguoi that. Voi mot luat dang o
+    # che do bong, day la so do FP TRUC TIEP: no se chan bao nhieu nguoi that.
+    auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
+    if (auth) a[key]++
+    if (f["exc"] != "-") e[f["rule"] "  <- " f["exc"]]++
+}
+END{
+    printf "  %-58s %8s %8s %7s\n", "rule / mode / wact / would", "luot", "auth", "FP%"
+    for (k in c) printf "  %-58s %8d %8d %6.1f%%\n", k, c[k], a[k]+0, 100*(a[k]+0)/c[k]
+    if (length(e)) {
+        print "  ---- exception da suppress ----"
+        for (k in e) printf "  %-58s %8d\n", k, e[k]
+    }
+}'
+fi
+
+echo
+echo "=== 0c. Bong: se chan nhung KHONG chan ==="
+# `wact=allow would=block` la dinh nghia cua mot luat dang hoc. Neu cot `auth`
+# cua no khac 0 thi bat enforce se chan nguoi that — do la con so QUYET DINH, va
+# no phai bang 0 truoc khi bat.
+grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
+{delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
+f["wact"]=="allow" && f["would"]=="block" {
+    auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
+    c[f["rule"]]++; if (auth) a[f["rule"]]++
+}
+END{
+    if (!length(c)) { print "  (khong co dong nao — chua luat nao o che do bong ban)"; exit }
+    printf "  %-34s %8s %8s  %s\n", "rule", "se chan", "auth", "ket luan"
+    for (k in c) {
+        v = (a[k]+0 == 0) ? "0 auth — co the xet enforce" : \
+            sprintf("%d nguoi that — KHONG duoc enforce", a[k])
+        printf "  %-34s %8d %8d  %s\n", k, c[k], a[k]+0, v
+    }
+}'
+
+echo
 echo "=== 1. Luat nao ban, theo target ==="
 grep -F '[waf]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}

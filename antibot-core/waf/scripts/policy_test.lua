@@ -3,14 +3,41 @@ if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
 end
 
-package.preload["antibot.waf.registry"] = function()
-    return dofile(SRC .. "waf/registry.lua")
+-- `init.lua` require CHIN module. Thieu mot cai thi `require` di tim theo
+-- `package.path` cua `resty` va bao "module not found" — hong ngay tu dong nap,
+-- truoc khi chay mot assertion nao. Cung mau `body_test.lua` dung.
+--
+-- `redis_pool` chi can NAP duoc, khong can chay: `fim_factor` tra `nil` ngay khi
+-- `detector_rule == nil` (URI cua test khong khop luat duong dan nao), nen khong
+-- luot Redis nao xay ra. Stub o day de khong phu thuoc `resty.redis`.
+for _, name in ipairs({
+    "registry", "policy", "config", "telemetry",
+    "exposed", "args", "upload", "body",
+}) do
+    package.preload["antibot.waf." .. name] = function()
+        return dofile(SRC .. "waf/" .. name .. ".lua")
+    end
+end
+package.preload["antibot.waf.wordpress.paths"] = function()
+    return dofile(SRC .. "waf/wordpress/paths.lua")
+end
+package.preload["antibot.waf.body_core"] = function()
+    return dofile(SRC .. "waf/body_core.lua")
+end
+package.preload["antibot.waf.body_worker"] = function()
+    return dofile(SRC .. "waf/body_worker.lua")
+end
+package.preload["antibot.core.redis_pool"] = function()
+    return { safe_get = function() return nil end }
 end
 
+-- `require` chu khong `dofile`: `init.lua` cung require nhung module nay, va hai
+-- ban sao rieng thi `config.DEFAULT` cua test khong phai ban `init.lua` dung —
+-- mot test co the bao xanh trong khi production doc bang khac.
 local registry  = require "antibot.waf.registry"
-local config    = dofile(SRC .. "waf/config.lua")
-local policy    = dofile(SRC .. "waf/policy.lua")
-local telemetry = dofile(SRC .. "waf/telemetry.lua")
+local config    = require "antibot.waf.config"
+local policy    = require "antibot.waf.policy"
+local telemetry = require "antibot.waf.telemetry"
 
 local pass, fail = 0, 0
 
@@ -202,6 +229,153 @@ do
     local ok, errors = registry.validate_sources({ fake = { not_registered = {} } })
     eq("registry detects drift", ok, false)
     eq("registry reports one drift", #errors, 1)
+end
+
+-- ── Cau hinh phai TU CHOI khoa la, khong duoc im lang ────────────────────────
+--
+-- Bon ca duoi day do review 25-09 tim ra, va khong ca nao bi validator ban dau
+-- chan. Ba ca dau lam cau hinh KHONG duoc ap (an toan hon y muon, nhung nguoi
+-- van hanh tuong da ap). Ca thu tu nguy hiem theo chieu NGUOC: `uri_prefx` bi
+-- bo qua nghia la exception mat rang buoc URI, tu "mot duong dan" thanh "moi
+-- request tren host". Mot go sai chinh ta mo mot lo tren WAF.
+do
+    local ok = config.validate(config.compile({ mod = "shadow" }))
+    eq("typo `mod` bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({
+        rules = { arg_traversal = { mdoe = "shadow" } },
+    }))
+    eq("typo `mdoe` trong rule override bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({ profiles = { wordpres = false } }))
+    eq("typo `wordpres` trong profiles bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({
+        exceptions = { { id = "x", rule = "arg_traversal", uri_prefx = "/admin/" } },
+    }))
+    eq("typo `uri_prefx` trong exception bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({ telemetry = { prefixx = "a" } }))
+    eq("typo trong telemetry bi tu choi", ok, false)
+
+    ok = config.validate(config.compile({ thresholds = { blok = 10 } }))
+    eq("typo trong thresholds bi tu choi", ok, false)
+
+    -- Va ban hop le phai VAN qua: mot validator tu choi tat ca thi vo dung.
+    ok = config.validate(config.compile({
+        mode = "shadow",
+        profiles = { wordpress = false },
+        rules = { arg_traversal = { mode = "shadow", score = 5 } },
+        exceptions = { { id = "x", rule = "arg_traversal", uri_prefix = "/a/" } },
+        telemetry = { per_host = true, host_limit = 8 },
+        thresholds = { block = 60 },
+    }))
+    eq("cau hinh hop le van qua", ok, true)
+
+    -- `host` do `resolve()` gan, nen validate tren ban da resolve khong bao oan.
+    ok = config.validate(config.resolve(config.compile(), "a.test"))
+    eq("ban da resolve khong bao loi oan", ok, true)
+end
+
+-- ── Exception phai chan CA phan quyet VA cau tuong thich cu ──────────────────
+--
+-- Hai duong doc cung mot su kien: `ctx.waf_decision` cua policy, va `ctx.waf_arg`
+-- ma `compute.lua` doc. Neu exception chi chan duong thu nhat thi cau hinh chi
+-- TRONG NHU co hieu luc — diem cu van nap. Test ca hai.
+do
+    local runtime = {
+        exceptions = { { id = "no-args", rule = "arg_traversal" } },
+    }
+    local ctx, st = state(runtime)
+    local hit = policy.emit(st, "arg_traversal", { target = "ARGS" })
+    eq("exception danh dau hit", hit.excepted, true)
+    eq("exception ghi id", hit.exception_id, "no-args")
+    eq("exception giu diem bang 0", st.score, 0)
+    eq("exception khong de lai nhan", st.labels["attack.traversal"], nil)
+    local d = policy.decide(st)
+    eq("exception -> allow", d.action, "allow")
+    eq("exception -> would_action cung allow", d.would_action, "allow")
+end
+
+-- `uri_prefix` phai RANG BUOC, khong duoc ap ngoai pham vi.
+do
+    local runtime = {
+        exceptions = { { id = "adm", rule = "arg_traversal", uri_prefix = "/adm/" } },
+    }
+    local _, inside = state(runtime, "a.test", "/adm/x.php")
+    eq("trong pham vi thi excepted",
+       policy.emit(inside, "arg_traversal", { target = "ARGS" }).excepted, true)
+
+    local _, outside = state(runtime, "a.test", "/other.php")
+    eq("ngoai pham vi thi KHONG excepted",
+       policy.emit(outside, "arg_traversal", { target = "ARGS" }).excepted, false)
+end
+
+-- ── `factor` phai ap len CA hai duong ────────────────────────────────────────
+--
+-- `arg_factor_body` la local trong `init.lua` nen test qua `_run_pre_with_runtime`
+-- voi mot `rt` gia lap. Ba dieu phai dung cung luc:
+--   1. `multipart` -> diem 5% (35 -> 1.75)
+--   2. `spill` MOT MINH tren urlencoded -> KHONG giam (35 nguyen) — day la lo
+--      da bi go: `spill` do ke gui dieu khien duoc bang cach nhoi padding.
+--   3. cau tuong thich `ctx.waf_body_arg` cung phai mang factor, khong nap du.
+do
+    local waf = dofile(SRC .. "waf/init.lua")
+    -- `dofile` co chu y: `init.lua` giu `compiled_config` o cap module va
+    -- `configure()` sua no, nen mot ban RIENG cho khoi nay tranh ro ri sang
+    -- cac test khac. Cac module NO require thi van la ban chung qua preload.
+
+    local function run_with_body(b)
+        local ctx = {}
+        local rt = {
+            var = { host = "a.test", uri = "/index.php", args = nil,
+                    remote_addr = "127.0.0.1", document_root = "/nonexistent" },
+            req = { get_method = function() return "POST" end },
+            log = function() end,
+            exit = function() end,
+            ERR = 4,
+            waf_body_probe = function(c) c.waf_body = b end,
+        }
+        waf._run_pre_with_runtime(ctx, rt)
+        return ctx
+    end
+
+    local mp = run_with_body({ family = "multipart", spill = true, len = 1125283,
+                               arg_rule = "arg_traversal" })
+    eq("multipart -> 5% cua 35", string.format("%.2f", mp.waf_score or -1), "1.75")
+    eq("multipart -> cau cu cung giam",
+       string.format("%.4f", mp.waf_body_arg or -1),
+       string.format("%.4f", 0.75 * 0.05))
+
+    local sp = run_with_body({ family = "urlencoded", spill = true, len = 900000,
+                               arg_rule = "arg_traversal" })
+    eq("spill mot minh KHONG giam diem",
+       string.format("%.2f", sp.waf_score or -1), "35.00")
+    eq("spill mot minh KHONG giam cau cu",
+       string.format("%.4f", sp.waf_body_arg or -1), "0.7500")
+
+    local ue = run_with_body({ family = "urlencoded", spill = false, len = 179,
+                               arg_rule = "arg_traversal" })
+    eq("urlencoded giu nguyen 35",
+       string.format("%.2f", ue.waf_score or -1), "35.00")
+
+    -- Exception phai chan CA cau tuong thich cu.
+    local ctx = {}
+    local rt = {
+        var = { host = "a.test", uri = "/index.php", args = nil,
+                remote_addr = "127.0.0.1", document_root = "/nonexistent" },
+        req = { get_method = function() return "POST" end },
+        log = function() end, exit = function() end, ERR = 4,
+        waf_body_probe = function(c)
+            c.waf_body = { family = "urlencoded", spill = false, len = 179,
+                           arg_rule = "arg_traversal" }
+        end,
+    }
+    waf.configure({ exceptions = { { id = "skip", rule = "arg_traversal" } } })
+    waf._run_pre_with_runtime(ctx, rt)
+    eq("exception chan ca cau tuong thich cu", ctx.waf_body_arg, nil)
+    eq("exception -> waf_score 0", ctx.waf_score, 0)
+    waf.configure(nil)
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))
