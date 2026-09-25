@@ -221,13 +221,20 @@ do
     telemetry.finish(ctx, rt)
     eq("telemetry records request once", values["waf:v2:requests"], 1)
     eq("telemetry records rule once", values["waf:v2:rule:arg_traversal"], 1)
-    eq("telemetry records latency once", values["waf:v2:latency_count"], 1)
+    eq("telemetry records latency once", values["waf:v2:latency_us_count"], 1)
     -- MICROGIAY: `tick` di tu 10 den 10.012 giay = 12 ms = 12.000 us. Don vi nay
     -- la bat buoc vi `run_pre` chay duoi 1 ms, nen tinh theo ms thi moi mau lam
     -- tron ve 0 va cot do tre bao 0,00 bat ke that su bao nhieu.
     eq("telemetry latency us", values["waf:v2:latency_us_sum"], 12000)
-    eq("telemetry KHONG con ghi khoa ms cu",
+    -- CA HAI khoa cu phai vang. Shared dict song sot qua `nginx -s reload`, nen
+    -- neu chi doi `sum` ma giu `count` thi sau deploy `latency_us_sum` chua mau
+    -- MOI trong khi `latency_count` chua ca mau cu lan moi — `snapshot()` lay tong
+    -- moi chia count cu va cho ra do tre THAP GIA TAO. Mot con so sai theo huong
+    -- "trong nhu moi thu on", tuc huong te nhat.
+    eq("telemetry KHONG con ghi khoa sum cu",
        values["waf:v2:latency_ms_sum"], nil)
+    eq("telemetry KHONG con ghi khoa count cu",
+       values["waf:v2:latency_count"], nil)
 end
 
 do

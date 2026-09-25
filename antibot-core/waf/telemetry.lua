@@ -148,9 +148,15 @@ function _M.finish(ctx, rt)
     -- mot `antibot_cache` day lam chung that bai IM LANG trong khi `write_errors`
     -- van bang 0 — tuc bo dem loi noi "khong co loi" trong luc dang co loi.
     local stats = {}
+    --
+    -- DOI CA `count`, khong chi doi `sum`. Shared dict SONG SOT qua `nginx -s
+    -- reload`, nen neu giu ten `latency_count` thi sau deploy: `latency_us_sum`
+    -- chi chua mau MOI, con `latency_count` chua ca mau cu lan moi — va
+    -- `snapshot()` lay tong moi chia count cu, cho ra do tre THAP GIA TAO. Mot con
+    -- so sai theo huong "trong nhu moi thu on", tuc huong te nhat.
     incr(dict, prefix .. "latency_us_sum",
          math.floor(elapsed * 1000 + 0.5), stats)
-    incr(dict, prefix .. "latency_count", 1, stats)
+    incr(dict, prefix .. "latency_us_count", 1, stats)
     if (stats.errors or 0) > 0 then
         incr(dict, prefix .. "write_errors", stats.errors)
     end
@@ -185,15 +191,41 @@ local FIXED = {
     -- trong rong ngay sau khi deploy, va de thay duoc chinh xac van de:
     -- `latency_ms_sum` co gia tri trong khi `latency_us_sum` vang nghia la may
     -- nay chua nap ban moi.
-    "requests", "latency_us_sum", "latency_ms_sum", "latency_count",
+    "requests",
+    -- HAI CAP doc lap, moi cap tu dung don vi cua no. Tron cap la cho sinh ra con
+    -- so thap gia tao (xem ghi chu o `finish`).
+    "latency_us_sum", "latency_us_count",
+    "latency_ms_sum", "latency_count",
     "body_bytes_sum", "body_spill", "write_errors",
 }
--- `scan` lay tu `body.lua`: `ok` cong cac ly do khong soi duoc. Liet ke thay vi
--- quet, va mot gia tri moi xuat hien trong `body.lua` ma quen them o day thi chi
--- MAT mot dong trong bang, khong lam sai con so nao khac.
-local SCANS = {
-    "ok", "empty", "spill_thread", "spill_worker", "nothread", "unknown",
-}
+-- Danh sach trang thai `scan` lay TU `body_core.SCAN_STATUS` — mot nguon duy
+-- nhat, khong go tay o day.
+--
+-- Ban truoc go tay sau ma va LECH 7/11 so voi thuc te: thieu sau ma cua
+-- `body_worker.lua` (`spill_path`, `spill_open`, `spill_seek`, `spill_big`,
+-- `spill_read`, `spill_short`) va `bad_payload` cua `body_core.lua`. Counter
+-- `waf:v2:scan:spill_open` VAN duoc ghi nhung `snapshot()` khong doc ra — bang so
+-- lieu thieu lang le dung cac ma noi request that su hong.
+--
+-- `unknown` khong nam trong `SCAN_STATUS` vi khong file nao sinh no: no do chinh
+-- `record()` dat khi `body.scan` la nil (`safe_component(body.scan or "unknown")`).
+-- Nen them tay o day, va day la ngoai le DUY NHAT.
+--
+-- `pcall` vi `telemetry.lua` phai nap duoc doc lap trong test. Khi khong nap duoc
+-- thi lui ve danh sach toi thieu — thieu mot dong trong bang so lieu, khong lam
+-- sai con so nao khac.
+local SCANS
+do
+    local list = { "unknown" }
+    local ok, core = pcall(require, "antibot.waf.body_core")
+    if ok and core and type(core.SCAN_STATUS) == "table" then
+        for i = 1, #core.SCAN_STATUS do list[#list + 1] = core.SCAN_STATUS[i] end
+    else
+        list[#list + 1] = "ok"
+        list[#list + 1] = "empty"
+    end
+    SCANS = list
+end
 
 function _M.snapshot(config, rt, max)
     local opts = (config and config.telemetry) or {}
@@ -260,15 +292,19 @@ function _M.snapshot(config, rt, max)
     -- Trung binh do tre tinh o day chu khong luu mot khoa moi request.
     --
     -- Uu tien khoa MICROGIAY; `latency_ms_sum` chi de doc may chua deploy ban moi.
-    local count  = tonumber(out.latency_count)
+    -- MOI CAP dung `count` RIENG cua no. Dung `latency_count` (cu) lam mau so cho
+    -- `latency_us_sum` (moi) la sai vi shared dict song sot qua reload: count cu
+    -- mang ca mau truoc deploy, nen thuong so thap gia tao.
+    local n_us   = tonumber(out.latency_us_count)
     local sum_us = tonumber(out.latency_us_sum)
+    local n_ms   = tonumber(out.latency_count)
     local sum_ms = tonumber(out.latency_ms_sum)
     local avg_us, avg
-    if sum_us and count and count > 0 then
-        avg_us = sum_us / count
+    if sum_us and n_us and n_us > 0 then
+        avg_us = sum_us / n_us
         avg    = avg_us / 1000
-    elseif sum_ms and count and count > 0 then
-        avg = sum_ms / count
+    elseif sum_ms and n_ms and n_ms > 0 then
+        avg = sum_ms / n_ms
     end
 
     return {

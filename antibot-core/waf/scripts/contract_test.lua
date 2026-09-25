@@ -1487,70 +1487,81 @@ do
     end
 end
 
--- ── `SCANS` trong telemetry phai phu moi gia tri `scan` cua body.lua ────────
+-- ── `body_core.SCAN_STATUS` phai phu MOI ma `scan` cua BA file ──────────────
 --
--- `telemetry.snapshot()` doc theo DANH SACH KHOA BIET TRUOC chu khong quet dict
--- (quet co hai lo: `antibot_cache` dung chung nen 2.048 khoa dau co the khong
--- chua counter WAF nao, va `get_keys` khoa dict).
+-- Phep kiem nay da bo sot HAI LAN, va moi lan theo mot chieu khac:
 --
--- Cai gia cua viec do la mot TAP CUNG: mot ly do `scan` moi them vao `body.lua`
--- ma quen them vao `SCANS` thi bang so lieu MAT mot dong — khong sai con so nao
--- khac, nhung lang le thieu. Chinh xac loai loi chi chu thich khong chan duoc.
+--   lan 1  chi tim `unscanned%(...)` nen bo sot `spill_thread`/`nothread` —
+--          chung di qua bien `reason`, khong phai chuoi truc tiep.
+--   lan 2  chi quet `body.lua` nen bo sot BAY ma: sau cai cua `body_worker.lua`
+--          (`spill_path`, `spill_open`, `spill_seek`, `spill_big`, `spill_read`,
+--          `spill_short`) va `bad_payload` cua `body_core.lua`. Bao XANH trong
+--          khi 7/11 ma khong duoc kiem.
 --
--- Nen ghim bang mot phep kiem: moi chuoi chu trong `unscanned(...)` cua body.lua
--- phai co mat trong `SCANS`. Day la phep kiem NGUON nen no khong chung minh duoc
--- chieu con lai (mot ten trong SCANS khong con ai ghi thi chi la mot dong 0), va
--- do la du.
-io.write("\nhop dong: SCANS cua telemetry phu het ly do scan cua body.lua\n")
+-- Hau qua cua lan 2: counter `waf:v2:scan:spill_open` VAN duoc ghi nhung
+-- `snapshot()` khong doc ra — bang so lieu thieu lang le dung cac ma noi request
+-- that su hong.
+--
+-- Nay chi con MOT danh sach (`body_core.SCAN_STATUS`) va `telemetry.lua` doc no
+-- thay vi go tay. Phep kiem vi vay doi huong: khong con so hai danh sach voi nhau,
+-- ma so DANH SACH voi MA NGUON cua ca ba file.
+io.write("\nhop dong: SCAN_STATUS phu het ma scan cua body.lua + worker + core\n")
 do
-    local body = slurp(SRC .. "waf/body.lua") or ""
-    local tele = slurp(SRC .. "waf/telemetry.lua") or ""
+    local core_src   = slurp(SRC .. "waf/body_core.lua") or ""
+    local body_src   = slurp(SRC .. "waf/body.lua") or ""
+    local worker_src = slurp(SRC .. "waf/body_worker.lua") or ""
+    local tele_src   = slurp(SRC .. "waf/telemetry.lua") or ""
 
     local allowed = {}
-    local block = tele:match("local SCANS = {(.-)}")
+    local block = core_src:match("_M%.SCAN_STATUS = {(.-)\n}")
     if not block then
-        bad("  SAI  khong tim thay `local SCANS = {...}` trong telemetry.lua\n")
+        bad("  SAI  khong tim thay `_M.SCAN_STATUS = {...}` trong body_core.lua\n")
     else
         for name in block:gmatch('"([%w_]+)"') do allowed[name] = true end
     end
 
-    -- `core.scan()` luon dat "ok"; cac ly do con lai di qua `unscanned(...)`.
-    --
-    -- HAI DANG, va chi tim dang thu nhat la BO SOT dung mot nua:
-    --
-    --   truc tiep   unscanned(family, false, "empty", 0)
-    --   qua bien    local reason = tostring(payload or "spill_thread")
-    --               if reason ~= "nothread" then reason = "spill_thread" end
-    --               unscanned(family, true, reason)
-    --
-    -- `spill_thread` va `nothread` chi xuat hien o dang thu hai. Mot phep kiem
-    -- chi quet `unscanned%(...)` bao XANH trong khi khong he kiem hai ten do —
-    -- dung loai "phep do hong tra so trong-co-ly" da mac bay lan trong mot buoi.
-    -- Nen quet CA chuoi gan vao `reason`, va bao ra so ten tim duoc de doc log
-    -- thay ngay neu con sot.
+    -- Moi ma, tu moi duong sinh ra no. Bon pattern cho bon dang thuc te:
+    --   `unscanned(family, false, "empty", 0)`     chuoi truc tiep
+    --   `reason = "spill_thread"` / `~= "nothread"` qua bien
+    --   `pack_error("spill_open")`                  trong worker
+    --   `return nil, "bad_payload"`                 trong core
     local seen = {}
-    for reason in body:gmatch('unscanned%([^)]-"([%w_]+)"') do seen[reason] = true end
-    for reason in body:gmatch('reason%s*=%s*"([%w_]+)"') do seen[reason] = true end
-    for reason in body:gmatch('reason%s*~=%s*"([%w_]+)"') do seen[reason] = true end
-    for reason in body:gmatch('payload%s+or%s+"([%w_]+)"') do seen[reason] = true end
+    for r in body_src:gmatch('unscanned%([^)]-"([%w_]+)"')   do seen[r] = true end
+    for r in body_src:gmatch('reason%s*=%s*"([%w_]+)"')      do seen[r] = true end
+    for r in body_src:gmatch('reason%s*~=%s*"([%w_]+)"')     do seen[r] = true end
+    for r in body_src:gmatch('payload%s+or%s+"([%w_]+)"')    do seen[r] = true end
+    for r in worker_src:gmatch('pack_error%("([%w_]+)"')     do seen[r] = true end
+    for r in core_src:gmatch('pack_error%("([%w_]+)"')       do seen[r] = true end
+    for r in core_src:gmatch('return nil, "([%w_]+)"')       do seen[r] = true end
 
     local n = 0
-    for reason in pairs(seen) do
+    for r in pairs(seen) do
         n = n + 1
-        if not allowed[reason] then
-            bad("  SAI  `body.lua` sinh `scan = \"%s\"` nhung `SCANS` cua\n" ..
-                "       telemetry.lua khong co ten do — counter\n" ..
-                "       `waf:v2:scan:%s` se KHONG BAO GIO duoc doc ra.\n",
-                reason, reason)
+        if not allowed[r] then
+            bad("  SAI  ma `scan = \"%s\"` duoc sinh trong ma nguon nhung KHONG co\n" ..
+                "       trong `body_core.SCAN_STATUS` — counter `waf:v2:scan:%s`\n" ..
+                "       se duoc GHI ma khong bao gio duoc DOC ra.\n", r, r)
         else pass = pass + 1 end
     end
     if not allowed["ok"] then
-        bad("  SAI  `SCANS` thieu \"ok\" — do la gia tri cua moi than da soi xong\n")
+        bad("  SAI  `SCAN_STATUS` thieu \"ok\" — gia tri cua moi than da soi xong\n")
     else pass = pass + 1 end
-    if n == 0 then
-        io.write("  (khong tim thay loi goi unscanned nao — muc nay khong kiem gi)\n")
+
+    -- Va `telemetry.lua` phai DOC danh sach do chu khong go lai tay. Thieu phep
+    -- kiem nay thi ai do co the them mot `local SCANS = {...}` moi va hai danh
+    -- sach lai lech nhu truoc.
+    if tele_src:find("body_core", 1, true) and
+       tele_src:find("SCAN_STATUS", 1, true) then
+        pass = pass + 1
     else
-        io.write(string.format("  %d ly do scan trong body.lua, deu co trong SCANS\n", n))
+        bad("  SAI  `telemetry.lua` khong doc `body_core.SCAN_STATUS` — no dang\n" ..
+            "       giu mot danh sach RIENG, va hai danh sach se lech.\n")
+    end
+
+    if n == 0 then
+        io.write("  (khong tim thay ma scan nao — muc nay khong kiem gi)\n")
+    else
+        io.write(string.format("  %d ma scan trong ma nguon, deu co trong SCAN_STATUS\n", n))
     end
 end
 

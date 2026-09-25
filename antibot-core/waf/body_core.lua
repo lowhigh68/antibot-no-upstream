@@ -663,6 +663,48 @@ function _M.pack(r)
     }, SEP)
 end
 
+-- ── DANH SACH TRANG THAI `scan`, MOT NGUON DUY NHAT ─────────────────────────
+--
+-- Truoc 25-09 co HAI danh sach: mot o day (ngam, rai rac trong ma cua ba file) va
+-- mot trong `telemetry.lua` (`local SCANS = {...}`, go tay). Chung lech nhau
+-- 7/11 ma: `telemetry` thieu sau ma cua `body_worker.lua` (`spill_path`,
+-- `spill_open`, `spill_seek`, `spill_big`, `spill_read`, `spill_short`) va
+-- `bad_payload` cua chinh file nay.
+--
+-- Hau qua: counter `waf:v2:scan:spill_open` VAN duoc ghi nhung `snapshot()` khong
+-- doc ra — bang so lieu thieu lang le dung cac ma noi request that su hong. Va
+-- hop dong toi viet de chan chuyen do chi quet `body.lua`, nen no BAO XANH trong
+-- khi bo sot bay ma. Lan thu hai cung mot phep kiem bo sot: lan truoc toi sua no
+-- quet hai DANG trong mot file, lan nay la hai FILE khac.
+--
+-- Nen dat o day, va o day la dung cho: `body_core` la module ma ca ba ben da dung
+-- chung (`body_worker` require no de goi `pack_error`, `body.lua` require no de
+-- goi `scan`/`unpack`, va no la Lua THUAN nen `telemetry` require duoc ma khong
+-- keo theo phu thuoc `ngx`).
+--
+-- THEM MOT MA MOI thi them vao day, khong them o `telemetry.lua`. Hop dong trong
+-- `contract_test.lua` ghim nguoc lai: moi chuoi truyen cho `pack_error` va moi
+-- ma trong `body.lua` phai co mat trong bang nay.
+_M.SCAN_STATUS = {
+    -- da soi xong
+    "ok",
+    -- than rong that (`get_body_file()` tra nil): KHONG phai vung mu
+    "empty",
+    -- khong soi duoc, o tang truy cap `body.lua`
+    "nothread",      -- `ngx.run_worker_thread` khong co (thread_pool tat)
+    "spill_thread",  -- goi thread that bai
+    "spill_worker",  -- worker tra loi
+    -- khong soi duoc, o trong worker (`body_worker.lua`)
+    "spill_path",    -- duong dan file tam khong hop le
+    "spill_open",    -- khong mo duoc file tam
+    "spill_seek",    -- seek that bai
+    "spill_big",     -- vuot gioi han doc
+    "spill_read",    -- doc that bai
+    "spill_short",   -- doc thieu byte
+    -- goi tin giua worker va tien trinh chinh bi hong (`unpack` o file nay)
+    "bad_payload",
+}
+
 function _M.pack_error(reason, len)
     return table.concat({ "E", enc(reason), enc(len) }, SEP)
 end
