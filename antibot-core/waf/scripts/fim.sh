@@ -110,10 +110,35 @@ chmod 0640  "$CRITLOG" 2>/dev/null || :
 # BAN SAO THU BA (hai ban trong awk, mot trong shell) o mot ngon ngu khac, nen
 # khong co cach kiem tu dong. Them mot ten core moi vao awk ma quen shell thi
 # ham lai tra file do, va hau qua im lang. Doi lai chi la tap nho hon.
+# DAU NHAN CORE khong phai chi `@package WordPress`. Do 25-09: `wp-signu1p.php`
+# tren dichtiengthailan.net la ban sao `wp-signup.php` NGUYEN BAN (`require
+# wp-load`, `add_action('wp_head','wp_no_robots')`, `nocache_headers()`,
+# `get_site_option('illegal_names')`, `md5x3|eval|base64_decode` = 0) nhung van
+# dat 40 diem, vi file core that mo bang `/** Sets up the WordPress
+# Environment. */` — KHONG co docblock `@package`. Dieu kien cu qua hep: toi lay
+# mot dac diem PHO BIEN cua file core va coi la BAT BIEN, dung lop loi voi regex
+# `del1_core` da bo.
+#
+# Nhan theo BAT KY dau hieu core nao. Cac chuoi duoi deu la ham/hang do CHINH
+# WordPress dinh nghia, khong phai thu ke tan cong viet ra de nguy trang: mot
+# webshell muon qua cua nay phai sao ca doan ma core vao dau file, va luc do
+# `pwhit`/`fraghit`/vi tri van cong diem (xem RUI RO o `pscore()`).
+# `ABSPATH` DA BI BO khoi danh sach nay, co y: `if (!defined('ABSPATH')) exit;`
+# la dong mo dau cua hau het file WordPress NHUNG cung la dong ke tan cong sao
+# vao de nguy trang — dau nhan YEU NHAT va la dau duy nhat de gia. Bon chuoi con
+# lai la ham/hang do CHINH WordPress dinh nghia trong than file.
+#
+# GIOI HAN KIEM THU, ghi ro: khong kiem duoc kich ban "webshell co loader + dau
+# nhan core" tren may dev — antivirus Windows chan doc moi tep chua `require
+# wp-load` cong mot ham thuc thi dong, doi ten cung bi. Ba file core that thi
+# kiem duoc, moi file khop mot dau nhan khac nhau (`@package WordPress` /
+# `Sets up the WordPress Environment` / `WP_USE_THEMES`). Rui ro con lai giong
+# het cai da ghi o `pscore()`: mien 25 diem, khong phai mien phat hien.
+CORE_MARK='@package WordPress|Sets up the WordPress Environment|wp_no_robots|nocache_headers|WP_USE_THEMES'
 core_like_list() {
     find $ROOTS -maxdepth 1 -name '*.php' -type f 2>/dev/null \
     | while IFS= read -r _f; do
-        grep -q '@package WordPress' "$_f" 2>/dev/null || continue
+        grep -qE "$CORE_MARK" "$_f" 2>/dev/null || continue
         grep -qE 'wp-load|wp-blog-header|wp-config' "$_f" 2>/dev/null \
             && printf '%s\n' "$_f"
       done | sort || :
