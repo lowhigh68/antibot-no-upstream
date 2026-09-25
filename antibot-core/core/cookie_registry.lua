@@ -125,11 +125,26 @@ end
 -- thêm đặc quyền nào. `ban_store_write.lua` đọc `== true` nên `nil` vẫn không
 -- được miễn `ban:<ip>`; cực fail-CLOSED không bị chạm.
 --
--- ĐÁNH ĐỔI đã nhận: mọi domain alias trên fleet mất lớp siết `ckn=false`. Dân
--- số bị ảnh hưởng, đo 14-09: 11.245 lệnh chặn không cookie / 62 có cookie =
--- 0,55%, và chỉ phần trong đó đến bằng tên alias. `swarm_attack` (120 điểm),
--- rate limit, `ip_risk`, graph, cluster, WAF path rules đều không phụ thuộc
--- `ckn` nên không đổi.
+-- PHẠM VI, đo 25-09 trên cloud168-123: ĐÚNG MỘT vhost trên cả máy có nhiều hơn
+-- một `server_name` (trừ tiền tố `www.`) — chính là site này. Site một domain
+-- cho `host == server_name` nên KHÔNG đổi hành vi, và đó là phần lớn fleet.
+--
+-- Phép đếm để đo lại khi cần:
+--     nginx -T | grep -oE '^\s*server_name .*;' | sed 's/^\s*server_name //; s/;$//' \
+--     | while read -r n; do c=$(printf '%s\n' $n | sed 's/^www\.//' | sort -u \
+--       | grep -vc '^_$'); [ "$c" -gt 1 ] && echo "$c  $n"; done
+--
+-- ĐÁNH ĐỔI đã nhận: trên vhost nhiều domain, request đến bằng tên KHÔNG phải
+-- tên đầu mất lớp siết `ckn=false`. Dân số bị ảnh hưởng, đo 14-09: 11.245 lệnh
+-- chặn không cookie / 62 có cookie = 0,55%, và chỉ phần trong đó đến bằng tên
+-- alias. `swarm_attack` (120 điểm), rate limit, `ip_risk`, graph, cluster, WAF
+-- path rules đều không phụ thuộc `ckn` nên không đổi.
+--
+-- ĐÃ XÉT VÀ BÁC cổng opt-in bằng Redis set (`SADD waf:ckn:aliasfix <host>`):
+-- với dân số 1 vhost nó bảo vệ thêm 0 site, còn cái giá là lần sau DirectAdmin
+-- tạo domain pointer cho site khác thì FP tái diễn trong im lặng cho tới khi có
+-- người nhớ ra phải `SADD`. Một cơ chế đúng mà cần người nhớ bật thì trên thực
+-- tế là không có.
 local function book_represents_request()
     local sn = ngx.var.server_name
     -- Catch-all hoặc rỗng: `host_key()` đã lùi về `host`, nên sổ khoá theo đúng
