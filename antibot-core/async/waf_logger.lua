@@ -380,6 +380,9 @@ function _M.run(ctx)
     local wscore = tonumber(dec.score)
     local wscore_s = wscore and string.format("%.2f", wscore) or "-"
     local pver  = (ctx.waf_v2 or {}).version or "-"
+    -- Mode TOAN CUC, khac `h.mode` la mode cua tung luat. Mot luat `enforce` nam
+    -- trong mot WAF dang `shadow` thi khong chan gi ca.
+    local gmode = dec.mode or "enforce"
 
     for i = 1, #hits do
         local h = hits[i]
@@ -404,12 +407,27 @@ function _M.run(ctx)
             scrub(ctx.ip or ngx.var.remote_addr, 45),
             h.rule or "-",
             h.target or "-",
-            -- `sev=` doc CA `excepted`. Mot luat hard-block bi exception chan
-            -- thi khong con la su kien critical — no la mot su kien bi bo qua co
-            -- chu y. Truoc ban nay cot nay chi doc `h.action` nen hai thu do ra
-            -- giong het nhau, va bat ky canh bao nao gac tren `sev=critical` se
-            -- keu vi mot luat CO Y khong chan.
-            (h.action == "block" and not h.excepted) and "critical" or "notice",
+            -- `sev=critical` chi khi request THAT SU bi chan. BON dieu kien, va
+            -- moi cai la mot duong lam `action=block` khong dan toi chan that:
+            --
+            --   h.action == "block"     luat muon chan
+            --   not h.excepted          khong bi exception go
+            --   h.mode == "enforce"     luat khong o che do bong
+            --   gmode == "enforce"      ca WAF khong o che do bong
+            --   dec.action == "block"   va phan quyet cuoi dung la chan
+            --
+            -- Ban truoc chi xet hai dieu kien dau, nen mot correlation
+            -- `mode=shadow` van ghi `critical` trong khi `wact=allow`. Do lieu
+            -- 25-09 xac nhan: `corr_upload_php_payload` tren 171-96 co
+            -- `wact=allow` ma dang mang `sev=critical`. Bat ky canh bao nao gac
+            -- tren `sev=critical` se keu vi mot luat CO Y khong chan — mot bao
+            -- dong gia, va bao dong gia lam nguoi ta ngung doc bao dong.
+            --
+            -- Chieu con lai duoc giu nguyen: khi ca nam dieu kien dung thi cot
+            -- nay van la `critical` y nhu truoc, nen khong mat canh bao that nao.
+            (h.action == "block" and not h.excepted and
+             (h.mode or "enforce") == "enforce" and gmode == "enforce" and
+             dec.action == "block") and "critical" or "notice",
             0,                       -- paranoia level: 0 = luật gốc, chưa phải CRS
             scrub(h.matched, 160),
             h.score or 0,

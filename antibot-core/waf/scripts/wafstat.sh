@@ -57,8 +57,25 @@ grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
     if (f["exc"] != "-") e[f["rule"] "  <- " f["exc"]]++
 }
 END{
-    printf "  %-58s %8s %8s %7s\n", "rule / mode / wact / would", "luot", "auth", "FP%"
-    for (k in c) printf "  %-58s %8d %8d %6.1f%%\n", k, c[k], a[k]+0, 100*(a[k]+0)/c[k]
+    # `auth%` CHU KHONG `FP%`. Voi mot luat khong chan (`wact=allow`,
+    # `would=allow`), ti le phien xac thuc KHONG phai ti le chan sai — no chi la
+    # thanh phan cua dan so. Dat ten `FP%` cho no la sai, va sai theo huong de
+    # gay hanh dong: doc "36% FP" xong se tuong can sua gap.
+    #
+    # Do that 25-09: `body_scan_incomplete` tren 171-96 ra 36,0% va do la mot
+    # luat `observe` score=0, khong chan ai. Con so dung nhung ten cot sai.
+    #
+    # Chi cot `-> FP` moi la ti le chan sai, va no chi in cho dong CO chan.
+    printf "  %-52s %7s %7s %7s  %s\n", "rule / mode / wact / would",
+           "luot", "auth", "auth%", "y nghia"
+    for (k in c) {
+        chan = (k ~ /wact=block/)
+        printf "  %-52s %7d %7d %6.1f%%  %s\n", k, c[k], a[k]+0,
+               100*(a[k]+0)/c[k],
+               (chan ? ((a[k]+0) ? "-> FP THAT: chan phien dang nhap" \
+                                 : "chan, 0 phien dang nhap") \
+                     : "khong chan — auth% la thanh phan, KHONG phai FP")
+    }
     if (length(e)) {
         print "  ---- exception da suppress ----"
         for (k in e) printf "  %-58s %8d\n", k, e[k]
@@ -79,11 +96,25 @@ f["wact"]=="allow" && f["would"]=="block" {
 }
 END{
     if (!length(c)) { print "  (khong co dong nao — chua luat nao o che do bong ban)"; exit }
-    printf "  %-34s %8s %8s  %s\n", "rule", "se chan", "auth", "ket luan"
+    # NGUONG DAN SO. Voi n nho, "0 auth" va "chua gap ca auth nao" la hai thu
+    # KHONG phan biet duoc — nen cau ket luan cu ("co the xet enforce") noi qua
+    # manh. Do 25-09: ba luat bong tren 171-96 co dung 1 luot moi cai, va toi da
+    # doc "0 auth" nhu mot bang chung. Mot luot khong phai bang chung, no la mot
+    # lan.
+    #
+    # 30 la moc toi thieu de mot ti le 0% co nghia gi (duoi do, khoang tin cay
+    # 95% cua "0/n" van chua duoi 10%). Khong phai con so thieng — chi la cho
+    # DUNG LAI de khong ket luan tu dan so mot chu so.
+    MIN = 30
+    printf "  %-30s %8s %7s  %s\n", "rule", "se chan", "auth", "ket luan"
     for (k in c) {
-        v = (a[k]+0 == 0) ? "0 auth — co the xet enforce" : \
-            sprintf("%d nguoi that — KHONG duoc enforce", a[k])
-        printf "  %-34s %8d %8d  %s\n", k, c[k], a[k]+0, v
+        if (c[k] < MIN)
+            v = sprintf("DAN SO QUA NHO (n=%d < %d) — chua ket luan duoc", c[k], MIN)
+        else if (a[k]+0 == 0)
+            v = sprintf("n=%d, 0 phien dang nhap — DU de xet enforce", c[k])
+        else
+            v = sprintf("%d phien dang nhap that — KHONG duoc enforce", a[k])
+        printf "  %-30s %8d %7d  %s\n", k, c[k], a[k]+0, v
     }
 }'
 

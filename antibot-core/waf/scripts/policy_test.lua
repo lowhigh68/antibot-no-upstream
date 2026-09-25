@@ -311,14 +311,19 @@ do
        policy.emit(outside, "arg_traversal", { target = "ARGS" }).excepted, false)
 end
 
--- ── `factor` phai ap len CA hai duong ────────────────────────────────────────
+-- ── Khong duoc ha diem theo DINH DANG hay KICH THUOC than request ────────────
 --
--- `arg_factor_body` la local trong `init.lua` nen test qua `_run_pre_with_runtime`
--- voi mot `rt` gia lap. Ba dieu phai dung cung luc:
---   1. `multipart` -> diem 5% (35 -> 1.75)
---   2. `spill` MOT MINH tren urlencoded -> KHONG giam (35 nguyen) — day la lo
---      da bi go: `spill` do ke gui dieu khien duoc bang cach nhoi padding.
---   3. cau tuong thich `ctx.waf_body_arg` cung phai mang factor, khong nap du.
+-- Hai lan lien tiep toi mo mot duong ha diem bang mot dieu kien ke gui dieu
+-- khien duoc: `spill` (kich thuoc) roi `multipart` (dinh dang). Ca hai da go.
+--
+-- `multipart` la lo do CHINH toi tao ra khi bit lo `spill`: `body_core` quet
+-- toan bo than va khong phan biet lan khop nam trong noi dung tep, ten tep,
+-- header part, hay MOT FORM FIELD THUONG. Ke gui dat `path=../../etc/passwd`
+-- thanh mot text part hop le thi PHP van nap vao `$_POST` — cung ban chat tan
+-- cong, nhung diem tu 35 xuong 1,75.
+--
+-- Bon truong hop duoi day PHAI cung diem. Mot ca lech nghia la mot nhom nao do
+-- lai duoc mien tru theo mot thuoc tinh ke gui chon duoc.
 do
     local waf = dofile(SRC .. "waf/init.lua")
     -- `dofile` co chu y: `init.lua` giu `compiled_config` o cap module va
@@ -340,42 +345,57 @@ do
         return ctx
     end
 
-    local mp = run_with_body({ family = "multipart", spill = true, len = 1125283,
-                               arg_rule = "arg_traversal" })
-    eq("multipart -> 5% cua 35", string.format("%.2f", mp.waf_score or -1), "1.75")
-    eq("multipart -> cau cu cung giam",
-       string.format("%.4f", mp.waf_body_arg or -1),
-       string.format("%.4f", 0.75 * 0.05))
+    local function arg_case(name, b, want_score, want_bridge)
+        local ctx = run_with_body(b)
+        eq(name .. " — waf_score",
+           string.format("%.2f", ctx.waf_score or -1), want_score)
+        eq(name .. " — cau cu waf_body_arg",
+           string.format("%.4f", ctx.waf_body_arg or -1), want_bridge)
+    end
 
-    local sp = run_with_body({ family = "urlencoded", spill = true, len = 900000,
-                               arg_rule = "arg_traversal" })
-    eq("spill mot minh KHONG giam diem",
-       string.format("%.2f", sp.waf_score or -1), "35.00")
-    eq("spill mot minh KHONG giam cau cu",
-       string.format("%.4f", sp.waf_body_arg or -1), "0.7500")
+    -- 35.00 la thang registry; 0.7500 la thang detector `[0,1]` cua cau cu.
+    arg_case("multipart + spill (9 ca FP do duoc)",
+             { family = "multipart", spill = true, len = 1125283,
+               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+    arg_case("multipart khong spill",
+             { family = "multipart", spill = false, len = 5000,
+               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+    -- DUONG NE da dong: nhoi padding cho urlencoded de vuot buffer.
+    arg_case("urlencoded + spill (nhoi padding)",
+             { family = "urlencoded", spill = true, len = 900000,
+               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+    arg_case("urlencoded thuong (botnet buoc 15)",
+             { family = "urlencoded", spill = false, len = 179,
+               arg_rule = "arg_traversal" }, "35.00", "0.7500")
 
-    local ue = run_with_body({ family = "urlencoded", spill = false, len = 179,
-                               arg_rule = "arg_traversal" })
-    eq("urlencoded giu nguyen 35",
-       string.format("%.2f", ue.waf_score or -1), "35.00")
-
-    -- Exception phai chan CA cau tuong thich cu.
-    local ctx = {}
-    local rt = {
-        var = { host = "a.test", uri = "/index.php", args = nil,
-                remote_addr = "127.0.0.1", document_root = "/nonexistent" },
-        req = { get_method = function() return "POST" end },
-        log = function() end, exit = function() end, ERR = 4,
-        waf_body_probe = function(c)
-            c.waf_body = { family = "urlencoded", spill = false, len = 179,
-                           arg_rule = "arg_traversal" }
-        end,
-    }
+    -- Exception phai chan CA hai duong: phan quyet VA cau tuong thich cu.
     waf.configure({ exceptions = { { id = "skip", rule = "arg_traversal" } } })
-    waf._run_pre_with_runtime(ctx, rt)
+    local ctx = run_with_body({ family = "urlencoded", spill = false, len = 179,
+                                arg_rule = "arg_traversal" })
     eq("exception chan ca cau tuong thich cu", ctx.waf_body_arg, nil)
     eq("exception -> waf_score 0", ctx.waf_score, 0)
     waf.configure(nil)
+
+    -- `scan = "empty"` la than RONG, khong phai vung mu. Do tren nam may:
+    -- 247/247 luot `body_scan_incomplete` la `empty`, va no chiem hon mot nua
+    -- toan bo dong V2. Phat luat cho no lam luat mat kha nang tra loi cau hoi
+    -- "con vung mu bao lon".
+    local empty_ctx = run_with_body({ family = "urlencoded", spill = false,
+                                      len = 0, scan = "empty" })
+    local fired = false
+    for i = 1, #(empty_ctx.waf_hits or {}) do
+        if empty_ctx.waf_hits[i].rule == "body_scan_incomplete" then fired = true end
+    end
+    eq("scan=empty KHONG phat body_scan_incomplete", fired, false)
+
+    -- Con `spill_thread` thi PHAI phat: do moi la "co ma soi khong noi".
+    local blind_ctx = run_with_body({ family = "multipart", spill = true,
+                                      len = -1, scan = "spill_thread" })
+    local blind = false
+    for i = 1, #(blind_ctx.waf_hits or {}) do
+        if blind_ctx.waf_hits[i].rule == "body_scan_incomplete" then blind = true end
+    end
+    eq("scan=spill_thread VAN phat body_scan_incomplete", blind, true)
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))

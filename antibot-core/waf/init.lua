@@ -244,9 +244,39 @@ end
 -- QUA IT de dat nguong. Truc 3 vi vay KHONG duoc hien thuc hoa. Khi telemetry
 -- V2 chay du lau, `waf:v2:rule:arg_traversal` cong voi `waf:v2:scan:*` se cho
 -- phan bo that.
-local function arg_factor_body(b)
-    if not b then return nil end
-    if tostring(b.family or "") == "multipart" then return 0.05 end
+-- GO NOT 25-09: ham nay gio KHONG ha diem cua bat ky nhom nao.
+--
+-- `multipart` da bi go vi cung mot ly do `spill` da bi go truoc do, va lan nay
+-- la mot LO TOI TU TAO RA khi vua bit lo kia. `body_core.lua` quet TOAN BO than
+-- multipart va khong phan biet lan khop nam o dau:
+--
+--   · trong noi dung tep dinh kem   <- day moi la nhom FP that
+--   · trong ten tep
+--   · trong header cua part
+--   · trong MOT FORM FIELD THUONG   <- va day la duong ne
+--
+-- Ke gui chi can dat `path=../../etc/passwd` thanh mot text part hop le trong
+-- `multipart/form-data`. PHP van nap no vao `$_POST` y nhu urlencoded, nhung diem
+-- traversal tu 35 xuong 1,75. Lap luan cu cua toi ("ke gui khong doi duoc dinh
+-- dang ma khong doi ban chat request") SAI: doi dinh dang khong doi viec tham so
+-- van tia toi `$_POST`. Va lo nay khong chi o traversal — no ap cho ca
+-- `arg_php_wrapper` va `arg_null_byte`.
+--
+-- Chua gay bypass hard-block hom nay (`score_enforcement = false`, va cau cu
+-- `waf_body_arg` o trong so 0), nhung no thanh bypass DUNG LUC ai do bat mot
+-- trong hai thu do len — tuc mot lo ngu, dung loai kho tim nhat.
+--
+-- DOI GIA CO Y: chin ca FP `multipart` do duoc (Magento admin upload anh, `../`
+-- nam trong noi dung tep) tro lai 35 diem. Chung van `action=allow` vi trong so
+-- bang 0, va `auth_session_cap` van che phien dang nhap that. Doi mot FP CHUA
+-- gay hai lay viec dong mot duong ne.
+--
+-- HUONG DUNG, chua lam: scanner phai tra them VI TRI khop —
+-- `arg_origin = file_content | form_field | filename` — roi chi ha
+-- `file_content`. `fn_rule` da lam duoc nua viec (nhan dien rieng ten tep) nhung
+-- hien chi phuc vu telemetry. Viec do doi `body_core.lua` cong giao thuc
+-- pack/unpack giua worker va tien trinh chinh, nen no la mot commit rieng.
+local function arg_factor_body(b) -- luon nil: xem ghi chu tren
     return nil
 end
 
@@ -254,7 +284,26 @@ local function emit_body_facts(ctx, state)
     local b = ctx.waf_body
     if not b then return end
 
-    if b.scan and b.scan ~= "ok" then
+    -- `scan == "empty"` KHONG duoc phat luat nay.
+    --
+    -- Do tren nam may sau hai gio (25-09): `body_scan_incomplete` chiem
+    -- 1.353/2.236 dong V2 tren 186-126 va 2.160/3.827 tren 28-246 — hon mot nua
+    -- toan bo so lieu cua khung. Va khi boc ra theo `matched=` thi 247/247 luot
+    -- tren 171-96 la `empty`, khong mot luot `spill_*` nao.
+    --
+    -- `empty` la nhanh `get_body_file()` tra nil o `body.lua:113`: than request
+    -- RONG THAT, `len = 0`. Mot POST `api_callback` khong co than la chuyen binh
+    -- thuong (admin-ajax dat tham so o query string) — do la 215/247 luot.
+    --
+    -- Gop "khong co gi de soi" voi "co ma soi khong noi" vao mot luat thi luat
+    -- do khong tra loi duoc cau nao: khong the doc `body_scan_incomplete` de biet
+    -- con vung mu bao lon. Dung ho loi "mot cot tra loi ve mot thu khac voi thu
+    -- dang duoc hoi" da lam `exists=1` bao sai cho moi luot `arg_traversal`.
+    --
+    -- Giu `empty` o TELEMETRY (`waf:v2:scan:empty` van dem, `scan=` van ra log)
+    -- chu chi bo khoi phat luat. Khong bia ra gia tri, cung khong dem mot thu
+    -- binh thuong nhu mot thieu sot.
+    if b.scan and b.scan ~= "ok" and b.scan ~= "empty" then
         policy.emit(state, "body_scan_incomplete", {
             target = "BODY",
             matched = tostring(b.scan),
