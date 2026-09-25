@@ -54,6 +54,16 @@ grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
     # che do bong, day la so do FP TRUC TIEP: no se chan bao nhieu nguoi that.
     auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
     if (auth) a[key]++
+    # `vfy=1` = client co cookie `verified` con han, nen no THOAT fast-path truoc
+    # `session_richness` va dong log ra `richness=-`. Phep dem `auth` o tren se xep
+    # no vao nhom "khong phai auth" — SAI, vi mot client verified la mot client da
+    # qua thach do PoW, tuc gan voi nguoi that hon la voi bot.
+    #
+    # Nghia la cot `auth` la mot SAN, khong phai gia tri that. Tach `vfy` ra thay
+    # vi gop vao `auth`: gop lai se thoi phong con so FP (mot bot da giai PoW cung
+    # co vfy=1), con bo qua thi con so thap hon thuc te. Hai cot doc canh nhau moi
+    # noi du.
+    if (f["vfy"]=="1") v[key]++
     if (f["exc"] != "-") e[f["rule"] "  <- " f["exc"]]++
 }
 END{
@@ -66,14 +76,14 @@ END{
     # luat `observe` score=0, khong chan ai. Con so dung nhung ten cot sai.
     #
     # Chi cot `-> FP` moi la ti le chan sai, va no chi in cho dong CO chan.
-    printf "  %-52s %7s %7s %7s  %s\n", "rule / mode / wact / would",
-           "luot", "auth", "auth%", "y nghia"
+    printf "  %-52s %7s %7s %7s %6s  %s\n", "rule / mode / wact / would",
+           "luot", "auth", "auth%", "vfy", "y nghia"
     for (k in c) {
         chan = (k ~ /wact=block/)
-        printf "  %-52s %7d %7d %6.1f%%  %s\n", k, c[k], a[k]+0,
-               100*(a[k]+0)/c[k],
-               (chan ? ((a[k]+0) ? "-> FP THAT: chan phien dang nhap" \
-                                 : "chan, 0 phien dang nhap") \
+        printf "  %-52s %7d %7d %6.1f%% %6d  %s\n", k, c[k], a[k]+0,
+               100*(a[k]+0)/c[k], v[k]+0,
+               (chan ? (((a[k]+0) || (v[k]+0)) ? "-> XEM KY: chan phien auth/verified" \
+                                               : "chan, 0 auth 0 verified") \
                      : "khong chan — auth% la thanh phan, KHONG phai FP")
     }
     if (length(e)) {
@@ -93,28 +103,51 @@ grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
 f["wact"]=="allow" && f["would"]=="block" {
     auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
     c[f["rule"]]++; if (auth) a[f["rule"]]++
+    if (f["vfy"]=="1") vf[f["rule"]]++
+    # SO NGUON KHAC NHAU, khong phai so luot. Dem /24 chu khong dem IP: mot ke gui
+    # doi IP trong cung dai la mot nguon.
+    split(f["ip"], o, ".")
+    net = o[1] "." o[2] "." o[3]
+    if (!((f["rule"] SUBSEP net) in seen)) {
+        seen[f["rule"], net] = 1
+        srcs[f["rule"]]++
+    }
 }
 END{
     if (!length(c)) { print "  (khong co dong nao — chua luat nao o che do bong ban)"; exit }
-    # NGUONG DAN SO. Voi n nho, "0 auth" va "chua gap ca auth nao" la hai thu
-    # KHONG phan biet duoc — nen cau ket luan cu ("co the xet enforce") noi qua
-    # manh. Do 25-09: ba luat bong tren 171-96 co dung 1 luot moi cai, va toi da
-    # doc "0 auth" nhu mot bang chung. Mot luot khong phai bang chung, no la mot
-    # lan.
+    # HAI NGUONG, va nguong thu hai moi la nguong that.
     #
-    # 30 la moc toi thieu de mot ti le 0% co nghia gi (duoi do, khoang tin cay
-    # 95% cua "0/n" van chua duoi 10%). Khong phai con so thieng — chi la cho
-    # DUNG LAI de khong ket luan tu dan so mot chu so.
-    MIN = 30
-    printf "  %-30s %8s %7s  %s\n", "rule", "se chan", "auth", "ket luan"
+    # `MIN_N` (so luot) la dieu kien de mot ti le 0% co nghia gi ve mat so hoc.
+    # `MIN_SRC` (so /24 khac nhau) la dieu kien de tap mau DAI DIEN.
+    #
+    # Do 25-09 tren 171-96 cho dung ly do can cai thu hai: bay dong `wact=allow
+    # would=block` thuoc BAY request khac nhau (bay `rid=` khac nhau, nen phep dem
+    # luot khong sai) NHUNG ca bay deu tu MOT IP — `107.161.175.27`. Mot ke tan
+    # cong thu nhieu hinh. Dem luot thi thay "bon luat, moi luat 1-2 luot"; dem
+    # nguon thi thay "mot nguon duy nhat", va do moi la thu quyet dinh: mot mau tu
+    # mot nguon khong noi duoc gi ve dan so nguoi dung that, du co bao nhieu luot.
+    #
+    # Dung ho loi da ghi trong memory: `min_names` do SO LUONG chu khong do tinh
+    # DAI DIEN. Nguong 30-luot dat truoc do lap lai chinh loi ay.
+    #
+    # Dem /24 chu khong dem IP: mot ke gui doi IP trong cung dai van la mot nguon.
+    MIN_N   = 30
+    MIN_SRC = 5
+    printf "  %-26s %7s %6s %5s %6s  %s\n",
+           "rule", "se chan", "auth", "vfy", "nguon", "ket luan"
     for (k in c) {
-        if (c[k] < MIN)
-            v = sprintf("DAN SO QUA NHO (n=%d < %d) — chua ket luan duoc", c[k], MIN)
-        else if (a[k]+0 == 0)
-            v = sprintf("n=%d, 0 phien dang nhap — DU de xet enforce", c[k])
+        if (srcs[k] < MIN_SRC)
+            kl = sprintf("CHI %d nguon (/24) — mau KHONG dai dien, bao nhieu luot cung the", srcs[k])
+        else if (c[k] < MIN_N)
+            kl = sprintf("dan so qua nho (n=%d < %d)", c[k], MIN_N)
+        else if ((a[k]+0) == 0 && (vf[k]+0) == 0)
+            kl = sprintf("n=%d tu %d nguon, 0 auth 0 verified — DU de xet enforce",
+                         c[k], srcs[k])
         else
-            v = sprintf("%d phien dang nhap that — KHONG duoc enforce", a[k])
-        printf "  %-30s %8d %7d  %s\n", k, c[k], a[k]+0, v
+            kl = sprintf("%d auth + %d verified — KHONG duoc enforce",
+                         a[k]+0, vf[k]+0)
+        printf "  %-26s %7d %6d %5d %6d  %s\n",
+               k, c[k], a[k]+0, vf[k]+0, srcs[k], kl
     }
 }'
 
