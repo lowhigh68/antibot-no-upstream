@@ -75,6 +75,13 @@ local function unscanned(family, spilled, reason, len)
         fnm      = nil,
         fn_rule  = nil,
         fn_trunc = (family == "multipart") and reason or nil,
+        -- V4. `nil` chu khong `"unknown"`: `arg_origin` chi co nghia khi CO mot
+        -- `arg_rule` de quy ve dau, va o day khong co gi ca vi than CHUA duoc soi.
+        -- Ghi `"unknown"` se lam bang phan bo dem mot than chua soi vao nhom
+        -- "la multipart nhung khong quy duoc" — hai trang thai khac han nhau.
+        arg_origin  = nil,
+        arg_field   = nil,
+        arg_content = nil,
     }
 end
 

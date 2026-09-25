@@ -556,7 +556,104 @@ do
     check("pack/unpack giu up_rule nil", clean.up_rule, nil)
 end
 
+-- ── V4: `arg_origin` — lan khop nam o DAU ───────────────────────────────────
+--
+-- Truoc V4, `arg_rule` den tu `check_args_lower` tren TOAN BO than nhu mot chuoi
+-- phang, nen mot lan khop `../` khong the truy ve dau. Toi da dung dieu do de ha
+-- diem ca nhom multipart, va do la mot duong ne mo cho nguoi ngoai: `../` trong
+-- mot text part hop le van tia toi `$_POST` y nhu urlencoded.
+--
+-- Bay ca duoi day la bay nhom phai TACH RIENG duoc. Ca (3) va (5) la hai ca quyet
+-- dinh: mot la duong ne da dong, mot la nhom FP that.
+io.write("\ncore: V4 arg_origin (vi tri lan khop)\n")
+do
+    -- (1) khong phai multipart -> `flat`, nghia cu khong doi.
+    local flat = scan("path=../../etc/passwd", URLENC)
+    check("urlencoded -> arg_rule", flat.arg_rule, "arg_traversal")
+    check("urlencoded -> aorig flat", flat.arg_origin, "flat")
+    check("urlencoded -> khong co kenh nao", flat.arg_field, nil)
+
+    -- (2) than sach -> khong co `arg_origin` nao. `nil` chu khong `"unknown"`:
+    --     khong co gi de quy ve dau thi khong tra loi, khong doan.
+    local clean = scan(mp({ part(CD .. 'name="a"', "noi dung sach") }))
+    check("than sach -> arg_rule nil", clean.arg_rule, nil)
+    check("than sach -> aorig nil", clean.arg_origin, nil)
+
+    -- (3) DUONG NE DA DONG: `../` trong mot TEXT FIELD cua multipart. Gia tri nay
+    --     di vao `$_POST` GIONG HET urlencoded, nen phai giu nguyen diem.
+    local fld = scan(mp({ part('Content-Disposition: form-data; name="path"',
+                               "../../etc/passwd") }))
+    check("text field -> arg_rule", fld.arg_rule, "arg_traversal")
+    check("text field -> aorig form_field", fld.arg_origin, "form_field")
+    check("text field -> kenh field", fld.arg_field, "arg_traversal")
+    check("text field -> KHONG phai kenh content", fld.arg_content, nil)
+
+    -- (4) `../` trong TEN TEP: nguy hiem that, va da co kenh rieng
+    --     (`up_rule`/`fn_rule`). `aorig` chi la mot nhan o day.
+    local fn = scan(mp({ part(CD .. 'filename="../../a.jpg"') }))
+    check("ten tep -> fn_rule", fn.fn_rule, "arg_traversal")
+    check("ten tep -> aorig filename", fn.arg_origin, "filename")
+
+    -- (5) NHOM FP THAT: `../` trong NOI DUNG mot tep dinh kem. 9/9 ca do duoc
+    --     tren Magento admin upload anh san pham.
+    local cnt = scan(mp({ part(CD .. 'filename="photo.jpg"',
+                               "JFIF....../../khong phai tham so") }))
+    check("noi dung tep -> arg_rule van co", cnt.arg_rule, "arg_traversal")
+    check("noi dung tep -> aorig file_content", cnt.arg_origin, "file_content")
+    check("noi dung tep -> kenh content", cnt.arg_content, "arg_traversal")
+    check("noi dung tep -> KHONG phai kenh field", cnt.arg_field, nil)
+
+    -- (6) CA HAI cung co: form field UU TIEN, nhung kenh content VAN ghi lai.
+    --     Day la ly do ba truong doc lap chu khong mot truong `arg_origin`: mot
+    --     truong buoc phai chon mot, va khi do THU TU PART quyet dinh chon cai
+    --     nao — thu tu part la thu ke gui dieu khien.
+    local both = scan(mp({
+        part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
+        part('Content-Disposition: form-data; name="path"', "../../trong field"),
+    }))
+    check("ca hai -> aorig uu tien form_field", both.arg_origin, "form_field")
+    check("ca hai -> kenh content VAN ghi", both.arg_content, "arg_traversal")
+    check("ca hai -> kenh field ghi", both.arg_field, "arg_traversal")
+
+    -- (7) DAO THU TU PART: ket qua phai Y HET ca (6). Neu khac thi thu tu part
+    --     dang quyet dinh evidence, va do la lo ma ca thiet ke nay di sua.
+    local rev = scan(mp({
+        part('Content-Disposition: form-data; name="path"', "../../trong field"),
+        part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
+    }))
+    check("dao thu tu -> aorig khong doi", rev.arg_origin, both.arg_origin)
+    check("dao thu tu -> kenh content khong doi", rev.arg_content, both.arg_content)
+    check("dao thu tu -> kenh field khong doi", rev.arg_field, both.arg_field)
+end
+
+io.write("\ncore: V4 giao thuc pack/unpack\n")
+do
+    local r = scan(mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") }))
+    local rt, err = core.unpack(core.pack(r))
+    check("V4 pack/unpack khong loi", err, nil)
+    check("V4 giu arg_origin", rt and rt.arg_origin, "file_content")
+    check("V4 giu arg_content", rt and rt.arg_content, "arg_traversal")
+    check("V4 giu arg_field nil", rt and rt.arg_field, nil)
+
+    -- Ban V3 (13 truong thay vi 14) phai bi TU CHOI, khong duoc doc nham thanh
+    -- mot ban V4 thieu truong. `bad_payload` la cau tra loi dung: no CO TEN, di
+    -- vao `waf:v2:scan:bad_payload`, va chi anh huong than da spill.
+    local v3 = core.pack(r):gsub("^V4", "V3")
+    check("ban V3 bi tu choi", select(2, core.unpack(v3)), "bad_payload")
+
+    -- Than SPILL phai cho ket qua Y HET than trong bo nho. Hai duong khac nhau
+    -- (`core.scan` truc tiep vs `worker.scan_file` qua pack/unpack), va mot lech
+    -- giua chung nghia la so lieu cua nhom upload lon noi ve mot thu khac.
+    local body = mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") })
+    local fh = io.open(tmp, "wb"); fh:write(body); fh:close()
+    local sp = core.unpack(worker.scan_file(tmp, MULTI))
+    check("spill: aorig giong memory", sp and sp.arg_origin, r.arg_origin)
+    check("spill: arg_content giong memory", sp and sp.arg_content, r.arg_content)
+    check("spill: arg_field giong memory", sp and sp.arg_field, r.arg_field)
+end
+
 os.remove(tmp)
+
 
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -1487,6 +1487,90 @@ do
     end
 end
 
+-- ── V4: moi gia tri `arg_origin` phai duoc MOT NOI dinh tuyen ───────────────
+--
+-- `body_core.scan()` sinh nam gia tri `arg_origin`, va `waf/init.lua` quyet dinh
+-- moi gia tri se lam gi. Mot gia tri MOI them vao `body_core` ma quen xu ly o
+-- `init.lua` thi roi vao nhanh mac dinh "giu nguyen diem" — an toan, nhung IM
+-- LANG, va nguoi them no se tuong da xu ly.
+--
+-- Phep kiem gac theo mot chieu: moi chuoi `arg_origin = "..."` trong `body_core`
+-- phai xuat hien trong `init.lua`, du chi la trong mot chu thich liet ke. Do la
+-- mot rang buoc YEU (chu thich khong phai ma), nhung no bat duoc dung cai loi
+-- "them mot nhom roi quen bang dinh tuyen" — va rang buoc manh hon (bang tra cuu
+-- dung chung) khong dang cho nam gia tri co dinh.
+io.write("\nhop dong: moi gia tri arg_origin deu duoc init.lua biet\n")
+do
+    local core_src = slurp(SRC .. "waf/body_core.lua") or ""
+    local init_src = slurp(SRC .. "waf/init.lua") or ""
+
+    local seen, n = {}, 0
+    for v in core_src:gmatch('arg_origin = "([%w_]+)"') do
+        if not seen[v] then
+            seen[v] = true
+            n = n + 1
+            if not init_src:find(v, 1, true) then
+                bad("  SAI  `body_core` sinh `arg_origin = \"%s\"` nhung\n" ..
+                    "       `waf/init.lua` khong he nhac ten do — nhom nay roi vao\n" ..
+                    "       nhanh mac dinh TRONG IM LANG.\n", v)
+            else pass = pass + 1 end
+        end
+    end
+    if n == 0 then
+        bad("  SAI  khong tim thay gia tri `arg_origin` nao trong body_core.lua\n")
+    else
+        io.write(string.format("  %d gia tri arg_origin, init.lua biet het\n", n))
+    end
+
+    -- Va chieu quan trong hon: `reroute_body_arg` chi duoc doi luat cho DUNG mot
+    -- nhom. Neu mot ban sua no thanh `or` nhieu nhom thi cac nhom con lai lang le
+    -- mat diem — dung huong loi da mac hai lan (`spill`, roi `multipart`).
+    local rr = init_src:match("local function reroute_body_arg%(b%)(.-)\nend")
+    if not rr then
+        bad("  SAI  khong tim thay `reroute_body_arg` trong waf/init.lua\n")
+    else
+        local groups = 0
+        for _ in rr:gmatch('arg_origin == "([%w_]+)"') do groups = groups + 1 end
+        if groups ~= 1 then
+            bad("  SAI  `reroute_body_arg` doi luat cho %d nhom `arg_origin`.\n" ..
+                "       CHI `file_content` duoc doi. Moi nhom khac phai GIU nguyen\n" ..
+                "       diem — ke ca `unknown`: \"khong biet\" khac \"khong co\".\n",
+                groups)
+        else pass = pass + 1 end
+        if rr:find("arg_origin == \"file_content\"", 1, true) then
+            pass = pass + 1
+        else
+            bad("  SAI  `reroute_body_arg` khong doi luat cho `file_content` —\n" ..
+                "       nhom FP that (9/9 ca Magento upload) se van la\n" ..
+                "       `arg_traversal` voi nhan `attack.traversal`.\n")
+        end
+    end
+
+    -- Giao thuc phai nang phien ban khi them truong: `unpack` gac bang so truong,
+    -- nen mot `pack` moi gap `unpack` cu tra `bad_payload` TRONG IM LANG.
+    local nfields = 0
+    local packblk = core_src:match('return table%.concat%({%s*"V%d"(.-)}, SEP%)')
+    if packblk then
+        for _ in packblk:gmatch("enc%(") do nfields = nfields + 1 end
+    end
+    local ver = core_src:match('return table%.concat%({%s*"(V%d)"')
+    local gate, gaten = core_src:match('f%[1%] ~= "(V%d)" or #f ~= (%d+)')
+    if not (ver and gate) then
+        bad("  SAI  khong doc duoc phien ban giao thuc trong body_core.lua\n")
+    elseif ver ~= gate then
+        bad("  SAI  `pack` ghi %s nhung `unpack` gac o %s — mot ban se luon\n" ..
+            "       tra `bad_payload`.\n", ver, gate)
+    elseif tonumber(gaten) ~= nfields + 1 then
+        bad("  SAI  `pack` ghi %d truong (cong ma phien ban = %d) nhung `unpack`\n" ..
+            "       gac o %s. Lech mot o lam moi truong sau do doc SAI GIA TRI.\n",
+            nfields, nfields + 1, gaten)
+    else
+        pass = pass + 1
+        io.write(string.format("  giao thuc %s: %d truong, unpack gac dung\n",
+                 ver, nfields + 1))
+    end
+end
+
 -- ── `body_core.SCAN_STATUS` phai phu MOI ma `scan` cua BA file ──────────────
 --
 -- Phep kiem nay da bo sot HAI LAN, va moi lan theo mot chieu khac:

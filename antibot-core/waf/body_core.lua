@@ -30,6 +30,15 @@ local upload = require "antibot.waf.upload"
 local MAX_PARTS   = 64     -- so phan multipart soi toi da
 local MAX_HDR_LEN = 2048   -- do dai vung header cua MOT phan
 local MAX_FN_LEN  = 512    -- nguong BAO CAO cho mot gia tri ten file
+-- Do dai NOI DUNG mot phan duoc soi. Mot tep dinh kem 2 MB thi soi tron la chi
+-- phi that tren duong request, va `find_traversal`/`find_wrapper` deu la quet
+-- tuyen tinh. 8 KB chon theo hai lap luan:
+--   · mot payload traversal that dai vai tram byte (do duoc: botnet 77..242 byte),
+--     nen 8 KB du rong de khong bao gio cat mat mot payload tham so.
+--   · mot tep that thi 8 KB dau la header cua dinh dang (PNG/JPEG/PDF/ZIP), noi
+--     `../` khong xuat hien tu nhien — nen cat o day KHONG lam mat tin hieu that.
+-- Khi cat, danh dau `ct` vao `fn_trunc` de doc log biet minh dang xem mot phan.
+local MAX_PART_LEN = 8192
 
 -- Do NGHIEM TRONG, khong phai do "muon xu ly truoc". Cot `fntr=` ton tai de noi
 -- CAN LAM GI TIEP, nen khi cham nhieu tran thi giu lai cai doi hanh dong lon
@@ -426,6 +435,7 @@ local function scan_disposition_headers(head, status)
     local up_rule    = nil
     local first_arg  = nil     -- lan khop `check_args` DAU TIEN (hop dong cu)
     local arg_status = nil     -- `status` tai dung luc do, de giu nghia `stop`
+    local has_filename = false -- phan nay la TEP DINH KEM hay FORM FIELD (V4)
     for i = 1, #lines do
         local line = lines[i]
         local colon = line:find(":", 1, true)
@@ -435,6 +445,11 @@ local function scan_disposition_headers(head, status)
             for j = 1, #params do
                 local p = params[j]
                 if p.name == "filename" or p.name == "filename*" then
+                    -- Dat o day chu khong sau vong lap `variants`: mot
+                    -- `filename=""` rong VAN la mot tep dinh kem theo RFC 7578,
+                    -- va `filename_variants` co the tra bang rong cho no. Doc su
+                    -- CO MAT cua tham so, khong doc gia tri.
+                    has_filename = true
                     local variants = filename_variants(p)
                     for k = 1, #variants do
                         local v = variants[k]
@@ -472,8 +487,14 @@ local function scan_disposition_headers(head, status)
     -- Da quet HET moi dong header cua phan nay. Tra `first_arg` neu co — gia tri
     -- y HET nhu ban cu voi `arg_rule`, nhung `up_rule` gio da thay moi
     -- `filename` trong phan, khong dung o cai dau tien khop `check_args`.
-    if first_arg then return first_arg, arg_status, up_rule end
-    return nil, status, up_rule
+    --
+    -- Gia tri thu TU (`has_filename`) la thu V4 can: no phan biet mot phan la TEP
+    -- DINH KEM voi mot FORM FIELD, va do la thong tin duy nhat trong vung header
+    -- noi len dieu do. RFC 7578: mot phan co `filename` la mot tep; khong co thi
+    -- no la mot truong form thuong, va gia tri cua no di vao `$_POST` y nhu
+    -- urlencoded.
+    if first_arg then return first_arg, arg_status, up_rule, has_filename end
+    return nil, status, up_rule, has_filename
 end
 
 -- Tra ve `vi_tri_ket_thuc_header, da_bi_cat`.
@@ -503,11 +524,53 @@ end
 -- IM LANG o dung nhom do — vd tran `MAX_PARTS`: mot upload 70 phan trong do
 -- phan thu 3 la `shell.php` se thoat o nhanh `n` va bao cao "khong co gi". Do la
 -- khuon loi da cat 4 thang cua `wp_paths.mark()`.
+-- Quet NOI DUNG mot phan, tach khoi vung header.
+--
+-- VI SAO CAN, va day la lo toi tu tao ra roi phai tu dong: `_M.scan` goi
+-- `check_args_lower` tren TOAN BO than nhu mot chuoi phang, nen mot lan khop
+-- `../` khong the truy ve dau. Toi da dung dieu do de HA DIEM ca nhom multipart
+-- (`arg_factor_body` tra 0.05), va do la mot duong ne mo cho nguoi ngoai: ke gui
+-- dat `path=../../etc/passwd` thanh mot text part hop le thi PHP van nap vao
+-- `$_POST` y nhu urlencoded, ma diem tu 35 xuong 1,75.
+--
+-- Cach dung khong phai ha diem theo DINH DANG ma la biet VI TRI. Ba nhom, va
+-- chung khac nhau ve ban chat chu khong ve muc do:
+--
+--   form field    gia tri di vao `$_POST` — GIONG HET urlencoded, nen phai giu
+--                 nguyen diem. Ke gui doi dinh dang khong doi duoc dieu nay.
+--   file content  `../` trong byte cua mot tep dinh kem. Mot anh JPEG chua chuoi
+--                 `../` la chuyen binh thuong; day la nhom FP that (9/9 ca do
+--                 duoc tren Magento admin upload).
+--   filename      da co kenh RIENG (`up_rule` + `fn_rule`), khong dung o day.
+--
+-- `nil` khi phan khong co noi dung hoac bi cat: KHONG suy dien tu su vang mat.
+local function scan_part_content(body, from, to, status)
+    if not from or not to or to < from then return nil, status end
+    local len = to - from + 1
+    if len <= 0 then return nil, status end
+    if len > MAX_PART_LEN then
+        to = from + MAX_PART_LEN - 1
+        status = worse(status, "ct")
+    end
+    local chunk = body:sub(from, to)
+    -- `decode = false`: noi dung mot phan multipart KHONG duoc percent-encode
+    -- (RFC 7578 dung transfer encoding, khong dung percent). Giai ma o day se
+    -- bien `%2e%2e` trong mot tep nhi phan thanh `..` — mot lan khop gia.
+    -- `binary = true`: noi dung tep CO chua byte 0 mot cach hop le, nen khong
+    -- duoc coi byte 0 la `arg_null_byte`.
+    return check_args(chunk, false, true), status
+end
+
 local function scan_one_boundary(body, boundary, initial_status)
     local delim = "--" .. boundary
     local status = initial_status or false
     local up_rule = nil
     local first_arg, first_arg_status = nil, nil
+    -- HAI KENH DOC LAP, khong gop thanh mot. Mot than multipart co the co `../` o
+    -- CA form field LAN noi dung tep; gop lai thi thu tu part quyet dinh ben nao
+    -- thang, va thu tu part la thu ke gui dieu khien — dung lop loi ma `up_rule`
+    -- da phai sua bang `worse_up` o ba tang.
+    local arg_field, arg_content = nil, nil
     local kind, at, after = next_delimiter(body, 1, delim)
     if not kind then return nil, worse(status, "bd"), nil end
 
@@ -516,11 +579,12 @@ local function scan_one_boundary(body, boundary, initial_status)
         -- Kiem `close` TRUOC tran. Dau dong ket thuc khong phai mot phan, va
         -- dem no vao lam upload dung 64 file bi gan `n` — mot "khong biet" gia.
         if kind == "close" then
-            return first_arg, (first_arg and first_arg_status or status), up_rule
+            return first_arg, (first_arg and first_arg_status or status), up_rule,
+                   arg_field, arg_content
         end
         if nparts >= MAX_PARTS then
             return first_arg, worse(first_arg and first_arg_status or status, "n"),
-                   up_rule
+                   up_rule, arg_field, arg_content
         end
         nparts, saw_open = nparts + 1, true
 
@@ -531,8 +595,33 @@ local function scan_one_boundary(body, boundary, initial_status)
         local he, capped = header_separator(body, after, next_at)
         if capped then status = worse(status, "hdr") end
 
-        local rule, part_up
-        rule, status, part_up = scan_disposition_headers(body:sub(after, he - 1), status)
+        local rule, part_up, has_fn
+        rule, status, part_up, has_fn =
+            scan_disposition_headers(body:sub(after, he - 1), status)
+
+        -- NOI DUNG phan: tu sau dong trong den truoc dau phan cach ke tiep.
+        -- `he` tro toi dau dong trong; bo qua chinh dong do (2 byte `\r\n` hoac
+        -- 1 byte `\n`) de khong dua ky tu phan cach vao noi dung.
+        local body_from = he + ((body:sub(he, he + 1) == "\r\n") and 2 or 1)
+        local body_to = (next_at and (next_at - 1)) or #body
+        -- Bo `\r\n` cuoi truoc dau phan cach: theo RFC do la ky tu PHAN CACH,
+        -- khong phai byte cuoi cua noi dung.
+        while body_to >= body_from do
+            local b = body:byte(body_to)
+            if b == 10 or b == 13 then body_to = body_to - 1 else break end
+        end
+        local content_rule
+        content_rule, status = scan_part_content(body, body_from, body_to, status)
+        if content_rule then
+            -- `has_fn` quyet dinh kenh, va do la QUYET DINH DUY NHAT o day. Mot
+            -- phan co `filename` la tep dinh kem (RFC 7578), khong co thi gia tri
+            -- cua no di vao `$_POST`.
+            if has_fn then
+                if not arg_content then arg_content = content_rule end
+            else
+                if not arg_field then arg_field = content_rule end
+            end
+        end
         -- `up_rule`: giu luat NGHIEM TRONG NHAT tren toan bo cac phan.
         up_rule = upload.worse_up(up_rule, part_up)
         -- `arg_rule`: giu lan khop DAU (hop dong cu, so lieu doc theo no).
@@ -552,8 +641,11 @@ local function scan_one_boundary(body, boundary, initial_status)
     end
 
     if saw_open then status = worse(status, "ending") end
-    if first_arg then return first_arg, worse(first_arg_status, "ending"), up_rule end
-    return nil, status, up_rule
+    if first_arg then
+        return first_arg, worse(first_arg_status, "ending"), up_rule,
+               arg_field, arg_content
+    end
+    return nil, status, up_rule, arg_field, arg_content
 end
 
 -- Tra ve `fn_rule, status, up_rule`.
@@ -565,9 +657,16 @@ local function filename_rule(body, family, ct)
     local combined = status or false
     local up_rule = nil
     local first_arg = nil
+    local arg_field, arg_content = nil, nil
     for i = 1, #boundaries do
-        local rule, st, up = scan_one_boundary(body, boundaries[i], combined)
+        local rule, st, up, fld, cnt =
+            scan_one_boundary(body, boundaries[i], combined)
         combined = worse(combined, st)
+        -- Gop hai kenh qua NHIEU boundary, cung ly le nhu `up_rule` o ngay duoi:
+        -- `Content-Type` co the khai nhieu gia tri boundary, va bo sot cho nay thi
+        -- boundary dau tien khop se che cac boundary sau.
+        if fld and not arg_field   then arg_field   = fld end
+        if cnt and not arg_content then arg_content = cnt end
         -- Cung `worse_up` nhu hai tang tren. Tang nay gop qua NHIEU BOUNDARY
         -- (Content-Type khai nhieu gia tri boundary), va bo sot no o day thi
         -- boundary dau tien khop se che cac boundary sau — dung lo ma [27d] bat
@@ -577,7 +676,7 @@ local function filename_rule(body, family, ct)
         -- `check_args` se che cac boundary phia sau khoi `check_filename`.
         if rule and not first_arg then first_arg = rule end
     end
-    return first_arg, combined, up_rule
+    return first_arg, combined, up_rule, arg_field, arg_content
 end
 
 -- Dem `&` thay vi `get_post_args()`: ham do CAT O 100 va khong bao gi, ma 500
@@ -615,7 +714,42 @@ function _M.scan(body, ct)
     local low    = body:lower()
     local arg_rule, at = check_args_lower(low, family == "urlencoded",
                                           family == "multipart" or family == "other")
-    local fn_rule, fn_trunc, up_rule = filename_rule(body, family, ct)
+    local fn_rule, fn_trunc, up_rule, arg_field, arg_content =
+        filename_rule(body, family, ct)
+
+    -- `arg_origin`: NOI lan khop cua `arg_rule` nam o dau. Day la truong V4 them,
+    -- va no ton tai vi mot ly do duy nhat — `arg_rule` den tu `check_args_lower`
+    -- tren TOAN BO than nhu mot chuoi phang, nen khong the truy ve dau.
+    --
+    -- THU TU UU TIEN co y, va no khong phai "cai nao manh hon":
+    --
+    --   form_field    Dat TRUOC `file_content`. Mot than co `../` o CA HAI cho
+    --                 thi nhom quyet dinh la form field — vi gia tri form field
+    --                 di vao `$_POST`, tuc mot tan cong tham so THAT, con `../`
+    --                 trong byte cua mot tep thi khong.
+    --   file_content  Chi khi KHONG co form field nao khop. Day la nhom FP that
+    --                 (Magento admin upload anh, 9/9 ca do duoc).
+    --   filename      `arg_rule` khop trong vung header cua mot phan. Kenh nay da
+    --                 co duong RIENG (`fn_rule` + `up_rule`) nen o day no chi la
+    --                 mot nhan; khong ha diem gi.
+    --   flat          khong phai multipart. Nghia cu, khong doi.
+    --   unknown       la multipart nhung khong quy duoc — parse do (`fn_trunc`),
+    --                 hoac lan khop nam ngoai moi phan (vung giua cac dau phan
+    --                 cach). TUYET DOI khong ha diem: "khong biet" khac "khong co".
+    local arg_origin
+    if not arg_rule then
+        arg_origin = nil
+    elseif family ~= "multipart" then
+        arg_origin = "flat"
+    elseif arg_field then
+        arg_origin = "form_field"
+    elseif fn_rule then
+        arg_origin = "filename"
+    elseif arg_content then
+        arg_origin = "file_content"
+    else
+        arg_origin = "unknown"
+    end
 
     return {
         family = family,
@@ -637,6 +771,13 @@ function _M.scan(body, ct)
         -- du. Khac han `php`, noi `nil` = CHUA SOI va la mot y nghia thu ba thuc
         -- su — dung cho `waf_body_php` phai so `== true`.
         up_rule  = up_rule,
+        -- V4. Ba truong DOC LAP chu khong mot truong `arg_origin` duy nhat: mot
+        -- than co the co `../` o CA form field LAN noi dung tep, va mot truong
+        -- buoc phai chon mot — khi do thu tu part quyet dinh chon cai nao, va thu
+        -- tu part la thu ke gui dieu khien.
+        arg_origin  = arg_origin,
+        arg_field   = arg_field,
+        arg_content = arg_content,
     }
 end
 
@@ -652,14 +793,23 @@ local function enc(v)
 end
 
 function _M.pack(r)
-    -- V3 them `up_rule` (P1). PHAI nang phien ban khi them truong: `unpack` gac
-    -- bang `#f ~= <so truong>`, nen mot ban `pack` moi gap mot ban `unpack` cu se
-    -- tra `bad_payload` — TRONG IM LANG, va chi voi than DA SPILL, tuc dung nhom
-    -- upload lon. Doi phien ban lam cho su khong khop do CO TEN.
+    -- V4 them `arg_origin`, `arg_field`, `arg_content`. PHAI nang phien ban khi
+    -- them truong: `unpack` gac bang `#f ~= <so truong>`, nen mot ban `pack` moi
+    -- gap mot ban `unpack` cu se tra `bad_payload` — TRONG IM LANG, va chi voi
+    -- than DA SPILL, tuc dung nhom upload lon. Doi phien ban lam cho su khong khop
+    -- do CO TEN.
+    --
+    -- (V3 da them `up_rule`; V2 va truoc do khong con tren dan may nao.)
+    --
+    -- Ba truong moi nam O CUOI chu khong xen vao giua: `unpack` doc theo CHI SO,
+    -- nen xen giua se lam moi truong sau no lech mot o — va vi truong dau tien
+    -- (`family`) van dung, loi se trong nhu mot loi du lieu chu khong nhu mot loi
+    -- giao thuc.
     return table.concat({
-        "V3", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
+        "V4", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
         enc(r.arg_rule), enc(r.fnm), enc(r.fn_rule), enc(r.fn_trunc), enc(r.scan),
         enc(r.up_rule),
+        enc(r.arg_origin), enc(r.arg_field), enc(r.arg_content),
     }, SEP)
 end
 
@@ -738,7 +888,15 @@ function _M.unpack(payload)
     if type(payload) ~= "string" then return nil, "bad_payload" end
     local f = split(payload)
     if f[1] == "E"  then return nil, f[2] or "worker", tonumber(f[3]) end
-    if f[1] ~= "V3" or #f ~= 11 then return nil, "bad_payload" end
+    -- CHI nhan V4. KHONG chap nhan V3 nhu mot ban tuong thich nguoc, va do la
+    -- quyet dinh co y: `body_worker.lua` chay trong MOT VM RIENG do
+    -- `ngx.run_worker_thread` dung len, nhung ca hai ben deu nap tu CUNG mot file
+    -- tren dia — nen chung khong bao gio lech phien ban TRU trong khoang giua hai
+    -- lan `nginx -s reload` cua mot lan deploy. Trong khoang do, `bad_payload` la
+    -- cau tra loi DUNG: no co ten, di vao `waf:v2:scan:bad_payload`, va chi anh
+    -- huong than da spill. Chap nhan V3 se lam khoang do trong nhu binh thuong
+    -- trong khi ba truong moi lang le bang nil.
+    if f[1] ~= "V4" or #f ~= 14 then return nil, "bad_payload" end
     return {
         family   = dec(f[2]),
         len      = tonumber(f[3]),
@@ -750,6 +908,9 @@ function _M.unpack(payload)
         fn_trunc = dec_stat(f[9]),
         scan     = dec(f[10]) or "ok",
         up_rule  = dec(f[11]),
+        arg_origin  = dec(f[12]),
+        arg_field   = dec(f[13]),
+        arg_content = dec(f[14]),
     }
 end
 

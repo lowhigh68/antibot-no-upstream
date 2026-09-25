@@ -151,7 +151,8 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s"
+        .. " aorig=%s afld=%s acnt=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -282,6 +283,26 @@ function _M.run_body(ctx)
         -- Bắt buộc phải có: lấy mẫu mà không ghi tỉ lệ ra là làm cho mọi phép
         -- đếm về sau thấp đi 20 lần trong khi log trông vẫn bình thường — đúng
         -- kiểu lệch âm thầm đã mất một buổi để gỡ với cột `status=`.
+        -- V4. `aorig=` la cot TRA LOI cau hoi "lan khop `argrule` nam o dau", va
+        -- thieu no thi ca thiet ke V4 khong do duoc.
+        --
+        --   aorig=flat         khong phai multipart — nghia cu
+        --   aorig=form_field   gia tri di vao `$_POST`, GIU nguyen diem
+        --   aorig=filename     trong ten tep — da co kenh rieng (`uprule`/`fnrule`)
+        --   aorig=file_content trong byte cua tep dinh kem -> doi sang luat
+        --                      `body_file_traversal` (observe, score 0)
+        --   aorig=-            khong co `argrule` nao, hoac than chua duoc soi
+        --   aorig=unknown      LA multipart nhung khong quy duoc: parse do, hoac
+        --                      khop nam ngoai moi phan. GIU nguyen diem.
+        --
+        -- `afld=` va `acnt=` la HAI KENH DOC LAP, khong phai chi tiet cua `aorig=`:
+        -- mot than co the co `../` o CA form field LAN noi dung tep, va khi do
+        -- `aorig=form_field` (uu tien) nhung `acnt=` van co gia tri. Doc rieng hai
+        -- cot moi thay duoc to hop do — gop lai thi thu tu part quyet dinh ben nao
+        -- hien ra, va thu tu part la thu ke gui dieu khien.
+        scrub(b.arg_origin, 16),
+        scrub(b.arg_field, 24),
+        scrub(b.arg_content, 24),
         notable and 1 or BODY_SAMPLE))
 
     fh:close()

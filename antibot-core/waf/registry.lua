@@ -42,6 +42,24 @@ add("body_php_code", "body", "request_body", "generic", "signal", "enforce",
 add("body_scan_incomplete", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 1.00, { "body.scan_incomplete" })
 
+-- Mot luat tham so khop trong NOI DUNG mot tep dinh kem, khong trong tham so.
+--
+-- `action = "observe"` va `score = 0`, va do la ca CHINH SACH chu khong phai mot
+-- muc do thap: mot chuoi `../` trong byte cua mot tep khong phai mot tan cong
+-- tham so. Do 25-09 tren sau may: nhom `<multipart>` la 9/9 ca FP — Magento admin
+-- upload anh san pham, `cl` 1,1-2,0 MB, `../` nam trong noi dung tep.
+--
+-- VI SAO MOT LUAT RIENG chu khong phai `arg_traversal` voi diem ha xuong: mot
+-- `factor` nho VAN de lai nhan (`policy.lua:162` goi `add_labels` theo `action`,
+-- khong theo `score`), nen nhom nay van kich hoat duoc correlation tuong lai. Mot
+-- luat rieng voi nhan rieng thi khong.
+--
+-- Nhan `body.file_content` KHONG trung voi `attack.traversal`: mot correlation ve
+-- sau muon dung bang chung nay phai goi ten no, khong duoc nhan nham no la mot
+-- tan cong tham so. Do la ca diem cua viec tach.
+add("body_file_traversal", "body", "request_body", "generic", "observe", "enforce",
+    0, 1, 0.30, { "body.file_content" })
+
 -- Upload names.  Scores are deliberately non-terminal until fleet data says
 -- otherwise; the exact sub-label is retained for tuning.
 add("upload_apache_config", "upload", "request_body", "generic", "signal", "enforce",

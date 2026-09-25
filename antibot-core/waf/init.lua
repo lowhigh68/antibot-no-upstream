@@ -244,39 +244,44 @@ end
 -- QUA IT de dat nguong. Truc 3 vi vay KHONG duoc hien thuc hoa. Khi telemetry
 -- V2 chay du lau, `waf:v2:rule:arg_traversal` cong voi `waf:v2:scan:*` se cho
 -- phan bo that.
--- GO NOT 25-09: ham nay gio KHONG ha diem cua bat ky nhom nao.
+-- ── DINH TUYEN mot luat tham so tren THAN request theo VI TRI khop ──────────
 --
--- `multipart` da bi go vi cung mot ly do `spill` da bi go truoc do, va lan nay
--- la mot LO TOI TU TAO RA khi vua bit lo kia. `body_core.lua` quet TOAN BO than
--- multipart va khong phan biet lan khop nam o dau:
+-- Lich su cho nay la hai lan toi mo mot duong ne roi phai tu dong:
 --
---   · trong noi dung tep dinh kem   <- day moi la nhom FP that
---   · trong ten tep
---   · trong header cua part
---   · trong MOT FORM FIELD THUONG   <- va day la duong ne
+--   `spill`      than da ra file tam. Ke gui nhoi padding la dat duoc -> go.
+--   `multipart`  dinh dang. Ke gui doi Content-Type la dat duoc -> go.
 --
--- Ke gui chi can dat `path=../../etc/passwd` thanh mot text part hop le trong
--- `multipart/form-data`. PHP van nap no vao `$_POST` y nhu urlencoded, nhung diem
--- traversal tu 35 xuong 1,75. Lap luan cu cua toi ("ke gui khong doi duoc dinh
--- dang ma khong doi ban chat request") SAI: doi dinh dang khong doi viec tham so
--- van tia toi `$_POST`. Va lo nay khong chi o traversal — no ap cho ca
--- `arg_php_wrapper` va `arg_null_byte`.
+-- Bai hoc: mot thuoc tinh chi dung duoc lam co ha diem khi ke gui KHONG chon duoc
+-- no. Ca kich thuoc lan dinh dang deu do ke gui chon. `arg_origin` thi khac — no
+-- noi lan khop nam o dau TRONG than, va vi tri do la ket qua cua viec PHAN TICH
+-- chu khong phai mot khai bao cua ke gui.
 --
--- Chua gay bypass hard-block hom nay (`score_enforcement = false`, va cau cu
--- `waf_body_arg` o trong so 0), nhung no thanh bypass DUNG LUC ai do bat mot
--- trong hai thu do len — tuc mot lo ngu, dung loai kho tim nhat.
+-- BON NHOM, va chung khac nhau ve BAN CHAT chu khong ve muc do:
 --
--- DOI GIA CO Y: chin ca FP `multipart` do duoc (Magento admin upload anh, `../`
--- nam trong noi dung tep) tro lai 35 diem. Chung van `action=allow` vi trong so
--- bang 0, va `auth_session_cap` van che phien dang nhap that. Doi mot FP CHUA
--- gay hai lay viec dong mot duong ne.
+--   flat        khong phai multipart. Nghia cu, diem cu, khong doi gi.
+--   form_field  gia tri di vao `$_POST` — GIONG HET urlencoded. Giu NGUYEN diem.
+--               Day la nhom ma ban `multipart` truoc day mien tru oan.
+--   filename    `../` trong ten tep la nguy hiem THAT (path traversal khi luu
+--               tep). Da co kenh RIENG (`up_rule`/`fn_rule`) nen o day giu nguyen
+--               diem, khong cong them va khong tru.
+--   file_content `../` trong byte cua mot tep dinh kem. Chuyen mot luat KHAC
+--               (`body_file_traversal`, observe, score 0) chu khong ha diem luat
+--               nay — vi mot `factor` nho VAN de lai nhan `attack.traversal`
+--               (`policy.lua:162` goi `add_labels` theo `action`, khong theo
+--               `score`), nen ha diem thi nhom nay van kich hoat duoc correlation
+--               tuong lai. Doi luat la doi CA nhan.
+--   unknown     la multipart nhung khong quy duoc: parse do, hoac lan khop nam
+--               ngoai moi phan. Giu NGUYEN diem — "khong biet" khac "khong co", va
+--               moi lan toi lan hai cai nay la mot lan mo them mot duong ne.
 --
--- HUONG DUNG, chua lam: scanner phai tra them VI TRI khop —
--- `arg_origin = file_content | form_field | filename` — roi chi ha
--- `file_content`. `fn_rule` da lam duoc nua viec (nhan dien rieng ten tep) nhung
--- hien chi phuc vu telemetry. Viec do doi `body_core.lua` cong giao thuc
--- pack/unpack giua worker va tien trinh chinh, nen no la mot commit rieng.
-local function arg_factor_body(b) -- luon nil: xem ghi chu tren
+-- Tra `rule_id` de dung thay cho `b.arg_rule`, hoac `nil` de giu nguyen.
+local function reroute_body_arg(b)
+    if not b or not b.arg_rule then return nil end
+    -- CHI nhom `file_content` duoc doi luat. Moi nhom con lai — ke ca `unknown` —
+    -- giu nguyen luat va nguyen diem.
+    if b.arg_origin == "file_content" and b.arg_rule == "arg_traversal" then
+        return "body_file_traversal"
+    end
     return nil
 end
 
@@ -311,10 +316,24 @@ local function emit_body_facts(ctx, state)
     end
 
     if b.arg_rule then
-        record_arg(state, b.arg_rule, "BODY",
-                   "<" .. tostring(b.family or "other") .. ":" ..
-                   tostring(b.len or -1) .. ">",
-                   arg_factor_body(b))
+        local rerouted = reroute_body_arg(b)
+        if rerouted then
+            -- Luat KHAC, nen `record_arg` khong dung duoc: no tra cuu
+            -- `args.RULES[rule_id]` cho cau tuong thich cu, va `body_file_traversal`
+            -- khong thuoc bang do (no la mot luat chi co trong registry, cung dang
+            -- nhu `body_scan_incomplete`). Phat thang qua policy, va KHONG nap gi
+            -- vao `ctx.waf_body_arg` — do la ca diem: nhom nay khong dong gop diem
+            -- nao cho duong cham diem cu.
+            policy.emit(state, rerouted, {
+                target  = "BODY",
+                matched = "<" .. tostring(b.family or "other") .. ":" ..
+                          tostring(b.len or -1) .. ">",
+            })
+        else
+            record_arg(state, b.arg_rule, "BODY",
+                       "<" .. tostring(b.family or "other") .. ":" ..
+                       tostring(b.len or -1) .. ">")
+        end
     end
 
     if b.php == true then
