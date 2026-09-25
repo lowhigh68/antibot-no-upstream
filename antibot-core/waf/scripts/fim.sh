@@ -95,10 +95,17 @@ chmod 0640  "$CRITLOG" 2>/dev/null || :
 # Hai dieu kien phai CUNG co — `@package WordPress` mot minh co trong ca plugin
 # hop le, con `wp-load|wp-blog-header|wp-config` mot minh co trong moi webshell
 # muon nap WordPress.
+#
+# `find ... -maxdepth 1` chu khong phai `grep -l ... $ROOTS/*.php`. Ban `grep`
+# CHAY DUNG (da kiem tren cay 3 webroot: ca hai cho 3/3), nhung no dua vao hai
+# thu khong noi ra: `$ROOTS` khong quote de shell no glob, va `grep` khong co
+# `-r` nen tang 0 la he qua chu khong phai y dinh. `-maxdepth 1` noi thang y do.
 core_like_list() {
-    grep -l '@package WordPress' $ROOTS/*.php 2>/dev/null \
+    find $ROOTS -maxdepth 1 -name '*.php' -type f 2>/dev/null \
     | while IFS= read -r _f; do
-        grep -qE 'wp-load|wp-blog-header|wp-config' "$_f" 2>/dev/null && printf '%s\n' "$_f"
+        grep -q '@package WordPress' "$_f" 2>/dev/null || continue
+        grep -qE 'wp-load|wp-blog-header|wp-config' "$_f" 2>/dev/null \
+            && printf '%s\n' "$_f"
       done | sort || :
 }
 # MANIFEST dat sau khi biet tier — xem chu thich tai cho gan.
