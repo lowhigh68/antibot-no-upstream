@@ -100,6 +100,16 @@ chmod 0640  "$CRITLOG" 2>/dev/null || :
 # CHAY DUNG (da kiem tren cay 3 webroot: ca hai cho 3/3), nhung no dua vao hai
 # thu khong noi ra: `$ROOTS` khong quote de shell no glob, va `grep` khong co
 # `-r` nen tang 0 la he qua chu khong phai y dinh. `-maxdepth 1` noi thang y do.
+# TRA VE GI, ghi ro vi ten ham noi hep hon thuc te: no liet ke MOI file tang 0
+# co noi dung core, KE CA ten core that (`wp-mail.php` `wp-login.php`
+# `index.php`...) — do 25-09 tren 186-126 la ~14 file x moi site WordPress.
+# `pscore()` van dung vi no chi tra `corelike` BEN TRONG nhanh `del1_core`, ma
+# `del1_core` tra 0 ngay cho moi ten thuoc `core0`. Tap phinh nhung vo hai.
+#
+# DA XET VA BAC viec loc ten core ngay trong ham: danh sach `core0` khi do thanh
+# BAN SAO THU BA (hai ban trong awk, mot trong shell) o mot ngon ngu khac, nen
+# khong co cach kiem tu dong. Them mot ten core moi vao awk ma quen shell thi
+# ham lai tra file do, va hau qua im lang. Doi lai chi la tap nho hon.
 core_like_list() {
     find $ROOTS -maxdepth 1 -name '*.php' -type f 2>/dev/null \
     | while IFS= read -r _f; do
