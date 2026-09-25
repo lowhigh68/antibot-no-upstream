@@ -280,6 +280,75 @@ else
     pass = pass + 1
 end
 
+-- ── 4b. RX_PHP_EXEC: hai ban phai khop TUNG BYTE ────────────────────
+--
+-- `waf/exposed.lua` va `waf/wordpress/paths.lua` moi ben giu mot ban cua cung
+-- mot mau. Trung lap la CO Y: `exposed.lua` chay TRUOC, khong cong host, va phai
+-- dung duoc tren may khong CMS nao (183-139 la code tay) nen no khong duoc phu
+-- thuoc module WordPress.
+--
+-- Nhung trung lap co y van la trung lap: sua mot ben roi quen ben kia thi mot
+-- duoi thuc thi bi chan o `/wp-content/` ma di qua o `/.well-known/`, va khong ai
+-- thay. Day dung ho loi "mot gia tri di qua ranh gioi va hai ben hieu khac nhau"
+-- ma muc 5 duoi day liet ke.
+--
+-- Da xay ra that trong lan them `wellknown_exec` (25-09): moi lan viet lai mau
+-- qua heredoc/printf deu mat mot lop backslash, nen ban dau `exposed.lua` co
+-- `(?=[/;.\]|$)` con `paths.lua` co `(?=[/;.\\]|$)` — lech dung mot ky tu, va
+-- `bash -n` khong thay vi mau nam trong chuoi Lua. Phai sao chep nguyen dong tu
+-- file kia moi dung. Phep kiem nay ghim dieu do lai.
+io.write("\nhop dong: RX_PHP_EXEC (exposed.lua <-> wordpress/paths.lua)\n")
+
+local exp_src  = slurp(SRC .. "waf/exposed.lua")
+local path_src = slurp(SRC .. "waf/wordpress/paths.lua")
+if not exp_src or not path_src then
+    bad("  SAI  khong doc duoc waf/exposed.lua hoac waf/wordpress/paths.lua\n")
+else
+    -- `%[%[(.-)%]%]` lazy: lay dung than long-string, khong an sang dong sau.
+    local a = exp_src:match("RX_PHP_EXEC%s*=%s*%[%[(.-)%]%]")
+    local b = path_src:match("RX_PHP_EXEC%s*=%s*%[%[(.-)%]%]")
+    if not a then
+        bad("  SAI  `exposed.lua` khong con dinh nghia RX_PHP_EXEC dang [[...]]\n")
+    elseif not b then
+        bad("  SAI  `paths.lua` khong con dinh nghia RX_PHP_EXEC dang [[...]]\n")
+    elseif a ~= b then
+        bad("  SAI  hai ban RX_PHP_EXEC DA LECH nhau:\n" ..
+            "       exposed.lua: " .. a .. "\n" ..
+            "       paths.lua  : " .. b .. "\n" ..
+            "       Sua mot ben ma quen ben kia = mot duoi thuc thi bi chan o\n" ..
+            "       /wp-content/ nhung di qua o /.well-known/. Sao chep NGUYEN\n" ..
+            "       DONG tu file kia, dung viet lai bang tay.\n")
+    else
+        pass = pass + 1
+    end
+end
+
+-- ── 4c. Ngoai le .well-known khong duoc mien CA CAY ─────────────────
+--
+-- Ngoai le ACME la bat buoc (mat no = khong gia han duoc chung chi, hong lang le
+-- toi dung ngay het han) nhung no mien DUNG MOT segment. Ban `3366255` viet
+-- `return nil` ngay sau phep kiem PHP, va nam URI lot:
+--     /.well-known/.env  /.well-known/.htaccess  /.well-known/foo/.git/config
+--     /.well-known/acme-challenge/.user.ini  /.well-known/.well-known/.env
+-- Lap luan "noi dung tinh thi an toan" SAI: `.env` la noi dung tinh va no chua
+-- credential database.
+io.write("\nhop dong: .well-known mien mot segment, khong mien cay\n")
+
+if not exp_src then
+    bad("  SAI  khong doc duoc waf/exposed.lua\n")
+else
+    local branch = exp_src:match("if%s+low:sub%(1,%s*#WELL_KNOWN%).-\n%s*end")
+    if not branch then
+        bad("  SAI  khong tim thay nhanh WELL_KNOWN trong exposed.lua\n")
+    elseif not branch:find("RX_DOTFILE") then
+        bad("  SAI  nhanh `.well-known` khong con quet RX_DOTFILE tren phan con lai.\n" ..
+            "       `/.well-known/.env` se di qua — do la credential database, va\n" ..
+            "       `.env` LA noi dung tinh nen lap luan \"tinh thi an toan\" khong cuu.\n")
+    else
+        pass = pass + 1
+    end
+end
+
 -- ── 5. Trang challenge <-> endpoint /antibot/verify ─────────────────
 --
 -- BO TEST NAY RA DOI VI MOT LOI DA SONG RAT LAU MA MOI NUA DEU "DUNG".

@@ -108,8 +108,34 @@ function _M.check(uri)
     -- `/.well-known/resource-that-should-not-exist-whose-status-code-should-not-be-200`
     -- (82 + 16 lần) là phép tự kiểm soft-404 của Chrome. Không đuôi `.php` nên
     -- luật này không chạm tới nó.
+    --
+    -- DOTFILE BEN DUOI `.well-known/` VAN PHAI QUET. Ngoai le mien `.well-known`
+    -- la mien DUNG MOT segment — cai segment bat dau bang dau cham va ACME can —
+    -- KHONG phai mien cay.
+    --
+    -- Loi cua chinh ban `3366255` hom nay: khi them phep kiem PHP toi da khong
+    -- xem lai phep con lai, va lap luan "noi dung tinh" cua toi sai — `.env` LA
+    -- noi dung tinh va no chua credential database. Do tren nam URI:
+    --     /.well-known/.env                       -> LOT
+    --     /.well-known/foo/.git/config            -> LOT
+    --     /.well-known/acme-challenge/.user.ini   -> LOT  (ghi de cau hinh PHP)
+    --     /.well-known/.htaccess                  -> LOT
+    --     /.well-known/.well-known/.env           -> LOT  (long nhau)
+    --
+    -- Cach lam: cat bo tien to `.well-known` roi ap `RX_DOTFILE` len PHAN CON
+    -- LAI. Giu lai dau `/` dan dau (`#WELL_KNOWN - 1`) de nhanh `(?:^|/)` cua
+    -- regex van khop dung voi dotfile ngay sau segment do.
+    --
+    -- Khong lam tang FP: 10 duong dan hop le co luu luong that tren fleet
+    -- (`security.txt` `assetlinks.json` `traffic-advice` `passkey-endpoints`
+    -- `openid-configuration` `tdmrep.json` `change-password` `jwks.json`
+    -- `apple-app-site-association` `gpc.json`) khong co segment nao bat dau bang
+    -- dau cham. Token ACME cung vay — ke ca token co dau cham GIUA
+    -- (`a-b_c.d`), vi `RX_DOTFILE` doi dau cham NGAY SAU `/` hoac dau chuoi.
     if low:sub(1, #WELL_KNOWN) == WELL_KNOWN then
         if ngx.re.find(low, RX_PHP_EXEC, "jo") then return "wellknown_exec" end
+        local rest = low:sub(#WELL_KNOWN - 1)
+        if ngx.re.find(rest, RX_DOTFILE, "jo") then return "dotfile_exposed" end
         return nil
     end
     if ngx.re.find(low, RX_DOTFILE, "jo") then return "dotfile_exposed" end

@@ -221,6 +221,27 @@ local EXPOSED_CASES = {
 {"/.well-known/resource-that-should-not-exist-whose-status-code-should-not-be-200",
  nil, nil, "phep tu kiem soft-404 cua Chrome — khong duoi .php nen di qua"},
 
+-- RANH GIOI BAO VE, phai doc truoc khi tin cac ca duoi day:
+--
+--   NGOAI `acme-challenge/`  -> Lua WAF bao ve, `wellknown_exec` ban that.
+--   BEN TRONG `acme-challenge/` -> Lua KHONG CHAY. `nginx/da_to_openresty.sh`
+--     sinh `location ^~ /.well-known/acme-challenge/` voi
+--     `access_by_lua_block { return; }`, `root /var/www/html`,
+--     `default_type text/plain`, `try_files $uri =404`. Request khong toi Lua,
+--     khong toi Apache, va doc tu `/var/www/html` CHU KHONG phai webroot site.
+--
+-- Nen cac ca `acme-challenge/*.php` duoi day kiem DUNG HANH VI CUA `check()`,
+-- KHONG phai bang chung end-to-end. Chung co gia tri: neu ai do bo
+-- `access_by_lua_block { return; }` hoac doi `^~` thanh prefix thuong thi Lua
+-- lai thay duong nay, va luc do luat phai dung. Nhung dung doc chung thanh
+-- "production dang chan `acme-challenge/index.php`" — production khong chan,
+-- no tra 404 hoac phuc vu file tinh nhu text/plain.
+--
+-- Rui ro con lai o nhanh do, ghi thang: mot `.php` that trong
+-- `/var/www/html/.well-known/acme-challenge/` se bi PHUC VU NHU TEXT — khong
+-- thuc thi, nhung lo noi dung. Kiem dieu nay can integration test o tang NGINX,
+-- khong phai unit test cua `exposed.check()`.
+
 -- NGOAI LE .well-known DA BI THU HEP: tinh thi qua, THUC THI thi chan.
 -- ACME that KHONG BAO GIO yeu cau .php (token Let's Encrypt la base64url khong
 -- duoi), nen moi .php trong acme-challenge la do, 100%.
@@ -237,6 +258,18 @@ local EXPOSED_CASES = {
 {"/.well-known/x.php/y",                  nil, "wellknown_exec", "PATH_INFO"},
 {"/.well-known/acme-challenge/db.sql",    nil, "dump_exposed",
  "dump_exposed chay TRUOC nen no thang — nhan dung hon cho nguoi doc log"},
+-- DOTFILE BEN DUOI .well-known VAN BI QUET. Ngoai le mien DUNG MOT segment,
+-- khong mien cay: `.env` la noi dung tinh nhung chua credential database. Nam ca
+-- nay LOT o ban `3366255` va duoc phat hien khi doc lai chinh ban va do.
+{"/.well-known/.env", nil, "dotfile_exposed", "credential database"},
+{"/.well-known/.htaccess", nil, "dotfile_exposed", ""},
+{"/.well-known/foo/.git/config", nil, "dotfile_exposed", "toan bo ma nguon"},
+{"/.well-known/acme-challenge/.user.ini", nil, "dotfile_exposed",
+ "ghi de cau hinh PHP — nguy hon ca mot shell vi no doi duoc open_basedir"},
+{"/.well-known/.well-known/.env", nil, "dotfile_exposed", "long nhau"},
+{"/.well-known/acme-challenge/a-b_c.d", nil, nil,
+ "token ACME co dau cham GIUA ten — KHONG phai dotfile, phai di qua"},
+
 {"/adminfuns.php/.well-known/acme-challenge/file.php", nil, "dotfile_exposed",
  "KHONG duoc mien: ngoai le chi khop khi /.well-known/ o DAU uri. Ghep ba thu " ..
  "doan (ten webshell + PATH_INFO + duong mien tru), thay tren CA SAU may"},
