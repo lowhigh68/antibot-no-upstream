@@ -112,7 +112,14 @@ do
     local d = policy.decide(st)
     eq("new correlation starts shadow", d.action, "allow")
     eq("new correlation computes block", d.would_action, "block")
-    eq("upload correlation reason", d.reason, "corr_upload_php_payload")
+    -- SUA 25-09 cung voi viec tach hai truc: assertion cu doc
+    -- `d.reason == "corr_upload_php_payload"` TRONG KHI `d.action == "allow"` —
+    -- tuc no ghi lai dung cai loi da sua: mot request khong bi chan mang mot ly do
+    -- chan. Correlation nay o `mode = "shadow"` nen bang chung cua no thuoc truc
+    -- GIA DINH, va `reason` phai la nil.
+    eq("shadow correlation khong dat reason", d.reason, nil)
+    eq("upload correlation would_reason", d.would_reason, "corr_upload_php_payload")
+    eq("would_rule_mode noi ro no dang shadow", d.would_rule_mode, "shadow")
     eq("upload correlation label", st.labels["correlation.upload_php_payload"], true)
 end
 
@@ -194,7 +201,17 @@ do
     local d = policy.decide(st)
     eq("score threshold starts shadow", d.action, "allow")
     eq("score threshold would block", d.would_action, "block")
-    eq("score threshold reason", d.reason, "score_threshold")
+    -- SUA 25-09: assertion cu doc `d.reason == "score_threshold"` trong khi
+    -- `d.action == "allow"`. Nguong diem o `threshold_mode = "shadow"` nen bang
+    -- chung cua no thuoc truc GIA DINH.
+    eq("nguong diem shadow khong dat reason", d.reason, nil)
+    eq("score threshold would_reason", d.would_reason, "score_threshold")
+    -- `score_candidate()` tra `mode = state.config.threshold_mode`, nen
+    -- `would_rule_mode` phai mang dung gia tri do. Neu no ra nil thi
+    -- `score_candidate` khong dat `mode` va mot nguong diem thang
+    -- `better_candidate` se lam `would_rule_mode` khuyet trong khi `would_reason`
+    -- co gia tri — dung kieu hai truong lech nhau ma ban nay di sua.
+    eq("would_rule_mode cua nguong diem", d.would_rule_mode, "shadow")
 end
 
 do
@@ -541,8 +558,11 @@ do
     eq("would_rule_mode noi ro no dang shadow", d.would_rule_mode, "shadow")
     eq("shadow=true khi hai truc lech", d.shadow, true)
 
-    -- (2) Luat enforce ban mot minh: hai truc TRUNG nhau, va do la truong hop
-    --     thuong gap nhat hom nay (moi luat deu enforce).
+end
+
+-- (2) Luat enforce ban mot minh: hai truc TRUNG nhau, va do la truong hop thuong
+--     gap nhat hom nay (moi luat deu enforce).
+do
     local _, st2 = state()
     policy.emit(st2, "dotfile_exposed", { target = "URI" })
     local d2 = policy.decide(st2)
@@ -552,10 +572,14 @@ do
     eq("enforce -> would trung voi that", d2.would_reason, "dotfile_exposed")
     eq("enforce -> shadow=false", d2.shadow, false)
 
-    -- (3) CA HAI cung ban: mot luat shadow diem CAO HON mot luat enforce.
-    --     Day la ca ma ban truoc tron hai truc — `reason` lay tu enforce
-    --     candidate (`wellknown_exec`) nhung `rule_mode` lay tu candidate manh
-    --     nhat (`dotfile_exposed`, shadow). Hai gia tri mo ta HAI RULE.
+end
+
+-- (3) CA HAI cung ban: mot luat shadow diem CAO HON mot luat enforce.
+--     Day la ca ma ban truoc tron hai truc — `reason` lay tu enforce candidate
+--     (`wellknown_exec`) nhung `rule_mode` lay tu candidate manh nhat
+--     (`dotfile_exposed`, shadow). Hai gia tri mo ta HAI RULE, va day la ca DUY
+--     NHAT phan biet duoc hai thiet ke.
+do
     local runtime3 = {
         rules = {
             dotfile_exposed = { mode = "shadow", score = 500 },
