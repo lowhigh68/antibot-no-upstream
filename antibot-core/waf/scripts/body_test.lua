@@ -677,19 +677,39 @@ do
     -- `check_args_lower` quet TOAN THAN va tra luat DAU TIEN khop theo thu tu
     -- `null_byte -> wrapper -> traversal` — thu tu KIEM, khong phai thu tu byte.
     --
-    -- (4a) V6 DOI KET QUA CA NAY, co y. V5 bao `arg_rule = arg_php_wrapper` (luat
-    --      uu tien cao hon, nam trong TEP) va `file_content` — dung nguon cua lan
-    --      khop do, nhung che mat `../` trong FORM FIELD, thu that su vao `$_POST`.
-    --      V6 lay luat tu phan KHONG PHAI TEP truoc: form field thang noi dung tep,
-    --      bat ke thu tu uu tien giua cac luat.
+    -- (4a) Luat MANH hon thang, bat ke nam o vung nao. V5 bao `arg_php_wrapper`
+    --      voi `file_content` — dung luat, nhung ma reroute them wrapper thi `../`
+    --      trong FORM FIELD bi che. Ban dau V6 dao lai: luat ngoai tep LUON thang,
+    --      nen ra `arg_traversal` (35) — va test nay tung GHIM chinh loi do. Review
+    --      26-09: ke gui chi can them mot field `../` la HA DIEM `php://input`
+    --      trong tep (50). Nay: luat giu `arg_php_wrapper`, nhan `unknown` (ngoai
+    --      tep KHONG sach nen khong duoc goi `file_content`), `../` o lai `afld=`.
     local mixed = scan(mp({
         part('Content-Disposition: form-data; name="a"', "../../trong field"),
         part(CD .. 'filename="x.jpg"', "php://input trong tep"),
     }))
-    check("4a: arg_rule lay tu form field", mixed.arg_rule, "arg_traversal")
+    check("4a: field ../ KHONG che wrapper trong tep", mixed.arg_rule, "arg_php_wrapper")
     check("4a: kenh field", mixed.arg_field, "arg_traversal")
     check("4a: kenh content van ghi luat cua tep", mixed.arg_content, "arg_php_wrapper")
-    check("4a: aorig form_field", mixed.arg_origin, "form_field")
+    check("4a: aorig unknown - hai vung deu co luat", mixed.arg_origin, "unknown")
+    check("4a: than van chung minh duoc", mixed.proof, "ok")
+
+    -- (4d) Chieu nguoc lai: NUL THO trong field (chi phep quet ngoai tep thay, vi
+    --      `binary = false`) + `../` trong tep. Khong duoc mat null-byte.
+    local nulmix = scan(mp({
+        part('Content-Disposition: form-data; name="a"', "x\0y"),
+        part(CD .. 'filename="x.jpg"', "JFIF../../trong tep"),
+    }))
+    check("4d: NUL trong field KHONG bi ../ trong tep che", nulmix.arg_rule, "arg_null_byte")
+    check("4d: aorig form_field", nulmix.arg_origin, "form_field")
+
+    -- `ARG_RANK` phai co hang cho MOI luat `check_args` tra ve (contract muc 3 ghim
+    -- moi luat do deu co trong `args.RULES`). Thieu hang thi luat moi tinh la 0 va
+    -- bi luat cu nao cung che — mo lai dung duong ne o (4a).
+    local args_mod = dofile(SRC .. "waf/args.lua")
+    for id in pairs(args_mod.RULES) do
+        check("ARG_RANK co hang cho " .. id, type(core.ARG_RANK[id]), "number")
+    end
 
     -- (4c) Wrapper CHI trong noi dung tep: quy duoc nguon, nhung luat GIU nguyen
     --      — `init.lua` chi doi luat cho `arg_traversal`. Gioi han DA BIET, ghim

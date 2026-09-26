@@ -547,7 +547,8 @@ do
     eq("V6 e2e: filename* -> cau cu",
        string.format("%.4f", c2.waf_body_arg or -1), "0.7500")
 
-    -- (3) Payload trong form field + `../` trong tep: form field thang.
+    -- (3) Payload trong form field + `../` trong tep: CUNG luat, nen luat ngoai tep
+    --     thang — nhan form_field, giu du diem.
     local c3 = run_with_body(core.scan(
         part6(FILE6, "JFIF../../x") ..
         part6('Content-Disposition: form-data; name="path"', "../../etc/passwd") ..
@@ -562,6 +563,20 @@ do
        fired(c4).arg_php_wrapper, true)
     eq("V6 e2e: wrapper trong tep -> KHONG doi luat",
        fired(c4).body_file_traversal, nil)
+
+    -- (5) Review 26-09: `../` trong field + `php://input` trong tep. Ban dau V6 lay
+    --     luat ngoai tep nen ra `arg_traversal` 35 va cau cu 0.75 — ke gui HA DIEM
+    --     bang cach them mot field. Phai giu luat manh hon, du diem o CA HAI duong.
+    local c5 = run_with_body(core.scan(
+        part6(FILE6, "php://input") ..
+        part6('Content-Disposition: form-data; name="path"', "../../etc/passwd") ..
+        CLOSE6, CT6))
+    eq("V6 e2e: field ../ + wrapper trong tep -> arg_php_wrapper",
+       fired(c5).arg_php_wrapper, true)
+    eq("V6 e2e: field ../ + wrapper trong tep -> waf_score",
+       string.format("%.2f", c5.waf_score or -1), "50.00")
+    eq("V6 e2e: field ../ + wrapper trong tep -> cau cu",
+       string.format("%.4f", c5.waf_body_arg or -1), "1.0000")
 end
 
 -- ── `waf/runtime_config.lua` la file NGUOI VAN HANH SUA, nen phai kiem no ────

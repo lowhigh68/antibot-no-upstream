@@ -293,13 +293,19 @@ function _M.run_body(ctx)
         --                      `body_file_traversal` (observe, score 0)
         --   aorig=-            khong co `argrule` nao, hoac than chua duoc soi
         --   aorig=unknown      LA multipart nhung khong quy duoc: parse do, hoac
-        --                      khop nam ngoai moi phan. GIU nguyen diem.
+        --                      khop nam ngoai moi phan. GIU nguyen diem. Tu V6 than
+        --                      chuan tac co luat o CA HAI vung (ngoai tep va trong
+        --                      tep) cung ra day — co y, xem `body_core.scan`.
         --
         -- `afld=` va `acnt=` la HAI KENH DOC LAP, khong phai chi tiet cua `aorig=`:
         -- mot than co the co `../` o CA form field LAN noi dung tep, va khi do
         -- `aorig=form_field` (uu tien) nhung `acnt=` van co gia tri. Doc rieng hai
         -- cot moi thay duoc to hop do — gop lai thi thu tu part quyet dinh ben nao
         -- hien ra, va thu tu part la thu ke gui dieu khien.
+        --
+        -- Tu V6 hai cot nay van di tu PARSER CU (tokenizer rieng, noi dung tep chi
+        -- soi 8 KB dau), khong phai tu phep chung minh. Chi doc chung nhu phan loai
+        -- khi `pf=ok`; `pf` khac `ok` thi chung chi la uoc doan (review 26-09).
         scrub(b.arg_origin, 16),
         scrub(b.arg_field, 24),
         scrub(b.arg_content, 24),

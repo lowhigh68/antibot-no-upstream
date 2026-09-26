@@ -190,6 +190,13 @@ local function check_args_lower(low, decode, binary)
 end
 _M.check_args_lower = check_args_lower
 
+-- Do MANH cua luat tham so, DUNG thu tu `check_args_lower` kiem: null_byte ->
+-- wrapper -> traversal (cung la thu tu diem: 50, 50, 35). `_M.scan` dung no khi
+-- hai phep quet deu co luat. Them luat moi vao `check_args_lower` thi PHAI them
+-- hang o day — `body_test` ghim moi muc cua `args.RULES` deu co hang.
+local ARG_RANK = { arg_traversal = 1, arg_php_wrapper = 2, arg_null_byte = 3 }
+_M.ARG_RANK = ARG_RANK
+
 local function check_args(s, decode, binary)
     if not s or s == "" then return nil end
     if decode == nil then decode = true end
@@ -922,11 +929,16 @@ function _M.scan(body, ct)
     local fn_rule, fn_trunc, up_rule, arg_field, arg_content =
         filename_rule(body, family, ct)
 
-    -- V6. Than chuan tac (`proof = "ok"`) thi `arg_rule` lay tu phan KHONG PHAI
-    -- TEP neu phan do co luat: mot luat trong form field luon thang mot luat trong
-    -- noi dung tep, bat ke thu tu uu tien giua cac luat. Phan do quet voi
-    -- `binary = false`, nen mot NUL tho trong form field gio moi thanh `arg_rule`
+    -- V6. Than chuan tac (`proof = "ok"`) thi quet THEM phan KHONG PHAI TEP, voi
+    -- `binary = false` — nen mot NUL tho trong form field gio moi thanh `arg_rule`
     -- (V5 chi dua no ra `afld=`, tuc telemetry, khong cham diem).
+    --
+    -- Hai phep quet tranh MOT o `arg_rule`: luat MANH hon thang (`ARG_RANK`), ngang
+    -- nhau thi luat ngoai tep thang. Ban dau V6 cho luat ngoai tep LUON thang —
+    -- review 26-09 chi ra do la mot duong HA DIEM do ke gui chon: them mot field
+    -- `../` (35) la che mat `php://input` hay `%00` trong tep (50), ca o policy V2
+    -- lan cau cu (1.00 -> 0.75). Lay luat manh hon thi them gi vao than cung
+    -- khong lam diem giam.
     --
     -- Than KHONG chuan tac thi giu nguyen hanh vi cu: quet phang `binary = true`.
     -- Quet phang `binary = false` o do se bien moi byte 0 trong noi dung tep thanh
@@ -940,7 +952,8 @@ function _M.scan(body, ct)
             local proj = projection(body, ranges)
             local proj_at
             proj_rule, proj_at = check_args(proj, false, false)
-            if proj_rule then
+            if proj_rule and
+               (ARG_RANK[proj_rule] or 0) >= (ARG_RANK[arg_rule] or 0) then
                 -- `at` phai di cung CHUOI no duoc do tren: `legacy_fnm` tim dong
                 -- chua lan khop, va vi tri trong ban chieu khac vi tri trong than.
                 arg_rule, at, fnm_src = proj_rule, proj_at, proj
@@ -976,6 +989,11 @@ function _M.scan(body, ct)
     --                 phai tep da QUET va SACH. Dat SAU hai nhom tren vi hai kenh
     --                 do di tu parser cu: neu chung noi "trong field" thi mot bat
     --                 dong giua hai parser phai nghieng ve phia giu diem.
+    --                 "SACH" la dieu kien CUNG: than co luat o CA HAI vung (luat
+    --                 manh hon trong tep, luat yeu hon ngoai tep) ra `unknown` du
+    --                 ta biet luat manh nam trong tep. Goi no `file_content` thi
+    --                 mot ban sau reroute them wrapper/null-byte se che mat luat
+    --                 ngoai tep — dung duong ne review 26-09 vua dong.
     --   flat          khong phai multipart. Nghia cu, khong doi.
     --   unknown       la multipart nhung khong quy duoc. TUYET DOI khong ha diem:
     --                 "khong biet" khac "khong co".
