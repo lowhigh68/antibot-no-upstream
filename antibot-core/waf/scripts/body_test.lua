@@ -582,6 +582,30 @@ check("shell.php.a.b.c.d.e.f -> bat duoc",
 check("filename*= percent-encoded",
       scan(mp({ part(CD .. "filename*=UTF-8''shell%2Ephp") })).up_rule, "upload_php_ext")
 
+-- Goc nhin CUA PHP (`php_filename`). `tools/wafdiff` do 26-09 tren 3.750 ca: 26/26
+-- ca ten tep nguy hiem PHP thay ma `up_rule` truot deu la NHAY DON.
+check("nhay don: PHP doc filename='shell.php' -> bat",
+      scan(mp({ part("Content-Disposition: form-data; name='a'; filename='shell.php'") })).up_rule,
+      "upload_php_ext")
+check("nhay don: .htaccess -> bat",
+      scan(mp({ part("Content-Disposition: form-data; name='a'; filename='.htaccess'") })).up_rule,
+      "upload_apache_config")
+-- Doi chung `php_filename` voi hanh vi PHP doc tu rfc1867.c.
+check("php_filename: nhay kep", core.php_filename(' form-data; name="a"; filename="x.php"'), "x.php")
+check("php_filename: nhay don", core.php_filename(" form-data; name='a'; filename='x.php'"), "x.php")
+check("php_filename: khong nhay dung o khoang trang",
+      core.php_filename(" form-data; filename=a b.php"), "a")
+check("php_filename: filename SAU CUNG thang",
+      core.php_filename(' form-data; filename="a.jpg"; filename="b.php"'), "b.php")
+check("php_filename: khoang trang truoc = -> KHONG phai filename",
+      core.php_filename(' form-data; name="a"; filename ="x.php"'), nil)
+check("php_filename: dau ; trong nhay khong tach",
+      core.php_filename(" form-data; name='a;b'; filename='x.php'"), "x.php")
+check("php_filename: NUL cat gia tri",
+      core.php_filename(' form-data; name="a"' .. "\0" .. '; filename="x.php"'), nil)
+check("php_filename: PHP khong biet filename*",
+      core.php_filename([[ form-data; name="a"; filename*=UTF-8''x.php]]), nil)
+
 -- KHONG multipart thi khong ap dung — `nil`, khong phai `false`.
 check("urlencoded -> nil", scan("a=1", URLENC).up_rule, nil)
 

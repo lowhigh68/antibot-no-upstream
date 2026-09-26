@@ -503,6 +503,82 @@ local function filename_variants(p)
     return values
 end
 
+-- ── Goc nhin CUA PHP len Content-Disposition (main/rfc1867.c) ────────────────
+--
+-- `parse_parameters` doc tham so theo RFC. PHP doc KHAC, va voi kenh TEN TEP thi
+-- goc nhin cua PHP moi quyet dinh: PHP luu tep theo ten NO doc ra. `tools/wafdiff`
+-- do 26-09 (3.750 ca): 26/26 ca ten tep nguy hiem PHP thay ma `up_rule` truot deu
+-- la NHAY DON — `filename='shell.php'`: `php_ap_getword` hieu nhay don, tokenizer
+-- tren thi khong.
+--
+-- Them goc nhin nay nhu mot BIEN THE nua, KHONG thay goc nhin cu. Kenh ten tep la
+-- kenh BAT: them goc nhin chi tang phat hien, khong mo duong ha diem nao. Vung
+-- `file` — noi duy nhat duoc ha diem — KHONG dung cac ham nay: no doi than o dang
+-- chuan tac ma moi parser doc giong nhau (`file_ranges`).
+--
+-- Mo phong ba ham C (doc ma nguon 26-09):
+--   php_ap_getword(line, stop)  quet toi `stop`, bo qua noi dung trong nhay kep
+--                               HOAC nhay don (gach nguoc + nhay la ky tu thoat),
+--                               roi bo moi `stop` lien tiep.
+--   php_ap_getword_conf(str)    bo khoang trang dau; mo bang nhay -> toi nhay dong
+--                               cung loai; khong nhay -> toi khoang trang.
+--   substring_conf              gach nguoc + (gach nguoc | nhay dong) -> ky tu sau.
+-- Key la phan truoc `=` KHONG trim, so bang `strcasecmp`; `filename` SAU CUNG
+-- thang; khong co `filename*`. Header la chuoi C: NUL cat gia tri.
+local SLASH = 92
+local function php_getword(s, pos, stop)
+    local n, i = #s, pos
+    while i <= n and s:byte(i) ~= stop do
+        local q = s:byte(i)
+        if q == 34 or q == 39 then
+            i = i + 1
+            while i <= n and s:byte(i) ~= q do
+                if s:byte(i) == SLASH and s:byte(i + 1) == q then i = i + 2 else i = i + 1 end
+            end
+            if i <= n then i = i + 1 end
+        else
+            i = i + 1
+        end
+    end
+    local word = s:sub(pos, i - 1)
+    while i <= n and s:byte(i) == stop do i = i + 1 end
+    return word, i
+end
+
+local function php_getword_conf(s)
+    s = s:gsub("^%s+", "")
+    if s == "" then return "" end
+    local q, body = s:byte(1), nil
+    if q == 34 or q == 39 then body = s:sub(2) else q, body = nil, s:match("^%S*") end
+    local out, i, n = {}, 1, #body
+    while i <= n and body:byte(i) ~= q do
+        local c, nx = body:byte(i), body:byte(i + 1)
+        if c == SLASH and (nx == SLASH or (q and nx == q)) then
+            out[#out + 1] = string.char(nx); i = i + 2
+        else
+            out[#out + 1] = string.char(c); i = i + 1
+        end
+    end
+    return table.concat(out)
+end
+
+-- Ten tep PHP doc ra tu MOT gia tri Content-Disposition, hoac nil.
+local function php_filename(cd)
+    local s = (cd:match("^[^%z]*")):gsub("^%s+", "")
+    local pos, n, filename = 1, #s, nil
+    while pos <= n do
+        local pair
+        pair, pos = php_getword(s, pos, 59)              -- `;`
+        while pos <= n and s:sub(pos, pos):match("%s") do pos = pos + 1 end
+        if pair:find("=", 1, true) then
+            local key, kpos = php_getword(pair, 1, 61)   -- `=`
+            if key:lower() == "filename" then filename = php_getword_conf(pair:sub(kpos)) end
+        end
+    end
+    return filename
+end
+_M.php_filename = php_filename
+
 -- Tra ve `status, up_rule`. Luat tham so khop trong gia tri ten tep ghi vao TAP
 -- `fn_set` — vung `filename` cua `_M.scan`.
 --
@@ -549,6 +625,13 @@ local function scan_disposition_headers(head, status, fn_set)
                         rules_in_lower(v:lower(), false, false, fn_set)
                     end
                 end
+            end
+            -- Goc nhin CUA PHP (`php_filename`): mot bien the NUA, cung hai kenh.
+            local pf = php_filename(line:sub(colon + 1))
+            if pf and pf ~= "" then
+                if #pf > MAX_FN_LEN then status = worse(status, "len") end
+                up_rule = upload.worse_up(up_rule, upload.check_filename(pf))
+                rules_in_lower(pf:lower(), false, false, fn_set)
             end
         end
     end
@@ -805,6 +888,11 @@ local function projection(body, ranges)
     out[#out + 1] = body:sub(pos)
     return table.concat(out)
 end
+
+-- CHI de kiem: `tools/wafdiff` doi chieu hai ham nay voi parser multipart THAT
+-- cua PHP (roadmap muc 3). Khong module nao cua WAF goi chung qua `_M`.
+_M.file_ranges = file_ranges
+_M.projection  = projection
 
 function _M.scan(body, ct)
     assert(type(body) == "string", "body_core.scan: body phai la chuoi")
