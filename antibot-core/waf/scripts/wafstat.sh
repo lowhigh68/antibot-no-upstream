@@ -52,8 +52,13 @@ grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
     c[key]++
     # `wpauth=1` hoac `richness>=0.5` = phien nguoi that. Voi mot luat dang o
     # che do bong, day la so do FP TRUC TIEP: no se chan bao nhieu nguoi that.
-    auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
-    if (auth) a[key]++
+    # HAI THUOC KHAC NHAU, khong gop (xem ghi chu day du o muc 0c):
+    #   `wpauth=1`      cookie `wordpress_logged_in_` — chinh chu website
+    #   `richness>=0.5` bang chung phien — mot bot giu cookie cung dat
+    # Do 26-09: mot webshell upload `.php` co `richness=0.56 wpauth=0`. Gop hai
+    # thuoc lam no dem nhu mot FP.
+    if (f["wpauth"]=="1") a[key]++
+    if (f["richness"]!="-" && f["richness"]+0 >= 0.5) rich[key]++
     # `vfy=1` = client co cookie `verified` con han, nen no THOAT fast-path truoc
     # `session_richness` va dong log ra `richness=-`. Phep dem `auth` o tren se xep
     # no vao nhom "khong phai auth" — SAI, vi mot client verified la mot client da
@@ -76,15 +81,20 @@ END{
     # luat `observe` score=0, khong chan ai. Con so dung nhung ten cot sai.
     #
     # Chi cot `-> FP` moi la ti le chan sai, va no chi in cho dong CO chan.
-    printf "  %-52s %7s %7s %7s %6s  %s\n", "rule / mode / wact / would",
-           "luot", "auth", "auth%", "vfy", "y nghia"
+    printf "  %-50s %7s %5s %5s %5s  %s\n", "rule / mode / wact / would",
+           "luot", "wpa", "rich", "vfy", "y nghia"
     for (k in c) {
         chan = (k ~ /wact=block/)
-        printf "  %-52s %7d %7d %6.1f%% %6d  %s\n", k, c[k], a[k]+0,
-               100*(a[k]+0)/c[k], v[k]+0,
-               (chan ? (((a[k]+0) || (v[k]+0)) ? "-> XEM KY: chan phien auth/verified" \
-                                               : "chan, 0 auth 0 verified") \
-                     : "khong chan — auth% la thanh phan, KHONG phai FP")
+        # `wpa` la thuoc duy nhat ket luan duoc mot minh. `rich`/`vfy` chi la co de
+        # DOC TAY — mot bot giu cookie hoac da giai PoW cung co chung.
+        if (chan)
+            yn = ((a[k]+0) > 0) ? "-> FP THAT: chan chinh chu (cookie WP)" \
+               : (((rich[k]+0) || (v[k]+0)) ? "chan, 0 cookie WP — doc tay rich/vfy" \
+                                            : "chan, 0 cookie WP 0 rich 0 vfy")
+        else
+            yn = "khong chan — cac cot nay la thanh phan, KHONG phai FP"
+        printf "  %-50s %7d %5d %5d %5d  %s\n",
+               k, c[k], a[k]+0, rich[k]+0, v[k]+0, yn
     }
     if (length(e)) {
         print "  ---- exception da suppress ----"
@@ -100,9 +110,28 @@ echo "=== 0c. Bong: se chan nhung KHONG chan ==="
 # no phai bang 0 truoc khi bat.
 grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
-f["wact"]=="allow" && f["would"]=="block" {
-    auth = (f["wpauth"]=="1") || (f["richness"]!="-" && f["richness"]+0 >= 0.5)
-    c[f["rule"]]++; if (auth) a[f["rule"]]++
+# `final=block` la DIEU KIEN LOAI. Muc nay tra loi cau hoi "luat nay SE chan nhung
+# KHONG chan", va mot request DA bi chan boi mot tang khac thi khong thuoc cau hoi
+# do — bat `enforce` cho luat nay se khong them mot lan chan nao.
+#
+# Do 26-09 tren 171-96: ba luat bong bao "2 luot, 2 auth" tren SAU dong thuoc HAI
+# request, va ca hai deu `final=block status=403` — `wscore=90` da du nguong voi
+# `class=auth_endpoint x1.5`. Nen chung khong phai "se chan"; chung la "da chan".
+f["wact"]=="allow" && f["would"]=="block" && f["final"]!="block" {
+    # HAI THUOC KHAC NHAU, khong gop thanh mot `auth`:
+    #
+    #   `wpauth=1`      co cookie `wordpress_logged_in_` — bang chung TRUC TIEP la
+    #                   chinh chu website. Day moi la thuoc FP that.
+    #   `richness>=0.5` bang chung PHIEN: cookie, so request, thoi gian. Mot bot giu
+    #                   cookie qua vai request cung dat 0.5+.
+    #
+    # Do 26-09 cho dung ly do phai tach: `107.161.175.27` upload `.php` kem PHP code
+    # trong body vao `auth_endpoint`, `richness=0.56` nhung `wpauth=0`. Gop hai thuoc
+    # lam mot webshell dem nhu mot FP — dung ho loi da ghi trong memory: thuoc dung
+    # la dem trong tap CO COOKIE THAT, khong phai tap co diem cao.
+    c[f["rule"]]++
+    if (f["wpauth"]=="1") a[f["rule"]]++
+    if (f["richness"]!="-" && f["richness"]+0 >= 0.5) rich[f["rule"]]++
     if (f["vfy"]=="1") vf[f["rule"]]++
     # SO NGUON KHAC NHAU, khong phai so luot. Dem /24 chu khong dem IP: mot ke gui
     # doi IP trong cung dai la mot nguon.
@@ -133,21 +162,28 @@ END{
     # Dem /24 chu khong dem IP: mot ke gui doi IP trong cung dai van la mot nguon.
     MIN_N   = 30
     MIN_SRC = 5
-    printf "  %-26s %7s %6s %5s %6s  %s\n",
-           "rule", "se chan", "auth", "vfy", "nguon", "ket luan"
+    printf "  %-24s %7s %5s %5s %5s %6s  %s\n",
+           "rule", "se chan", "wpa", "rich", "vfy", "nguon", "ket luan"
     for (k in c) {
         if (srcs[k] < MIN_SRC)
-            kl = sprintf("CHI %d nguon (/24) — mau KHONG dai dien, bao nhieu luot cung the", srcs[k])
+            kl = sprintf("CHI %d nguon (/24) — mau KHONG dai dien", srcs[k])
         else if (c[k] < MIN_N)
             kl = sprintf("dan so qua nho (n=%d < %d)", c[k], MIN_N)
-        else if ((a[k]+0) == 0 && (vf[k]+0) == 0)
-            kl = sprintf("n=%d tu %d nguon, 0 auth 0 verified — DU de xet enforce",
-                         c[k], srcs[k])
+        else if ((a[k]+0) > 0)
+            # `wpauth` la thuoc duy nhat ket luan duoc MOT MINH: co cookie dang nhap
+            # WordPress nghia la chinh chu website.
+            kl = sprintf("%d co cookie dang nhap WP — KHONG duoc enforce", a[k]+0)
+        else if ((vf[k]+0) > 0 || (rich[k]+0) > 0)
+            # `rich`/`vfy` la CAN DOC TAY, khong ket luan duoc mot minh: mot bot giu
+            # cookie qua vai request cung dat `richness>=0.5`, va mot bot da giai PoW
+            # cung co `vfy=1`.
+            kl = sprintf("0 cookie WP nhung %d rich + %d verified — DOC TAY truoc khi enforce",
+                         rich[k]+0, vf[k]+0)
         else
-            kl = sprintf("%d auth + %d verified — KHONG duoc enforce",
-                         a[k]+0, vf[k]+0)
-        printf "  %-26s %7d %6d %5d %6d  %s\n",
-               k, c[k], a[k]+0, vf[k]+0, srcs[k], kl
+            kl = sprintf("n=%d tu %d nguon, 0 wpa 0 rich 0 vfy — DU de xet enforce",
+                         c[k], srcs[k])
+        printf "  %-24s %7d %5d %5d %5d %6d  %s\n",
+               k, c[k], a[k]+0, rich[k]+0, vf[k]+0, srcs[k], kl
     }
 }'
 
