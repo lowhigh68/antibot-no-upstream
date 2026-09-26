@@ -66,6 +66,15 @@ local function worse(a, b)
 end
 _M.worse = worse
 
+-- B1: cac trang thai `fntr` nghia la kenh ten tep DUNG TRUOC khi xem het cac
+-- part — co the con ten tep chua ai xem. `len`/`disp`/`ending`/`bdup` KHONG
+-- thuoc bang nay: o bon trang thai do moi part tim thay deu da soi tron (xem bang
+-- tren), nen chung la tin hieu chu khong phai vung mu. `init.lua` phat
+-- `body_multipart_incomplete` cho nhom nay. Them mot trang thai moi vao
+-- `STATUS_RANK` thi phai quyet no co thuoc bang nay khong; `contract_test.lua`
+-- ghim moi ma o day phai co trong `STATUS_RANK`.
+_M.FN_INCOMPLETE = { n = true, hdr = true, bd = true, bval = true, bmax = true, nb = true }
+
 local function trim(s)
     return (s:gsub("^[ \t]+", ""):gsub("[ \t]+$", ""))
 end

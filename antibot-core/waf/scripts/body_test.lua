@@ -471,6 +471,51 @@ if capture_ok then
     ngx.log = ngx_log_real
 end
 
+-- ── B3: dem luot dang bay trong pool, THEO server block ─────────────────────
+--
+-- Bo chay gia goi LONG: trong luc lan ngoai con "bay", hai request khac vao pool
+-- — mot cung server block, mot khac. Chay dong bo nen so dem la tat dinh.
+io.write("\nbody: B3 dem luot dang bay\n")
+local function rt3(host, cl)
+    local r = runtime("POST", MULTI, nil, tmp)
+    r.var.server_name, r.var.http_content_length = host, cl
+    return r
+end
+local function real_runner(_, _, _, path, ct) return true, worker.scan_file(path, ct) end
+local inner_a, inner_b
+local outer = {}
+body._probe_with_runner(outer, function(pool, mod, fn, path, ct)
+    local a, b = {}, {}
+    body._probe_with_runner(a, real_runner, rt3("a.test", "2048"))
+    body._probe_with_runner(b, real_runner, rt3("b.test", "1024"))
+    inner_a, inner_b = a.waf_body, b.waf_body
+    return real_runner(pool, mod, fn, path, ct)
+end, rt3("a.test", "4096"))
+check("B3 mot minh: qh=1", outer.waf_body.qh, 1)
+check("B3 mot minh: qw=1", outer.waf_body.qw, 1)
+check("B3 mot minh: qhk=4", outer.waf_body.qhk, 4)
+check("B3 van soi nhu cu: scan=ok", outer.waf_body.scan, "ok")
+check("B3 cung server block dang bay: qh=2", inner_a.qh, 2)
+check("B3 cung server block: qw=2", inner_a.qw, 2)
+check("B3 cung server block: qhk=4+2", inner_a.qhk, 6)
+check("B3 server block khac: qh=1", inner_b.qh, 1)
+check("B3 server block khac: qw=2 (luot cung host da tra)", inner_b.qw, 2)
+check("B3 server block khac: qwk=4+1", inner_b.qwk, 5)
+check("B3 than trong bo nho KHONG qua pool: qh=nil", probe("POST", URLENC, "a=1").qh, nil)
+
+-- Bo chay NEM loi: van phai tra luot, neu khong so dem lech toi het doi worker.
+local real_log = ngx and ngx.log
+if ngx then pcall(function() ngx.log = function() end end) end
+local thrown = {}
+body._probe_with_runner(thrown, function() error("gia lap") end, rt3("a.test", "1024"))
+if ngx then pcall(function() ngx.log = real_log end) end
+check("B3 bo chay nem loi -> scan=spill_thread", thrown.waf_body.scan, "spill_thread")
+check("B3 bo chay nem loi -> van ghi qh", thrown.waf_body.qh, 1)
+local after = {}
+body._probe_with_runner(after, real_runner, rt3("a.test", "1024"))
+check("B3 sau loi van tra luot: qw=1", after.waf_body.qw, 1)
+check("B3 sau loi van tra luot: qh=1", after.waf_body.qh, 1)
+
 
 -- ══ P1: `up_rule` di TRON duong tren THAN MULTIPART THAT ════════════
 --

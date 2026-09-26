@@ -1637,6 +1637,35 @@ do
     end
 end
 
+-- ── B1: moi ma trong `FN_INCOMPLETE` phai la trang thai bo quet SINH RA ──────
+--
+-- Go sai mot ma (`hdrs`, `bmx`) thi `body_multipart_incomplete` khong bao gio ban
+-- cho nhom do — mot vung mu duoc khai bao ma khong ai nghe thay.
+io.write("\nhop dong: FN_INCOMPLETE chi chua ma co trong STATUS_RANK\n")
+do
+    local core_src = slurp(SRC .. "waf/body_core.lua") or ""
+    local rank = core_src:match("local STATUS_RANK = (%b{})") or ""
+    local inc  = core_src:match("_M%.FN_INCOMPLETE = (%b{})")
+    if not inc then
+        bad("  SAI  khong tim thay `_M.FN_INCOMPLETE = {...}` trong body_core.lua\n")
+    else
+        local known = {}
+        for k in rank:gmatch("([%w_]+)%s*=%s*%d") do known[k] = true end
+        local n = 0
+        for k in inc:gmatch("([%w_]+)%s*=%s*true") do
+            n = n + 1
+            if known[k] then
+                pass = pass + 1
+            else
+                bad("  SAI  `FN_INCOMPLETE.%s` khong co trong `STATUS_RANK` — ma do khong\n" ..
+                    "       bao gio duoc sinh, nen B1 khong bao gio ban cho no.\n", k)
+            end
+        end
+        if n == 0 then bad("  SAI  `FN_INCOMPLETE` rong\n") end
+        io.write(string.format("  %d ma, deu la trang thai co that\n", n))
+    end
+end
+
 -- ── 4d. `max_field` chi duoc dat ten field CO TRONG compute.lua ──────
 --
 -- Muc tren nhan dang gan gian tiep `max_field(ctx, "<ten>", v)`. Dieu do mo mot

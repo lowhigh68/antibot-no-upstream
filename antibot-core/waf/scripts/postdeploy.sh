@@ -130,3 +130,48 @@ if [ -s "$J" ]; then
       c[f["action"] "  reason=" r "  waf_wp_path=" p]++ }
     END { printf "  # antibot.log cung ts+ip+domain: %d dong\n", n; for (k in c) printf "  %-60s %6d\n", k, c[k] }'
 fi
+
+# Roadmap muc 2, GIAI DOAN DO (27-09): ghi lai phan mu / chua xac dinh, quyet sau
+# tu chinh so lieu nay — chinh sach theo route (B2) va ngan sach hang doi (B3).
+echo "=== 8. B1: than multipart KHONG soi het (body_multipart_incomplete), da nhan smp ==="
+B1='{ why = "" }
+f["ct"] == "multipart" {
+    if (f["scan"] != "ok" && f["scan"] != "empty" && f["scan"] != "") why = f["scan"]
+    else if (f["fntr"] ~ /^(n|hdr|bd|bval|bmax|nb)$/) why = "fntr_" f["fntr"]
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0 }'
+grep -F '[waf-body]' "$W" | awk "$P$B1"'
+why != "" { r[why] += s; t += s }
+END { if (!t) { print "  (khong co)"; exit }
+      for (k in r) printf "  %-16s %6d\n", k, r[k]
+      printf "  ---- tong %d. 25 nhom lon nhat (luot / ly do / domain / route / lop):\n", t }'
+grep -F '[waf-body]' "$W" | awk "$P$B1"'
+why != "" { g[why "  " f["domain"] "  " f["method"] " " f["uri"] "  class=" f["class"] " vfy=" f["vfy"]] += s }
+END { for (k in g) printf "%d\t%s\n", g[k], k }' | sort -t"$(printf '\t')" -k1,1nr | head -25 \
+| awk -F'\t' '{ printf "  %6d  %s\n", $1, $2 }'
+
+echo "=== 9. B3: hang doi soi file tam (than spill; moi luot deu ghi, smp=1) ==="
+grep -F '[waf-body]' "$W" | grep -F ' qw=' | awk "$P"'
+f["qw"] != "-" && f["qw"] != "" {
+    n++; st[f["scan"]]++
+    qw = f["qw"] + 0; qh = f["qh"] + 0; ms = (f["qms"] == "-") ? -1 : f["qms"] + 0
+    if (qw > mw) mw = qw
+    if (qh > mh) mh = qh
+    if (ms > mm) mm = ms
+    if (f["qwk"] + 0 > mk) mk = f["qwk"] + 0
+    for (i = 0; i <= 4; i++) if (qh > 2 ^ i) over[i]++
+    if (qw > 64) w64++
+    if (qw > 128) w128++
+    if (ms > 1000) s1++
+    if (ms > 5000) s5++
+    if (qh > hmax[f["domain"]]) hmax[f["domain"]] = qh
+}
+END {
+    if (!n) { print "  (khong co luot nao qua pool)"; exit }
+    printf "  %d luot qua pool:", n; for (k in st) printf "  scan=%s %d", k, st[k]; print ""
+    printf "  qw (ca worker) lon nhat %d   >64: %d   >128 (sat tran hang doi): %d\n", mw, w64, w128
+    printf "  qh (mot server block) lon nhat %d\n", mh
+    printf "  neu moi server block chi duoc K luot dang bay, so luot SE VUOT:"
+    for (i = 0; i <= 4; i++) printf "  K=%d:%d", 2 ^ i, over[i]; print ""
+    printf "  qms lon nhat %d ms   >1s: %d   >5s: %d   KiB dang bay lon nhat (worker): %d\n", mm, s1, s5, mk
+    for (d in hmax) if (hmax[d] > 1) printf "  qh lon nhat %3d  %s\n", hmax[d], d
+}'

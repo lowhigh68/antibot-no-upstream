@@ -495,13 +495,50 @@ do
     eq("scan=empty KHONG phat body_scan_incomplete", fired, false)
 
     -- Con `spill_thread` thi PHAI phat: do moi la "co ma soi khong noi".
-    local blind_ctx = run_with_body({ family = "multipart", spill = true,
-                                      len = -1, scan = "spill_thread" })
-    local blind = false
-    for i = 1, #(blind_ctx.waf_hits or {}) do
-        if blind_ctx.waf_hits[i].rule == "body_scan_incomplete" then blind = true end
+    local function hits_by_rule(c)
+        local out = {}
+        for i = 1, #(c.waf_hits or {}) do out[c.waf_hits[i].rule] = c.waf_hits[i] end
+        return out
     end
-    eq("scan=spill_thread VAN phat body_scan_incomplete", blind, true)
+    local blind = hits_by_rule(run_with_body({ family = "urlencoded", spill = true,
+                                               len = -1, scan = "spill_thread" }))
+    eq("scan=spill_thread VAN phat body_scan_incomplete",
+       blind.body_scan_incomplete ~= nil, true)
+    eq("than khong phai multipart KHONG phat body_multipart_incomplete",
+       blind.body_multipart_incomplete, nil)
+
+    -- B1 (roadmap muc 2): multipart KHONG soi het di luat RIENG — observe, diem
+    -- 0, `matched` la ly do. Chinh sach theo route chon sau tu so lieu.
+    local mpc = run_with_body({ family = "multipart", spill = true, len = -1,
+                                scan = "spill_thread", fn_trunc = "spill_thread" })
+    local mp = hits_by_rule(mpc)
+    eq("B1 multipart khong soi duoc -> body_multipart_incomplete",
+       mp.body_multipart_incomplete and mp.body_multipart_incomplete.matched, "spill_thread")
+    eq("B1 multipart khong soi duoc -> KHONG phat them body_scan_incomplete",
+       mp.body_scan_incomplete, nil)
+    eq("B1 la observe",
+       mp.body_multipart_incomplete and mp.body_multipart_incomplete.action, "observe")
+    eq("B1 khong cong diem", mpc.waf_score, 0)
+    local core_b1 = require "antibot.waf.body_core"
+    for code in pairs(core_b1.FN_INCOMPLETE) do
+        local h = hits_by_rule(run_with_body({ family = "multipart", spill = false,
+                                               len = 900, scan = "ok", fn_trunc = code }))
+        eq("B1 fntr=" .. code .. " -> body_multipart_incomplete",
+           h.body_multipart_incomplete and h.body_multipart_incomplete.matched,
+           "fntr_" .. code)
+    end
+    for _, code in ipairs({ "len", "disp", "ending", "bdup" }) do
+        local h = hits_by_rule(run_with_body({ family = "multipart", spill = false,
+                                               len = 900, scan = "ok", fn_trunc = code }))
+        eq("B1 fntr=" .. code .. " (da soi tron) -> KHONG phat",
+           h.body_multipart_incomplete, nil)
+    end
+    local clean = hits_by_rule(run_with_body({ family = "multipart", spill = false,
+                                               len = 900, scan = "ok", fn_trunc = false }))
+    eq("B1 multipart soi het -> KHONG phat", clean.body_multipart_incomplete, nil)
+    local mt = hits_by_rule(run_with_body({ family = "multipart", spill = false,
+                                            len = 0, scan = "empty", fn_trunc = "empty" }))
+    eq("B1 multipart RONG -> KHONG phat", mt.body_multipart_incomplete, nil)
 
     -- ── V7 dau-cuoi: body_core -> init.lua -> policy ─────────────────────────
     --

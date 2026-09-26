@@ -42,6 +42,17 @@ add("body_php_code", "body", "request_body", "generic", "signal", "enforce",
 add("body_scan_incomplete", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 1.00, { "body.scan_incomplete" })
 
+-- B1 (roadmap muc 2): than MULTIPART khong soi het — khong soi duoc (`scan` khac
+-- ok/empty) HOAC kenh ten tep dung truoc khi xem het cac part
+-- (`body_core.FN_INCOMPLETE`). Tach khoi `body_scan_incomplete` vi multipart la
+-- noi tep di vao; chinh sach theo route cho nhom nay (B2) chon SAU, con cac than
+-- khac giu luat cu.
+--
+-- `observe`, diem 0: GIAI DOAN DO. Nguoi dung 27-09 — phan chua xac dinh chinh
+-- xac thi ghi lai roi lay log xu ly; chua gia dinh "multipart = upload".
+add("body_multipart_incomplete", "body", "request_body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "body.multipart_incomplete" })
+
 -- Mot luat tham so khop trong NOI DUNG mot tep dinh kem, khong trong tham so.
 --
 -- `action = "observe"` va `score = 0`, va do la ca CHINH SACH chu khong phai mot

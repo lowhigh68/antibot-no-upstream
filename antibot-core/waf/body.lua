@@ -88,6 +88,51 @@ local function default_runner(pool, module_name, fn, ...)
     return ngx.run_worker_thread(pool, module_name, fn, ...)
 end
 
+-- ── B3: luot soi dang bay trong pool — GIAI DOAN DO (roadmap muc 2) ─────────
+--
+-- `thread_pool` va hang doi cua no la cua TUNG worker (nginx dung pool rieng
+-- trong moi worker), nen dem cung o day: bang Lua cap module, song va chet cung
+-- worker. KHONG ghi shared dict — khoa theo host la thu ke gui chon, con bang
+-- trong worker thi khong co gi ro ri qua reload, khong can TTL.
+--
+-- Khoa la `server_name`: ten DAU cua server block da khop, nen moi alias cua mot
+-- site chung mot so dem, va Host ngau nhien roi vao server mac dinh thay vi de
+-- ra mot khoa moi moi lan.
+--
+-- CHUA CO NGUONG. Nguoi dung 27-09: phan chua xac dinh chinh xac thi ghi lai roi
+-- lay log xu ly. Nen o day chi DO — cot `qh`/`qw`/`qhk`/`qwk`/`qms` cua dong
+-- `[waf-body]`. Ngan sach (va 503 kem Retry-After khi vuot, nguoi dung chon
+-- 27-09) dat SAU, tu chinh so lieu do.
+local inflight = { n = 0, kb = 0, host = {} }
+
+local function acquire(key, kb)
+    local h = inflight.host[key]
+    if not h then h = { n = 0, kb = 0 }; inflight.host[key] = h end
+    h.n, h.kb = h.n + 1, h.kb + kb
+    inflight.n, inflight.kb = inflight.n + 1, inflight.kb + kb
+    return { qh = h.n, qw = inflight.n, qhk = h.kb, qwk = inflight.kb }
+end
+
+local function release(key, kb)
+    local h = inflight.host[key]
+    if h then
+        h.n, h.kb = h.n - 1, h.kb - kb
+        if h.n <= 0 then inflight.host[key] = nil end
+    end
+    inflight.n, inflight.kb = inflight.n - 1, inflight.kb - kb
+end
+
+local function stamp(b, q)
+    for k, v in pairs(q) do b[k] = v end
+    return b
+end
+
+local function clock_ms(rt)
+    if not rt.now then return nil end
+    if rt.update_time then rt.update_time() end
+    return rt.now() * 1000
+end
+
 local function probe(ctx, runner, rt)
     rt = rt or ngx
 
@@ -119,24 +164,37 @@ local function probe(ctx, runner, rt)
         return
     end
 
-    local ok, payload = runner(THREAD_POOL, WORKER_MODULE, "scan_file", path, ct)
+    -- B3: dem TRUOC khi dua vao pool, tra NGAY khi co ket qua. `pcall` de mot loi
+    -- nem ra tu bo chay van tra luot — neu khong, so dem lech toi het doi worker.
+    -- Loi nem ra tinh nhu goi thread that bai (`spill_thread`).
+    local key = rt.var.server_name or "-"
+    local kb = math.floor((tonumber(rt.var.http_content_length) or 0) / 1024)
+    local q = acquire(key, kb)
+    local t0 = clock_ms(rt)
+    local called, ok, payload = pcall(runner, THREAD_POOL, WORKER_MODULE,
+                                      "scan_file", path, ct)
+    local t1 = clock_ms(rt)
+    release(key, kb)
+    if t0 and t1 then q.qms = t1 - t0 end
+    if not called then ok, payload = false, ok end
+
     if not ok then
         local reason = tostring(payload or "spill_thread")
         if reason ~= "nothread" then reason = "spill_thread" end
         log_once(reason, payload)
-        ctx.waf_body = unscanned(family, true, reason)
+        ctx.waf_body = stamp(unscanned(family, true, reason), q)
         return
     end
 
     local result, err, known_len = core.unpack(payload)
     if not result then
         log_once(err or "spill_worker", known_len)
-        ctx.waf_body = unscanned(family, true, err or "spill_worker", known_len)
+        ctx.waf_body = stamp(unscanned(family, true, err or "spill_worker", known_len), q)
         return
     end
 
     result.spill, result.source = true, "file"
-    ctx.waf_body = result
+    ctx.waf_body = stamp(result, q)
 end
 
 function _M.probe(ctx)

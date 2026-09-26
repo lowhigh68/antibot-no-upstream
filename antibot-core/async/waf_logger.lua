@@ -159,7 +159,7 @@ function _M.run_body(ctx)
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
         .. " class=%s richness=%s vfy=%d scan=%s nf=%s fl=%s fn=%s fntr=%s uprule=%s"
-        .. " pf=%s smp=%d\n",
+        .. " pf=%s qh=%s qw=%s qhk=%s qwk=%s qms=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(ctx),
@@ -290,6 +290,21 @@ function _M.run_body(ctx)
         -- Moi gia tri khac `ok` la GIU NGUYEN DIEM: khong co vung `fl=`, ca than
         -- nam o `nf=`. Cot nay ton tai de do upload THAT hong o buoc nao.
         scrub(b.proof, 8),
+        -- B3 (roadmap muc 2, GIAI DOAN DO): hang doi soi file tam cua worker nay
+        -- luc than nay vao pool. `-` = than khong qua pool (trong bo nho, rong).
+        --   qh=   so luot dang bay cua CHINH server block nay trong worker, ke ca
+        --         luot nay
+        --   qw=   tong so luot dang bay trong worker — pool co 2 thread + hang doi
+        --         128, qua 130 thi `scan=spill_thread`
+        --   qhk=  KiB dang bay (theo Content-Length) cua server block nay
+        --   qwk=  KiB dang bay cua ca worker
+        --   qms=  ms tu luc dua vao pool toi luc co ket qua: cho + doc + soi
+        -- Chua co nguong nao — chon tu chinh cac cot nay (`postdeploy.sh` muc 9).
+        b.qh and tostring(b.qh) or "-",
+        b.qw and tostring(b.qw) or "-",
+        b.qhk and tostring(b.qhk) or "-",
+        b.qwk and tostring(b.qwk) or "-",
+        b.qms and string.format("%d", math.floor(b.qms + 0.5)) or "-",
         -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
         -- `smp=20` = nó đại diện cho 20 request cùng loại.
         --

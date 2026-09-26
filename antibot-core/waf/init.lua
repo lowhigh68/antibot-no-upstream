@@ -4,6 +4,7 @@ local wp_paths  = require "antibot.waf.wordpress.paths"
 local exposed   = require "antibot.waf.exposed"
 local args      = require "antibot.waf.args"
 local body      = require "antibot.waf.body"
+local body_core = require "antibot.waf.body_core"
 local upload    = require "antibot.waf.upload"
 local registry  = require "antibot.waf.registry"
 local policy    = require "antibot.waf.policy"
@@ -223,7 +224,17 @@ local function emit_body_facts(ctx, state)
     -- Giu `empty` o TELEMETRY (`waf:v2:scan:empty` van dem, `scan=` van ra log)
     -- chu chi bo khoi phat luat. Khong bia ra gia tri, cung khong dem mot thu
     -- binh thuong nhu mot thieu sot.
-    if b.scan and b.scan ~= "ok" and b.scan ~= "empty" then
+    --
+    -- B1: than MULTIPART khong soi het di luat RIENG (`registry.lua`). `matched`
+    -- la LY DO — ma `scan` khi khong soi duoc, `fntr_<ma>` khi kenh ten tep dung
+    -- giua chung — khong bao gio la noi dung than.
+    local blind = b.scan and b.scan ~= "ok" and b.scan ~= "empty"
+    if b.family == "multipart" and (blind or body_core.FN_INCOMPLETE[b.fn_trunc]) then
+        policy.emit(state, "body_multipart_incomplete", {
+            target = "BODY",
+            matched = blind and tostring(b.scan) or ("fntr_" .. tostring(b.fn_trunc)),
+        })
+    elseif blind then
         policy.emit(state, "body_scan_incomplete", {
             target = "BODY",
             matched = tostring(b.scan),
