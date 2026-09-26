@@ -672,17 +672,40 @@ do
     check("thieu dong ket thuc -> fields_complete false", ne.fields_complete, false)
     check("thieu dong ket thuc -> KHONG reroute", ne.arg_origin ~= "file_content", true)
 
-    -- (4) HAI KENH mang HAI LUAT khac nhau. `arg_rule` la luat uu tien cao hon
-    --     (`arg_php_wrapper`), nen khong kenh nao khop CUNG luat -> `unknown`.
-    --     Ban truoc viet `elseif arg_field then` nen se bao `form_field` — SAI
-    --     NGUON, va telemetry noi ve mot thu khac.
+    -- (4) HAI KENH mang HAI LUAT khac nhau.
+    --
+    -- `check_args_lower` quet TOAN THAN va tra luat DAU TIEN khop theo thu tu
+    -- `null_byte -> wrapper -> traversal` — thu tu KIEM, khong phai thu tu byte.
+    -- Nen `arg_rule` la luat uu tien cao nhat co mat o bat ky dau trong than.
+    --
+    -- (4a) Mot kenh VAN trung `arg_rule`: quy duoc nguon, va quy DUNG.
+    --      `php://` that su nam trong noi dung tep, nen `file_content` la cau tra
+    --      loi dung. Ban dau toi viet ca nay va mong `unknown` — dung sai vi du:
+    --      "hai kenh khac luat" khong dong nghia "khong quy duoc".
     local mixed = scan(mp({
         part('Content-Disposition: form-data; name="a"', "../../trong field"),
         part(CD .. 'filename="x.jpg"', "php://input trong tep"),
     }))
-    check("hai luat khac nhau -> arg_rule la wrapper",
+    check("4a: arg_rule la luat uu tien cao hon", mixed.arg_rule, "arg_php_wrapper")
+    check("4a: kenh field mang luat khac", mixed.arg_field, "arg_traversal")
+    check("4a: kenh content trung arg_rule", mixed.arg_content, "arg_php_wrapper")
+    check("4a: quy duoc nguon -> file_content", mixed.arg_origin, "file_content")
+    -- Va no KHONG duoc reroute: chi `arg_traversal` co so lieu de tach. Day la
+    -- gioi han DA BIET, ghim lai de mot ban sau khong lang le mo rong reroute.
+    check("4a: wrapper trong noi dung tep GIU nguyen luat",
           mixed.arg_rule, "arg_php_wrapper")
-    check("hai luat khac nhau -> aorig unknown", mixed.arg_origin, "unknown")
+
+    -- (4b) KHONG kenh nao trung `arg_rule`: day moi la ca `unknown` that.
+    --      `arg_rule = arg_php_wrapper` (tu vung HEADER cua part, qua
+    --      `check_args` tren ten tep), nhung hai kenh NOI DUNG chi co traversal.
+    local nomatch = scan(mp({
+        part(CD .. 'filename="php://input"', "../../trong noi dung tep"),
+        part('Content-Disposition: form-data; name="a"', "../../trong field"),
+    }))
+    check("4b: arg_rule la wrapper (tu ten tep)",
+          nomatch.arg_rule, "arg_php_wrapper")
+    check("4b: khong kenh noi dung nao trung -> quy qua fn_rule",
+          nomatch.arg_origin, "filename")
 
     -- (5) NUL THO trong mot form field van phai bat duoc. `binary = is_file` nen
     --     form field dung `binary = false`; ban truoc hardcode `true` va bo qua.
