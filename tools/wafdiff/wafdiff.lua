@@ -8,19 +8,31 @@
 --   P6  NGUY HIEM  luat tham so trong mot gia tri `$_POST` phai co o `nonfile`.
 --   P7  NGUY HIEM  luat trong BAT KY byte PHP thay (noi dung tep, ten tep) phai co
 --                  o IT NHAT mot vung — khong vung mu.
+--   P8  NGUY HIEM  luat trong ten tep PHP doc ra (`full_path`, TRUOC basename) phai
+--                  o vung `filename`; va khi `pf=ok` ca o `nonfile` — header khong
+--                  bao gio la noi dung tep. P7 chi hoi HOP cac vung nen khong thay
+--                  "dung luat, sai vung".
 --   P5  NGUY HIEM  ten tep PHP thay (sau basename) ma `upload.check_filename` bat
 --                  thi `up_rule` cua WAF phai nghiem trong it nhat bang.
+--   P9  LOI        luat trong noi dung tep PHP: `pf=ok` -> o vung `file`; khong ->
+--                  o `nonfile` (quet phang).
 --   P3  LOI        spill (worker, qua pack/unpack) = memory (`core.scan`).
---   P2  THONG TIN  khoang tep cua WAF vs noi dung `$_FILES` — lech la FP-side.
--- Chay qua `run.sh`. Ma thoat: 0 sach, 1 co vi pham NGUY HIEM/LOI, 2 khong chay.
+--   P2  THONG TIN  khoang tep cua WAF vs noi dung `$_FILES`, tach theo ly do:
+--                  `filename=""`, trung ten, con lai (giu ca de xem tay).
+-- P5/P8 bo sot khi kenh ten tep DA KHAI BAO dung giua chung (`FN_INCOMPLETE`, B1)
+-- chi dem la thong tin; bo sot khong khai bao moi la vi pham.
+-- Oracle phai qua mot than biet truoc ket qua truoc vong lap, va MOI ca phai doc
+-- duoc — mot ca PHP khong doc duoc la ma 2, khong phai "0 vi pham".
+-- Chay qua `run.sh`. Ma thoat: 0 sach, 1 co vi pham NGUY HIEM/LOI, 2 khong chay
+-- duoc / khong bao dam duoc ket qua.
 local SRC    = os.getenv("ANTIBOT_SRC")
 local DUMP   = os.getenv("WAFDIFF_DUMP")
 local PHPCGI = os.getenv("PHPCGI") or "php-cgi"
 local N      = tonumber(os.getenv("N") or "") or 1500
 local SEED   = tonumber(os.getenv("SEED") or "") or os.time()
-local OUT    = os.getenv("OUT") or "/var/tmp/wafdiff"   -- /tmp cua WSL bi don khi distro tat
-if not SRC or not DUMP then
-    io.write("wafdiff: thieu ANTIBOT_SRC/WAFDIFF_DUMP — chay qua run.sh\n"); os.exit(2)
+local OUT    = os.getenv("OUT")   -- run.sh dat: thu muc tam RIENG cua lan chay
+if not SRC or not DUMP or not OUT then
+    io.write("wafdiff: thieu ANTIBOT_SRC/WAFDIFF_DUMP/OUT — chay qua run.sh\n"); os.exit(2)
 end
 for _, m in ipairs({ "upload", "body_core", "body_worker" }) do
     package.preload["antibot.waf." .. m] = function()
@@ -31,7 +43,12 @@ local core   = require "antibot.waf.body_core"
 local worker = require "antibot.waf.body_worker"
 local upload = require "antibot.waf.upload"
 local cjson  = require "cjson.safe"
-os.execute("rm -rf '" .. OUT .. "' && mkdir -p '" .. OUT .. "'")
+-- Khong ghi duoc OUT thi moi lan goi PHP ben duoi hong — dung o day voi ma 2,
+-- khong de no thanh loi Lua (ma 1, trung ma "co vi pham").
+local st = os.execute("rm -rf '" .. OUT .. "' && mkdir -p '" .. OUT .. "'")
+local probe_fh = (st == 0 or st == true) and io.open(OUT .. "/.ghi-thu", "wb")
+if not probe_fh then io.write("wafdiff: khong ghi duoc vao " .. OUT .. "\n"); os.exit(2) end
+probe_fh:close()
 math.randomseed(SEED)
 
 local function rint(a, b) return math.random(a, b) end
@@ -180,6 +197,7 @@ local function php_parse(body, ct)
     local cmd = "REQUEST_METHOD=POST CONTENT_TYPE=\"$(cat '" .. cf .. "')\"" ..
                 " CONTENT_LENGTH=" .. #body .. " SCRIPT_FILENAME='" .. DUMP .. "'" ..
                 " REDIRECT_STATUS=1 " .. PHPCGI ..
+                " -d file_uploads=1 -d enable_post_data_reading=1" ..
                 " -d max_file_uploads=1000 -d upload_max_filesize=64M" ..
                 " -d post_max_size=64M -d max_input_vars=100000" ..
                 " -d display_errors=0 -d error_reporting=0 < '" .. bf .. "' 2>/dev/null"
@@ -189,17 +207,43 @@ local function php_parse(body, ct)
 end
 
 local function list(t) return t and table.concat(t, ",") or "-" end
+local function set(t) local s = {}; for _, v in ipairs(t or {}) do s[v] = true end; return s end
 local function rules(s, binary) return core.rules_in_lower(s:lower(), false, binary, {}) end
-local b64 = ngx.decode_base64
+-- `cjson.null` (tep loi upload) la userdata TRUTHY — chi giai ma khi la chuoi.
+local function s64(v) return type(v) == "string" and ngx.decode_base64(v) or nil end
 
-local viol, info, n_cases, n_proof = {}, {}, 0, 0
+local viol, info, n_cases, n_proof, oracle_fail = {}, {}, 0, 0, 0
+local KEEP = tonumber(os.getenv("KEEP") or "") or 5
+local function save(kind, k, body, ct)
+    local base = string.format("%s/%s-%d", OUT, kind, k)
+    local f = assert(io.open(base .. ".body", "wb")); f:write(body); f:close()
+    f = assert(io.open(base .. ".ct", "wb")); f:write(ct); f:close()
+    return base
+end
 local function flag(kind, msg, body, ct)
     viol[kind] = (viol[kind] or 0) + 1
-    if viol[kind] > (tonumber(os.getenv("KEEP") or "") or 5) then return end
-    local base = string.format("%s/%s-%d", OUT, kind, viol[kind])
-    local f = io.open(base .. ".body", "wb"); f:write(body); f:close()
-    f = io.open(base .. ".ct", "wb"); f:write(ct); f:close()
-    io.write(string.format("  %s #%d: %s  [%s.body]\n", kind, viol[kind], msg, base))
+    if viol[kind] > KEEP then return end
+    io.write(string.format("  %s #%d: %s  [%s.body]\n", kind, viol[kind], msg,
+                           save(kind, viol[kind], body, ct)))
+end
+-- Nhu `flag` nhung KHONG phai vi pham: dem vao `info` va giu ca de xem tay.
+local function note(kind, body, ct)
+    info[kind] = (info[kind] or 0) + 1
+    if info[kind] <= KEEP then save(kind, info[kind], body, ct) end
+end
+local function bump(kind) info[kind] = (info[kind] or 0) + 1 end
+
+-- P2: vi sao mot khoang tep CUA WAF khong khop noi dung tep nao PHP giu lai. Chi
+-- than `pf=ok` (dang chuan tac) toi day, nen dong Content-Disposition cua part la
+-- `form-data; name="X"; filename="Y"` roi CRLF — doc duoc bang mot mau co dinh.
+local CD_FILE = '; name="([^"]*)"; filename="([^"]*)"\r\n'
+local function part_of(body, at)
+    local nm, fn, pos = nil, nil, 1
+    while true do
+        local a, b, n, f = body:find(CD_FILE, pos)
+        if not a or a >= at then return nm, fn end
+        nm, fn, pos = n, f, b + 1
+    end
 end
 
 local spill_tmp = OUT .. "/spill.body"
@@ -207,7 +251,7 @@ local function check(body, ct)
     n_cases = n_cases + 1
     local r = core.scan(body, ct)
 
-    local fh = io.open(spill_tmp, "wb"); fh:write(body); fh:close()
+    local fh = assert(io.open(spill_tmp, "wb")); fh:write(body); fh:close()
     local sp = core.unpack(worker.scan_file(spill_tmp, ct))
     if not sp or list(sp.nonfile_rules) ~= list(r.nonfile_rules)
        or list(sp.file_rules) ~= list(r.file_rules)
@@ -216,20 +260,29 @@ local function check(body, ct)
         flag("P3", "spill khac memory", body, ct)
     end
 
+    -- Oracle hong KHONG phai thong tin: ca do khong duoc kiem gi. Dem, va mot lan
+    -- chay co ca hong thi thoat 2 — "0 vi pham" chi co nghia khi PHP doc MOI ca.
     local php = php_parse(body, ct)
-    if not php then info.php_khong_doc_duoc = (info.php_khong_doc_duoc or 0) + 1; return end
+    if type(php) ~= "table" or type(php.post) ~= "table" or type(php.files) ~= "table" then
+        oracle_fail = oracle_fail + 1
+        note("ORACLE_hong", body, ct)
+        return
+    end
 
     local ranges = core.file_ranges(body, ct)
     local proof = ranges ~= nil
     if proof then n_proof = n_proof + 1 end
     local proj = proof and core.projection(body, ranges) or body
-    local nonfile, all = {}, {}
-    for _, v in ipairs(r.nonfile_rules or {}) do nonfile[v] = true; all[v] = true end
-    for _, v in ipairs(r.file_rules or {}) do all[v] = true end
-    for _, v in ipairs(r.filename_rules or {}) do all[v] = true end
+    local nonfile, file, fname = set(r.nonfile_rules), set(r.file_rules), set(r.filename_rules)
+    local all = {}
+    for _, s in ipairs({ nonfile, file, fname }) do for k in pairs(s) do all[k] = true end end
+    -- B1: kenh ten tep DA KHAI BAO dung giua chung (`FN_INCOMPLETE`) — bo sot ten
+    -- tep khi do la dieu da biet, da phat `body_multipart_incomplete`: dem rieng.
+    -- Bo sot KHONG khai bao moi la vi pham.
+    local declared = core.FN_INCOMPLETE[r.fn_trunc]
 
-    for _, pv in ipairs(php.post or {}) do
-        local v = type(pv.value) == "string" and b64(pv.value) or ""
+    for _, pv in ipairs(php.post) do
+        local v = s64(pv.value) or ""
         if v ~= "" then
             if proof and not proj:find(v, 1, true) then
                 flag("P1", "gia tri $_POST bi coi la noi dung tep", body, ct)
@@ -244,38 +297,74 @@ local function check(body, ct)
         end
     end
 
+    -- P7 hoi "co vung nao bao khong" (HOP cac vung). P8/P9 hoi "co DUNG vung
+    -- khong": mot luat dung ma sai vung la mot duong ha diem (`registry.region_rule`
+    -- doi luat theo vung) hoac mot FP, va P7 khong thay duoc.
     local php_c = {}
-    for _, pf in ipairs(php.files or {}) do
-        -- `cjson.null` (tep loi upload) la userdata TRUTHY — kiem kieu, dung `and`.
-        local c = type(pf.content) == "string" and b64(pf.content) or nil
+    for _, pf in ipairs(php.files) do
+        local c = s64(pf.content)
         if c and c ~= "" then
             php_c[c] = (php_c[c] or 0) + 1
             for id in pairs(rules(c, true)) do
                 if not all[id] then
                     flag("P7", "luat " .. id .. " trong noi dung tep khong o vung nao", body, ct)
+                elseif proof and not file[id] then
+                    flag("P9", "luat " .. id .. " trong noi dung tep PHP khong o vung file (pf=ok)", body, ct)
+                elseif not proof and not nonfile[id] then
+                    flag("P9", "luat " .. id .. " trong noi dung tep khong o nonfile (pf khac ok)", body, ct)
                 end
             end
         end
-        local nm = type(pf.name) == "string" and b64(pf.name) or ""
+        local nm = s64(pf.name) or ""
         if nm ~= "" then
             local want = upload.check_filename(nm)
             if want and upload.worse_up(r.up_rule, want) ~= r.up_rule then
-                flag("P5", string.format("PHP thay ten %q -> %s, up_rule=%s",
-                                         nm, want, tostring(r.up_rule)), body, ct)
+                if declared then bump("P5_da_khai_bao_B1")
+                else
+                    flag("P5", string.format("PHP thay ten %q -> %s, up_rule=%s",
+                                             nm, want, tostring(r.up_rule)), body, ct)
+                end
             end
-            for id in pairs(rules(nm, false)) do
+        end
+        -- Luat trong ten tep kiem tren ten PHP doc ra TRUOC basename (`full_path`):
+        -- ten sau basename da mat `../`, nen kiem tren no la kiem rong.
+        local full = s64(pf.full_path) or nm
+        if full ~= "" then
+            for id in pairs(rules(full, false)) do
                 if not all[id] then
                     flag("P7", "luat " .. id .. " trong ten tep khong o vung nao", body, ct)
+                else
+                    if not fname[id] then
+                        if declared then bump("P8_da_khai_bao_B1")
+                        else flag("P8", "luat " .. id .. " trong ten tep PHP doc khong o vung filename", body, ct) end
+                    end
+                    -- Header KHONG BAO GIO la noi dung tep: voi `pf=ok` ten tep phai nam
+                    -- trong ban chieu. Thieu o day = `file_ranges` nuot header, tuc luat
+                    -- cua ten tep bi doi thanh luat noi dung tep.
+                    if proof and not nonfile[id] then
+                        flag("P8", "luat " .. id .. " trong ten tep khong o nonfile du pf=ok", body, ct)
+                    end
                 end
             end
         end
     end
 
     if proof then
+        local cnt = {}
+        for n in body:gmatch(CD_FILE) do cnt[n] = (cnt[n] or 0) + 1 end
         for _, rg in ipairs(ranges) do
             local c = body:sub(rg[1], rg[2])
-            if (php_c[c] or 0) > 0 then php_c[c] = php_c[c] - 1
-            else info.P2_chi_WAF_coi_la_tep = (info.P2_chi_WAF_coi_la_tep or 0) + 1 end
+            if (php_c[c] or 0) > 0 then
+                php_c[c] = php_c[c] - 1
+            else
+                -- Hai ly do PHP bo noi dung ma WAF van coi la tep: `filename=""` (PHP bao
+                -- UPLOAD_ERR_NO_FILE) va hai part tep TRUNG TEN (PHP ghi de). Ngoai hai
+                -- ly do do thi giu ca de xem tay.
+                local nm, fn = part_of(body, rg[1])
+                if fn == "" then bump("P2_chi_WAF_filename_rong")
+                elseif nm and (cnt[nm] or 0) > 1 then bump("P2_chi_WAF_trung_ten")
+                else note("P2_chi_WAF_chua_giai_thich", body, ct) end
+            end
         end
         for _, k in pairs(php_c) do
             if k > 0 then info.P2_chi_PHP_coi_la_tep = (info.P2_chi_PHP_coi_la_tep or 0) + k end
@@ -283,32 +372,72 @@ local function check(body, ct)
     end
 end
 
-io.write(string.format("wafdiff: seed %d, %d ca ngau nhien, ket qua loi o %s\n", SEED, N, OUT))
-for _ = 1, N do check(gen_case()) end
-
--- "Than cat tai MOI vi tri byte" (review): ba than chuan tac co tep va field.
-for _, B in ipairs({ "----WebKitFormBoundaryAbC123", "q'()+_./:=?-9", "B" }) do
-    local body = build(B, {
-        { name = "path", content = token() .. "../../x" .. token(), dnl = "\r\n", hnl = "\r\n", cnl = "\r\n" },
-        { name = "f", filename = "a.jpg", ctype = "image/jpeg",
-          content = token() .. "php://input" .. token(), dnl = "\r\n", hnl = "\r\n", cnl = "\r\n" },
-    }, {})
-    local ct = "multipart/form-data; boundary=" .. B
-    for cut = 0, #body do check(body:sub(1, cut), ct) end
+-- ── ORACLE phai DUNG truoc khi tin no ────────────────────────────────────────
+--
+-- Mot dump.php sai, hoac PHP khong doc than multipart, thi moi phep kiem ben duoi
+-- RONG — va rong thi ra "0 vi pham". Nen truoc vong lap: mot than chuan tac biet
+-- truoc ket qua; lech la thoat 2.
+do
+    local B = "AaB03x"
+    local body = "--" .. B .. CRLF .. 'Content-Disposition: form-data; name="p"' .. CRLF .. CRLF ..
+                 "gia-tri-p" .. CRLF .. "--" .. B .. CRLF ..
+                 'Content-Disposition: form-data; name="f"; filename="d/a.jpg"' .. CRLF .. CRLF ..
+                 "noi-dung-f" .. CRLF .. "--" .. B .. "--" .. CRLF
+    local php = php_parse(body, "multipart/form-data; boundary=" .. B)
+    local p = type(php) == "table" and type(php.post) == "table" and php.post[1]
+    local f = type(php) == "table" and type(php.files) == "table" and php.files[1]
+    if not (p and f and s64(p.value) == "gia-tri-p" and s64(f.name) == "a.jpg"
+            and s64(f.content) == "noi-dung-f") then
+        io.write("wafdiff: ORACLE SAI — PHP khong doc dung mot than chuan tac biet truoc ket qua\n")
+        os.exit(2)
+    end
+    if s64(f.full_path) ~= "d/a.jpg" then
+        io.write("wafdiff: PHP khong co `full_path` (can >= 8.1) — luat trong ten tep chi\n" ..
+                 "         kiem duoc tren ten SAU basename\n")
+    end
 end
+
+io.write(string.format("wafdiff: seed %d, %d ca ngau nhien, ket qua loi o %s\n", SEED, N, OUT))
+-- Loi CUA CHINH bo kiem phai ra ma 2: `resty` tra 1 cho loi Lua khong bat, trung
+-- voi ma "co vi pham".
+local ran, err = pcall(function()
+    for _ = 1, N do check(gen_case()) end
+
+    -- "Than cat tai MOI vi tri byte" (review): ba than chuan tac co tep va field.
+    for _, B in ipairs({ "----WebKitFormBoundaryAbC123", "q'()+_./:=?-9", "B" }) do
+        local body = build(B, {
+            { name = "path", content = token() .. "../../x" .. token(), dnl = "\r\n", hnl = "\r\n", cnl = "\r\n" },
+            { name = "f", filename = "a.jpg", ctype = "image/jpeg",
+              content = token() .. "php://input" .. token(), dnl = "\r\n", hnl = "\r\n", cnl = "\r\n" },
+        }, {})
+        local ct = "multipart/form-data; boundary=" .. B
+        for cut = 0, #body do check(body:sub(1, cut), ct) end
+    end
+end)
+if not ran then io.write("wafdiff: bo kiem hong: " .. tostring(err) .. "\n"); os.exit(2) end
 
 local DESC = {
     P1 = "NGUY HIEM  gia tri $_POST bi WAF coi la noi dung tep",
     P6 = "NGUY HIEM  luat trong $_POST khong o vung nonfile",
     P7 = "NGUY HIEM  luat PHP thay nhung khong vung nao bao",
+    P8 = "NGUY HIEM  luat trong ten tep sai vung (khong o filename; hoac khong o nonfile khi pf=ok)",
     P5 = "NGUY HIEM  ten tep nguy hiem PHP thay ma up_rule nhe hon",
+    P9 = "LOI        luat trong noi dung tep sai vung",
     P3 = "LOI        spill khac memory",
 }
 io.write(string.format("\nwafdiff: %d ca, %d ca pf=ok (seed %d)\n", n_cases, n_proof, SEED))
 local bad = 0
-for _, k in ipairs({ "P1", "P6", "P7", "P5", "P3" }) do
+for _, k in ipairs({ "P1", "P6", "P7", "P8", "P5", "P9", "P3" }) do
     bad = bad + (viol[k] or 0)
     io.write(string.format("  %-3s %6d  %s\n", k, viol[k] or 0, DESC[k]))
 end
-for k, v in pairs(info) do io.write(string.format("  (thong tin) %s: %d\n", k, v)) end
-os.exit(bad == 0 and 0 or 1)
+local keys = {}
+for k in pairs(info) do keys[#keys + 1] = k end
+table.sort(keys)
+for _, k in ipairs(keys) do io.write(string.format("  (thong tin) %s: %d\n", k, info[k])) end
+if bad > 0 then os.exit(1) end
+if oracle_fail > 0 then
+    io.write(string.format("wafdiff: %d ca PHP KHONG doc duoc — ket qua KHONG bao dam\n", oracle_fail))
+    os.exit(2)
+end
+os.exit(0)
