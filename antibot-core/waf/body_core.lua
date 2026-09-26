@@ -825,6 +825,13 @@ local function canonical_boundary(ct)
     return b
 end
 
+-- Ly do KHONG chung minh duoc (cot `pf=`). Di qua ham nay chu KHONG viet
+-- `return nil, "..."`: trong file nay dang do la MA SCAN — hop dong SCAN_STATUS
+-- trong `contract_test.lua` quet dung dang do de bat ma `scan` bi quen. Ly do
+-- chung minh la ho KHAC: chi ra cot `pf=`, khong bao gio vao `scan=` hay counter
+-- `waf:v2:scan:*`, nen KHONG duoc them vao `SCAN_STATUS`.
+local function no_proof(why) return nil, why end
+
 -- Vung header cua MOT part (khong ke CRLF ket thuc): "file", "field", hoac
 -- `nil, ly_do`.
 local function canonical_part_head(head)
@@ -832,25 +839,25 @@ local function canonical_part_head(head)
     for line in (head .. "\r\n"):gmatch("(.-)\r\n") do
         -- CR/LF le hoac NUL trong mot dong: PHP cat dong o `\n` va doc header nhu
         -- chuoi C, nen tu day hai ben co the thay hai header khac nhau.
-        if line:find("[\r\n%z]") then return nil, "hdr" end
+        if line:find("[\r\n%z]") then return no_proof("hdr") end
         local name, value = line:match("^([%w-]+): (.*)$")
-        if not name then return nil, "hdr" end
+        if not name then return no_proof("hdr") end
         name = name:lower()
         if name == "content-disposition" then
-            if cd then return nil, "cd" end
+            if cd then return no_proof("cd") end
             cd = value
         elseif name == "content-type" and not has_ct then
             has_ct = true
         else
-            return nil, "hdr"
+            return no_proof("hdr")
         end
     end
-    if not cd then return nil, "cd" end
+    if not cd then return no_proof("cd") end
     if cd:find('^form%-data; name="[^"\\]*"; filename="[^"\\]*"$') then
         return "file"
     end
     if cd:find('^form%-data; name="[^"\\]*"$') then return "field" end
-    return nil, "cd"
+    return no_proof("cd")
 end
 
 -- Cac khoang `{dau, cuoi}` la NOI DUNG TEP da chung minh, hoac `nil, ly_do`.
@@ -861,22 +868,22 @@ end
 --   n    hon MAX_PARTS phan
 local function file_ranges(body, ct)
     local b = canonical_boundary(ct)
-    if not b then return nil, "ct" end
+    if not b then return no_proof("ct") end
     local open = "--" .. b .. "\r\n"
-    if body:sub(1, #open) ~= open then return nil, "pre" end
+    if body:sub(1, #open) ~= open then return no_proof("pre") end
     local next_delim = "\n--" .. b
     local ranges, pos, nparts = {}, #open + 1, 0
     while true do
         nparts = nparts + 1
-        if nparts > MAX_PARTS then return nil, "n" end
+        if nparts > MAX_PARTS then return no_proof("n") end
         local he = body:find("\r\n\r\n", pos, true)
-        if not he or he - pos > MAX_HDR_LEN then return nil, "hdr" end
+        if not he or he - pos > MAX_HDR_LEN then return no_proof("hdr") end
         local kind, why = canonical_part_head(body:sub(pos, he - 1))
         if not kind then return nil, why end
         local cs = he + 4
         local at = body:find(next_delim, cs, true)
-        if not at then return nil, "end" end
-        if at <= cs or body:byte(at - 1) ~= 13 then return nil, "dl" end
+        if not at then return no_proof("end") end
+        if at <= cs or body:byte(at - 1) ~= 13 then return no_proof("dl") end
         if kind == "file" and at - 2 >= cs then
             ranges[#ranges + 1] = { cs, at - 2 }
         end
@@ -886,10 +893,10 @@ local function file_ranges(body, ct)
             pos = after + 2
         elseif tail == "--" then
             local rest = body:sub(after + 2)
-            if rest ~= "" and rest ~= "\r\n" then return nil, "end" end
+            if rest ~= "" and rest ~= "\r\n" then return no_proof("end") end
             return ranges
         else
-            return nil, "dl"
+            return no_proof("dl")
         end
     end
 end

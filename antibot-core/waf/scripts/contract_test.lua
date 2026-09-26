@@ -1590,6 +1590,11 @@ do
     --   `reason = "spill_thread"` / `~= "nothread"` qua bien
     --   `pack_error("spill_open")`                  trong worker
     --   `return nil, "bad_payload"`                 trong core
+    --
+    -- KHONG quet `no_proof("ct")` cua core: do la ly do CHUNG MINH (cot `pf=`),
+    -- mot ho khac, khong bao gio thanh `scan=`. V6 luc dau viet chung thanh
+    -- `return nil, "ct"` va muc nay bao 7 ma "thieu" — cach sua dung la TACH ho
+    -- do ra, KHONG phai them chung vao SCAN_STATUS.
     local seen = {}
     for r in body_src:gmatch('unscanned%([^)]-"([%w_]+)"')   do seen[r] = true end
     for r in body_src:gmatch('reason%s*=%s*"([%w_]+)"')      do seen[r] = true end
