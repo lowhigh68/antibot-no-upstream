@@ -565,7 +565,7 @@ end
 --
 -- Bay ca duoi day la bay nhom phai TACH RIENG duoc. Ca (3) va (5) la hai ca quyet
 -- dinh: mot la duong ne da dong, mot la nhom FP that.
-io.write("\ncore: V4 arg_origin (vi tri lan khop)\n")
+io.write("\ncore: V5 arg_origin (vi tri lan khop)\n")
 do
     -- (1) khong phai multipart -> `flat`, nghia cu khong doi.
     local flat = scan("path=../../etc/passwd", URLENC)
@@ -626,20 +626,102 @@ do
     check("dao thu tu -> kenh field khong doi", rev.arg_field, both.arg_field)
 end
 
-io.write("\ncore: V4 giao thuc pack/unpack\n")
+-- ── V5: CAC CA QUYET DINH cua duong reroute ─────────────────────────────────
+--
+-- Sau ca duoi day la sau duong lam mat kha nang phan loai form field. Neu mot
+-- duong nao trong so do KHONG lam `fields_complete` xuong `false`, thi mot request
+-- co payload trong form field se bi reroute sang `body_file_traversal` (score 0) —
+-- va do la mot bypass THAT, khong phai mot gia thuyet: review 26-09 dung dung
+-- ky thuat (1) de mo ta no.
+io.write("\ncore: V5 fields_complete gac duong reroute\n")
+do
+    local PAD = string.rep("a", 9000)   -- > MAX_PART_LEN (8192)
+
+    -- (1) KY THUAT BYPASS chinh: tep co `../` trong 8 KB dau, con form field nhoi
+    --     9 KB padding roi moi dat payload. Neu form field bi cap thi `arg_field`
+    --     thanh nil va `arg_origin` thanh `file_content` — ca request xuong score 0
+    --     TRONG KHI payload that nam trong `$_POST`.
+    --
+    --     Sau ban 26-09 form field KHONG bi cap, nen `arg_field` phai bat duoc.
+    local bypass = scan(mp({
+        part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
+        part('Content-Disposition: form-data; name="path"',
+             PAD .. "../../etc/passwd"),
+    }))
+    check("bypass: form field sau 9KB padding VAN bat duoc",
+          bypass.arg_field, "arg_traversal")
+    check("bypass: aorig la form_field, KHONG phai file_content",
+          bypass.arg_origin, "form_field")
+
+    -- (2) Payload o part thu 65 (sau `MAX_PARTS = 64`). Cac part sau tran khong
+    --     duoc soi, nen KHONG duoc phep reroute.
+    local many = {}
+    for i = 1, 64 do
+        many[i] = part('Content-Disposition: form-data; name="x' .. i .. '"', "sach")
+    end
+    many[65] = part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep")
+    local over = scan(mp(many))
+    check("tran MAX_PARTS -> fields_complete false", over.fields_complete, false)
+    check("tran MAX_PARTS -> KHONG reroute duoc", over.arg_origin ~= "file_content", true)
+
+    -- (3) Thieu dau dong ket thuc: backend co the van chap nhan cac part phia
+    --     truoc, nen ta khong biet con part nao nua khong.
+    local noend = "--" .. B .. "\r\n" .. CD .. 'filename="photo.jpg"' ..
+                  "\r\n\r\nJFIF../../trong tep\r\n"
+    local ne = scan(noend)
+    check("thieu dong ket thuc -> fields_complete false", ne.fields_complete, false)
+    check("thieu dong ket thuc -> KHONG reroute", ne.arg_origin ~= "file_content", true)
+
+    -- (4) HAI KENH mang HAI LUAT khac nhau. `arg_rule` la luat uu tien cao hon
+    --     (`arg_php_wrapper`), nen khong kenh nao khop CUNG luat -> `unknown`.
+    --     Ban truoc viet `elseif arg_field then` nen se bao `form_field` — SAI
+    --     NGUON, va telemetry noi ve mot thu khac.
+    local mixed = scan(mp({
+        part('Content-Disposition: form-data; name="a"', "../../trong field"),
+        part(CD .. 'filename="x.jpg"', "php://input trong tep"),
+    }))
+    check("hai luat khac nhau -> arg_rule la wrapper",
+          mixed.arg_rule, "arg_php_wrapper")
+    check("hai luat khac nhau -> aorig unknown", mixed.arg_origin, "unknown")
+
+    -- (5) NUL THO trong mot form field van phai bat duoc. `binary = is_file` nen
+    --     form field dung `binary = false`; ban truoc hardcode `true` va bo qua.
+    local nul = scan(mp({
+        part('Content-Disposition: form-data; name="a"', "x\0y"),
+    }))
+    check("NUL tho trong form field -> bat duoc", nul.arg_field, "arg_null_byte")
+    -- Va NUL trong noi dung TEP thi KHONG bat: mot JPEG co byte 0 hop le.
+    local nulfile = scan(mp({ part(CD .. 'filename="x.jpg"', "x\0y") }))
+    check("NUL trong noi dung tep -> bo qua", nulfile.arg_content, nil)
+
+    -- (6) `ct` phai CAO HON `stop`/`len` trong `STATUS_RANK`: mot vung chua soi
+    --     khong duoc bi mot ghi chu ve do dai che mat.
+    local big = scan(mp({ part(CD .. 'filename="x.jpg"', string.rep("b", 9000)) }))
+    check("noi dung tep bi cat -> fn_trunc mang ct", big.fn_trunc, "ct")
+end
+
+io.write("\ncore: V5 giao thuc pack/unpack\n")
+
 do
     local r = scan(mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") }))
     local rt, err = core.unpack(core.pack(r))
-    check("V4 pack/unpack khong loi", err, nil)
-    check("V4 giu arg_origin", rt and rt.arg_origin, "file_content")
-    check("V4 giu arg_content", rt and rt.arg_content, "arg_traversal")
-    check("V4 giu arg_field nil", rt and rt.arg_field, nil)
+    check("V5 pack/unpack khong loi", err, nil)
+    check("V5 giu arg_origin", rt and rt.arg_origin, "file_content")
+    check("V5 giu arg_content", rt and rt.arg_content, "arg_traversal")
+    check("V5 giu arg_field nil", rt and rt.arg_field, nil)
+    -- `fields_complete` phai di qua giao thuc BANG KIEU BOOLEAN. Doc bang `dec`
+    -- thay vi `dec_bool` se cho chuoi "0", va trong Lua `"0"` la TRUTHY — nen mot
+    -- phep kiem `~= false` se mo lai dung bypass vua dong.
+    check("V5 giu fields_complete true", rt and rt.fields_complete, true)
+    local nf = scan(mp({ part(CD .. 'filename="x.jpg"', string.rep("b", 9000)) }))
+    check("V5 giu fields_complete false",
+          core.unpack(core.pack(nf)).fields_complete, false)
 
-    -- Ban V3 (13 truong thay vi 14) phai bi TU CHOI, khong duoc doc nham thanh
-    -- mot ban V4 thieu truong. `bad_payload` la cau tra loi dung: no CO TEN, di
-    -- vao `waf:v2:scan:bad_payload`, va chi anh huong than da spill.
-    local v3 = core.pack(r):gsub("^V4", "V3")
-    check("ban V3 bi tu choi", select(2, core.unpack(v3)), "bad_payload")
+    -- Ban CU (14 truong thay vi 15) phai bi TU CHOI, khong duoc doc nham thanh mot
+    -- ban V5 thieu truong. `bad_payload` la cau tra loi dung: no CO TEN, di vao
+    -- `waf:v2:scan:bad_payload`, va chi anh huong than da spill.
+    local old_ver = core.pack(r):gsub("^V5", "V4")
+    check("ban V4 bi tu choi", select(2, core.unpack(old_ver)), "bad_payload")
 
     -- Than SPILL phai cho ket qua Y HET than trong bo nho. Hai duong khac nhau
     -- (`core.scan` truc tiep vs `worker.scan_file` qua pack/unpack), va mot lech

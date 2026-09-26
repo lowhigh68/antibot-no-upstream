@@ -82,6 +82,11 @@ local function unscanned(family, spilled, reason, len)
         arg_origin  = nil,
         arg_field   = nil,
         arg_content = nil,
+        -- `false` chu khong `nil`: mot than CHUA duoc soi thi chac chan CHUA chung
+        -- minh duoc gi ca. `nil` o day se lam mot phep so `== true` va mot phep so
+        -- `~= false` cho hai ket qua khac nhau, va duong reroute gac tren chinh
+        -- truong nay.
+        fields_complete = false,
     }
 end
 

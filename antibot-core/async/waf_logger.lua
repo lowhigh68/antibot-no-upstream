@@ -152,7 +152,7 @@ function _M.run_body(ctx)
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
         .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s"
-        .. " aorig=%s afld=%s acnt=%s smp=%d\n",
+        .. " aorig=%s afld=%s acnt=%s fc=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -303,6 +303,13 @@ function _M.run_body(ctx)
         scrub(b.arg_origin, 16),
         scrub(b.arg_field, 24),
         scrub(b.arg_content, 24),
+        -- `fc=` DIEU KIEN gac cho reroute: `fc=0` nghia la con form field chua duoc
+        -- phan loai, nen mot `aorig=unknown` di kem `fc=0` la "chua chung minh
+        -- duoc", con `aorig=unknown fc=1` la "quy khong duoc vi ly do khac" (vi du
+        -- hai kenh mang hai luat khac nhau). Hai cau tra loi khac nhau, va gop lai
+        -- thi khong doc duoc cai nao.
+        (b.fields_complete == true and "1") or
+            (b.fields_complete == false and "0") or "-",
         notable and 1 or BODY_SAMPLE))
 
     fh:close()

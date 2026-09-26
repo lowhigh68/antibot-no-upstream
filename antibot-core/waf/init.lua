@@ -279,7 +279,18 @@ local function reroute_body_arg(b)
     if not b or not b.arg_rule then return nil end
     -- CHI nhom `file_content` duoc doi luat. Moi nhom con lai — ke ca `unknown` —
     -- giu nguyen luat va nguyen diem.
-    if b.arg_origin == "file_content" and b.arg_rule == "arg_traversal" then
+    --
+    -- HAI LOP GAC cho cung mot dieu kien, co y:
+    --   `body_core` da doi `fields_complete` truoc khi dat `arg_origin =
+    --   "file_content"`, nen phep kiem duoi day la LOP THU HAI. No ton tai vi
+    --   `ctx.waf_body` co the den tu mot ban `unpack` khac phien ban (giao thuc doi
+    --   moi lan them truong), va vi day la NOI DUY NHAT ha mot nhom xuong score 0 —
+    --   mot cho nhu vay xung dang mot phep kiem du thua.
+    --
+    --   `== true` chu khong `~= false`: mot `nil` (truong vang vi ban cu) phai lam
+    --   phep kiem THAT BAI, khong duoc coi la da chung minh.
+    if b.arg_origin == "file_content" and b.arg_rule == "arg_traversal" and
+       b.fields_complete == true then
         return "body_file_traversal"
     end
     return nil
