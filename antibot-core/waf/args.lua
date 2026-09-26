@@ -58,9 +58,9 @@ _M.RULES = RULES
 -- `from` CHI CO NGHIA KHI `decode == false`. Luc do vong lap chay dung mot luot
 -- tren ban `lower()`, ma `lower()` giu nguyen do dai byte, nen `from` anh xa
 -- 1:1 sang chuoi goc. Voi `decode == true` thi chuoi co the la ban da giai ma —
--- do dai khac han — nen `from` tro vao mot chuoi khong con ton tai. Nguoi goi
--- duy nhat dung `from` la `body_core.legacy_fnm` cho multipart, va multipart
--- luon `decode = false`.
+-- do dai khac han — nen `from` tro vao mot chuoi khong con ton tai. Tu V7 khong
+-- con nguoi goi nao dung `from` (`body_core.legacy_fnm` da go cung cot `fnm`);
+-- gia tri van tra ve de chu ky khong doi.
 --
 -- CANH BAO cho lan doc so lieu sau: ham nay tra ve MOT rule_id theo thu tu
 -- NUL -> wrapper -> traversal. Nen con so "0 luot traversal/wrapper tren body"

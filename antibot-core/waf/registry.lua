@@ -60,6 +60,34 @@ add("body_scan_incomplete", "body", "request_body", "generic", "observe", "enfor
 add("body_file_traversal", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 0.30, { "body.file_content" })
 
+-- ── V7: luat tham so doi theo VUNG cua than ─────────────────────────────────
+--
+-- `body_core.scan` bao ba vung (`nonfile`, `file`, `filename`) va KHONG quyet
+-- dinh gi. Bang nay la noi DUY NHAT noi mot luat tham so thanh luat nao o vung
+-- `file` — noi dung tep dinh kem, chi ton tai khi than chung minh duoc (`pf=ok`).
+-- `nonfile` va `filename` giu nguyen luat va nguyen diem.
+--
+-- MOI luat trong `args.RULES` phai co MOT dong o day, ke ca khi no giu nguyen:
+-- hop dong trong `contract_test.lua` ghim dieu do, nen them mot luat tham so moi
+-- ma quen quyet dinh vung `file` cho no la bao do, khong lang le.
+--
+-- Hai luat giu nguyen (50 diem, nhu truoc V7): chua co so lieu `php://`/`%00`
+-- trong noi dung tep that. Doi chung la mot quyet dinh policy rieng, sau khi
+-- shadow cho so lieu — khong gop vao lan tach vung nay.
+local FILE_REGION = {
+    arg_traversal   = "body_file_traversal",
+    arg_php_wrapper = "arg_php_wrapper",
+    arg_null_byte   = "arg_null_byte",
+}
+_M.FILE_REGION = FILE_REGION
+
+-- Luat ma mot lan khop `rule_id` o `region` tro thanh. Khong co dong cho vung
+-- `file` thi GIU NGUYEN luat — "khong biet" khong bao gio duoc ha diem.
+function _M.region_rule(rule_id, region)
+    if region == "file" then return FILE_REGION[rule_id] or rule_id end
+    return rule_id
+end
+
 -- Upload names.  Scores are deliberately non-terminal until fleet data says
 -- otherwise; the exact sub-label is retained for tuning.
 add("upload_apache_config", "upload", "request_body", "generic", "signal", "enforce",

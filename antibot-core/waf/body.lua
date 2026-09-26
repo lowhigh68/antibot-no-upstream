@@ -56,7 +56,7 @@ end
 
 -- KHONG SOI DUOC khac han DA SOI VA SACH.
 --
--- `php`/`arg_rule`/`fn_rule` de NIL chu khong `false`/`0`: neu mot phep thong ke
+-- `php` va ba vung luat de NIL chu khong `false`/`0`: neu mot phep thong ke
 -- ve sau coi `php=0` la am tinh thi moi ty le deu lech va khong ai biet, vi log
 -- trong nhu binh thuong.
 --
@@ -71,22 +71,12 @@ local function unscanned(family, spilled, reason, len)
         len    = len or (spilled and -1 or 0),
         php      = nil,
         nargs    = nil,
-        arg_rule = nil,
-        fnm      = nil,
-        fn_rule  = nil,
+        -- V7: ba vung deu `nil` — than CHUA duoc soi. Ly do nam o `scan` va
+        -- `fn_trunc`, khong o day.
+        nonfile_rules  = nil,
+        file_rules     = nil,
+        filename_rules = nil,
         fn_trunc = (family == "multipart") and reason or nil,
-        -- V4. `nil` chu khong `"unknown"`: `arg_origin` chi co nghia khi CO mot
-        -- `arg_rule` de quy ve dau, va o day khong co gi ca vi than CHUA duoc soi.
-        -- Ghi `"unknown"` se lam bang phan bo dem mot than chua soi vao nhom
-        -- "la multipart nhung khong quy duoc" — hai trang thai khac han nhau.
-        arg_origin  = nil,
-        arg_field   = nil,
-        arg_content = nil,
-        -- `false` chu khong `nil`: mot than CHUA duoc soi thi chac chan CHUA chung
-        -- minh duoc gi ca. `nil` o day se lam mot phep so `== true` va mot phep so
-        -- `~= false` cho hai ket qua khac nhau, va duong reroute gac tren chinh
-        -- truong nay.
-        fields_complete = false,
         -- V6. `nil`: than CHUA soi thi khong co ly do "khong chuan tac" nao de noi
         -- — ly do chua soi da nam o `scan`/`fn_trunc`.
         proof = nil,

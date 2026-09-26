@@ -462,22 +462,22 @@ do
     -- 35.00 la thang registry; 0.7500 la thang detector `[0,1]` cua cau cu.
     arg_case("multipart + spill (9 ca FP do duoc)",
              { family = "multipart", spill = true, len = 1125283,
-               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+               nonfile_rules = { "arg_traversal" } }, "35.00", "0.7500")
     arg_case("multipart khong spill",
              { family = "multipart", spill = false, len = 5000,
-               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+               nonfile_rules = { "arg_traversal" } }, "35.00", "0.7500")
     -- DUONG NE da dong: nhoi padding cho urlencoded de vuot buffer.
     arg_case("urlencoded + spill (nhoi padding)",
              { family = "urlencoded", spill = true, len = 900000,
-               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+               nonfile_rules = { "arg_traversal" } }, "35.00", "0.7500")
     arg_case("urlencoded thuong (botnet buoc 15)",
              { family = "urlencoded", spill = false, len = 179,
-               arg_rule = "arg_traversal" }, "35.00", "0.7500")
+               nonfile_rules = { "arg_traversal" } }, "35.00", "0.7500")
 
     -- Exception phai chan CA hai duong: phan quyet VA cau tuong thich cu.
     waf.configure({ exceptions = { { id = "skip", rule = "arg_traversal" } } })
     local ctx = run_with_body({ family = "urlencoded", spill = false, len = 179,
-                                arg_rule = "arg_traversal" })
+                                nonfile_rules = { "arg_traversal" } })
     eq("exception chan ca cau tuong thich cu", ctx.waf_body_arg, nil)
     eq("exception -> waf_score 0", ctx.waf_score, 0)
     waf.configure(nil)
@@ -503,13 +503,12 @@ do
     end
     eq("scan=spill_thread VAN phat body_scan_incomplete", blind, true)
 
-    -- ── V6 dau-cuoi: body_core -> init.lua -> policy ─────────────────────────
+    -- ── V7 dau-cuoi: body_core -> init.lua -> policy ─────────────────────────
     --
-    -- Duong reroute chua tung co test di qua CA ba tang: `body_core` quyet dinh
-    -- `arg_origin`, `init.lua` doi luat, `policy` cham diem. Test tung tang rieng
-    -- thi mot lech giua chung (ten truong, `== true` vs truthy, phien ban giao
-    -- thuc) bao XANH ca ba noi trong khi request van mat diem sai. Review 26-09
-    -- chi ra cho trong nay.
+    -- Duong bang chung chua tung co test di qua CA ba tang: `body_core` bao vung,
+    -- `init.lua` + `registry.region_rule` doi luat theo vung, `policy` gop diem.
+    -- Test tung tang rieng thi mot lech giua chung (ten truong, target, phien ban
+    -- giao thuc) bao XANH ca ba noi trong khi request van mat diem sai.
     local core = require "antibot.waf.body_core"
     local B6 = "----WebKitFormBoundaryE2eV6"
     local CT6 = "multipart/form-data; boundary=" .. B6
@@ -524,59 +523,105 @@ do
         return seen
     end
 
-    -- (1) Upload lon, `../` sau 8 KB dau: doi sang `body_file_traversal`, 0 diem,
-    --     cau cu khong nap. Day la nhom FP that ma V5 khong bao gio cham toi.
+    -- (1) Upload lon, `../` sau 8 KB dau: vung `file` doi sang `body_file_traversal`,
+    --     0 diem, cau cu khong nap. Nhom FP that ma V5 khong bao gio cham toi.
     local c1 = run_with_body(core.scan(
         part6(FILE6, string.rep("J", 9000) .. "../x") .. CLOSE6, CT6))
     local f1 = fired(c1)
-    eq("V6 e2e: upload lon -> body_file_traversal", f1.body_file_traversal, true)
-    eq("V6 e2e: upload lon -> KHONG arg_traversal", f1.arg_traversal, nil)
-    eq("V6 e2e: upload lon -> cau cu khong nap", c1.waf_body_arg, nil)
-    eq("V6 e2e: upload lon -> waf_score",
+    eq("V7 e2e: upload lon -> body_file_traversal", f1.body_file_traversal, true)
+    eq("V7 e2e: upload lon -> KHONG arg_traversal", f1.arg_traversal, nil)
+    eq("V7 e2e: upload lon -> cau cu khong nap", c1.waf_body_arg, nil)
+    eq("V7 e2e: upload lon -> waf_score",
        string.format("%.2f", c1.waf_score or -1), "0.00")
 
-    -- (2) `filename*=`: PHP doc la FORM FIELD. Phai giu `arg_traversal`, du diem.
+    -- (2) `filename*=`: PHP doc la FORM FIELD, than KHONG chung minh duoc, nen ca
+    --     than la `nonfile` — giu `arg_traversal`, du diem.
     local c2 = run_with_body(core.scan(
         part6([[Content-Disposition: form-data; name="path"; filename*=UTF-8''x.txt]],
               "../../etc/passwd") .. CLOSE6, CT6))
     local f2 = fired(c2)
-    eq("V6 e2e: filename* -> arg_traversal", f2.arg_traversal, true)
-    eq("V6 e2e: filename* -> KHONG doi luat", f2.body_file_traversal, nil)
-    eq("V6 e2e: filename* -> waf_score",
+    eq("V7 e2e: filename* -> arg_traversal", f2.arg_traversal, true)
+    eq("V7 e2e: filename* -> KHONG doi luat", f2.body_file_traversal, nil)
+    eq("V7 e2e: filename* -> waf_score",
        string.format("%.2f", c2.waf_score or -1), "35.00")
-    eq("V6 e2e: filename* -> cau cu",
+    eq("V7 e2e: filename* -> cau cu",
        string.format("%.4f", c2.waf_body_arg or -1), "0.7500")
 
-    -- (3) Payload trong form field + `../` trong tep: CUNG luat, nen luat ngoai tep
-    --     thang — nhan form_field, giu du diem.
+    -- (3) `../` trong form field + `../` trong tep: HAI fact, moi vung mot fact —
+    --     field giu `arg_traversal` du diem, tep thanh `body_file_traversal`.
     local c3 = run_with_body(core.scan(
         part6(FILE6, "JFIF../../x") ..
         part6('Content-Disposition: form-data; name="path"', "../../etc/passwd") ..
         CLOSE6, CT6))
-    eq("V6 e2e: field + tep -> arg_traversal", fired(c3).arg_traversal, true)
-    eq("V6 e2e: field + tep -> waf_score",
+    eq("V7 e2e: field + tep -> arg_traversal", fired(c3).arg_traversal, true)
+    eq("V7 e2e: field + tep -> body_file_traversal", fired(c3).body_file_traversal, true)
+    eq("V7 e2e: field + tep -> waf_score",
        string.format("%.2f", c3.waf_score or -1), "35.00")
 
-    -- (4) Wrapper CHI trong noi dung tep: quy duoc nguon nhung KHONG doi luat.
+    -- (4) Wrapper CHI trong noi dung tep: registry giu nguyen luat cho vung `file`.
     local c4 = run_with_body(core.scan(part6(FILE6, "php://input") .. CLOSE6, CT6))
-    eq("V6 e2e: wrapper trong tep -> giu arg_php_wrapper",
+    eq("V7 e2e: wrapper trong tep -> giu arg_php_wrapper",
        fired(c4).arg_php_wrapper, true)
-    eq("V6 e2e: wrapper trong tep -> KHONG doi luat",
+    eq("V7 e2e: wrapper trong tep -> KHONG doi luat",
        fired(c4).body_file_traversal, nil)
 
-    -- (5) Review 26-09: `../` trong field + `php://input` trong tep. Ban dau V6 lay
-    --     luat ngoai tep nen ra `arg_traversal` 35 va cau cu 0.75 — ke gui HA DIEM
-    --     bang cach them mot field. Phai giu luat manh hon, du diem o CA HAI duong.
+    -- (5) Review 26-09: `../` trong field + `php://input` trong tep. V6 ban dau lay
+    --     luat ngoai tep (35), f7a4099 lay luat manh hon (50) — ca hai deu CHON mot.
+    --     V7 khong chon: hai luat khac nhau o hai vung, policy cong = 85.
     local c5 = run_with_body(core.scan(
         part6(FILE6, "php://input") ..
         part6('Content-Disposition: form-data; name="path"', "../../etc/passwd") ..
         CLOSE6, CT6))
-    eq("V6 e2e: field ../ + wrapper trong tep -> arg_php_wrapper",
+    eq("V7 e2e: field ../ + wrapper trong tep -> arg_php_wrapper",
        fired(c5).arg_php_wrapper, true)
-    eq("V6 e2e: field ../ + wrapper trong tep -> waf_score",
-       string.format("%.2f", c5.waf_score or -1), "50.00")
-    eq("V6 e2e: field ../ + wrapper trong tep -> cau cu",
+    eq("V7 e2e: field ../ + wrapper trong tep -> arg_traversal",
+       fired(c5).arg_traversal, true)
+    eq("V7 e2e: field ../ + wrapper trong tep -> waf_score",
+       string.format("%.2f", c5.waf_score or -1), "85.00")
+    eq("V7 e2e: field ../ + wrapper trong tep -> cau cu",
        string.format("%.4f", c5.waf_body_arg or -1), "1.0000")
+
+    -- (6) BAT BIEN: them noi dung vao request KHONG lam diem giam. Them `php://`
+    --     vao field cua (5): voi "mot luat moi vung", field chi con bao wrapper,
+    --     trung luat voi tep, va policy gop max -> 50 < 85. Voi TAP thi field giu
+    --     ca hai luat.
+    local c6 = run_with_body(core.scan(
+        part6(FILE6, "php://input") ..
+        part6('Content-Disposition: form-data; name="path"', "../../etc/passwd php://x") ..
+        CLOSE6, CT6))
+    eq("V7 e2e: them noi dung khong lam diem giam",
+       (c6.waf_score or -1) >= (c5.waf_score or 0), true)
+end
+
+-- ── V7: policy gop diem theo LUAT, khong theo target ────────────────────────
+--
+-- Cung mot luat o nhieu target tinh MOT lan (max); khac luat thi cong. Truoc V7
+-- `arg_traversal` o query + than ra 70 (do 26-09 tren ma cu, trong WSL) — mot
+-- bang chung dem hai lan chi vi no xuat hien o hai cho.
+do
+    local function score_of(list)
+        local ctx, st = state()
+        for i = 1, #list do
+            policy.emit(st, list[i][1], { target = list[i][2], matched = "m" })
+        end
+        policy.decide(st)
+        return string.format("%.2f", ctx.waf_score or -1)
+    end
+    eq("V7: cung luat ARGS + BODY -> mot lan",
+       score_of({ { "arg_traversal", "ARGS" }, { "arg_traversal", "BODY" } }), "35.00")
+    eq("V7: cung luat BODY + ten tep -> mot lan",
+       score_of({ { "arg_traversal", "BODY" },
+                  { "arg_traversal", "MULTIPART_FILENAME" } }), "35.00")
+    eq("V7: khac luat -> cong",
+       score_of({ { "arg_traversal", "BODY" },
+                  { "arg_php_wrapper", "BODY_FILE" } }), "85.00")
+    eq("V7: luat observe khong cong",
+       score_of({ { "arg_traversal", "BODY" },
+                  { "body_file_traversal", "BODY_FILE" } }), "35.00")
+    -- Thu tu phat khong doi ket qua.
+    eq("V7: dao thu tu -> y het",
+       score_of({ { "arg_php_wrapper", "BODY_FILE" }, { "arg_traversal", "ARGS" },
+                  { "arg_traversal", "BODY" } }), "85.00")
 end
 
 -- ── `waf/runtime_config.lua` la file NGUOI VAN HANH SUA, nen phai kiem no ────

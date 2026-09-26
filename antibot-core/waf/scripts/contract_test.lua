@@ -1487,69 +1487,71 @@ do
     end
 end
 
--- ── V4: moi gia tri `arg_origin` phai duoc MOT NOI dinh tuyen ───────────────
+-- ── V7: moi vung cua `body_core.scan` duoc phat, moi luat co anh xa vung file ─
 --
--- `body_core.scan()` sinh nam gia tri `arg_origin`, va `waf/init.lua` quyet dinh
--- moi gia tri se lam gi. Mot gia tri MOI them vao `body_core` ma quen xu ly o
--- `init.lua` thi roi vao nhanh mac dinh "giu nguyen diem" — an toan, nhung IM
--- LANG, va nguoi them no se tuong da xu ly.
+-- Thay cho hop dong V4 (`arg_origin` + `reroute_body_arg`). Ba chieu, moi chieu la
+-- mot cach bang chung mat TRONG IM LANG:
 --
--- Phep kiem gac theo mot chieu: moi chuoi `arg_origin = "..."` trong `body_core`
--- phai xuat hien trong `init.lua`, du chi la trong mot chu thich liet ke. Do la
--- mot rang buoc YEU (chu thich khong phai ma), nhung no bat duoc dung cai loi
--- "them mot nhom roi quen bang dinh tuyen" — va rang buoc manh hon (bang tra cuu
--- dung chung) khong dang cho nam gia tri co dinh.
-io.write("\nhop dong: moi gia tri arg_origin deu duoc init.lua biet\n")
+--   (a) `_M.scan` tra mot truong `<vung>_rules` ma `init.lua` khong duyet
+--       (`BODY_REGIONS`) -> vung do soi xong roi bi vut, khong mot dong log.
+--   (b) Mot luat trong `args.RULES` khong co dong trong `registry` `FILE_REGION`
+--       -> van giu diem (mac dinh an toan), nhung la mot quyet dinh KHONG AI DUA
+--       RA. Them mot luat tham so moi thi phai quyet vung `file` cho no.
+--   (c) Mot dong `FILE_REGION` tro toi luat KHONG co trong registry ->
+--       `policy.emit` tra `unknown_rule` va fact mat han.
+--
+-- Phien ban giao thuc KHONG kiem o day: muc `[27c]` ben duoi da ghim.
+io.write("\nhop dong: V7 — ba vung duoc phat, moi luat co anh xa vung file\n")
 do
     local core_src = slurp(SRC .. "waf/body_core.lua") or ""
     local init_src = slurp(SRC .. "waf/init.lua") or ""
+    local reg_src  = slurp(SRC .. "waf/registry.lua") or ""
+    local args_src = slurp(SRC .. "waf/args.lua") or ""
 
-    local seen, n = {}, 0
-    for v in core_src:gmatch('arg_origin = "([%w_]+)"') do
-        if not seen[v] then
-            seen[v] = true
-            n = n + 1
-            if not init_src:find(v, 1, true) then
-                bad("  SAI  `body_core` sinh `arg_origin = \"%s\"` nhung\n" ..
-                    "       `waf/init.lua` khong he nhac ten do — nhom nay roi vao\n" ..
-                    "       nhanh mac dinh TRONG IM LANG.\n", v)
-            else pass = pass + 1 end
+    local scanfn = core_src:gsub("%-%-[^\n]*", ""):match("function _M%.scan%b()(.-)\nend")
+                   or ""
+    local n = 0
+    for field in scanfn:gmatch("([%w_]+_rules)%s*=") do
+        n = n + 1
+        if init_src:find('field = "' .. field .. '"', 1, true) then
+            pass = pass + 1
+        else
+            bad("  SAI  (a) `body_core.scan` tra `%s` nhung `BODY_REGIONS` trong\n" ..
+                "       `waf/init.lua` khong duyet no — vung do bi vut IM LANG.\n", field)
         end
     end
     if n == 0 then
-        bad("  SAI  khong tim thay gia tri `arg_origin` nao trong body_core.lua\n")
+        bad("  SAI  (a) khong tim thay truong `*_rules` nao trong `_M.scan`\n")
     else
-        io.write(string.format("  %d gia tri arg_origin, init.lua biet het\n", n))
+        io.write(string.format("  %d vung, init.lua duyet het\n", n))
     end
 
-    -- Va chieu quan trong hon: `reroute_body_arg` chi duoc doi luat cho DUNG mot
-    -- nhom. Neu mot ban sua no thanh `or` nhieu nhom thi cac nhom con lai lang le
-    -- mat diem — dung huong loi da mac hai lan (`spill`, roi `multipart`).
-    local rr = init_src:match("local function reroute_body_arg%(b%)(.-)\nend")
-    if not rr then
-        bad("  SAI  khong tim thay `reroute_body_arg` trong waf/init.lua\n")
+    local fr_block = reg_src:match("local FILE_REGION = (%b{})")
+    if not fr_block then
+        bad("  SAI  (b) khong tim thay `local FILE_REGION = {...}` trong registry.lua\n")
     else
-        local groups = 0
-        for _ in rr:gmatch('arg_origin == "([%w_]+)"') do groups = groups + 1 end
-        if groups ~= 1 then
-            bad("  SAI  `reroute_body_arg` doi luat cho %d nhom `arg_origin`.\n" ..
-                "       CHI `file_content` duoc doi. Moi nhom khac phai GIU nguyen\n" ..
-                "       diem — ke ca `unknown`: \"khong biet\" khac \"khong co\".\n",
-                groups)
-        else pass = pass + 1 end
-        if rr:find("arg_origin == \"file_content\"", 1, true) then
-            pass = pass + 1
-        else
-            bad("  SAI  `reroute_body_arg` khong doi luat cho `file_content` —\n" ..
-                "       nhom FP that (9/9 ca Magento upload) se van la\n" ..
-                "       `arg_traversal` voi nhan `attack.traversal`.\n")
+        local file_region = {}
+        for k, v in fr_block:gmatch('([%w_]+)%s*=%s*"([%w_]+)"') do file_region[k] = v end
+        local nr = 0
+        for id in (args_src:match("local RULES = (%b{})") or ""):gmatch("\n%s*([%w_]+)%s*=%s*{") do
+            nr = nr + 1
+            if file_region[id] then
+                pass = pass + 1
+            else
+                bad("  SAI  (b) luat tham so `%s` KHONG co dong trong `FILE_REGION` —\n" ..
+                    "       chua ai quyet no thanh luat gi trong NOI DUNG tep.\n", id)
+            end
+        end
+        if nr == 0 then bad("  SAI  (b) khong doc duoc `args.RULES`\n") end
+        for k, v in pairs(file_region) do
+            if reg_src:find('add%("' .. v .. '"') then
+                pass = pass + 1
+            else
+                bad("  SAI  (c) `FILE_REGION.%s = \"%s\"` tro toi luat KHONG co trong\n" ..
+                    "       registry — `policy.emit` tra `unknown_rule`, fact MAT HAN.\n", k, v)
+            end
         end
     end
-
-    -- Phien ban giao thuc KHONG kiem o day: muc `[27c]` ben duoi da ghim ca ba
-    -- dieu (pack/unpack cung phien ban, cung so truong, va lech mot truong thi
-    -- than spill tra `bad_payload`). Hai phep kiem cung mot bat bien nghia la khi
-    -- bat bien doi thi phai sua HAI cho, va mot trong hai se bi bo sot.
 end
 
 -- ── `body_core.SCAN_STATUS` phai phu MOI ma `scan` cua BA file ──────────────
@@ -2290,23 +2292,19 @@ do
     else
         local code = core:gsub("%-%-[^\n]*", "")
 
-        -- 27a. Moi `return` trong `scan_one_boundary` phai co 5 gia tri.
+        -- 27a. Moi `return` trong `scan_one_boundary` phai co 2 gia tri, gia tri
+        -- thu HAI la `up_rule` (hoac `nil` tuong minh).
         --
-        -- Ham nay tra `rule, status, up_rule, arg_field, arg_content`. Mot
-        -- `return nil, status` con sot lai la mot loi ra danh roi P1 HOAC danh roi
-        -- hai kenh V4 — va ca hai deu mat tin hieu TRONG IM LANG o dung nhom do.
+        -- Ham nay tra `status, up_rule`. Luat tham so trong ten tep (vung
+        -- `filename`) ghi vao mot TAP truyen vao, nen mot loi ra som khong danh roi
+        -- duoc chung. `up_rule` thi di bang GIA TRI TRA VE, nen mot `return status`
+        -- con sot lai la mot loi ra danh roi P1 TRONG IM LANG.
         --
-        -- CON SO 5 DOI THEO V4 (25-09): ban truoc ghim 3 va do la mot bai hoc rieng
-        -- — mot hop dong dem SO LUONG gia tri se phai sua moi lan ham doi chu ky,
-        -- va neu ai do sua no thanh so moi MA KHONG doc lai thi phep kiem van xanh
-        -- trong khi mot loi ra co the da danh roi dung truong vua them. Nen muc nay
-        -- kiem CA VI TRI: `up_rule` phai la gia tri thu BA o moi loi ra, khong chi
-        -- "co mat dau do".
-        --
-        -- V6 (26-09) dua ve 5: V5 them `fields_complete` lam gia tri thu sau va
-        -- muc nay ghim no, nhung chinh truong do suy "da soi tron" tu trang thai
-        -- parser — loi ma review 26-09 diem 2 chi ra. Phep chung minh gio la
-        -- `file_ranges` trong `_M.scan`, khong di qua ham nay. Dung them lai.
+        -- CON SO DA DOI BA LAN: 3 (P1), 5 (V4 them `arg_field`/`arg_content`), 2
+        -- (V7 bo hai kenh do va `rule`). Mot hop dong dem SO LUONG phai sua moi lan
+        -- ham doi chu ky, va neu ai do sua con so ma khong doc lai thi phep kiem van
+        -- xanh trong khi mot loi ra da dat `up_rule` sai o. Nen muc nay kiem CA VI
+        -- TRI, khong chi so luong.
         --
         -- `return` nhieu dong: `fn:gmatch("return ([^\n]+)")` chi lay dong dau, nen
         -- mot loi ra ngat dong se bi dem thieu. Gop dong truoc khi dem.
@@ -2314,8 +2312,6 @@ do
         if not fn then
             bad("  SAI  [27a] khong tim thay `scan_one_boundary`\n")
         else
-            -- Gop moi `return ...` thanh mot dong: bo dau dong tiep noi khi dong
-            -- truoc ket thuc bang dau phay.
             local joined = fn:gsub(",%s*\n%s*", ", ")
             local bad_n = 0
             for ret in joined:gmatch("return ([^\n]+)") do
@@ -2332,35 +2328,23 @@ do
                     else cur = cur .. ch end
                 end
                 parts[#parts + 1] = cur
-                if commas ~= 4 then
+                if commas ~= 1 then
                     bad_n = bad_n + 1
                     bad("  SAI  [27a] `scan_one_boundary` co `return %s`\n" ..
-                        "       => %d gia tri, phai la 5 (rule, status, up_rule,\n" ..
-                        "       arg_field, arg_content). Mot loi ra danh roi mot\n" ..
-                        "       trong ba truong sau lam tin hieu mat IM LANG.\n",
+                        "       => %d gia tri, phai la 2 (status, up_rule). Mot loi\n" ..
+                        "       ra danh roi `up_rule` lam P1 mat tin hieu IM LANG.\n",
                         ret, commas + 1)
                 else
-                    -- Ghim VI TRI, khong chi so luong: mot loi ra tra du 5 gia tri
-                    -- nhung dat `up_rule` sai o se lam `filename_rule` doc mot
-                    -- truong khac — va vi ca hai deu la chuoi hoac nil, loi se
-                    -- trong nhu mot loi du lieu chu khong nhu mot loi thu tu.
-                    --
-                    -- `nil` TUONG MINH la hop le o vi tri nay: mot loi ra som (vi
-                    -- du "khong tim thay dau phan cach nao") chac chan chua co
-                    -- `up_rule`, va viet `nil` ra la dung. Chi mot TEN BIEN KHAC
-                    -- moi la loi. Ban dau toi doi chuoi nay phai chua `up_rule`, va
-                    -- phep kiem do bao HONG tren mot loi ra hoan toan dung — mot
-                    -- hop dong chat hon thuc te no can kiem.
-                    local function clean(i)
-                        local v = (parts[i] or ""):gsub("^%s+", ""):gsub("%s+$", "")
-                        return (v:gsub("%s*end%s*$", ""))
-                    end
-                    local third = clean(3)
-                    if third ~= "nil" and not third:find("up_rule", 1, true) then
+                    -- `nil` TUONG MINH la hop le: mot loi ra som (vi du "khong tim
+                    -- thay dau phan cach nao") chac chan chua co `up_rule`. Chi mot
+                    -- TEN BIEN KHAC moi la loi.
+                    local second = (parts[2] or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                    second = second:gsub("%s*end%s*$", "")
+                    if second ~= "nil" and not second:find("up_rule", 1, true) then
                         bad_n = bad_n + 1
-                        bad("  SAI  [27a] gia tri thu BA cua `return` la `%s`, phai\n" ..
+                        bad("  SAI  [27a] gia tri thu HAI cua `return` la `%s`, phai\n" ..
                             "       la `up_rule` hoac `nil` tuong minh.\n" ..
-                            "       `filename_rule` doc theo VI TRI.\n", third)
+                            "       `filename_rule` doc theo VI TRI.\n", second)
                     end
                 end
             end
@@ -2381,18 +2365,18 @@ do
         -- part sau. Hai kenh doc lap o cap DU LIEU nhung viec DUYET van chung.
         --
         -- Gac bang cach doi: trong `scan_one_boundary`, thu sau `if rule` KHONG
-        -- duoc la `return`. Phai la phep GAN (`first_arg = rule`) roi duyet tiep.
+        -- duoc la `return`. Phai ghi vao TAP roi duyet tiep.
         do
             local fn2 = code:match("local function scan_one_boundary.-\nend")
             if fn2 then
-                -- tim `if rule` (khong phai `if rule and not first_arg`) di kem
+                -- tim `if rule` di kem
                 -- `return` ngay sau trong cung dong hoac dong ke
                 local ne = fn2:match("if%s+rule%s+then%s+return")
                 if ne then
                     bad("  SAI  [27a-bis] `scan_one_boundary` co `if rule then return`\n" ..
                         "       => part phia sau KHONG duoc soi khi part truoc khop\n" ..
                         "       `check_args`. Duong ne: `../../a.jpg` roi `shell.php`.\n" ..
-                        "       Phai GAN `first_arg` roi duyet tiep het cac part.\n")
+                        "       Phai ghi vao TAP `fn_set` roi duyet tiep het cac part.\n")
                 else
                     pass = pass + 1
                 end

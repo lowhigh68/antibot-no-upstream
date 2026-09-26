@@ -94,6 +94,8 @@ function _M.begin(ctx, request, resolved_config)
         hits         = {},
         labels       = {},
         seen         = {},
+        -- Diem DA TINH cua moi luat: `score` = tong theo luat cua max qua target.
+        rule_score   = {},
         score        = 0,
         candidate    = nil,
         enforce_candidate = nil,
@@ -164,8 +166,17 @@ function _M.emit(state, rule_id, evidence)
         -- A correlation is a verdict derived from facts already scored. Adding
         -- its nominal severity again would double-count the same evidence and
         -- could let a shadow correlation cross an enforced score threshold.
-        if rule.family ~= "correlation" then
-            state.score = state.score + score
+        --
+        -- CUNG MOT LUAT o nhieu target tinh MOT lan, lay max; khac luat thi cong.
+        -- V7 phat bang chung than theo vung, va `../` trong ten tep nam ca o vung
+        -- `nonfile` (header la phan khong phai tep) lan `filename` — cong ca hai la
+        -- dem mot bang chung hai lan. Loi nay co tu truoc V7 giua query string va
+        -- than: `arg_traversal` o `ARGS` + `BODY` ra 70 thay vi 35 (do 26-09).
+        -- Them fact chi co the them luat moi hoac nang max, nen diem khong bao gio
+        -- giam khi request co them noi dung.
+        if rule.family ~= "correlation" and score > (state.rule_score[rule.id] or 0) then
+            state.score = state.score + score - (state.rule_score[rule.id] or 0)
+            state.rule_score[rule.id] = score
         end
         if action == "block" then
             state.candidate = better_candidate(state.candidate, hit)

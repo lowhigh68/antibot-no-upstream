@@ -251,7 +251,7 @@ END{
 }'
 
 echo
-echo "=== 7. [waf-body] family / php / spill / fnm - DA NHAN smp ==="
+echo "=== 7. [waf-body] family / php / spill / ba vung luat - DA NHAN smp ==="
 grep -F '[waf-body]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
 {
@@ -259,9 +259,12 @@ grep -F '[waf-body]' "$LOG" | awk '
     fam[f["ct"]]+=s
     if(f["php"]=="1")   php+=s
     if(f["spill"]=="1") sp+=s
-    if(f["argrule"]!="-"){ ar[f["argrule"]]+=s
-        if(f["fnm"]=="1") fn1+=s; else if(f["fnm"]=="0") fn0+=s }
-    if(f["fnrule"]!="-" && f["fnrule"]!="") fr[f["fnrule"]]+=s
+    # V7: moi vung la TAP luat `a,b` hoac `-`. Dong dinh dang cu (co `argrule=`)
+    # chi dem rieng, khong tron vao bang vung.
+    if("argrule" in f) old+=s
+    split("nf fl fn", rg, " ")
+    for(r=1;r<=3;r++){ v=f[rg[r]]
+        if(v!="" && v!="-"){ m=split(v, ids, ","); for(j=1;j<=m;j++) reg[rg[r] "  " ids[j]]+=s } }
     if(f["fntr"]!="-" && f["fntr"]!="0" && f["fntr"]!="") ftr[f["fntr"]]+=s
     if(f["scan"]!="" && f["scan"]!="-") sc[f["scan"]]+=s
     tot+=s
@@ -271,19 +274,16 @@ END{
     for(k in fam) printf "  %-12s %8d\n", k, fam[k]
     printf "  the mo PHP trong body : %d\n", php+0
     printf "  spill ra file tam     : %d\n", sp+0
-    print "  -- luat tham so trong THAN request --"
-    for(k in ar) printf "  %-16s %8d\n", k, ar[k]
-    printf "    trong do fnm=1 (lan khop duoc chon nam trong ten file): %d\n", fn1+0
-    printf "    trong do fnm=0 (lan khop duoc chon nam ngoai ten file): %d\n", fn0+0
-    print "  -- luat khop khi soi RIENG TEN FILE (fnrule) --"
-    print "     Doc lap voi bang tren: chay luat len chinh gia tri ten file,"
-    print "     khong le thuoc thu tu uu tien cua luat toan than. DAY moi la so"
-    print "     dem duoc cho cau: co bao nhieu request tan cong o ten file."
-    n=0; for(k in fr){ printf "  %-16s %8d\n", k, fr[k]; n++ }
+    print "  -- luat tham so theo VUNG (V7) --"
+    print "     nf = moi byte chua chung minh la noi dung tep (ke ca header part)"
+    print "     fl = noi dung tep, chi khi pf=ok   fn = gia tri filename/filename*"
+    print "     `../` trong ten tep ra CA nf lan fn — policy gop bang max."
+    n=0; for(k in reg){ printf "  %-28s %8d\n", k, reg[k]; n++ }
     if(n==0) print "  (khong co)"
+    if(old>0) printf "  dong dinh dang CU (truoc V7, co argrule=): %d — khong tinh o tren\n", old
     print "  -- BO DO CO CHAY KHONG (scan=) --"
     print "     `ok` la da soi. Moi gia tri khac la KHONG SOI DUOC, va `php=-`"
-    print "     `argrule=-` cua chung KHONG phai am tinh."
+    print "     `nf=- fl=- fn=-` cua chung KHONG phai am tinh."
     sn=0
     if(sc["ok"]>0) printf "  ok           %8d\n", sc["ok"]
     if(sc["empty"]>0) printf "  empty        %8d  POST khong co than (KHONG phai spill)\n", sc["empty"]
@@ -292,7 +292,7 @@ END{
     if(sn>0 && tot>0) printf "  => %.1f%% POST khong duoc soi. Neu phan lon la `nothread`: bo dau # dong\n     `thread_pool antibot_waf_io` trong nginx/nginx.conf va deploy lai.\n", 100*sn/tot
     print ""
     print "  -- quet ten file khong hoan tat, theo LY DO --"
-    print "     `stop` va `empty` la binh thuong. Cac gia tri khac deu la KHONG BIET,"
+    print "     `empty` la binh thuong (`stop`/`ct` chi con o log truoc V7). Cac gia tri khac deu la KHONG BIET,"
     print "     khong phai sach, va moi cai doi mot viec khac han - nen dem RIENG."
     print "     `len` la NGOAI LE: ten file van duoc kiem TRON, no chi bao dai bat thuong."
     tt=0

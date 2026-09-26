@@ -125,7 +125,9 @@ local function record_arg(state, rule_id, target, matched, factor)
     -- observe override must suppress this bridge too; otherwise it would still
     -- affect the old scoring path and the policy would only look configurable.
     if not hit or hit.excepted or hit.action == "observe" then return end
-    local field = target == "BODY" and "waf_body_arg" or "waf_arg"
+    -- CHI query string (`ARGS`) vao `waf_arg`; moi vung cua THAN — `BODY`,
+    -- `BODY_FILE`, `MULTIPART_FILENAME` — vao `waf_body_arg`.
+    local field = target == "ARGS" and "waf_arg" or "waf_body_arg"
     -- `factor` phai di qua ca cau nay. Cau truyen `rule.score` o thang detector
     -- `[0,1]` (khong phai thang registry) de `compute.lua` nhan y nguyen, nhung
     -- neu bo `factor` thi mot request da duoc policy ha xuong 5% van nap DU
@@ -178,123 +180,25 @@ local function terminate(ctx, state, decision, rt)
     return true
 end
 
--- `factor` cho luat THAM SO tren THAN request.
+-- ── V7: phat bang chung THAN request theo VUNG ──────────────────────────────
 --
--- VI SAO CAN. `arg_traversal` la tin hieu duy nhat co dan so lon ma khong tach
--- duoc bang noi dung: moi nhom duoi day THAT SU chua `../`, nen khong regex nao
--- phan biet duoc. Do 25-09 tren sau may, nhom theo `matched=` va doi chieu voi
--- thuoc do FP (`wpauth=1` hoac `richness>=0.5` o dong `[waf]` cung `rid`):
+-- `body_core.scan` bao ba TAP luat: `nonfile_rules`, `file_rules`,
+-- `filename_rules`. Ham duoi day phat MOI (vung, luat) thanh mot hit rieng voi
+-- target rieng, va KHONG chon giua chung — review 26-09 lan 2: "phat fact theo
+-- vung doc lap; policy quyet dinh rieng".
 --
---   matched                luot    co cookie/auth      doc
---   <multipart>               9     9/9 = 100%         upload cua NGUOI THAT
---   <urlencoded>          4.041     6/4.041 = 0,15%    botnet
---   <page_id,pagename>    1.806     0                  cung bo cong cu
---   <json>                   20     0                  /api/templates/preview
+-- Thay cho V4–V6 (`arg_origin` + `reroute_body_arg`): mot `arg_rule` duy nhat cong
+-- mot nhan vi tri, va moi lan chon luat cho o do la mot duong ha diem ke gui dieu
+-- khien duoc — thu tu part, dinh dang, "luat ngoai tep luon thang".
 --
--- Nhom `<multipart>` la FP TUYET DOI, 9/9. Doc tung dong: `ct=multipart`
--- `spill=1` `cl=1.125.283 / 1.177.235 / 1.612.016 / 2.000.644`, URI la
--- `/index.php/quatt_admin/catalog_product_gallery/upload/key/...` — Magento
--- admin dang upload anh san pham. `../` nam trong NOI DUNG FILE (ma chinh chu
--- thich `body_core.lua` da du bao: "part 1 filename=\"../../photo.jpg\" -> khop
--- arg_traversal"), khong phai trong tham so.
---
--- VI SAO KHONG DOC `richness`. `waf.run_pre` chay o `init.lua:200`, con
--- `session_richness` nam trong `STEPS_COMMON` o dong 223 — nen luc tinh factor
--- thi `ctx.session_richness` CHUA TON TAI. Doc no o day se luon ra nil va factor
--- thanh hang so, dung ho loi "co doc truoc khi ghi" da mac bon lan trong repo
--- nay. Ba truong duoi day CO san vi `body.probe()` vua chay xong.
---
--- BA TRUC, va moi truc la mot bat bien chu khong phai mot nguong hieu chinh:
---
---   1. `multipart` — dinh dang danh cho FILE, va la truc DUY NHAT duoc dung.
---      `../` trong than multipart nam trong noi dung file voi xac suat ap dao;
---      do 05-09 da ghi dieu tuong tu cho `arg_null_byte` (67/67 luot nam trong
---      noi dung file). Ke gui khong doi duoc dinh dang ma khong doi ban chat
---      request: mot than `multipart/form-data` phai co boundary va part hop le
---      moi den duoc day, va khi do `../` trong part content dung la thu luat
---      nay dang noi sai ve.
---   2. (DA GO) `spill` — xem dinh chinh (1) ben duoi.
---   3. (KHONG hien thuc hoa) `len` rat lon — nhom botnet do duoc 77..242 byte,
---      buoc 15; nhom FP 1,1-2,0 MB. Dan so 9 ca la qua it de dat nguong.
---
--- DINH CHINH 25-09, hai cho, ca hai do review phat hien:
---
--- (1) `spill` DA BI GO khoi danh sach nay. `spill` nghia la "than request da ra
---     file tam vi vuot buffer" — mot dieu kien KE GUI DIEU KHIEN DUOC. Chi can
---     nhoi padding cho mot than urlencoded hoac JSON vuot `client_body_buffer_
---     size` la moi payload traversal trong do tu 35 diem con 1,75. Do la mot
---     duong ha diem MO CHO NGUOI NGOAI, va no te hon han cai FP no chua: truc 1
---     trong lap luan ban dau ("tan cong tham so khong can megabyte") dung theo
---     chieu quan sat nhung sai theo chieu dieu khien — ke tan cong khong bi
---     buoc phai giu payload nho. Con lai `multipart`, thu ma dinh dang chu
---     khong phai kich thuoc quyet dinh.
---
---     Chin ca FP do duoc deu la `multipart` VA `spill`, nen go `spill` khong
---     mat ca nao: `family == "multipart"` van phu du 9/9.
---
--- (2) Ly do "0.05 chu khong 0 de nhan khong mat" tung ghi o day la SAI. Doc
---     `policy.lua:162`: `add_labels` duoc goi khi `not excepted and action ~=
---     "observe"` — no khong doc `score` mot lan nao. Factor 0 lam diem bang 0
---     nhung nhan VAN vao `state.labels`, nen correlation van thay. Giu 0.05
---     thi bay gio la mot lua chon khac: de telemetry phan biet duoc "luat co
---     no nhung bi ha" voi "luat khong no", va de mot nguong diem tuong lai van
---     nhin thay mot phan nho. Khong con la mot rang buoc ky thuat.
---
--- CHUA HIEU CHINH NGUONG `len`: 2 MB la mot moc lay tu dan so 9 ca, va 9 ca la
--- QUA IT de dat nguong. Truc 3 vi vay KHONG duoc hien thuc hoa. Khi telemetry
--- V2 chay du lau, `waf:v2:rule:arg_traversal` cong voi `waf:v2:scan:*` se cho
--- phan bo that.
--- ── DINH TUYEN mot luat tham so tren THAN request theo VI TRI khop ──────────
---
--- Lich su cho nay la hai lan toi mo mot duong ne roi phai tu dong:
---
---   `spill`      than da ra file tam. Ke gui nhoi padding la dat duoc -> go.
---   `multipart`  dinh dang. Ke gui doi Content-Type la dat duoc -> go.
---
--- Bai hoc: mot thuoc tinh chi dung duoc lam co ha diem khi ke gui KHONG chon duoc
--- no. Ca kich thuoc lan dinh dang deu do ke gui chon. `arg_origin` thi khac — no
--- noi lan khop nam o dau TRONG than, va vi tri do la ket qua cua viec PHAN TICH
--- chu khong phai mot khai bao cua ke gui.
---
--- BON NHOM, va chung khac nhau ve BAN CHAT chu khong ve muc do:
---
---   flat        khong phai multipart. Nghia cu, diem cu, khong doi gi.
---   form_field  gia tri di vao `$_POST` — GIONG HET urlencoded. Giu NGUYEN diem.
---               Day la nhom ma ban `multipart` truoc day mien tru oan.
---   filename    `../` trong ten tep la nguy hiem THAT (path traversal khi luu
---               tep). Da co kenh RIENG (`up_rule`/`fn_rule`) nen o day giu nguyen
---               diem, khong cong them va khong tru.
---   file_content `../` trong byte cua mot tep dinh kem. Chuyen mot luat KHAC
---               (`body_file_traversal`, observe, score 0) chu khong ha diem luat
---               nay — vi mot `factor` nho VAN de lai nhan `attack.traversal`
---               (`policy.lua:162` goi `add_labels` theo `action`, khong theo
---               `score`), nen ha diem thi nhom nay van kich hoat duoc correlation
---               tuong lai. Doi luat la doi CA nhan.
---   unknown     la multipart nhung khong quy duoc: parse do, hoac lan khop nam
---               ngoai moi phan. Giu NGUYEN diem — "khong biet" khac "khong co", va
---               moi lan toi lan hai cai nay la mot lan mo them mot duong ne.
---
--- Tra `rule_id` de dung thay cho `b.arg_rule`, hoac `nil` de giu nguyen.
-local function reroute_body_arg(b)
-    if not b or not b.arg_rule then return nil end
-    -- CHI nhom `file_content` duoc doi luat. Moi nhom con lai — ke ca `unknown` —
-    -- giu nguyen luat va nguyen diem.
-    --
-    -- HAI LOP GAC cho cung mot dieu kien, co y:
-    --   `body_core` da doi `fields_complete` truoc khi dat `arg_origin =
-    --   "file_content"`, nen phep kiem duoi day la LOP THU HAI. No ton tai vi
-    --   `ctx.waf_body` co the den tu mot ban `unpack` khac phien ban (giao thuc doi
-    --   moi lan them truong), va vi day la NOI DUY NHAT ha mot nhom xuong score 0 —
-    --   mot cho nhu vay xung dang mot phep kiem du thua.
-    --
-    --   `== true` chu khong `~= false`: mot `nil` (truong vang vi ban cu) phai lam
-    --   phep kiem THAT BAI, khong duoc coi la da chung minh.
-    if b.arg_origin == "file_content" and b.arg_rule == "arg_traversal" and
-       b.fields_complete == true then
-        return "body_file_traversal"
-    end
-    return nil
-end
+-- Luat nao cho vung nao la viec cua `registry.region_rule` (vd `../` trong NOI
+-- DUNG tep -> `body_file_traversal`, observe), khong viet o day. Cung mot luat
+-- phat o nhieu target thi policy gop bang max, khong cong hai lan.
+local BODY_REGIONS = {
+    { field = "nonfile_rules",  region = "nonfile",  target = "BODY" },
+    { field = "file_rules",     region = "file",     target = "BODY_FILE" },
+    { field = "filename_rules", region = "filename", target = "MULTIPART_FILENAME" },
+}
 
 local function emit_body_facts(ctx, state)
     local b = ctx.waf_body
@@ -326,24 +230,24 @@ local function emit_body_facts(ctx, state)
         })
     end
 
-    if b.arg_rule then
-        local rerouted = reroute_body_arg(b)
-        if rerouted then
-            -- Luat KHAC, nen `record_arg` khong dung duoc: no tra cuu
-            -- `args.RULES[rule_id]` cho cau tuong thich cu, va `body_file_traversal`
-            -- khong thuoc bang do (no la mot luat chi co trong registry, cung dang
-            -- nhu `body_scan_incomplete`). Phat thang qua policy, va KHONG nap gi
-            -- vao `ctx.waf_body_arg` — do la ca diem: nhom nay khong dong gop diem
-            -- nao cho duong cham diem cu.
-            policy.emit(state, rerouted, {
-                target  = "BODY",
-                matched = "<" .. tostring(b.family or "other") .. ":" ..
-                          tostring(b.len or -1) .. ">",
-            })
-        else
-            record_arg(state, b.arg_rule, "BODY",
-                       "<" .. tostring(b.family or "other") .. ":" ..
-                       tostring(b.len or -1) .. ">")
+    -- `matched` KHONG BAO GIO chua noi dung than — chi dinh dang va do dai.
+    local matched = "<" .. tostring(b.family or "other") .. ":" ..
+                    tostring(b.len or -1) .. ">"
+    for i = 1, #BODY_REGIONS do
+        local r = BODY_REGIONS[i]
+        local list = b[r.field]
+        for j = 1, (list and #list or 0) do
+            local rule_id = registry.region_rule(list[j], r.region)
+            if args.RULES[rule_id] then
+                -- Luat tham so: qua `record_arg` de cau noi sang duong cham diem cu
+                -- (`ctx.waf_body_arg`, lay max) van nhan.
+                record_arg(state, rule_id, r.target, matched)
+            else
+                -- Luat chi co trong registry (vd `body_file_traversal`): phat thang,
+                -- KHONG nap gi vao `ctx.waf_body_arg` — do la ca diem cua viec doi
+                -- luat: nhom nay khong dong gop diem cho duong cham diem cu.
+                policy.emit(state, rule_id, { target = r.target, matched = matched })
+            end
         end
     end
 

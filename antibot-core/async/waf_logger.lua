@@ -113,18 +113,14 @@ function _M.run_body(ctx)
     -- mỗi lần là một bộ ba syscall `io.open`/write/`close`. Trên site
     -- WooCommerce hay REST API thì đó là lượng I/O thật, cho một bộ đo TẠM.
     --
-    -- Nhưng KHÔNG lấy mẫu cái đáng chú ý: `php`, `arg_rule`, `spill` đều hiếm và
+    -- Nhưng KHÔNG lấy mẫu cái đáng chú ý: `php`, ba vùng luật, `spill` đều hiếm và
     -- đều là thứ ta dựng bộ đo này để đếm. Chỉ lấy mẫu phần còn lại — tức phần
     -- chỉ đóng góp vào PHÂN BỐ (`blen`), mà phân bố thì lấy mẫu không làm méo.
     --
-    -- Bỏ mẫu ở đây an toàn với `arg_rule` vì mọi lượt CHẠM LUẬT đã có dòng
-    -- `[waf]` riêng với `target=BODY`; dòng `[waf-body]` không phải nguồn duy
-    -- nhất của chúng.
-    --
-    -- `fn_rule` thì KHÔNG như vậy, và đây là chỗ dễ hụt nhất: nó KHÔNG sinh
-    -- dòng `[waf]` (nó là telemetry, không tạo `waf_hits`), nên dòng
-    -- `[waf-body]` là nguồn DUY NHẤT của nó. Quên nó ở đây là vứt 19/20 lượt
-    -- tấn công tên file — đúng kiểu lệch âm thầm mà cột `smp=` sinh ra để chặn.
+    -- Từ V7 mọi (vùng, luật) đều có dòng `[waf]` riêng (`target=BODY`,
+    -- `BODY_FILE`, `MULTIPART_FILENAME`), nên dòng `[waf-body]` không còn là
+    -- nguồn duy nhất của luật nào. Vẫn giữ chúng là notable: đây là dòng DUY
+    -- NHẤT thấy CẢ BA vùng của cùng một request cạnh nhau, cùng `pf=`.
     -- `fn_trunc` cung la notable: mot lan quet KHONG HOAN TAT la thong tin,
     -- va lay mau no di thi ty le "khong soi het" trong so lieu thap di 20 lan.
     -- `scan ~= "ok"` cung la notable: mot lan KHONG SOI DUOC la thong tin, va
@@ -143,12 +139,12 @@ function _M.run_body(ctx)
     -- dong `[waf-body]` khi trung nhip lay mau, va van dem trong
     -- `waf:v2:scan:empty`. Cung phan biet da lam o `waf/init.lua` cho viec phat
     -- luat: "khong co gi de soi" khac "co ma soi khong noi".
-    -- `up_rule` (P1) cung KHONG sinh dong `[waf]` — dung ly do da ghi cho
-    -- `fn_rule` ngay tren: no la kenh rieng, khong tao `waf_hits`. Bo sot no o
+    -- `up_rule` (P1) cung la notable. Bo sot no o
     -- day thi BODY_SAMPLE vut 19/20 luot upload ten file chay duoc, va so lieu
     -- dung de quyet dinh co nang trong so khoi 0 se thap di 20 lan — tuc phep do
     -- se noi "khong co gi" ve dung thu no duoc sinh ra de dem.
-    local notable = b.php or b.arg_rule or b.fn_rule or b.fn_trunc or b.spill
+    local notable = b.php or b.nonfile_rules or b.file_rules or b.filename_rules
+                 or b.fn_trunc or b.spill
                  or b.up_rule
                  or (b.scan and b.scan ~= "ok" and b.scan ~= "empty")
     if not notable then
@@ -162,8 +158,8 @@ function _M.run_body(ctx)
     fh:write(string.format(
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
-        .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s"
-        .. " aorig=%s afld=%s acnt=%s fc=%s pf=%s smp=%d\n",
+        .. " class=%s richness=%s vfy=%d scan=%s nf=%s fl=%s fn=%s fntr=%s uprule=%s"
+        .. " pf=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(ctx),
@@ -216,10 +212,9 @@ function _M.run_body(ctx)
         -- `class=- richness=-` — trong y het truong hop khac. Thieu cot nay thi
         -- rieng nhom body khong biet vi sao khong co du lieu.
         ctx.verified and 1 or 0,
-        -- Luat tham so nao khop trong THAN request. Doi chieu voi dong `[waf]`
         -- BO DO CO CHAY KHONG, va neu khong thi VI SAO.
         --
-        -- `php=-` va `argrule=-` da noi "chua soi", nhung khong noi nguyen nhan,
+        -- `php=-` da noi "chua soi", nhung khong noi nguyen nhan,
         -- va voi request KHONG phai multipart thi `fntr` cung khong mang duoc
         -- (no la nil). Cot nay phu ca hai cho.
         --     scan=ok            da soi
@@ -231,27 +226,24 @@ function _M.run_body(ctx)
         -- `nothread` la con so noi thang: bat `thread_pool` len thi bay nhieu
         -- request nay duoc soi them.
         b.scan or "-",
-        -- cung `rid=` de biet cai do la than hay query string — dong `[waf]`
-        -- phan biet bang cot `target=` (ARGS / BODY).
-        b.arg_rule or "-",
-        -- Lan khop nam trong `filename=` cua multipart (1) hay o noi dung khac
-        -- (0); `-` khi khong ap dung — khong phai multipart, hoac khong luat
-        -- nao ban. Cot PHAN TANG de doc phan bo, khong tac dong gi toi phan
-        -- quyet. Doc cung `family=` va `richness=`: ten file la tan cong, noi
-        -- dung bai viet la FP, va hai cai do phai tach duoc TRUOC khi tinh
-        -- chuyen `waf_body_arg` len khoi trong so 0.
-        (b.fnm == nil) and "-" or (b.fnm and "1" or "0"),
-        -- Luat khop khi soi RIENG gia tri ten file, doc lap voi than.
+        -- V7: BA VUNG, moi cot la TAP luat tham so (`a,b`) khop trong vung do, hoac
+        -- `-`. Moi (vung, luat) con co dong `[waf]` rieng, cot `target=` noi vung:
+        --     nf=  `BODY`                moi byte CHUA chung minh la noi dung tep
+        --                                (ca than neu khong phai multipart hoac
+        --                                `pf` khac ok; ke ca vung header)
+        --     fl=  `BODY_FILE`           noi dung tep — CHI khi `pf=ok`
+        --     fn=  `MULTIPART_FILENAME`  gia tri `filename`/`filename*`, moi bien the
+        -- `../` trong ten tep ra CA `nf=` lan `fn=` (header nam trong `nonfile`);
+        -- policy gop cung luat bang max nen khong bi dem hai lan. `-` o ca ba co
+        -- the la "sach" hoac "chua soi" — doc `scan=`.
         --
-        -- KHAC `fnm` va tra loi mot cau khac han:
-        --   `fnm`     vi tri cua lan khop TOAN THAN duoc chon. Le thuoc thu tu
-        --             uu tien, nen KHONG dung de dem tan cong ten file.
-        --   `fnrule`  ket qua chay luat len CHINH gia tri ten file. Day moi la
-        --             con so dem duoc.
-        -- `filename*=` duoc giai ma rieng (RFC 5987 dinh nghia la
-        -- percent-encoding); `filename=` thi khong.
-        b.fn_rule or "-",
-        -- LY DO quet ten file khong hoan tat. Doc kem `fnrule=`:
+        -- Thay cho `argrule`/`fnm`/`fnrule`/`aorig`/`afld`/`acnt`/`fc` (V4–V6), ma
+        -- moi cot chi chua MOT luat duoc CHON — va viec chon la cho ke gui dieu
+        -- khien duoc.
+        b.nonfile_rules and table.concat(b.nonfile_rules, ",") or "-",
+        b.file_rules and table.concat(b.file_rules, ",") or "-",
+        b.filename_rules and table.concat(b.filename_rules, ",") or "-",
+        -- LY DO quet ten file khong hoan tat. Doc kem `fn=`:
         --     fntr=-     khong ap dung — request khong phai multipart
         --     fntr=0     da soi het MOI vung header, khong luat nao ban
         --     fntr=spill multipart nhung body ra file tam -> KHONG soi gi ca
@@ -261,11 +253,8 @@ function _M.run_body(ctx)
         --     fntr=hdr   mot vung header > 2 KB  -> bat thuong, chi soi 2 KB dau
         --     fntr=len   mot ten file > 512 byte -> hiem, tu no da dang ngo
         --     fntr=n     hon 64 phan             -> thuong la upload that
-        --     fntr=stop  dung lai vi DA TIM THAY -> binh thuong, kem `fnrule=`
-        -- `stop` ton tai de `fntr=0` chi con MOT nghia. Ham thoat ngay o luat
-        -- dau tien, nen khong co no thi `fnrule=X fntr=0` doc thanh "da soi
-        -- het" trong khi that ra cac ten file phia sau chua he duoc soi — va
-        -- moi phep dem "bao nhieu lan quet hoan tat" deu lech.
+        -- (`fntr=stop` va `fntr=ct` chi con o log truoc V7: bo quet khong con dung
+        -- o lan khop dau, va kenh soi noi dung tung part cap 8 KB da go.)
         -- Ba gia tri rx/len/n deu la KHONG BIET, khong phai sach — gop lai la
         -- bien mot khoang trong thanh mot am tinh (cung nguyen tac da dung cho
         -- `php=-` va `exists=-`). Nhung chung doi ba viec khac han nhau, nen ghi
@@ -288,46 +277,8 @@ function _M.run_body(ctx)
         -- Doc KEM `fntr=`: `uprule=- fntr=spill` nghia la CHUA SOI, khong phai
         -- sach. Gop hai cai lai la dung loi da cat 4 thang o `wp_paths.mark()`.
         b.up_rule or "-",
-        -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
-        -- `smp=20` = nó đại diện cho 20 request cùng loại.
-        --
-        -- Bắt buộc phải có: lấy mẫu mà không ghi tỉ lệ ra là làm cho mọi phép
-        -- đếm về sau thấp đi 20 lần trong khi log trông vẫn bình thường — đúng
-        -- kiểu lệch âm thầm đã mất một buổi để gỡ với cột `status=`.
-        -- V4. `aorig=` la cot TRA LOI cau hoi "lan khop `argrule` nam o dau", va
-        -- thieu no thi ca thiet ke V4 khong do duoc.
-        --
-        --   aorig=flat         khong phai multipart — nghia cu
-        --   aorig=form_field   gia tri di vao `$_POST`, GIU nguyen diem
-        --   aorig=filename     trong ten tep — da co kenh rieng (`uprule`/`fnrule`)
-        --   aorig=file_content trong byte cua tep dinh kem -> doi sang luat
-        --                      `body_file_traversal` (observe, score 0)
-        --   aorig=-            khong co `argrule` nao, hoac than chua duoc soi
-        --   aorig=unknown      LA multipart nhung khong quy duoc: parse do, hoac
-        --                      khop nam ngoai moi phan. GIU nguyen diem. Tu V6 than
-        --                      chuan tac co luat o CA HAI vung (ngoai tep va trong
-        --                      tep) cung ra day — co y, xem `body_core.scan`.
-        --
-        -- `afld=` va `acnt=` la HAI KENH DOC LAP, khong phai chi tiet cua `aorig=`:
-        -- mot than co the co `../` o CA form field LAN noi dung tep, va khi do
-        -- `aorig=form_field` (uu tien) nhung `acnt=` van co gia tri. Doc rieng hai
-        -- cot moi thay duoc to hop do — gop lai thi thu tu part quyet dinh ben nao
-        -- hien ra, va thu tu part la thu ke gui dieu khien.
-        --
-        -- Tu V6 hai cot nay van di tu PARSER CU (tokenizer rieng, noi dung tep chi
-        -- soi 8 KB dau), khong phai tu phep chung minh. Chi doc chung nhu phan loai
-        -- khi `pf=ok`; `pf` khac `ok` thi chung chi la uoc doan (review 26-09).
-        scrub(b.arg_origin, 16),
-        scrub(b.arg_field, 24),
-        scrub(b.arg_content, 24),
-        -- `fc=` DIEU KIEN gac cho reroute. Tu V6: `fc=1` <=> `pf=ok` — than chuan
-        -- tac va moi byte khong phai tep da duoc quet. `aorig=unknown fc=1` la luat
-        -- nam ngoai noi dung tep nhung khong quy duoc vao field hay ten tep (vi du
-        -- trong `name=`); `fc=0` thi doc `pf=` de biet vi sao.
-        (b.fields_complete == true and "1") or
-            (b.fields_complete == false and "0") or "-",
         -- V6 `pf=`: VI SAO than multipart nay chung minh duoc hay khong.
-        --   pf=ok   dang chuan tac, noi dung tep da tach ra     -> `fc=1`
+        --   pf=ok   dang chuan tac, noi dung tep da tach ra     -> co vung `fl=`
         --   pf=ct   Content-Type (boundary) khong chuan tac
         --   pf=pre  co byte truoc dong phan cach dau
         --   pf=hdr  vung header mot part: dong la, header thu ba, qua dai
@@ -336,9 +287,15 @@ function _M.run_body(ctx)
         --   pf=end  thieu dong ket thuc, hoac co byte sau no
         --   pf=n    hon 64 phan
         --   pf=-    khong phai multipart, hoac than chua soi
-        -- Moi gia tri khac `ok` la GIU NGUYEN DIEM. Cot nay ton tai de do upload
-        -- THAT hong o buoc nao, thay vi doan.
+        -- Moi gia tri khac `ok` la GIU NGUYEN DIEM: khong co vung `fl=`, ca than
+        -- nam o `nf=`. Cot nay ton tai de do upload THAT hong o buoc nao.
         scrub(b.proof, 8),
+        -- HỆ SỐ NHÂN, không phải cờ. `smp=1` = dòng này luôn được ghi;
+        -- `smp=20` = nó đại diện cho 20 request cùng loại.
+        --
+        -- Bắt buộc phải có: lấy mẫu mà không ghi tỉ lệ ra là làm cho mọi phép
+        -- đếm về sau thấp đi 20 lần trong khi log trông vẫn bình thường — đúng
+        -- kiểu lệch âm thầm đã mất một buổi để gỡ với cột `status=`.
         notable and 1 or BODY_SAMPLE))
 
     fh:close()

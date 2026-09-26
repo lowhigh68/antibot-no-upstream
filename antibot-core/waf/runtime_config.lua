@@ -58,6 +58,11 @@ return {
     --         host = "shop.example.com", target = "BODY",
     --         uri_prefix = "/index.php/admin/catalog_product_gallery/upload/" },
     --   },
+    --   `target` khop CHINH XAC. Tu V7 than request co ba target: `BODY` (moi byte
+    --   chua chung minh la noi dung tep), `BODY_FILE` (noi dung tep) va
+    --   `MULTIPART_FILENAME` (ten tep); query string la `ARGS`. Bo `target` thi
+    --   exception ap cho moi target. (Vi du tren da loi thoi tu V7: `../` trong
+    --   noi dung tep nay la `body_file_traversal`, observe.)
     rules        = {},
     families     = {},
     correlations = {},

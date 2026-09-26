@@ -60,7 +60,16 @@ local function mp(parts, nl)
     nl = nl or "\r\n"
     return table.concat(parts) .. "--" .. B .. "--" .. nl
 end
-local function scan(data, ct) return core.scan(data, ct or MULTI) end
+-- V7: moi vung la MANG luat. `check` so sanh chuoi, nen gan them ban chuoi `a,b`
+-- cua tung vung (`nf`, `fl`, `fnr`) va ban gop `all` = "nonfile|file|filename"
+-- ("-" cho vung rong). Bang tu worker/unpack thi dung `list(...)`.
+local function list(t) return t and table.concat(t, ",") or nil end
+local function scan(data, ct)
+    local r = core.scan(data, ct or MULTI)
+    r.nf, r.fl, r.fnr = list(r.nonfile_rules), list(r.file_rules), list(r.filename_rules)
+    r.all = (r.nf or "-") .. "|" .. (r.fl or "-") .. "|" .. (r.fnr or "-")
+    return r
+end
 
 -- ══ 1. Phan loai content-type ═══════════════════════════════════════
 io.write("core: phan loai content-type\n")
@@ -83,33 +92,33 @@ check("media type gia trong tham so co nhay khong thanh multipart",
 
 -- ══ 2. Ba luat tham so ══════════════════════════════════════════════
 io.write("\ncore: ba luat tham so\n")
-check("traversal tho", scan("f=../../etc/passwd", URLENC).arg_rule, "arg_traversal")
-check("wrapper tho",   scan("f=php://input", URLENC).arg_rule, "arg_php_wrapper")
-check("NUL tho",       scan("f=x" .. string.char(0), URLENC).arg_rule, "arg_null_byte")
-check("body lanh",     scan("name=nguyen&city=ha noi", URLENC).arg_rule, nil)
+check("traversal tho", scan("f=../../etc/passwd", URLENC).nf, "arg_traversal")
+check("wrapper tho",   scan("f=php://input", URLENC).nf, "arg_php_wrapper")
+check("NUL tho",       scan("f=x" .. string.char(0), URLENC).nf, "arg_null_byte")
+check("body lanh",     scan("name=nguyen&city=ha noi", URLENC).nf, nil)
 -- `..` PHAI di kem `/` hoac `\`. Thieu ve sau thi moi so thap phan deu ban.
-check("hai cham khong kem gach -> im", scan("gia=1..5", URLENC).arg_rule, nil)
+check("hai cham khong kem gach -> im", scan("gia=1..5", URLENC).nf, nil)
 -- `://` bat buoc, neu khong `data:image/png;base64,...` bi bat oan.
 check("data URI hop le -> im",
-      scan("img=data:image/png;base64,iVBOR", URLENC).arg_rule, nil)
+      scan("img=data:image/png;base64,iVBOR", URLENC).nf, nil)
 
 check("ma hoa hai lop van bat",
-      scan("f=%252e%252e%252fetc", URLENC).arg_rule, "arg_traversal")
+      scan("f=%252e%252e%252fetc", URLENC).nf, "arg_traversal")
 -- BYPASS THAT cua ban `ngx.re` cu: no khong `lower()` LAI sau moi vong giai ma,
 -- nen `%50` ra `P` va `Php://input` truot mau chu thuong.
 check("giai ma sinh chu HOA van phai khop",
-      scan("f=%50hp%3A%2F%2Finput", URLENC).arg_rule, "arg_php_wrapper")
+      scan("f=%50hp%3A%2F%2Finput", URLENC).nf, "arg_php_wrapper")
 -- Noi dung KHONG phai percent-encoding thi khong duoc giai ma: mot file .txt
 -- chua chuoi ky tu `%2e%2e%2f` se BIEN THANH `../` va ban — FP do chinh buoc
 -- giai ma tao ra.
 check("noi dung khong giai ma thi khong tu tao FP",
-      scan(mp({ part(CD .. 'filename="a.txt"', "%2e%2e%2fetc") })).arg_rule, nil)
+      scan(mp({ part(CD .. 'filename="a.txt"', "%2e%2e%2fetc") })).all, "-|-|-")
 -- Byte NUL tat cho nhi phan (moi PNG/JPEG/PDF chua no theo dac ta), nhung mau
 -- VAN BAN `%00` thi khong tat.
 check("multipart: byte NUL tho khong ban",
-      scan(mp({ part(CD .. 'filename="a.png"', "PNG" .. string.char(0)) })).arg_rule, nil)
+      scan(mp({ part(CD .. 'filename="a.png"', "PNG" .. string.char(0)) })).all, "-|-|-")
 check("multipart: `%00` van ban VAN ban",
-      scan(mp({ part(CD .. 'filename="x.php%00.jpg"') })).arg_rule, "arg_null_byte")
+      scan(mp({ part(CD .. 'filename="x.php%00.jpg"') })).all, "arg_null_byte|-|arg_null_byte")
 
 -- ══ 3. The mo PHP, dem tham so ══════════════════════════════════════
 io.write("\ncore: the mo PHP va dem tham so\n")
@@ -127,12 +136,15 @@ check("nargs ba tham so",  scan("a=1&b=2&c=3", URLENC).nargs, 3)
 check("nargs chi co nghia voi urlencoded", scan("a=1&b=2", MULTI).nargs, nil)
 check("len dung", scan("abcde", URLENC).len, 5)
 
--- ══ 4. fn_rule — soi vung header cua TUNG phan ══════════════════════
-io.write("\ncore: fn_rule (vung header cua tung phan)\n")
+-- ══ 4. Vung `filename` — soi vung header cua TUNG phan ═══════════════
+io.write("\ncore: vung filename (vung header cua tung phan)\n")
 check("filename that bi bat",
-      scan(mp({ part(CD .. 'filename="../../shell.php"') })).fn_rule, "arg_traversal")
-check("tim thay som -> stop",
-      scan(mp({ part(CD .. 'filename="../../shell.php"') })).fn_trunc, "stop")
+      scan(mp({ part(CD .. 'filename="../../shell.php"') })).fnr, "arg_traversal")
+-- V7 khong con `stop`: bo quet khong dung o lan khop dau, nen mot lan quet co khop
+-- va mot lan quet sach deu ra `fn_trunc = false` — cot `fntr=` chi con noi ve
+-- nhung gioi han cua PARSER.
+check("tim thay KHONG con danh dau stop",
+      scan(mp({ part(CD .. 'filename="../../shell.php"') })).fn_trunc, false)
 
 -- CAI DAT DUOC BANG VIEC CAT THEO BOUNDARY. Ban quet-toan-than lam tran 64 VO
 -- NGHIA: nhoi `filename=` gia vao NOI DUNG phan 1 la het suat truoc khi toi
@@ -141,10 +153,10 @@ local pad = ""
 for i = 1, 80 do pad = pad .. '; filename="pad' .. i .. '.jpg"' end
 check("noi dung phan 1 KHONG tieu ngan sach cua phan 2",
       scan(mp({ part('Content-Disposition: form-data; name="t"', pad),
-                part(CD .. 'filename="../../shell.php"') })).fn_rule, "arg_traversal")
+                part(CD .. 'filename="../../shell.php"') })).fnr, "arg_traversal")
 check("`filename=` trong NOI DUNG file khong bi dem",
       scan(mp({ part('Content-Disposition: form-data; name="t"',
-                     '; filename="../../x.php"') })).fn_rule, nil)
+                     '; filename="../../x.php"') })).fnr, nil)
 check("noi dung khong lam ban trang thai",
       scan(mp({ part('Content-Disposition: form-data; name="t"',
                      '; filename="../../x.php"') })).fn_trunc, false)
@@ -152,29 +164,29 @@ check("noi dung khong lam ban trang thai",
 -- CHI tham so cua CHINH Content-Disposition moi la ung vien.
 check("filename trong header KHAC khong bi dem",
       scan(mp({ part('Content-Disposition: form-data; name="f"\r\n'
-                     .. 'X-Debug: filename="../../debug.php"') })).fn_rule, nil)
+                     .. 'X-Debug: filename="../../debug.php"') })).fnr, nil)
 -- Dau `;` NAM TRONG chuoi co nhay khong phai cu phap.
 check("filename trong quoted name khong bi tach thanh tham so",
-      scan(mp({ part('Content-Disposition: form-data; name="x; filename=../../in.php"') })).fn_rule,
+      scan(mp({ part('Content-Disposition: form-data; name="x; filename=../../in.php"') })).fnr,
       nil)
 
 check("khong phan biet hoa thuong",
-      scan(mp({ part('Content-Disposition: form-data; FILENAME="../x"') })).fn_rule,
+      scan(mp({ part('Content-Disposition: form-data; FILENAME="../x"') })).fnr,
       "arg_traversal")
 check("ten file lanh -> im",
-      scan(mp({ part(CD .. 'filename="anh-san-pham.jpg"') })).fn_rule, nil)
+      scan(mp({ part(CD .. 'filename="anh-san-pham.jpg"') })).fnr, nil)
 check("PNG co byte NUL, ten file lanh -> im",
       scan(mp({ part(CD .. 'filename="anh.jpg"',
-                     "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR") })).fn_rule, nil)
+                     "\137PNG\r\n\26\n" .. string.char(0,0,0,13) .. "IHDR") })).fnr, nil)
 -- Upload thu vien anh co hang chuc phan va tan cong thuong nam o phan cuoi.
 check("quet het moi phan, khong dung o cai dau",
       scan(mp({ part(CD .. 'filename="ok.jpg"'),
-                part(CD .. 'filename="../../s.php"') })).fn_rule, "arg_traversal")
+                part(CD .. 'filename="../../s.php"') })).fnr, "arg_traversal")
 check("khong phai multipart -> nil",
-      scan('filename="../../x"', URLENC).fn_rule, nil)
+      scan('filename="../../x"', URLENC).fnr, nil)
 -- Header gap dong (obs-fold): dong bat dau bang space la phan noi tiep.
 check("header gap dong van doc duoc filename",
-      scan(mp({ part('Content-Disposition: form-data;\r\n name="f"; filename="../../x.php"') })).fn_rule,
+      scan(mp({ part('Content-Disposition: form-data;\r\n name="f"; filename="../../x.php"') })).fnr,
       "arg_traversal")
 
 -- ══ 5. Cat phan: dau phan cach ══════════════════════════════════════
@@ -183,18 +195,18 @@ io.write("\ncore: cat phan theo boundary\n")
 check("boundary co hau to trong noi dung khong tao phan",
       scan(mp({ part(CD .. 'filename="safe.jpg"',
                      "alpha\r\n--" .. B .. "XYZ\r\n" .. CD
-                     .. 'filename="../../fake.php"\r\n\r\nkhong-phai-phan') })).fn_rule,
+                     .. 'filename="../../fake.php"\r\n\r\nkhong-phai-phan') })).fnr,
       nil)
 -- `--B--garbage` khong phai dau dong ket thuc hop le, nen KHONG duoc dung quet.
 check("dau dong ket thuc gia khong duoc dung bo quet",
       scan(mp({ part(CD .. 'filename="safe.jpg"',
                      "truoc\r\n--" .. B .. "--rac\r\nsau"),
-                part(CD .. 'filename="../../sau.php"') })).fn_rule, "arg_traversal")
+                part(CD .. 'filename="../../sau.php"') })).fnr, "arg_traversal")
 -- CAT RONG TAY: chap ca `\n--B` tran. Neu ta doi `\r\n` ma parser ha nguon chap
 -- `\n` thi ke tan cong dung `\n` va ta thay MOT phan khong lo trong khi PHP
 -- thay hai.
 check("than dung `\\n` tran van cat duoc phan",
-      scan(mp({ part(CD .. 'filename="../../x.php"', nil, "\n") }, "\n")).fn_rule,
+      scan(mp({ part(CD .. 'filename="../../x.php"', nil, "\n") }, "\n")).fnr,
       "arg_traversal")
 -- Phan KHONG CO HEADER NAO. Khong xu ly rieng thi khong tim thay `\r\n\r\n` nao
 -- va `hdr` ban OAN tren mot than hoan toan hop le.
@@ -205,23 +217,23 @@ check("phan khong co header nao -> khong bao hdr oan",
 io.write("\ncore: boundary\n")
 check("boundary co nhay",
       scan(mp({ part(CD .. 'filename="../../x.php"') }),
-           'multipart/form-data; boundary="' .. B .. '"').fn_rule, "arg_traversal")
+           'multipart/form-data; boundary="' .. B .. '"').fnr, "arg_traversal")
 check("boundary that sau mot tham so co nhay van duoc dung",
       scan(mp({ part(CD .. 'filename="../../real.php"') }),
-           'multipart/form-data; x="; boundary=gia"; boundary=' .. B).fn_rule,
+           'multipart/form-data; x="; boundary=gia"; boundary=' .. B).fnr,
       "arg_traversal")
 -- HAI boundary khac nhau la hop le ve cu phap va parser khac nhau chon khac
 -- nhau. Quet voi TAT CA candidate, va van khong bao sach.
 check("boundary trung lap: quet moi candidate",
       scan(mp({ part(CD .. 'filename="../../dup.php"') }),
-           "multipart/form-data; boundary=gia; boundary=" .. B).fn_rule, "arg_traversal")
+           "multipart/form-data; boundary=gia; boundary=" .. B).fnr, "arg_traversal")
 check("boundary trung lap KHONG duoc bao sach",
       scan(mp({ part(CD .. 'filename="anh.jpg"') }),
            "multipart/form-data; boundary=gia; boundary=" .. B).fn_trunc, "bdup")
 check("khong co boundary -> nb",
       scan(mp({ part(CD .. 'filename="../../x.php"') }), "multipart/form-data").fn_trunc, "nb")
 check("khong co boundary -> fn_rule nil, KHONG phai sach",
-      scan(mp({ part(CD .. 'filename="../../x.php"') }), "multipart/form-data").fn_rule, nil)
+      scan(mp({ part(CD .. 'filename="../../x.php"') }), "multipart/form-data").fnr, nil)
 check("co boundary nhung than khong co dau phan cach -> bd",
       scan("than phang khong co dau phan cach").fn_trunc, "bd")
 
@@ -247,7 +259,7 @@ check("vung header > 2 KB -> hdr",
 local long_fn = CD .. 'filename="' .. string.rep("a", 600) .. '../x"'
 check("ten file > 512 byte -> len", scan(mp({ part(long_fn) })).fn_trunc, "len")
 check("don 512 byte KHONG che duoc traversal",
-      scan(mp({ part(long_fn) })).fn_rule, "arg_traversal")
+      scan(mp({ part(long_fn) })).fnr, "arg_traversal")
 
 check("multipart binh thuong -> false",
       scan(mp({ part(CD .. 'filename="anh.jpg"') })).fn_trunc, false)
@@ -256,44 +268,73 @@ check("khong phai multipart -> nil", scan("a=1", URLENC).fn_trunc, nil)
 -- ══ 8. Chuan hoa ten file ═══════════════════════════════════════════
 io.write("\ncore: chuan hoa ten file\n")
 check("filename*= giai ma DUNG MOT LOP",
-      scan(mp({ part(CD .. "filename*=UTF-8''..%2F..%2Fx.php") })).fn_rule, "arg_traversal")
+      scan(mp({ part(CD .. "filename*=UTF-8''..%2F..%2Fx.php") })).fnr, "arg_traversal")
 -- FP THAT do giai ma qua tay: `a..%252Fb.txt` giai mot lan ra `a..%2Fb.txt` —
 -- ten file hop le chua ky tu `%`. Giai lan hai bien no thanh `a../b.txt`.
 check("filename*= KHONG duoc giai hai lop",
-      scan(mp({ part(CD .. "filename*=UTF-8''a..%252Fb.txt") })).fn_rule, nil)
+      scan(mp({ part(CD .. "filename*=UTF-8''a..%252Fb.txt") })).fnr, nil)
 check("filename thuong KHONG percent-decode",
-      scan(mp({ part(CD .. 'filename="a..%2Fb.txt"') })).fn_rule, nil)
+      scan(mp({ part(CD .. 'filename="a..%2Fb.txt"') })).fnr, nil)
 -- MEP CO CHU Y: `x%2500.jpg` giai mot lan ra `x%00.jpg` roi mau VAN BAN `%00`
 -- van ban. Rieng luat NUL doc them mot lop, va do la lua chon.
 check("`%2500` -> `%00` sau mot lan giai, mau van ban VAN ban",
-      scan(mp({ part(CD .. "filename*=UTF-8''x%2500.jpg") })).fn_rule, "arg_null_byte")
+      scan(mp({ part(CD .. "filename*=UTF-8''x%2500.jpg") })).fnr, "arg_null_byte")
 check("`filename=` khong giai ma nen `%2500` khong thanh `%00`",
-      scan(mp({ part(CD .. 'filename="x%2500.jpg"') })).fn_rule, nil)
+      scan(mp({ part(CD .. 'filename="x%2500.jpg"') })).fnr, nil)
 -- QUOTED-PAIR: soi CA HAI dang. Dang semantic bat `.\./`, dang raw bat `..\..\`
 -- — bo escape mot cach pha huy la doi mot lo hong lay mot lo hong.
 check("quoted-pair: dang semantic bat duoc `.\\./`",
-      scan(mp({ part(CD .. 'filename=".\\./x.php"') })).fn_rule, "arg_traversal")
+      scan(mp({ part(CD .. 'filename=".\\./x.php"') })).fnr, "arg_traversal")
 check("quoted-pair: dang raw bat duoc Windows `..\\..\\`",
-      scan(mp({ part(CD .. 'filename="..\\..\\x.php"') })).fn_rule, "arg_traversal")
+      scan(mp({ part(CD .. 'filename="..\\..\\x.php"') })).fnr, "arg_traversal")
 check("nhay thoat khong lam mat tai trong",
-      scan(mp({ part(CD .. 'filename="abc\\"../../x.php"') })).fn_rule, "arg_traversal")
+      scan(mp({ part(CD .. 'filename="abc\\"../../x.php"') })).fnr, "arg_traversal")
 check("duong dan Windows hop le -> im",
-      scan(mp({ part(CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"') })).fn_rule, nil)
+      scan(mp({ part(CD .. 'filename="C:\\Users\\me\\anh-san-pham.jpg"') })).fnr, nil)
 -- Nhay khong dong: dung o CRLF nhu parser ha nguon, va vung header da bi cat
 -- theo boundary nen khong voi sang phan khac duoc.
 check("nhay khong dong KHONG an sang phan khac",
       scan(mp({ part('Content-Disposition: form-data; name="a"; filename="'),
-                part(CD .. 'filename="../../shell.php"') })).fn_rule, "arg_traversal")
+                part(CD .. 'filename="../../shell.php"') })).fnr, "arg_traversal")
 
--- ══ 9. fnm (cot phan tang cu) ═══════════════════════════════════════
-io.write("\ncore: fnm\n")
-check("fnm=1 khi lan khop nam cung dong voi filename",
-      scan(mp({ part(CD .. 'filename="x.php%00.jpg"') })).fnm, true)
-check("fnm=0 khi lan khop nam trong noi dung",
-      scan(mp({ part(CD .. 'filename="a.txt"', "php://input") })).fnm, false)
-check("fnm=nil khi khong luat nao ban",
-      scan(mp({ part(CD .. 'filename="a.jpg"') })).fnm, nil)
-check("fnm=nil khi khong phai multipart", scan("f=../x", URLENC).fnm, nil)
+-- ══ 9. V7: TAP luat cua mot vung ═════════════════════════════════════
+--
+-- Moi vung bao CA TAP, khong chi luat dau tien theo thu tu kiem. Cot `fnm` (lan
+-- khop DUOC CHON co nam cung dong voi `filename=` khong) da go cung voi viec chon.
+io.write("\ncore: V7 tap luat cua mot vung\n")
+check("hai luat trong cung mot field -> ca hai",
+      scan(mp({ part('Content-Disposition: form-data; name="a"', "%00 va ../x") })).nf,
+      "arg_null_byte,arg_traversal")
+check("ba luat trong urlencoded -> ca ba",
+      scan("a=%00&b=php://x&c=../y", URLENC).nf,
+      "arg_null_byte,arg_php_wrapper,arg_traversal")
+check("hai ten tep, hai luat -> ca hai (khong dung o part dau)",
+      scan(mp({ part(CD .. 'filename="../a.jpg"'),
+                part(CD .. 'filename="x%00.jpg"') })).fnr,
+      "arg_null_byte,arg_traversal")
+
+-- `rules_in_lower` phai DONG Y voi `check_args_lower` (query string van dung ham
+-- sau): luat ma `check_args_lower` tra ve phai nam trong tap, va tap rong khi va
+-- chi khi no tra nil. Cung ba phep tim — lech nhau la mot bypass tren mot trong
+-- hai duong.
+do
+    local samples = { "a=../x", "a=%00", "php://input", "x" .. string.char(0) .. "y",
+                      "%252e%252e%252f", "%50hp%3A%2F%2Finput", "sach", "1..5",
+                      "data:image/png;base64,x", "compress.zlib://a",
+                      ".." .. string.char(92) .. "x", "%00 php:// ../" }
+    local modes = { { true, false }, { false, false }, { false, true } }
+    for i = 1, #samples do
+        for j = 1, #modes do
+            local low = samples[i]:lower()
+            local one = core.check_args_lower(low, modes[j][1], modes[j][2])
+            local set = core.rules_in_lower(low, modes[j][1], modes[j][2], {})
+            local agree = (one == nil and next(set) == nil) or
+                          (one ~= nil and set[one] == true)
+            check(string.format("dong y voi check_args_lower: %q mode %d",
+                                samples[i], j), agree, true)
+        end
+    end
+end
 
 -- ══ 10. Dong goi qua ranh gioi thread ═══════════════════════════════
 io.write("\ncore: pack/unpack\n")
@@ -304,9 +345,16 @@ check("pack/unpack khong loi", rt_err, nil)
 -- "da soi va sach" thanh "chua soi".
 check("pack/unpack giu false", rt.fn_trunc, false)
 check("pack/unpack giu nil", core.unpack(core.pack(scan("a=1", URLENC))).fn_trunc, nil)
-check("pack/unpack giu fnm false",
-      core.unpack(core.pack({ family = "multipart", len = 1, php = false,
-                              fnm = false, fn_trunc = false, scan = "ok" })).fnm, false)
+do
+    local r = scan(mp({ part('Content-Disposition: form-data; name="a"', "%00 ../x"),
+                        part(CD .. 'filename="../x.jpg"', "php://input") }))
+    local u = core.unpack(core.pack(r))
+    check("pack/unpack giu nonfile", list(u.nonfile_rules), r.nf)
+    check("pack/unpack giu file", list(u.file_rules), r.fl)
+    check("pack/unpack giu filename", list(u.filename_rules), r.fnr)
+    check("pack/unpack giu vung rong la nil",
+          core.unpack(core.pack(scan("a=1", URLENC))).nonfile_rules, nil)
+end
 check("pack/unpack giu do dai", rt.len, clean.len)
 check("payload rac -> bao loi", select(2, core.unpack("rac")), "bad_payload")
 
@@ -322,7 +370,7 @@ fh:write(spilled_body); fh:close()
 
 local sp, sp_err = core.unpack(worker.scan_file(tmp, MULTI))
 check("worker khong loi", sp_err, nil)
-check("worker soi duoc filename", sp.fn_rule, "arg_traversal")
+check("worker soi duoc filename", list(sp.filename_rules), "arg_traversal")
 check("worker soi duoc the PHP", sp.php, true)
 check("worker tra do dai that", sp.len, #spilled_body)
 -- Tran kich thuoc phai BAO chu khong am tham cat.
@@ -401,7 +449,7 @@ check("chua co thread pool -> fn_trunc mang ly do", nothread.fn_trunc, "nothread
 local ran = probe("POST", MULTI, nil, tmp, function(_, _, _, path, ct)
     return true, worker.scan_file(path, ct)
 end)
-check("spill duoc soi -> co fn_rule", ran.fn_rule, "arg_traversal")
+check("spill duoc soi -> co fn_rule", list(ran.filename_rules), "arg_traversal")
 check("spill duoc soi -> spill=true", ran.spill, true)
 check("spill duoc soi -> source=file", ran.source, "file")
 check("spill duoc soi -> scan=ok", ran.scan, "ok")
@@ -411,7 +459,7 @@ local werr = probe("POST", MULTI, nil, tmp, function(_, _, _, path, ct)
     return true, worker.scan_file(path, ct, 4)
 end)
 check("worker bao loi -> scan mang ly do", werr.scan, "spill_big")
-check("worker bao loi -> fn_rule nil", werr.fn_rule, nil)
+check("worker bao loi -> fn_rule nil", list(werr.filename_rules), nil)
 
 -- MOT LAN moi ly do, khong phai moi request. Mau va cau hinh la HANG SO nen loi
 -- o day la loi luc deploy; ghi moi request thi 43 domain do day error.log ma
@@ -499,7 +547,7 @@ io.write("\ncore: P1 duong ne 'fn_rule som' (part vo hai dung truoc)\n")
 do
     local r = scan(mp({ part(CD .. 'filename="../../photo.jpg"'),
                         part(CD .. 'filename="shell.php"') }))
-    check("arg_rule van giu lan khop dau", r.fn_rule, "arg_traversal")
+    check("vung filename van co traversal", r.fnr, "arg_traversal")
     check("up_rule KHONG bi mat o part 2", r.up_rule, "upload_php_ext")
 end
 
@@ -541,7 +589,7 @@ check("urlencoded -> nil", scan("a=1", URLENC).up_rule, nil)
 -- CA HAI, khong duoc de mot cai nuot cai kia.
 do
     local r = scan(mp({ part(CD .. 'filename="../../wp-config.php"') }))
-    check("ca hai: arg_rule co", r.fn_rule, "arg_traversal")
+    check("ca hai: vung filename co", r.fnr, "arg_traversal")
     check("ca hai: up_rule co",  r.up_rule, "upload_php_ext")
 end
 
@@ -556,259 +604,183 @@ do
     check("pack/unpack giu up_rule nil", clean.up_rule, nil)
 end
 
--- ── V4: `arg_origin` — lan khop nam o DAU ───────────────────────────────────
+-- ── V7: BA VUNG — bang chung doc lap, khong chon ─────────────────────────────
 --
--- Truoc V4, `arg_rule` den tu `check_args_lower` tren TOAN BO than nhu mot chuoi
--- phang, nen mot lan khop `../` khong the truy ve dau. Toi da dung dieu do de ha
--- diem ca nhom multipart, va do la mot duong ne mo cho nguoi ngoai: `../` trong
--- mot text part hop le van tia toi `$_POST` y nhu urlencoded.
---
--- Bay ca duoi day la bay nhom phai TACH RIENG duoc. Ca (3) va (5) la hai ca quyet
--- dinh: mot la duong ne da dong, mot la nhom FP that.
-io.write("\ncore: V5 arg_origin (vi tri lan khop)\n")
+-- Moi ca duoi day tung la mot ca cua `arg_origin` (V4–V6): mot `arg_rule` duoc
+-- CHON roi gan nhan vi tri. V7 khong chon: moi vung bao tap luat cua no. Nen moi
+-- ca gio ghim CA BA vung (`all` = nonfile|file|filename), va (7) ghim rang thu tu
+-- part khong doi gi.
+io.write("\ncore: V7 ba vung\n")
 do
-    -- (1) khong phai multipart -> `flat`, nghia cu khong doi.
-    local flat = scan("path=../../etc/passwd", URLENC)
-    check("urlencoded -> arg_rule", flat.arg_rule, "arg_traversal")
-    check("urlencoded -> aorig flat", flat.arg_origin, "flat")
-    check("urlencoded -> khong co kenh nao", flat.arg_field, nil)
+    -- (1) khong phai multipart -> ca than la `nonfile`.
+    check("urlencoded -> ca than la nonfile",
+          scan("path=../../etc/passwd", URLENC).all, "arg_traversal|-|-")
 
-    -- (2) than sach -> khong co `arg_origin` nao. `nil` chu khong `"unknown"`:
-    --     khong co gi de quy ve dau thi khong tra loi, khong doan.
-    local clean = scan(mp({ part(CD .. 'name="a"', "noi dung sach") }))
-    check("than sach -> arg_rule nil", clean.arg_rule, nil)
-    check("than sach -> aorig nil", clean.arg_origin, nil)
+    -- (2) than sach -> ba vung rong.
+    check("than sach -> ba vung rong",
+          scan(mp({ part(CD .. 'name="a"', "noi dung sach") })).all, "-|-|-")
 
-    -- (3) DUONG NE DA DONG: `../` trong mot TEXT FIELD cua multipart. Gia tri nay
-    --     di vao `$_POST` GIONG HET urlencoded, nen phai giu nguyen diem.
-    local fld = scan(mp({ part('Content-Disposition: form-data; name="path"',
-                               "../../etc/passwd") }))
-    check("text field -> arg_rule", fld.arg_rule, "arg_traversal")
-    check("text field -> aorig form_field", fld.arg_origin, "form_field")
-    check("text field -> kenh field", fld.arg_field, "arg_traversal")
-    check("text field -> KHONG phai kenh content", fld.arg_content, nil)
+    -- (3) `../` trong TEXT FIELD: gia tri vao `$_POST` -> `nonfile`, du diem.
+    check("text field -> nonfile",
+          scan(mp({ part('Content-Disposition: form-data; name="path"',
+                         "../../etc/passwd") })).all, "arg_traversal|-|-")
 
-    -- (4) `../` trong TEN TEP: nguy hiem that, va da co kenh rieng
-    --     (`up_rule`/`fn_rule`). `aorig` chi la mot nhan o day.
-    local fn = scan(mp({ part(CD .. 'filename="../../a.jpg"') }))
-    check("ten tep -> fn_rule", fn.fn_rule, "arg_traversal")
-    check("ten tep -> aorig filename", fn.arg_origin, "filename")
+    -- (4) `../` trong TEN TEP: ca `nonfile` (header la phan khong phai tep) lan
+    --     `filename`. Policy gop cung luat bang max, khong dem hai lan.
+    check("ten tep -> nonfile va filename",
+          scan(mp({ part(CD .. 'filename="../../a.jpg"') })).all,
+          "arg_traversal|-|arg_traversal")
 
-    -- (5) NHOM FP THAT: `../` trong NOI DUNG mot tep dinh kem. 9/9 ca do duoc
-    --     tren Magento admin upload anh san pham.
-    local cnt = scan(mp({ part(CD .. 'filename="photo.jpg"',
-                               "JFIF....../../khong phai tham so") }))
-    check("noi dung tep -> arg_rule van co", cnt.arg_rule, "arg_traversal")
-    check("noi dung tep -> aorig file_content", cnt.arg_origin, "file_content")
-    check("noi dung tep -> kenh content", cnt.arg_content, "arg_traversal")
-    check("noi dung tep -> KHONG phai kenh field", cnt.arg_field, nil)
+    -- (5) NHOM FP THAT: `../` trong NOI DUNG tep (9/9 ca Magento) -> CHI `file`.
+    check("noi dung tep -> chi vung file",
+          scan(mp({ part(CD .. 'filename="photo.jpg"',
+                         "JFIF....../../khong phai tham so") })).all, "-|arg_traversal|-")
 
-    -- (6) CA HAI cung co: form field UU TIEN, nhung kenh content VAN ghi lai.
-    --     Day la ly do ba truong doc lap chu khong mot truong `arg_origin`: mot
-    --     truong buoc phai chon mot, va khi do THU TU PART quyet dinh chon cai
-    --     nao — thu tu part la thu ke gui dieu khien.
+    -- (6) Field va tep deu co `../`: hai vung, khong vung nao che vung nao.
     local both = scan(mp({
         part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
         part('Content-Disposition: form-data; name="path"', "../../trong field"),
     }))
-    check("ca hai -> aorig uu tien form_field", both.arg_origin, "form_field")
-    check("ca hai -> kenh content VAN ghi", both.arg_content, "arg_traversal")
-    check("ca hai -> kenh field ghi", both.arg_field, "arg_traversal")
+    check("field va tep -> ca hai vung", both.all, "arg_traversal|arg_traversal|-")
 
-    -- (7) DAO THU TU PART: ket qua phai Y HET ca (6). Neu khac thi thu tu part
-    --     dang quyet dinh evidence, va do la lo ma ca thiet ke nay di sua.
+    -- (7) DAO THU TU PART: y het (6). Thu tu part la thu ke gui dieu khien.
     local rev = scan(mp({
         part('Content-Disposition: form-data; name="path"', "../../trong field"),
         part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
     }))
-    check("dao thu tu -> aorig khong doi", rev.arg_origin, both.arg_origin)
-    check("dao thu tu -> kenh content khong doi", rev.arg_content, both.arg_content)
-    check("dao thu tu -> kenh field khong doi", rev.arg_field, both.arg_field)
+    check("dao thu tu part -> khong doi", rev.all, both.all)
 end
 
--- ── V5: CAC CA QUYET DINH cua duong reroute ─────────────────────────────────
---
--- Sau ca duoi day la sau duong lam mat kha nang phan loai form field. Neu mot
--- duong nao trong so do KHONG lam `fields_complete` xuong `false`, thi mot request
--- co payload trong form field se bi reroute sang `body_file_traversal` (score 0) —
--- va do la mot bypass THAT, khong phai mot gia thuyet: review 26-09 dung dung
--- ky thuat (1) de mo ta no.
-io.write("\ncore: V5 fields_complete gac duong reroute\n")
+-- ── V7: cac duong ne cua V4–V6 van dong ─────────────────────────────────────
+io.write("\ncore: V7 cac duong ne cu van dong\n")
 do
-    local PAD = string.rep("a", 9000)   -- > MAX_PART_LEN (8192)
-
-    -- (1) KY THUAT BYPASS chinh: tep co `../` trong 8 KB dau, con form field nhoi
-    --     9 KB padding roi moi dat payload. Neu form field bi cap thi `arg_field`
-    --     thanh nil va `arg_origin` thanh `file_content` — ca request xuong score 0
-    --     TRONG KHI payload that nam trong `$_POST`.
-    --
-    --     Sau ban 26-09 form field KHONG bi cap, nen `arg_field` phai bat duoc.
+    -- (1) Form field nhoi 9 KB padding roi moi dat payload (review 26-09): payload
+    --     van o `nonfile` — form field khong bao gio bi cap.
     local bypass = scan(mp({
         part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep"),
         part('Content-Disposition: form-data; name="path"',
-             PAD .. "../../etc/passwd"),
+             string.rep("a", 9000) .. "../../etc/passwd"),
     }))
-    check("bypass: form field sau 9KB padding VAN bat duoc",
-          bypass.arg_field, "arg_traversal")
-    check("bypass: aorig la form_field, KHONG phai file_content",
-          bypass.arg_origin, "form_field")
+    check("padding 9 KB trong field -> van o nonfile", bypass.nf, "arg_traversal")
 
-    -- (2) Payload o part thu 65 (sau `MAX_PARTS = 64`). Cac part sau tran khong
-    --     duoc soi, nen KHONG duoc phep reroute.
+    -- (2) Payload o part 65 (> MAX_PARTS): khong chung minh duoc -> KHONG co vung
+    --     `file`, ca than la `nonfile`.
     local many = {}
     for i = 1, 64 do
         many[i] = part('Content-Disposition: form-data; name="x' .. i .. '"', "sach")
     end
     many[65] = part(CD .. 'filename="photo.jpg"', "JFIF../../trong tep")
     local over = scan(mp(many))
-    check("tran MAX_PARTS -> fields_complete false", over.fields_complete, false)
-    check("tran MAX_PARTS -> KHONG reroute duoc", over.arg_origin ~= "file_content", true)
+    check("tran MAX_PARTS -> ca than la nonfile", over.all, "arg_traversal|-|-")
+    check("tran MAX_PARTS -> pf n", over.proof, "n")
 
-    -- (3) Thieu dau dong ket thuc: backend co the van chap nhan cac part phia
-    --     truoc, nen ta khong biet con part nao nua khong.
-    local noend = "--" .. B .. "\r\n" .. CD .. 'filename="photo.jpg"' ..
-                  "\r\n\r\nJFIF../../trong tep\r\n"
-    local ne = scan(noend)
-    check("thieu dong ket thuc -> fields_complete false", ne.fields_complete, false)
-    check("thieu dong ket thuc -> KHONG reroute", ne.arg_origin ~= "file_content", true)
+    -- (3) Thieu dong ket thuc: khong chung minh -> ca than la `nonfile`.
+    check("thieu dong ket thuc -> ca than la nonfile",
+          scan("--" .. B .. "\r\n" .. CD .. 'filename="photo.jpg"' ..
+               "\r\n\r\nJFIF../../trong tep\r\n").all, "arg_traversal|-|-")
 
-    -- (4) HAI KENH mang HAI LUAT khac nhau.
-    --
-    -- `check_args_lower` quet TOAN THAN va tra luat DAU TIEN khop theo thu tu
-    -- `null_byte -> wrapper -> traversal` — thu tu KIEM, khong phai thu tu byte.
-    --
-    -- (4a) Luat MANH hon thang, bat ke nam o vung nao. V5 bao `arg_php_wrapper`
-    --      voi `file_content` — dung luat, nhung ma reroute them wrapper thi `../`
-    --      trong FORM FIELD bi che. Ban dau V6 dao lai: luat ngoai tep LUON thang,
-    --      nen ra `arg_traversal` (35) — va test nay tung GHIM chinh loi do. Review
-    --      26-09: ke gui chi can them mot field `../` la HA DIEM `php://input`
-    --      trong tep (50). Nay: luat giu `arg_php_wrapper`, nhan `unknown` (ngoai
-    --      tep KHONG sach nen khong duoc goi `file_content`), `../` o lai `afld=`.
+    -- (4a) REVIEW 26-09: field `../` + tep `php://input`. Luat yeu ngoai tep KHONG
+    --      duoc xoa luat manh trong tep. V6 ban dau giu `../` (35), f7a4099 giu
+    --      wrapper (50) — ca hai deu CHON. V7 giu ca hai.
     local mixed = scan(mp({
         part('Content-Disposition: form-data; name="a"', "../../trong field"),
         part(CD .. 'filename="x.jpg"', "php://input trong tep"),
     }))
-    check("4a: field ../ KHONG che wrapper trong tep", mixed.arg_rule, "arg_php_wrapper")
-    check("4a: kenh field", mixed.arg_field, "arg_traversal")
-    check("4a: kenh content van ghi luat cua tep", mixed.arg_content, "arg_php_wrapper")
-    check("4a: aorig unknown - hai vung deu co luat", mixed.arg_origin, "unknown")
-    check("4a: than van chung minh duoc", mixed.proof, "ok")
+    check("4a: field ../ va tep wrapper -> ca hai", mixed.all,
+          "arg_traversal|arg_php_wrapper|-")
+    check("4a: than chung minh duoc", mixed.proof, "ok")
 
-    -- (4d) Chieu nguoc lai: NUL THO trong field (chi phep quet ngoai tep thay, vi
-    --      `binary = false`) + `../` trong tep. Khong duoc mat null-byte.
-    local nulmix = scan(mp({
-        part('Content-Disposition: form-data; name="a"', "x\0y"),
-        part(CD .. 'filename="x.jpg"', "JFIF../../trong tep"),
-    }))
-    check("4d: NUL trong field KHONG bi ../ trong tep che", nulmix.arg_rule, "arg_null_byte")
-    check("4d: aorig form_field", nulmix.arg_origin, "form_field")
+    -- (4b) Them `php://` vao FIELD cua (4a). Voi "mot luat moi vung" field chi con
+    --      bao wrapper, trung luat voi tep, policy gop max -> diem GIAM tu 85 xuong
+    --      50. Voi tap thi field giu ca hai luat.
+    check("4b: field giu CA traversal lan wrapper",
+          scan(mp({
+              part('Content-Disposition: form-data; name="a"', "../../ va php://x"),
+              part(CD .. 'filename="x.jpg"', "php://input trong tep"),
+          })).nf, "arg_php_wrapper,arg_traversal")
 
-    -- `ARG_RANK` phai co hang cho MOI luat `check_args` tra ve (contract muc 3 ghim
-    -- moi luat do deu co trong `args.RULES`). Thieu hang thi luat moi tinh la 0 va
-    -- bi luat cu nao cung che — mo lai dung duong ne o (4a).
-    local args_mod = dofile(SRC .. "waf/args.lua")
-    for id in pairs(args_mod.RULES) do
-        check("ARG_RANK co hang cho " .. id, type(core.ARG_RANK[id]), "number")
-    end
+    -- (4c) Wrapper CHI trong tep -> chi `file`.
+    check("4c: wrapper chi trong tep -> chi vung file",
+          scan(mp({ part(CD .. 'filename="x.jpg"', "php://input trong tep") })).all,
+          "-|arg_php_wrapper|-")
 
-    -- (4c) Wrapper CHI trong noi dung tep: quy duoc nguon, nhung luat GIU nguyen
-    --      — `init.lua` chi doi luat cho `arg_traversal`. Gioi han DA BIET, ghim
-    --      lai de mot ban sau khong lang le mo rong reroute.
-    local wonly = scan(mp({ part(CD .. 'filename="x.jpg"', "php://input trong tep") }))
-    check("4c: wrapper chi trong tep -> file_content", wonly.arg_origin, "file_content")
-    check("4c: wrapper chi trong tep -> luat giu nguyen", wonly.arg_rule, "arg_php_wrapper")
+    -- (4d) NUL THO trong field + `../` trong tep: null-byte o `nonfile`, khong mat.
+    check("4d: NUL trong field + ../ trong tep",
+          scan(mp({
+              part('Content-Disposition: form-data; name="a"', "x\0y"),
+              part(CD .. 'filename="x.jpg"', "JFIF../../trong tep"),
+          })).all, "arg_null_byte|arg_traversal|-")
 
-    -- (4b) KHONG kenh nao trung `arg_rule`: day moi la ca `unknown` that.
-    --      `arg_rule = arg_php_wrapper` (tu vung HEADER cua part, qua
-    --      `check_args` tren ten tep), nhung hai kenh NOI DUNG chi co traversal.
-    local nomatch = scan(mp({
-        part(CD .. 'filename="php://input"', "../../trong noi dung tep"),
-        part('Content-Disposition: form-data; name="a"', "../../trong field"),
-    }))
-    check("4b: arg_rule la wrapper (tu ten tep)",
-          nomatch.arg_rule, "arg_php_wrapper")
-    check("4b: khong kenh noi dung nao trung -> quy qua fn_rule",
-          nomatch.arg_origin, "filename")
+    -- (4e) Ten tep `php://input`, `../` trong noi dung tep, `../` trong field: ba
+    --      vung, moi vung dung tap cua no.
+    check("4e: ten tep wrapper, noi dung ../, field ../",
+          scan(mp({
+              part(CD .. 'filename="php://input"', "../../trong noi dung tep"),
+              part('Content-Disposition: form-data; name="a"', "../../trong field"),
+          })).all, "arg_php_wrapper,arg_traversal|arg_traversal|arg_php_wrapper")
 
-    -- (5) NUL THO trong mot form field van phai bat duoc. `binary = is_file` nen
-    --     form field dung `binary = false`; ban truoc hardcode `true` va bo qua.
-    local nul = scan(mp({
-        part('Content-Disposition: form-data; name="a"', "x\0y"),
-    }))
-    check("NUL tho trong form field -> bat duoc", nul.arg_field, "arg_null_byte")
-    -- V6: va gio no la `arg_rule`, tuc duoc CHAM DIEM. V5 lay `arg_rule` tu phep
-    -- quet phang `binary = true`, nen dong tren dung ma request khong mat diem nao.
-    check("NUL tho trong form field -> arg_rule", nul.arg_rule, "arg_null_byte")
-    check("NUL tho trong form field -> form_field", nul.arg_origin, "form_field")
-    -- Va NUL trong noi dung TEP thi KHONG bat: mot JPEG co byte 0 hop le.
-    local nulfile = scan(mp({ part(CD .. 'filename="x.jpg"', "x\0y") }))
-    check("NUL trong noi dung tep -> bo qua", nulfile.arg_content, nil)
-    check("NUL trong noi dung tep -> khong thanh arg_rule", nulfile.arg_rule, nil)
+    -- (5) NUL THO: trong form field la tin hieu; trong noi dung tep thi bo qua (mot
+    --     JPEG co byte 0 hop le).
+    check("NUL tho trong form field -> nonfile",
+          scan(mp({ part('Content-Disposition: form-data; name="a"', "x\0y") })).all,
+          "arg_null_byte|-|-")
+    check("NUL trong noi dung tep -> bo qua",
+          scan(mp({ part(CD .. 'filename="x.jpg"', "x\0y") })).all, "-|-|-")
 
-    -- (6) `ct` phai CAO HON `stop`/`len` trong `STATUS_RANK`: mot vung chua soi
-    --     khong duoc bi mot ghi chu ve do dai che mat.
-    local big = scan(mp({ part(CD .. 'filename="x.jpg"', string.rep("b", 9000)) }))
-    check("noi dung tep bi cat -> fn_trunc mang ct", big.fn_trunc, "ct")
-    -- ... nhung `ct` KHONG duoc lam mat phep chung minh (review 26-09 diem 2).
-    -- V5 ghim `fields_complete = false` cho dung ca nay, tuc ghim chinh cai loi.
-    check("tep 9 KB -> VAN chung minh duoc", big.fields_complete, true)
+    -- (6) Tep 9 KB: KHONG con cat 8 KB — luat nam sau 8 KB van o vung `file`, than
+    --     van chung minh duoc, va `fntr` khong con `ct`.
+    local big = scan(mp({ part(CD .. 'filename="x.jpg"',
+                               string.rep("b", 9000) .. "php://x") }))
+    check("tep 9 KB, wrapper sau 8 KB -> vung file", big.all, "-|arg_php_wrapper|-")
     check("tep 9 KB -> pf ok", big.proof, "ok")
+    check("tep 9 KB -> fntr sach (khong con ct)", big.fn_trunc, false)
 end
 
-io.write("\ncore: V6 giao thuc pack/unpack\n")
-
+io.write("\ncore: V7 giao thuc pack/unpack\n")
 do
     local r = scan(mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") }))
     local rt, err = core.unpack(core.pack(r))
-    check("V6 pack/unpack khong loi", err, nil)
-    check("V6 giu arg_origin", rt and rt.arg_origin, "file_content")
-    check("V6 giu arg_content", rt and rt.arg_content, "arg_traversal")
-    check("V6 giu arg_field nil", rt and rt.arg_field, nil)
-    -- `fields_complete` phai di qua giao thuc BANG KIEU BOOLEAN. Doc bang `dec`
-    -- thay vi `dec_bool` se cho chuoi "0", va trong Lua `"0"` la TRUTHY — nen mot
-    -- phep kiem `~= false` se mo lai dung bypass vua dong.
-    check("V6 giu fields_complete true", rt and rt.fields_complete, true)
-    check("V6 giu proof", rt and rt.proof, "ok")
-    -- Than KHONG chuan tac (thieu dong ket thuc). V5 dung tep 9 KB cho ca nay —
-    -- tuc dung chinh cai loi `ct`; tu V6 tep 9 KB chung minh duoc.
-    local nf = scan("--" .. B .. "\r\n" .. CD .. 'filename="x.jpg"' ..
-                    "\r\n\r\nJFIF../../x\r\n")
-    local nfr = core.unpack(core.pack(nf))
-    check("V6 giu fields_complete false", nfr.fields_complete, false)
-    check("V6 giu ly do proof", nfr.proof, "end")
-    check("V6 giu proof nil ngoai multipart",
+    check("V7 pack/unpack khong loi", err, nil)
+    check("V7 giu vung file", rt and list(rt.file_rules), "arg_traversal")
+    check("V7 giu nonfile rong", rt and rt.nonfile_rules, nil)
+    check("V7 giu proof", rt and rt.proof, "ok")
+    -- Than KHONG chuan tac (thieu dong ket thuc): khong co vung `file`.
+    local nfr = core.unpack(core.pack(scan("--" .. B .. "\r\n" .. CD ..
+                'filename="x.jpg"' .. "\r\n\r\nJFIF../../x\r\n")))
+    check("V7 giu ly do proof", nfr.proof, "end")
+    check("V7 than khong chung minh -> khong co vung file", nfr.file_rules, nil)
+    check("V7 giu proof nil ngoai multipart",
           core.unpack(core.pack(scan("a=1", URLENC))).proof, nil)
 
-    -- Ban CU (15 truong thay vi 16) phai bi TU CHOI, khong duoc doc nham thanh mot
-    -- ban V6 thieu truong. `bad_payload` la cau tra loi dung: no CO TEN, di vao
-    -- `waf:v2:scan:bad_payload`, va chi anh huong than da spill.
-    local old_ver = core.pack(r):gsub("^V6", "V5")
-    check("ban V5 bi tu choi", select(2, core.unpack(old_ver)), "bad_payload")
+    -- Ban CU phai bi TU CHOI, khong duoc doc nham thanh mot ban V7 thieu truong.
+    local old_ver = core.pack(r):gsub("^V7", "V6")
+    check("ban V6 bi tu choi", select(2, core.unpack(old_ver)), "bad_payload")
 
-    -- Than SPILL phai cho ket qua Y HET than trong bo nho. Hai duong khac nhau
-    -- (`core.scan` truc tiep vs `worker.scan_file` qua pack/unpack), va mot lech
-    -- giua chung nghia la so lieu cua nhom upload lon noi ve mot thu khac.
-    local body = mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") })
-    local fh = io.open(tmp, "wb"); fh:write(body); fh:close()
+    -- Than SPILL phai cho ket qua Y HET than trong bo nho — hai duong khac nhau
+    -- (`core.scan` truc tiep vs `worker.scan_file` qua pack/unpack).
+    local data = mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x"),
+                      part('Content-Disposition: form-data; name="a"', "x\0y") })
+    local mem = scan(data)
+    local fh = io.open(tmp, "wb"); fh:write(data); fh:close()
     local sp = core.unpack(worker.scan_file(tmp, MULTI))
-    check("spill: aorig giong memory", sp and sp.arg_origin, r.arg_origin)
-    check("spill: arg_content giong memory", sp and sp.arg_content, r.arg_content)
-    check("spill: arg_field giong memory", sp and sp.arg_field, r.arg_field)
-    check("spill: proof giong memory", sp and sp.proof, r.proof)
+    check("spill: nonfile giong memory", sp and list(sp.nonfile_rules), mem.nf)
+    check("spill: file giong memory", sp and list(sp.file_rules), mem.fl)
+    check("spill: filename giong memory", sp and list(sp.filename_rules), mem.fnr)
+    check("spill: proof giong memory", sp and sp.proof, mem.proof)
 end
 
 -- ── V6: phep chung minh theo DUNG parser PHP ─────────────────────────────────
 --
 -- Moi ca duoi day la mot cach lam mot FORM FIELD (voi PHP) trong nhu mot TEP
 -- voi mot tokenizer, hoac lam ranh gioi tep cua ta lech PHP. Ca nao cung phai ra
--- `fields_complete = false` va KHONG `file_content`. Nam ca dau la review 26-09
+-- KHONG co vung `file` (ca than o `nonfile`, giu nguyen diem). Nam ca dau la review 26-09
 -- neu ten; cac ca con lai doc tu `main/rfc1867.c`.
 io.write("\ncore: V6 phep chung minh theo parser PHP\n")
 do
     local FILE_TRAV = "JFIF../../trong tep"
     local function no_proof(name, r, why)
-        check(name .. " -> khong chung minh", r.fields_complete, false)
-        check(name .. " -> KHONG file_content", r.arg_origin ~= "file_content", true)
+        check(name .. " -> khong co vung file", r.fl, nil)
+        check(name .. " -> payload o nonfile", r.nf ~= nil, true)
         check(name .. " -> pf", r.proof, why)
     end
 
@@ -833,19 +805,18 @@ do
              FILE_TRAV),
     }))
     check("name= traversal -> pf ok", nm.proof, "ok")
-    check("name= traversal -> arg_rule con", nm.arg_rule, "arg_traversal")
-    check("name= traversal -> KHONG file_content", nm.arg_origin ~= "file_content", true)
+    check("name= traversal -> nonfile (header) va vung file", nm.all,
+          "arg_traversal|arg_traversal|-")
 
     -- (4) NHOM FP THAT: tep > 8 KB, `../` nam SAU 8 KB dau. V5 ra `unknown` vi
-    --     hai ly do (`ct` va `acnt`); V6 phai ra `file_content`.
+    --     hai ly do (`ct` va `acnt`); V6/V7 phai ra vung `file`.
     local bigf = scan(mp({
         part(CD .. 'filename="anh.jpg"',
              string.rep("J", 9000) .. "../x" .. string.rep("K", 100)),
     }))
-    check("tep 9 KB, ../ sau 8 KB -> file_content", bigf.arg_origin, "file_content")
-    check("tep 9 KB -> fields_complete", bigf.fields_complete, true)
-    check("tep 9 KB -> acnt rong (ly do V5 hong)", bigf.arg_content, nil)
-    check("tep 9 KB -> fntr van la ct", bigf.fn_trunc, "ct")
+    check("tep 9 KB, ../ sau 8 KB -> chi vung file", bigf.all, "-|arg_traversal|-")
+    check("tep 9 KB -> pf ok", bigf.proof, "ok")
+    check("tep 9 KB -> fntr sach (khong con ct)", bigf.fn_trunc, false)
 
     -- Upload kieu WordPress: ba form field sach + mot tep co Content-Type.
     local wp = scan(mp({
@@ -856,7 +827,7 @@ do
              string.rep("J", 20000) .. "../" .. string.rep("K", 10)),
     }))
     check("upload kieu WordPress -> pf ok", wp.proof, "ok")
-    check("upload kieu WordPress -> file_content", wp.arg_origin, "file_content")
+    check("upload kieu WordPress -> chi vung file", wp.all, "-|arg_traversal|-")
 
     -- (5) Tep co `../` o part 1, payload o part 65 (sau `MAX_PARTS`).
     local many = { part(CD .. 'filename="x.jpg"', FILE_TRAV) }
@@ -931,7 +902,7 @@ do
     local q = scan(mp({ part(CD .. 'filename="x.jpg"', FILE_TRAV) }),
                    'multipart/form-data; boundary="' .. B .. '"')
     check("boundary trong nhay -> pf ok", q.proof, "ok")
-    check("boundary trong nhay -> file_content", q.arg_origin, "file_content")
+    check("boundary trong nhay -> chi vung file", q.all, "-|arg_traversal|-")
     local lc = scan(mp({
         part('content-disposition: form-data; name="f"; filename="x.jpg"', FILE_TRAV),
     }))
