@@ -87,6 +87,9 @@ local function unscanned(family, spilled, reason, len)
         -- `~= false` cho hai ket qua khac nhau, va duong reroute gac tren chinh
         -- truong nay.
         fields_complete = false,
+        -- V6. `nil`: than CHUA soi thi khong co ly do "khong chuan tac" nao de noi
+        -- — ly do chua soi da nam o `scan`/`fn_trunc`.
+        proof = nil,
     }
 end
 

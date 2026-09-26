@@ -38,6 +38,11 @@ local MAX_FN_LEN  = 512    -- nguong BAO CAO cho mot gia tri ten file
 --   · mot tep that thi 8 KB dau la header cua dinh dang (PNG/JPEG/PDF/ZIP), noi
 --     `../` khong xuat hien tu nhien — nen cat o day KHONG lam mat tin hieu that.
 -- Khi cat, danh dau `ct` vao `fn_trunc` de doc log biet minh dang xem mot phan.
+--
+-- Tu V6 vung cat nay CHI con anh huong cot `acnt=` (telemetry). V5 dat quyet dinh
+-- reroute len `acnt`, nen `../` nam sau 8 KB dau cua mot tep lon lam quyet dinh
+-- do khong bao gio dat duoc. V6 quyet dinh bang `file_ranges`, noi khong co gioi
+-- han nao theo do dai.
 local MAX_PART_LEN = 8192
 
 -- Do NGHIEM TRONG, khong phai do "muon xu ly truoc". Cot `fntr=` ton tai de noi
@@ -63,10 +68,11 @@ local STATUS_RANK = {
     stop = 1, len = 2, n = 3,
     disp = 4, ending = 4,
     bd = 5, bdup = 5, bval = 5,
-    -- `ct`: noi dung MOT PHAN da bi cat o `MAX_PART_LEN`. Xep CAO HON `stop`/`len`
-    -- vi no la mot VUNG CHUA SOI, khong phai mot ghi chu ve do dai — va vi
-    -- `arg_origin` gac tren no: mot `stop` che mat `ct` se lam mot than bi cat
-    -- trong nhu mot than da soi tron, va do dung la dieu kien de reroute sai.
+    -- `ct`: noi dung MOT TEP da bi cat o `MAX_PART_LEN` trong phep soi TUNG PHAN.
+    -- Xep CAO HON `stop`/`len` de cot `fntr=` khong bi mot ghi chu ve do dai che
+    -- mat. Tu V6 bang nay KHONG gac `arg_origin` nua: no la bang MUC DO de bao
+    -- cao, va V5 suy "da soi tron" tu no — nen moi tep > 8 KB mat duong reroute
+    -- (review 26-09 diem 2).
     ct = 6,
     hdr = 6,
     -- `bmax`: so boundary candidate vuot tran. Cung muc `nb` (khong co boundary
@@ -313,9 +319,13 @@ local function boundaries_of(ct)
             local v = p.semantic
             if v == "" or #v > 1024 or v:find("[\r\n%z]") then
                 status = worse(status, "bval")
+            elseif seen[v] then
+                -- Gia tri DA CO khong ton them mot lan quet, nen khong tinh vao
+                -- tran. Kiem tran TRUOC (ban cu) thi `A;B;C;D;A` bao `bmax` oan
+                -- tren mot than chi co bon boundary (review 26-09 diem 4).
             elseif #values >= MAX_BOUNDARIES then
                 status = worse(status, "bmax")
-            elseif not seen[v] then
+            else
                 seen[v] = true
                 values[#values + 1] = v
             end
@@ -578,15 +588,15 @@ end
 --      dung cho noi dung tep (mot JPEG co byte 0 hop le) nhung SAI cho form
 --      field: mot NUL tho trong mot truong van ban la tin hieu that.
 local function scan_part_content(body, from, to, status, is_file)
-    if not from or not to or to < from then return nil, status, true end
+    if not from or not to or to < from then return nil, status end
     local len = to - from + 1
-    if len <= 0 then return nil, status, true end
-    local complete = true
-    -- CHI cap tep. Xem ghi chu (1) tren: cap form field mo mot duong ne.
+    if len <= 0 then return nil, status end
+    -- CHI cap tep. Xem ghi chu (1) tren. Tu V6 cap form field khong con la duong
+    -- ne (quyet dinh doc `file_ranges`, khong doc kenh nay), nhung no van lam cot
+    -- `afld=` bao sai — nen van khong cap.
     if is_file and len > MAX_PART_LEN then
         to = from + MAX_PART_LEN - 1
         status = worse(status, "ct")
-        complete = false
     end
     local chunk = body:sub(from, to)
     -- `decode = false`: noi dung mot phan multipart KHONG duoc percent-encode
@@ -594,7 +604,7 @@ local function scan_part_content(body, from, to, status, is_file)
     -- bien `%2e%2e` trong mot tep nhi phan thanh `..` — mot lan khop gia.
     --
     -- `binary = is_file`: xem ghi chu (2) tren.
-    return check_args(chunk, false, is_file), status, complete
+    return check_args(chunk, false, is_file), status
 end
 
 local function scan_one_boundary(body, boundary, initial_status)
@@ -606,48 +616,30 @@ local function scan_one_boundary(body, boundary, initial_status)
     -- CA form field LAN noi dung tep; gop lai thi thu tu part quyet dinh ben nao
     -- thang, va thu tu part la thu ke gui dieu khien — dung lop loi ma `up_rule`
     -- da phai sua bang `worse_up` o ba tang.
+    --
+    -- Tu V6 hai kenh nay la TELEMETRY (`afld=`/`acnt=`). Duong reroute khong doc
+    -- chung nua ma doc phep chung minh cua `file_ranges` — xem ghi chu o do. V5 co
+    -- them truong thu sau `fields_complete` o day, suy tu cac trang thai parser;
+    -- da go vi chinh phep suy do la loi (review 26-09 diem 2).
     local arg_field, arg_content = nil, nil
-    -- `fields_complete`: MOI form field da duoc soi TRON hay chua.
-    --
-    -- Day la dieu kien DUY NHAT cho phep reroute sang `file_content`, va no ton tai
-    -- vi mot bypass that (review 26-09): neu mot form field bi cat hoac khong duoc
-    -- soi het thi `arg_field` co the la nil TRONG KHI payload nam trong do — va khi
-    -- `arg_content` co gia tri, ca request bi reroute sang mot luat score 0.
-    --
-    -- Nen nguyen tac: CHI duoc ha mot nhom khi da CHUNG MINH khong con form field
-    -- chua phan loai. Moi duong lam phep chung minh do thap bai — tran `MAX_PARTS`,
-    -- header bi cat, `disp` sai, thieu dau dong ket thuc — deu phai lam co nay
-    -- thanh `false`.
-    local fields_complete = true
     local kind, at, after = next_delimiter(body, 1, delim)
     -- NAM gia tri o MOI loi ra, ke ca loi ra nay noi ca hai kenh chac chan la
     -- `nil`. Viet du ra la mot rang buoc de doc va de hop dong [27a] ghim duoc:
     -- neu mot loi ra duoc phep ngan hon, thi khi ai do them mot truong thu sau se
     -- khong con cach nao phan biet "co y bo qua" voi "quen".
-    -- SAU gia tri o MOI loi ra, ke ca loi ra nay noi ba truong sau chac chan la
-    -- `nil`/`false`. Viet du ra la mot rang buoc de doc va de hop dong [27a] ghim
-    -- duoc: neu mot loi ra duoc phep ngan hon, thi khi ai do them mot truong moi
-    -- se khong con cach nao phan biet "co y bo qua" voi "quen".
-    --
-    -- `fields_complete = false`: khong tim thay dau phan cach nao thi khong phan
-    -- loai duoc mot form field nao ca.
-    if not kind then return nil, worse(status, "bd"), nil, nil, nil, false end
+    if not kind then return nil, worse(status, "bd"), nil, nil, nil end
 
     local nparts, saw_open = 0, false
     while kind do
         -- Kiem `close` TRUOC tran. Dau dong ket thuc khong phai mot phan, va
         -- dem no vao lam upload dung 64 file bi gan `n` — mot "khong biet" gia.
         if kind == "close" then
-            -- Duong ra DUY NHAT co the giu `fields_complete = true`: da gap dau
-            -- dong ket thuc, tuc da duyet het moi part.
             return first_arg, (first_arg and first_arg_status or status), up_rule,
-                   arg_field, arg_content, fields_complete
+                   arg_field, arg_content
         end
         if nparts >= MAX_PARTS then
-            -- Tran `MAX_PARTS`: cac part tu thu 65 tro di KHONG duoc soi, nen mot
-            -- form field doc co the nam trong so do. `fields_complete = false`.
             return first_arg, worse(first_arg and first_arg_status or status, "n"),
-                   up_rule, arg_field, arg_content, false
+                   up_rule, arg_field, arg_content
         end
         nparts, saw_open = nparts + 1, true
 
@@ -677,18 +669,9 @@ local function scan_one_boundary(body, boundary, initial_status)
         -- dinh kem (RFC 7578) nen duoc cap o `MAX_PART_LEN` va coi la nhi phan;
         -- khong co thi gia tri cua no di vao `$_POST` nen phai soi TRON va coi la
         -- van ban.
-        local content_rule, part_complete
-        content_rule, status, part_complete =
+        local content_rule
+        content_rule, status =
             scan_part_content(body, body_from, body_to, status, has_fn)
-        if not has_fn and not part_complete then
-            -- Khong the xay ra hom nay (form field khong bi cap) nhung ghim lai:
-            -- neu mai ai do them mot gioi han cho form field thi co nay phai xuong.
-            fields_complete = false
-        end
-        -- Vung header bi cat cung lam mat kha nang phan loai: `has_fn` doc tu
-        -- `Content-Disposition`, va mot header bi cat co the lam mot TEP trong nhu
-        -- mot form field hoac nguoc lai.
-        if capped then fields_complete = false end
         if content_rule then
             if has_fn then
                 if not arg_content then arg_content = content_rule end
@@ -715,41 +698,30 @@ local function scan_one_boundary(body, boundary, initial_status)
     end
 
     -- Den day nghia la KHONG gap dau dong ket thuc: mot backend co the van chap
-    -- nhan cac part phia truoc, nhung ta khong biet con part nao nua khong. Nen
-    -- `fields_complete = false` o ca hai loi ra duoi day.
+    -- nhan cac part phia truoc, nhung ta khong biet con part nao nua khong.
     if saw_open then status = worse(status, "ending") end
     if first_arg then
         return first_arg, worse(first_arg_status, "ending"), up_rule,
-               arg_field, arg_content, false
+               arg_field, arg_content
     end
-    return nil, status, up_rule, arg_field, arg_content, false
+    return nil, status, up_rule, arg_field, arg_content
 end
 
--- Tra ve `fn_rule, status, up_rule`.
+-- Tra ve `fn_rule, status, up_rule, arg_field, arg_content`.
 local function filename_rule(body, family, ct)
-    -- SAU gia tri o moi loi ra, cung ly le nhu `scan_one_boundary`.
-    --
-    -- `fields_complete = false` o hai loi ra nay: khong phai multipart thi khong co
-    -- form field nao de phan loai, va khong co boundary nao thi khong phan giai
-    -- duoc cau truc. Ca hai deu la "chua chung minh duoc", va nhom `flat` khong di
-    -- qua duong reroute nen gia tri nay vo hai o do.
-    if family ~= "multipart" then return nil, nil, nil, nil, nil, false end
+    -- NAM gia tri o moi loi ra, cung ly le nhu `scan_one_boundary`.
+    if family ~= "multipart" then return nil, nil, nil, nil, nil end
     local boundaries, status = boundaries_of(ct)
-    if #boundaries == 0 then return nil, status, nil, nil, nil, false end
+    if #boundaries == 0 then return nil, status, nil, nil, nil end
 
     local combined = status or false
     local up_rule = nil
     local first_arg = nil
     local arg_field, arg_content = nil, nil
-    -- `fields_complete` AND qua moi boundary: mot boundary khong phan loai xong thi
-    -- ca than la "chua chung minh duoc". Khong phai OR — mot phep chung minh chi
-    -- dung khi MOI duong deu dung.
-    local fields_complete = true
     for i = 1, #boundaries do
-        local rule, st, up, fld, cnt, fc =
+        local rule, st, up, fld, cnt =
             scan_one_boundary(body, boundaries[i], combined)
         combined = worse(combined, st)
-        if not fc then fields_complete = false end
         -- Gop hai kenh qua NHIEU boundary, cung ly le nhu `up_rule` o ngay duoi:
         -- `Content-Type` co the khai nhieu gia tri boundary, va bo sot cho nay thi
         -- boundary dau tien khop se che cac boundary sau.
@@ -764,19 +736,7 @@ local function filename_rule(body, family, ct)
         -- `check_args` se che cac boundary phia sau khoi `check_filename`.
         if rule and not first_arg then first_arg = rule end
     end
-    -- Moi trang thai parser NGHIEM TRONG cung lam mat kha nang chung minh. `combined`
-    -- la trang thai NANG NHAT gap duoc, nen mot phep so theo `STATUS_RANK` gac duoc
-    -- toan bo nhom: `n` (tran part), `disp` (Content-Disposition sai), `ending`
-    -- (thieu dau dong ket thuc), `bd`/`bdup`/`bval` (boundary), `ct` (noi dung cat),
-    -- `hdr` (header cat), `bmax`, `nb`.
-    --
-    -- Nguong o `n` (= 3): `stop` va `len` duoi no la ghi chu ve mot gia tri cu the,
-    -- khong phai mot vung chua soi. Tu `n` tro len thi CO mot phan than khong duoc
-    -- phan loai.
-    if combined and (STATUS_RANK[combined] or 0) >= STATUS_RANK.n then
-        fields_complete = false
-    end
-    return first_arg, combined, up_rule, arg_field, arg_content, fields_complete
+    return first_arg, combined, up_rule, arg_field, arg_content
 end
 
 -- Dem `&` thay vi `get_post_args()`: ham do CAT O 100 va khong bao gi, ma 500
@@ -808,14 +768,178 @@ local function legacy_fnm(body, family, at)
         or line:find("filename*=", 1, true) ~= nil
 end
 
+-- ── V6: chung minh "lan khop nam trong NOI DUNG TEP" ────────────────────────
+--
+-- V5 SAI HAI LAN, ca hai do review 26-09 va phep do 2 gio sau deploy chi ra:
+--
+--   1. V5 hoi "moi form field da soi tron chua" bang cach suy tu `STATUS_RANK` —
+--      bang MUC DO de bao cao. `ct` (tep > 8 KB) nam tren nguong, nen MOI upload
+--      lon mat duong reroute: dung nhom 9/9 Magento 1-2 MB ma V4 sinh ra de xu ly.
+--   2. V5 doi `acnt == argrule`, ma `acnt` chi thay 8 KB DAU cua tep.
+--   Do 26-09 tren sau may: 12/12 luot luat tham so tren than tu phien WordPress
+--   dang nhap ra `aorig=unknown`, 0 luot `file_content` tren toan dan may.
+--
+-- Va mot lo theo HUONG NGUOC LAI: V5 doc "part nay la tep" bang tokenizer CUA
+-- MINH, lech PHP o bon cho (`filename*`, Content-Disposition trung, khoang trang
+-- truoc `=`, nhay don). Moi cho lech la mot cach bien mot form field thanh "tep"
+-- de payload trong no bi ha diem.
+--
+-- CACH V6, chung minh bang SU CO MAT chu khong bang su vang mat: bo cac vung
+-- CHAC CHAN la noi dung tep ra khoi than, roi quet TOAN BO phan con lai
+-- (`binary = false`). Phan con lai sach thi lan khop cua phep quet phang chi co
+-- the nam trong noi dung tep. Khong co gioi han do dai nao, khong co co nao de
+-- suy.
+--
+-- "CHAC CHAN" nghia la than o DANG CHUAN TAC ma trinh duyet gui — dang ma PHP
+-- (`main/rfc1867.c`) va moi parser khac doc ra giong nhau. Lech mot byte thi
+-- KHONG chung minh gi: ca than giu nguyen diem. KHONG sua tung cho lech — bon
+-- cho lech da biet cua tokenizer la bang chung cuoc dua do khong thang duoc.
+--
+-- Nhung diem dang chuan tac phai khop PHP TUNG BYTE (doc tu rfc1867.c 26-09):
+--   · boundary: PHP lay bang CHUOI CON `strstr(ct, "boundary")`, gia tri khong
+--     nhay dung o `,`/`;`. Chi nhan `multipart/form-data; boundary=X` (hoac X
+--     trong nhay) voi X la bchars khong `,` `;` khoang trang: o dang do moi cach
+--     doc ra cung X.
+--   · noi dung mot part ket thuc o `\n--X` DAU TIEN — PHP khop theo `\n`, KHONG
+--     doi `\r`, va theo TIEN TO. Nen tim dung chuoi do roi DOI no la `\r\n--X`
+--     theo sau boi `\r\n` hoac `--`. Tim thang `\r\n--X` la SAI: mot `\n--X` tran
+--     trong noi dung tep lam PHP cat tep o do va doc phan sau thanh FORM FIELD,
+--     trong khi ta van coi la tep va xoa mat payload.
+--   · sau `--X--` PHP VAN tim tiep dong `--X` — no khong coi dong ket thuc la
+--     het. Byte nao sau `--X--\r\n` cung la khong chuan tac.
+--   · header: PHP lay Content-Disposition DAU TIEN, so `filename` bang
+--     `strcasecmp` (khong co `filename*`), KHONG trim key, hieu ca nhay don, va
+--     doc header nhu chuoi C (dung o NUL). Chi nhan dung MOT Content-Disposition
+--     dang `form-data; name="..."` hoac `form-data; name="..."; filename="..."`
+--     (khong `"`, `\` trong gia tri), cong toi da MOT Content-Type.
+--
+-- Tran `MAX_PARTS` cung la "khong chung minh" (`pf=n`): so do CPU, khong phai do
+-- ngu nghia. Nang no chi khi co so lieu `pf=n` tren upload that.
+
+-- Boundary o dang ma PHP va ta doc ra GIONG NHAU, hoac nil.
+local function canonical_boundary(ct)
+    if type(ct) ~= "string" then return nil end
+    local b = ct:match('^multipart/form%-data; ?boundary="([^"]*)"$')
+           or ct:match('^multipart/form%-data; ?boundary=([^"]*)$')
+    if not b or #b > 70 or not b:find("^[%w'()+_./:=?-]+$") then return nil end
+    return b
+end
+
+-- Vung header cua MOT part (khong ke CRLF ket thuc): "file", "field", hoac
+-- `nil, ly_do`.
+local function canonical_part_head(head)
+    local cd, has_ct = nil, false
+    for line in (head .. "\r\n"):gmatch("(.-)\r\n") do
+        -- CR/LF le hoac NUL trong mot dong: PHP cat dong o `\n` va doc header nhu
+        -- chuoi C, nen tu day hai ben co the thay hai header khac nhau.
+        if line:find("[\r\n%z]") then return nil, "hdr" end
+        local name, value = line:match("^([%w-]+): (.*)$")
+        if not name then return nil, "hdr" end
+        name = name:lower()
+        if name == "content-disposition" then
+            if cd then return nil, "cd" end
+            cd = value
+        elseif name == "content-type" and not has_ct then
+            has_ct = true
+        else
+            return nil, "hdr"
+        end
+    end
+    if not cd then return nil, "cd" end
+    if cd:find('^form%-data; name="[^"\\]*"; filename="[^"\\]*"$') then
+        return "file"
+    end
+    if cd:find('^form%-data; name="[^"\\]*"$') then return "field" end
+    return nil, "cd"
+end
+
+-- Cac khoang `{dau, cuoi}` la NOI DUNG TEP da chung minh, hoac `nil, ly_do`.
+-- Ly do ra log o cot `pf=`:
+--   ct   Content-Type khong chuan tac    pre  co byte truoc dong phan cach dau
+--   hdr  vung header cua mot part        cd   Content-Disposition
+--   dl   dau phan cach sau noi dung      end  thieu dong ket thuc / co byte sau no
+--   n    hon MAX_PARTS phan
+local function file_ranges(body, ct)
+    local b = canonical_boundary(ct)
+    if not b then return nil, "ct" end
+    local open = "--" .. b .. "\r\n"
+    if body:sub(1, #open) ~= open then return nil, "pre" end
+    local next_delim = "\n--" .. b
+    local ranges, pos, nparts = {}, #open + 1, 0
+    while true do
+        nparts = nparts + 1
+        if nparts > MAX_PARTS then return nil, "n" end
+        local he = body:find("\r\n\r\n", pos, true)
+        if not he or he - pos > MAX_HDR_LEN then return nil, "hdr" end
+        local kind, why = canonical_part_head(body:sub(pos, he - 1))
+        if not kind then return nil, why end
+        local cs = he + 4
+        local at = body:find(next_delim, cs, true)
+        if not at then return nil, "end" end
+        if at <= cs or body:byte(at - 1) ~= 13 then return nil, "dl" end
+        if kind == "file" and at - 2 >= cs then
+            ranges[#ranges + 1] = { cs, at - 2 }
+        end
+        local after = at + #next_delim
+        local tail = body:sub(after, after + 1)
+        if tail == "\r\n" then
+            pos = after + 2
+        elseif tail == "--" then
+            local rest = body:sub(after + 2)
+            if rest ~= "" and rest ~= "\r\n" then return nil, "end" end
+            return ranges
+        else
+            return nil, "dl"
+        end
+    end
+end
+
+-- Than goc TRU cac khoang noi dung tep. Chi bo NOI DUNG — header, dau phan cach
+-- va CRLF quanh chung van o lai, nen hai manh ghep lai khong tao ra mau moi.
+local function projection(body, ranges)
+    local out, pos = {}, 1
+    for i = 1, #ranges do
+        out[#out + 1] = body:sub(pos, ranges[i][1] - 1)
+        pos = ranges[i][2] + 1
+    end
+    out[#out + 1] = body:sub(pos)
+    return table.concat(out)
+end
+
 function _M.scan(body, ct)
     assert(type(body) == "string", "body_core.scan: body phai la chuoi")
     local family = ct_family(ct)
     local low    = body:lower()
     local arg_rule, at = check_args_lower(low, family == "urlencoded",
                                           family == "multipart" or family == "other")
-    local fn_rule, fn_trunc, up_rule, arg_field, arg_content, fields_complete =
+    local fn_rule, fn_trunc, up_rule, arg_field, arg_content =
         filename_rule(body, family, ct)
+
+    -- V6. Than chuan tac (`proof = "ok"`) thi `arg_rule` lay tu phan KHONG PHAI
+    -- TEP neu phan do co luat: mot luat trong form field luon thang mot luat trong
+    -- noi dung tep, bat ke thu tu uu tien giua cac luat. Phan do quet voi
+    -- `binary = false`, nen mot NUL tho trong form field gio moi thanh `arg_rule`
+    -- (V5 chi dua no ra `afld=`, tuc telemetry, khong cham diem).
+    --
+    -- Than KHONG chuan tac thi giu nguyen hanh vi cu: quet phang `binary = true`.
+    -- Quet phang `binary = false` o do se bien moi byte 0 trong noi dung tep thanh
+    -- `arg_null_byte` — ma o do ta khong tach duoc tep khoi form field.
+    local proof, proj_rule, fnm_src = nil, nil, body
+    if family == "multipart" then
+        local ranges
+        ranges, proof = file_ranges(body, ct)
+        if ranges then
+            proof = "ok"
+            local proj = projection(body, ranges)
+            local proj_at
+            proj_rule, proj_at = check_args(proj, false, false)
+            if proj_rule then
+                -- `at` phai di cung CHUOI no duoc do tren: `legacy_fnm` tim dong
+                -- chua lan khop, va vi tri trong ban chieu khac vi tri trong than.
+                arg_rule, at, fnm_src = proj_rule, proj_at, proj
+            end
+        end
+    end
 
     -- `arg_origin`: NOI lan khop cua `arg_rule` nam o dau. Day la truong V4 them,
     -- va no ton tai vi mot ly do duy nhat — `arg_rule` den tu `check_args_lower`
@@ -839,10 +963,12 @@ function _M.scan(body, ct)
     --   form_field    Dat TRUOC `file_content`. Mot than co CUNG luat o hai cho thi
     --                 nhom quyet dinh la form field — vi gia tri form field di vao
     --                 `$_POST`, tuc mot tan cong tham so THAT.
-    --   file_content  Chi khi KHONG co form field nao khop CUNG luat, VA da chung
-    --                 minh duoc moi form field deu soi tron (`fields_complete`).
     --   filename      `arg_rule` khop trong vung header cua mot phan. Kenh nay da
     --                 co duong RIENG (`fn_rule` + `up_rule`).
+    --   file_content  V6: CHI khi than chuan tac (`proof = "ok"`) VA phan khong
+    --                 phai tep da QUET va SACH. Dat SAU hai nhom tren vi hai kenh
+    --                 do di tu parser cu: neu chung noi "trong field" thi mot bat
+    --                 dong giua hai parser phai nghieng ve phia giu diem.
     --   flat          khong phai multipart. Nghia cu, khong doi.
     --   unknown       la multipart nhung khong quy duoc. TUYET DOI khong ha diem:
     --                 "khong biet" khac "khong co".
@@ -855,12 +981,10 @@ function _M.scan(body, ct)
         arg_origin = "form_field"
     elseif fn_rule == arg_rule then
         arg_origin = "filename"
-    elseif arg_content == arg_rule and fields_complete then
-        -- `fields_complete` la DIEU KIEN BAT BUOC o day, khong phai mot ghi chu.
-        -- Thieu no thi mot form field bi cat / mot part sau tran `MAX_PARTS` / mot
-        -- header do se lam `arg_field` thanh nil trong khi payload nam trong do, va
-        -- ca request duoc reroute sang mot luat score 0. Do la bypass that ma
-        -- review 26-09 tim ra, va no dung ho loi "suy dien tu su vang mat".
+    elseif proof == "ok" and not proj_rule then
+        -- `not proj_rule` la TOAN BO phep chung minh: phan con lai sau khi bo noi
+        -- dung tep da duoc QUET va khong co luat nao. Khong suy tu mot co, khong
+        -- suy tu `acnt` — hai cach V5 da lam va ca hai deu sai.
         arg_origin = "file_content"
     else
         arg_origin = "unknown"
@@ -877,7 +1001,7 @@ function _M.scan(body, ct)
         php    = low:find("<?php", 1, true) ~= nil or low:find("<?=", 1, true) ~= nil,
         nargs  = count_args(body, family),
         arg_rule = arg_rule,
-        fnm      = legacy_fnm(body, family, at),
+        fnm      = legacy_fnm(fnm_src, family, at),
         fn_rule  = fn_rule,
         fn_trunc = fn_trunc,
         -- P1. `nil` gop BA truong hop: khong phai multipart, khong co
@@ -893,10 +1017,12 @@ function _M.scan(body, ct)
         arg_origin  = arg_origin,
         arg_field   = arg_field,
         arg_content = arg_content,
-        -- Ra log de doc duoc VI SAO mot than thanh `unknown`: `fc=0` nghia la con
-        -- form field chua phan loai, `fc=1` nghia la khong quy duoc vi ly do khac
-        -- (vi du hai kenh mang hai luat khac nhau).
-        fields_complete = fields_complete,
+        -- V6: `fields_complete` = than chuan tac VA moi byte khong phai tep da duoc
+        -- quet (`proof = "ok"`). Giu ten cu vi `init.lua` gac reroute tren no
+        -- (`== true`) va cot `fc=` doc theo no. `proof` la LY DO khi khong chung
+        -- minh duoc — ra cot `pf=`, de do duoc upload that hong o buoc nao.
+        fields_complete = (proof == "ok"),
+        proof           = proof,
     }
 end
 
@@ -912,7 +1038,8 @@ local function enc(v)
 end
 
 function _M.pack(r)
-    -- V5 them `fields_complete`. (V4 da them `arg_origin`/`arg_field`/`arg_content`.) PHAI nang phien ban khi
+    -- V6 them `proof`. (V5 da them `fields_complete`, V4 `arg_origin`/`arg_field`/
+    -- `arg_content`.) PHAI nang phien ban khi
     -- them truong: `unpack` gac bang `#f ~= <so truong>`, nen mot ban `pack` moi
     -- gap mot ban `unpack` cu se tra `bad_payload` — TRONG IM LANG, va chi voi
     -- than DA SPILL, tuc dung nhom upload lon. Doi phien ban lam cho su khong khop
@@ -925,11 +1052,11 @@ function _M.pack(r)
     -- (`family`) van dung, loi se trong nhu mot loi du lieu chu khong nhu mot loi
     -- giao thuc.
     return table.concat({
-        "V5", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
+        "V6", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
         enc(r.arg_rule), enc(r.fnm), enc(r.fn_rule), enc(r.fn_trunc), enc(r.scan),
         enc(r.up_rule),
         enc(r.arg_origin), enc(r.arg_field), enc(r.arg_content),
-        enc(r.fields_complete),
+        enc(r.fields_complete), enc(r.proof),
     }, SEP)
 end
 
@@ -1008,7 +1135,7 @@ function _M.unpack(payload)
     if type(payload) ~= "string" then return nil, "bad_payload" end
     local f = split(payload)
     if f[1] == "E"  then return nil, f[2] or "worker", tonumber(f[3]) end
-    -- CHI nhan V5. KHONG chap nhan ban cu nhu mot ban tuong thich nguoc, va do la
+    -- CHI nhan V6. KHONG chap nhan ban cu nhu mot ban tuong thich nguoc, va do la
     -- quyet dinh co y: `body_worker.lua` chay trong MOT VM RIENG do
     -- `ngx.run_worker_thread` dung len, nhung ca hai ben deu nap tu CUNG mot file
     -- tren dia — nen chung khong bao gio lech phien ban TRU trong khoang giua hai
@@ -1016,7 +1143,7 @@ function _M.unpack(payload)
     -- cau tra loi DUNG: no co ten, di vao `waf:v2:scan:bad_payload`, va chi anh
     -- huong than da spill. Chap nhan V3 se lam khoang do trong nhu binh thuong
     -- trong khi ba truong moi lang le bang nil.
-    if f[1] ~= "V5" or #f ~= 15 then return nil, "bad_payload" end
+    if f[1] ~= "V6" or #f ~= 16 then return nil, "bad_payload" end
     return {
         family   = dec(f[2]),
         len      = tonumber(f[3]),
@@ -1035,6 +1162,7 @@ function _M.unpack(payload)
         -- cho reroute, nen mot chuoi "0" doc thanh true se mo lai dung cai
         -- bypass vua dong.
         fields_complete = dec_bool(f[15]),
+        proof           = dec(f[16]),
     }
 end
 

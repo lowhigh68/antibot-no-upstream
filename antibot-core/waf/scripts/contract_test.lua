@@ -2298,6 +2298,11 @@ do
         -- kiem CA VI TRI: `up_rule` phai la gia tri thu BA o moi loi ra, khong chi
         -- "co mat dau do".
         --
+        -- V6 (26-09) dua ve 5: V5 them `fields_complete` lam gia tri thu sau va
+        -- muc nay ghim no, nhung chinh truong do suy "da soi tron" tu trang thai
+        -- parser — loi ma review 26-09 diem 2 chi ra. Phep chung minh gio la
+        -- `file_ranges` trong `_M.scan`, khong di qua ham nay. Dung them lai.
+        --
         -- `return` nhieu dong: `fn:gmatch("return ([^\n]+)")` chi lay dong dau, nen
         -- mot loi ra ngat dong se bi dem thieu. Gop dong truoc khi dem.
         local fn = code:match("local function scan_one_boundary.-\nend")
@@ -2322,15 +2327,12 @@ do
                     else cur = cur .. ch end
                 end
                 parts[#parts + 1] = cur
-                if commas ~= 5 then
+                if commas ~= 4 then
                     bad_n = bad_n + 1
                     bad("  SAI  [27a] `scan_one_boundary` co `return %s`\n" ..
-                        "       => %d gia tri, phai la 6 (rule, status, up_rule,\n" ..
-                        "       arg_field, arg_content, fields_complete). Mot loi ra\n" ..
-                        "       danh roi mot trong bon truong sau lam tin hieu mat\n" ..
-                        "       IM LANG — va voi `fields_complete` thi no MO LAI mot\n" ..
-                        "       duong ne: `nil` o vi tri do lam phep kiem `== true`\n" ..
-                        "       that bai, nhung mot `~= false` o dau do thi khong.\n",
+                        "       => %d gia tri, phai la 5 (rule, status, up_rule,\n" ..
+                        "       arg_field, arg_content). Mot loi ra danh roi mot\n" ..
+                        "       trong ba truong sau lam tin hieu mat IM LANG.\n",
                         ret, commas + 1)
                 else
                     -- Ghim VI TRI, khong chi so luong: mot loi ra tra du 5 gia tri
@@ -2354,21 +2356,6 @@ do
                         bad("  SAI  [27a] gia tri thu BA cua `return` la `%s`, phai\n" ..
                             "       la `up_rule` hoac `nil` tuong minh.\n" ..
                             "       `filename_rule` doc theo VI TRI.\n", third)
-                    end
-                    -- Vi tri thu SAU la `fields_complete`, va no la truong DUY NHAT
-                    -- trong danh sach nay gac mot duong ha diem. Mot loi ra dat `nil`
-                    -- o do (thay vi `false` hoac ten bien) lam phep kiem `== true`
-                    -- that bai — an toan — NHUNG no cung lam mot phep kiem `~= false`
-                    -- o bat ky dau THANH CONG, va do la duong ne. Nen chi nhan
-                    -- `false` hoac mot ten bien, KHONG nhan `nil`.
-                    local sixth = clean(6)
-                    if sixth ~= "false" and not sixth:find("fields_complete", 1, true) then
-                        bad_n = bad_n + 1
-                        bad("  SAI  [27a] gia tri thu SAU cua `return` la `%s`, phai\n" ..
-                            "       la `fields_complete` hoac `false` tuong minh.\n" ..
-                            "       `nil` KHONG duoc nhan o vi tri nay: mot phep kiem\n" ..
-                            "       `~= false` o dau do se coi `nil` la \"da chung\n" ..
-                            "       minh\" va mo lai duong ha diem.\n", sixth)
                     end
                 end
             end

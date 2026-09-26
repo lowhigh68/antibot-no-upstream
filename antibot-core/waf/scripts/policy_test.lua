@@ -502,6 +502,66 @@ do
         if blind_ctx.waf_hits[i].rule == "body_scan_incomplete" then blind = true end
     end
     eq("scan=spill_thread VAN phat body_scan_incomplete", blind, true)
+
+    -- ── V6 dau-cuoi: body_core -> init.lua -> policy ─────────────────────────
+    --
+    -- Duong reroute chua tung co test di qua CA ba tang: `body_core` quyet dinh
+    -- `arg_origin`, `init.lua` doi luat, `policy` cham diem. Test tung tang rieng
+    -- thi mot lech giua chung (ten truong, `== true` vs truthy, phien ban giao
+    -- thuc) bao XANH ca ba noi trong khi request van mat diem sai. Review 26-09
+    -- chi ra cho trong nay.
+    local core = require "antibot.waf.body_core"
+    local B6 = "----WebKitFormBoundaryE2eV6"
+    local CT6 = "multipart/form-data; boundary=" .. B6
+    local function part6(hdr, content)
+        return "--" .. B6 .. "\r\n" .. hdr .. "\r\n\r\n" .. content .. "\r\n"
+    end
+    local CLOSE6 = "--" .. B6 .. "--\r\n"
+    local FILE6 = 'Content-Disposition: form-data; name="f"; filename="a.jpg"'
+    local function fired(c)
+        local seen = {}
+        for i = 1, #(c.waf_hits or {}) do seen[c.waf_hits[i].rule] = true end
+        return seen
+    end
+
+    -- (1) Upload lon, `../` sau 8 KB dau: doi sang `body_file_traversal`, 0 diem,
+    --     cau cu khong nap. Day la nhom FP that ma V5 khong bao gio cham toi.
+    local c1 = run_with_body(core.scan(
+        part6(FILE6, string.rep("J", 9000) .. "../x") .. CLOSE6, CT6))
+    local f1 = fired(c1)
+    eq("V6 e2e: upload lon -> body_file_traversal", f1.body_file_traversal, true)
+    eq("V6 e2e: upload lon -> KHONG arg_traversal", f1.arg_traversal, nil)
+    eq("V6 e2e: upload lon -> cau cu khong nap", c1.waf_body_arg, nil)
+    eq("V6 e2e: upload lon -> waf_score",
+       string.format("%.2f", c1.waf_score or -1), "0.00")
+
+    -- (2) `filename*=`: PHP doc la FORM FIELD. Phai giu `arg_traversal`, du diem.
+    local c2 = run_with_body(core.scan(
+        part6([[Content-Disposition: form-data; name="path"; filename*=UTF-8''x.txt]],
+              "../../etc/passwd") .. CLOSE6, CT6))
+    local f2 = fired(c2)
+    eq("V6 e2e: filename* -> arg_traversal", f2.arg_traversal, true)
+    eq("V6 e2e: filename* -> KHONG doi luat", f2.body_file_traversal, nil)
+    eq("V6 e2e: filename* -> waf_score",
+       string.format("%.2f", c2.waf_score or -1), "35.00")
+    eq("V6 e2e: filename* -> cau cu",
+       string.format("%.4f", c2.waf_body_arg or -1), "0.7500")
+
+    -- (3) Payload trong form field + `../` trong tep: form field thang.
+    local c3 = run_with_body(core.scan(
+        part6(FILE6, "JFIF../../x") ..
+        part6('Content-Disposition: form-data; name="path"', "../../etc/passwd") ..
+        CLOSE6, CT6))
+    eq("V6 e2e: field + tep -> arg_traversal", fired(c3).arg_traversal, true)
+    eq("V6 e2e: field + tep -> waf_score",
+       string.format("%.2f", c3.waf_score or -1), "35.00")
+
+    -- (4) Wrapper CHI trong noi dung tep: quy duoc nguon nhung KHONG doi luat.
+    local c4 = run_with_body(core.scan(part6(FILE6, "php://input") .. CLOSE6, CT6))
+    eq("V6 e2e: wrapper trong tep -> giu arg_php_wrapper",
+       fired(c4).arg_php_wrapper, true)
+    eq("V6 e2e: wrapper trong tep -> KHONG doi luat",
+       fired(c4).body_file_traversal, nil)
 end
 
 -- ── `waf/runtime_config.lua` la file NGUOI VAN HANH SUA, nen phai kiem no ────

@@ -152,7 +152,7 @@ function _M.run_body(ctx)
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
         .. " class=%s richness=%s vfy=%d scan=%s argrule=%s fnm=%s fnrule=%s fntr=%s uprule=%s"
-        .. " aorig=%s afld=%s acnt=%s fc=%s smp=%d\n",
+        .. " aorig=%s afld=%s acnt=%s fc=%s pf=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(),
@@ -303,13 +303,25 @@ function _M.run_body(ctx)
         scrub(b.arg_origin, 16),
         scrub(b.arg_field, 24),
         scrub(b.arg_content, 24),
-        -- `fc=` DIEU KIEN gac cho reroute: `fc=0` nghia la con form field chua duoc
-        -- phan loai, nen mot `aorig=unknown` di kem `fc=0` la "chua chung minh
-        -- duoc", con `aorig=unknown fc=1` la "quy khong duoc vi ly do khac" (vi du
-        -- hai kenh mang hai luat khac nhau). Hai cau tra loi khac nhau, va gop lai
-        -- thi khong doc duoc cai nao.
+        -- `fc=` DIEU KIEN gac cho reroute. Tu V6: `fc=1` <=> `pf=ok` — than chuan
+        -- tac va moi byte khong phai tep da duoc quet. `aorig=unknown fc=1` la luat
+        -- nam ngoai noi dung tep nhung khong quy duoc vao field hay ten tep (vi du
+        -- trong `name=`); `fc=0` thi doc `pf=` de biet vi sao.
         (b.fields_complete == true and "1") or
             (b.fields_complete == false and "0") or "-",
+        -- V6 `pf=`: VI SAO than multipart nay chung minh duoc hay khong.
+        --   pf=ok   dang chuan tac, noi dung tep da tach ra     -> `fc=1`
+        --   pf=ct   Content-Type (boundary) khong chuan tac
+        --   pf=pre  co byte truoc dong phan cach dau
+        --   pf=hdr  vung header mot part: dong la, header thu ba, qua dai
+        --   pf=cd   Content-Disposition: `filename*`, trung, khoang trang, nhay
+        --   pf=dl   dau phan cach sau noi dung khong dung dang
+        --   pf=end  thieu dong ket thuc, hoac co byte sau no
+        --   pf=n    hon 64 phan
+        --   pf=-    khong phai multipart, hoac than chua soi
+        -- Moi gia tri khac `ok` la GIU NGUYEN DIEM. Cot nay ton tai de do upload
+        -- THAT hong o buoc nao, thay vi doan.
+        scrub(b.proof, 8),
         notable and 1 or BODY_SAMPLE))
 
     fh:close()

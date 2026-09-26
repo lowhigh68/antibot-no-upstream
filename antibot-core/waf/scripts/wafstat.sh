@@ -41,7 +41,7 @@ V2=$(grep -F '[waf]' "$LOG" | grep -c ' pver=')
 TOT=$(grep -cF '[waf]' "$LOG")
 printf 'dong co cot policy : %s / %s\n' "$V2" "$TOT"
 if [ "$V2" -eq 0 ]; then
-    echo '  (chua co dong nao — hoac ban cu, hoac chua co luu luong sau deploy)'
+    echo '  (chua co dong nao - hoac ban cu, hoac chua co luu luong sau deploy)'
 else
 grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
@@ -89,10 +89,10 @@ END{
         # DOC TAY — mot bot giu cookie hoac da giai PoW cung co chung.
         if (chan)
             yn = ((a[k]+0) > 0) ? "-> FP THAT: chan chinh chu (cookie WP)" \
-               : (((rich[k]+0) || (v[k]+0)) ? "chan, 0 cookie WP — doc tay rich/vfy" \
+               : (((rich[k]+0) || (v[k]+0)) ? "chan, 0 cookie WP - doc tay rich/vfy" \
                                             : "chan, 0 cookie WP 0 rich 0 vfy")
         else
-            yn = "khong chan — cac cot nay la thanh phan, KHONG phai FP"
+            yn = "khong chan - cac cot nay la thanh phan, KHONG phai FP"
         printf "  %-50s %7d %5d %5d %5d  %s\n",
                k, c[k], a[k]+0, rich[k]+0, v[k]+0, yn
     }
@@ -143,7 +143,7 @@ f["wact"]=="allow" && f["would"]=="block" && f["final"]!="block" {
     }
 }
 END{
-    if (!length(c)) { print "  (khong co dong nao — chua luat nao o che do bong ban)"; exit }
+    if (!length(c)) { print "  (khong co dong nao - chua luat nao o che do bong ban)"; exit }
     # HAI NGUONG, va nguong thu hai moi la nguong that.
     #
     # `MIN_N` (so luot) la dieu kien de mot ti le 0% co nghia gi ve mat so hoc.
@@ -166,21 +166,21 @@ END{
            "rule", "se chan", "wpa", "rich", "vfy", "nguon", "ket luan"
     for (k in c) {
         if (srcs[k] < MIN_SRC)
-            kl = sprintf("CHI %d nguon (/24) — mau KHONG dai dien", srcs[k])
+            kl = sprintf("CHI %d nguon (/24) - mau KHONG dai dien", srcs[k])
         else if (c[k] < MIN_N)
             kl = sprintf("dan so qua nho (n=%d < %d)", c[k], MIN_N)
         else if ((a[k]+0) > 0)
             # `wpauth` la thuoc duy nhat ket luan duoc MOT MINH: co cookie dang nhap
             # WordPress nghia la chinh chu website.
-            kl = sprintf("%d co cookie dang nhap WP — KHONG duoc enforce", a[k]+0)
+            kl = sprintf("%d co cookie dang nhap WP - KHONG duoc enforce", a[k]+0)
         else if ((vf[k]+0) > 0 || (rich[k]+0) > 0)
             # `rich`/`vfy` la CAN DOC TAY, khong ket luan duoc mot minh: mot bot giu
             # cookie qua vai request cung dat `richness>=0.5`, va mot bot da giai PoW
             # cung co `vfy=1`.
-            kl = sprintf("0 cookie WP nhung %d rich + %d verified — DOC TAY truoc khi enforce",
+            kl = sprintf("0 cookie WP nhung %d rich + %d verified - DOC TAY truoc khi enforce",
                          rich[k]+0, vf[k]+0)
         else
-            kl = sprintf("n=%d tu %d nguon, 0 wpa 0 rich 0 vfy — DU de xet enforce",
+            kl = sprintf("n=%d tu %d nguon, 0 wpa 0 rich 0 vfy - DU de xet enforce",
                          c[k], srcs[k])
         printf "  %-24s %7d %5d %5d %5d %6d  %s\n",
                k, c[k], a[k]+0, rich[k]+0, vf[k]+0, srcs[k], kl
@@ -229,7 +229,7 @@ f["target"]=="URI" {print f["rule"], "exists="f["exists"], "fim="f["fim"], "fina
 | sort | uniq -c | sort -rn | head -30
 
 echo
-echo "=== 6. [waf-body] phan bo do dai — DA NHAN he so smp ==="
+echo "=== 6. [waf-body] phan bo do dai - DA NHAN he so smp ==="
 grep -F '[waf-body]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
 {
@@ -251,7 +251,7 @@ END{
 }'
 
 echo
-echo "=== 7. [waf-body] family / php / spill / fnm — DA NHAN smp ==="
+echo "=== 7. [waf-body] family / php / spill / fnm - DA NHAN smp ==="
 grep -F '[waf-body]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
 {
@@ -293,7 +293,7 @@ END{
     print ""
     print "  -- quet ten file khong hoan tat, theo LY DO --"
     print "     `stop` va `empty` la binh thuong. Cac gia tri khac deu la KHONG BIET,"
-    print "     khong phai sach, va moi cai doi mot viec khac han — nen dem RIENG."
+    print "     khong phai sach, va moi cai doi mot viec khac han - nen dem RIENG."
     print "     `len` la NGOAI LE: ten file van duoc kiem TRON, no chi bao dai bat thuong."
     tt=0
     if(ftr["nb"]>0){    printf "  nb       %6d  Content-Type khong co boundary -> khong cat duoc phan nao\n", ftr["nb"];    tt+=ftr["nb"] }
@@ -314,13 +314,13 @@ END{
     print "  BA DIEU KIEN PHAI XU LY TRUOC KHI NANG fn_rule LEN TRONG SO > 0."
     print "  Doc so o tren xong la den luc de quen chung, nen chung in o day:"
     print "   1. (DA XU LY 05-09) Nay chi soi vung header cua tung phan, cat theo"
-    print "      boundary. Vung mu con lai: multipart LONG NHAU — header cua phan"
+    print "      boundary. Vung mu con lai: multipart LONG NHAU - header cua phan"
     print "      con nam trong THAN phan cha nen khong duoc soi."
     print "   2. nb / hdr / n / bd / bdup / bval / disp / ending / nothread deu"
     print "      KHONG phai sach. Enforcement doc chung nhu \"da soi, khong thay\""
     print "      la bien vung mu thanh giay thong hanh."
     print "   3. (DA XU LY 05-09) Than tran ra file tam duoc soi trong thread"
-    print "      pool — NEU `thread_pool` da bat. Chua bat thi xem dong"
+    print "      pool - NEU `thread_pool` da bat. Chua bat thi xem dong"
     print "      `nothread` o tren; do la phan luu luong con thieu."
     printf "  ---- uoc tinh tong POST: %d\n", tot
 }'
@@ -329,7 +329,7 @@ echo
 echo "=== 8. spill x cach nginx biet do dai body  [CAU HOI VE BUFFER] ==="
 echo "    Cau hoi: nginx co BIET TRUOC do dai body khong. Biet thi no cap dung co"
 echo "    va bo qua client_body_buffer_size; khong biet thi roi ve buffer va spill."
-echo "    LUU Y: cl=- KHONG dong nghia chunked — header do con vang trong HTTP/2,"
+echo "    LUU Y: cl=- KHONG dong nghia chunked - header do con vang trong HTTP/2,"
 echo "    HTTP/3, request khong body. Vi vay phai doc kem proto= va te=."
 grep -F '[waf-body]' "$LOG" | awk '
 {delete f;for(i=1;i<=NF;i++){n=index($i,"=");if(n)f[substr($i,1,n-1)]=substr($i,n+1)}}
