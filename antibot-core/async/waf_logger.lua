@@ -11,6 +11,13 @@ local _M = {}
 -- Ghép dòng: dùng `rid=` (`$request_id` của nginx, 32 hex, duy nhất từng
 -- request). Nó ghép chính xác `[waf]` với `[waf-body]`.
 --
+-- ĐÍNH CHÍNH 26-09: câu trên SAI cho tới bản này, và chưa ai từng kiểm nó trên
+-- log thật. Không cấu hình nginx nào nhắc tới `$request_id`, nên biến không có
+-- chỉ mục — và khi đó MỖI lần đọc `ngx.var.request_id` nginx gọi lại hàm sinh,
+-- ra một số ngẫu nhiên MỚI. Hai dòng của cùng một request mang hai `rid` khác
+-- nhau: đo trên sáu máy, 0/770 dòng `body_php_code` ghép được với dòng
+-- `[waf-body]` của chính nó. Nay `req_id()` đọc MỘT lần, giữ trong `ctx.rid`.
+--
 -- ĐÍNH CHÍNH: khối này trước đây bảo ghép bằng cặp `id=`+`ts=`. Cặp đó KHÔNG
 -- duy nhất — `id` là `ctx.identity`, mà mọi request thoát sớm (block ở access
 -- phase, cookie fast-path, ban ở cửa) đều có `id=-`, còn `ts` chỉ tới giây.
@@ -81,10 +88,14 @@ end
 -- — ghép theo cặp đó là ghép bừa.
 --
 -- `$request_id` của nginx là 32 ký tự hex sinh riêng cho từng request (có từ
--- nginx 1.11). Rẻ: một lượt đọc biến, không tính toán.
-local function req_id()
+-- nginx 1.11). Đọc MỘT lần rồi giữ trong `ctx.rid`: biến không có chỉ mục thì
+-- mỗi lần đọc là một số mới (xem đính chính ở đầu file), nên đọc lại cho dòng
+-- thứ hai là ghi ra một `rid` khác.
+local function req_id(ctx)
+    if ctx.rid then return ctx.rid end
     local rid = ngx.var.request_id
-    if not rid or rid == "" then return "-" end
+    if not rid or rid == "" then rid = "-" end
+    ctx.rid = rid
     return rid
 end
 
@@ -155,7 +166,7 @@ function _M.run_body(ctx)
         .. " aorig=%s afld=%s acnt=%s fc=%s pf=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
-        req_id(),
+        req_id(ctx),
         scrub(ctx.identity or ctx.fp_light, 64),
         scrub((ctx.req and ctx.req.host) or ngx.var.host, 80),
         scrub(ctx.ip or ngx.var.remote_addr, 45),
@@ -460,7 +471,7 @@ function _M.run(ctx)
             .. " mode=%s exc=%s wact=%s would=%s wscore=%s pver=%s\n",
             stamp,
             now,
-            req_id(),
+            req_id(ctx),
             scrub(id, 64),
             scrub(domain, 80),
             scrub(ctx.ip or ngx.var.remote_addr, 45),
