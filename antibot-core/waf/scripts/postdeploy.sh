@@ -37,7 +37,21 @@ echo "  file doc   :$(names $WF)"
 [ -n "$WF" ] || echo "  KHONG CO file waf.log nao ghi sau deploy - moi so duoi day VO NGHIA"
 echo "  cua so THAT: $(head -n 1 "$W" | cut -c2-20) -> $(tail -n 1 "$W" | cut -c2-20)"
 echo "  dong [waf] $(grep -cF '[waf]' "$W")   dong [waf-body] $(grep -cF '[waf-body]' "$W")"
-echo "  rid dung chung >1 dong: $(grep -o " rid=[0-9a-f]*" "$W" | sort | uniq -d | wc -l)  (tu e4e5f43 phai > 0)"
+# `rid` chi TRUNG khi MOT request sinh CA HAI dong — tuc mot POST vua co than vua
+# khop luat. Con so 0 KHONG phai loi khi cua so chi co luat DUONG DAN (GET) va cac
+# POST khong khop luat nao: do la hai dan so roi nhau.
+#
+# Chu thich cu o day ghi "tu e4e5f43 phai > 0" — SAI, va no la mot bao dong gia
+# dung loai da ghi trong memory (`feedback_alert_reaches_nobody`): mot canh bao keu
+# khi khong co gi sai lam nguoi ta ngung doc canh bao. Nen in CA mau so.
+RID_SHARED=$(grep -o " rid=[0-9a-f]*" "$W" | sort | uniq -d | wc -l)
+RID_BOTH=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^rid=/) r = $i }
+    /\[waf\]/    { law[r] = 1 }
+    /\[waf-body\]/ { body[r] = 1 }
+    END { n = 0; for (k in law) if (k in body) n++; print n }' "$W")
+echo "  rid tren >1 dong: $RID_SHARED   request co CA dong luat lan dong than: $RID_BOTH"
+echo "     (hai so nay chi khac 0 khi mot POST vua co than VUA khop luat — 0 la binh"
+echo "      thuong khi cua so chi co luat duong dan tren GET)"
 [ "$MIN" -lt 1440 ] && echo "  CHUA DU 24 GIO - upload cua admin thua, muc 3-4 co the con rong"
 
 echo "=== 1. Cong im lang (ca hai phai = 0) ==="
