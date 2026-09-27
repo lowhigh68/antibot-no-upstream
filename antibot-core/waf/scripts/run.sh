@@ -53,4 +53,14 @@ echo
 echo "── upload_content + cung part (buoc 3-4) ─────────────"
 "$RESTY" "$HERE/upload_content_test.lua" || rc=1
 
+# `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
+# trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
+# bash chu khong resty (no kiem mot script shell).
+#
+# Can `date -d`, `find -newermt`, `zcat` — co san tren fleet lan WSL. Neu mai chay
+# o cho thieu chung thi bo nay do va do la dung: `postdeploy.sh` cung se sai o do.
+echo
+echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
+bash "$HERE/postdeploy_test.sh" || rc=1
+
 exit $rc
