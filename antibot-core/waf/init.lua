@@ -272,6 +272,41 @@ local function emit_body_facts(ctx, state)
         end
     end
 
+    -- ── Buoc 4: bang chung CUNG MOT PART (V8 part record) ───────────────────
+    --
+    -- Hai correlation cu ghep hai fact TOAN REQUEST, nen `shell.php` rong o part 1
+    -- cong `<?php` trong mot form field o part 2 ban y het `shell.php` chua `<?php`.
+    -- Nhom nay doi CUNG MOT PART: `name_flags` va `content_flags` cua cung mot
+    -- record.
+    --
+    -- Chay TRUOC `b.up_rule` de `matched` cua no khong bi dedupe cua policy che:
+    -- `policy.emit` dedupe theo `rule_id + target`, va day la rule_id KHAC nen hai
+    -- ben khong dap nhau — nhung thu tu nay lam log doc duoc theo dung thu tu suy
+    -- luan (fact part -> fact request).
+    --
+    -- `matched` chi mang SLOT va TEN LUAT, tuyet doi khong mang ten tep hay noi dung:
+    -- ca hai do ke gui dieu khien, va `waf.log` giu 30 ngay. Cung ly do `uprule=` chi
+    -- ghi RULE_ID.
+    for i = 1, #(b.parts or {}) do
+        local p = b.parts[i]
+        local cf = p.content_flags
+        if p.name_flags and type(cf) == "table" then
+            for flag in pairs(cf) do
+                local rule_id = registry.same_part_rule(p.name_flags, flag)
+                if rule_id then
+                    local hit = policy.emit(state, rule_id, {
+                        target  = "MULTIPART_PART",
+                        matched = "slot=" .. tostring(p.slot) .. " " ..
+                                  tostring(p.name_flags) .. "+" .. tostring(flag),
+                    })
+                    if hit and not hit.excepted and hit.action ~= "observe" then
+                        ctx.waf_upload_same_part = rule_id
+                    end
+                end
+            end
+        end
+    end
+
     if b.up_rule then
         local hit = policy.emit(state, b.up_rule, {
             target = "MULTIPART_FILENAME",

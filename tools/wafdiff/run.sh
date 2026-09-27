@@ -70,6 +70,21 @@ export WAFDIFF_DUMP="$WORK/dump.php"
 # Dat OUT= thi ca loi ra cho do (wafdiff.lua xoa va tao lai no).
 if [ -z "${OUT:-}" ]; then export OUT="$WORK/cases"; own_out=1; else own_out=0; fi
 
+# Loi NAP MODULE cua chinh bo kiem ra ma 1 ("co vi pham") vi `resty` tra 1 cho moi
+# loi Lua khong bat — da xay ra that khi `body_core` them mot `require` moi. Nen kiem
+# NAP DUOC truoc, roi moi chay that: mot bo kiem khong nap duoc phai la ma 2.
+if ! "$RESTY" -e "
+    local SRC = os.getenv('ANTIBOT_SRC')
+    for _, m in ipairs({ 'upload', 'upload_content', 'body_core', 'body_worker' }) do
+        package.preload['antibot.waf.' .. m] = function()
+            return dofile(SRC .. 'waf/' .. m .. '.lua')
+        end
+    end
+    require 'antibot.waf.body_core'
+" 2>/dev/null; then
+    fail "khong nap duoc antibot-core (thieu mot \`require\` trong danh sach preload?)"
+fi
+
 rc=0
 "$RESTY" "$HERE/wafdiff.lua" || rc=$?
 [ "$rc" -ne 0 ] && [ "$own_out" = 1 ] && keep=1

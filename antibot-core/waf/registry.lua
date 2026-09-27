@@ -145,6 +145,59 @@ add("corr_upload_config_php_payload", "correlation", "decision", "generic", "blo
 add("corr_new_direct_executable", "correlation", "decision", "generic", "block", "shadow",
     100, 5, 0.95, { "correlation.new_direct_executable" })
 
+-- ── Buoc 4: bang chung CUNG MOT PART (review 27-09) ─────────────────────────
+--
+-- Hai correlation cu (`corr_upload_php_payload`, `corr_upload_config_php_payload`)
+-- ghep hai fact TOAN REQUEST: mot nhan `upload.executable` tu `up_rule` (gia tri cua
+-- ca request) va mot nhan `body.php_code` tu co `php` (boolean toan than). Nen
+-- `shell.php` RONG o part 1 cong `<?php` trong mot FORM FIELD o part 2 cho ra Y HET
+-- `shell.php` chua `<?php`. Do la ly do chung khong the promote.
+--
+-- Bon luat duoi day doi hoi CUNG MOT PART, dung tren V8 part record. Chung KHONG
+-- dung nhan toan cuc — `waf/init.lua` phat chung tu `parts`, khong qua bang
+-- `CORRELATIONS`.
+--
+-- `mode = "shadow"`: KHONG chan gi hom nay, ke ca khi `mode` toan cuc la `enforce`.
+-- Promote can so lieu tu `postdeploy.sh` muc 11 (bao nhieu luot "cung part" vs "hai
+-- part khac nhau") va cot `auth` cua `wafstat` muc 0c — cung cong da dat cho moi
+-- correlation truoc.
+--
+-- `family = "correlation"` nen `policy.lua` KHONG cong diem cua chung vao
+-- `state.score`: chung la phan quyet duoc suy ra tu fact DA duoc cham diem, va cong
+-- lan nua la dem mot bang chung hai lan.
+add("upload_php_executable_content", "correlation", "decision", "generic", "block", "shadow",
+    100, 5, 0.97, { "correlation.same_part_php_exec" })
+add("upload_php_double_content", "correlation", "decision", "generic", "block", "shadow",
+    100, 5, 0.95, { "correlation.same_part_php_double" })
+add("upload_apache_handler_content", "correlation", "decision", "generic", "block", "shadow",
+    100, 5, 0.97, { "correlation.same_part_apache_handler" })
+add("upload_php_autoload_content", "correlation", "decision", "generic", "block", "shadow",
+    100, 5, 0.96, { "correlation.same_part_php_autoload" })
+
+-- Ten tep + co noi dung -> luat cung-part. `body_core` bao `name_flags` va
+-- `content_flags` cua CUNG mot part; bang nay la noi DUY NHAT quyet chung thanh mot
+-- phan quyet.
+--
+-- `upload_php_config` (`.user.ini` VA `php.ini`) dung CHUNG co `autoload` — cung mot
+-- directive, cung co che — nhung tach o day va o `name_flags`: `.user.ini` duoc PHP
+-- doc THEO THU MUC o FPM/CGI nen mot tep upload vao webroot co tac dung THAT, con
+-- `php.ini` thi khong. Hom nay ca hai vao cung mot rule id vi `name_flags` chua phan
+-- biet duoc hai ten; khi so lieu cho thay `php.ini` chiem phan lon thi tach
+-- `name_flags` truoc, roi tach rule sau.
+local SAME_PART = {
+    upload_php_ext        = { php_tag  = "upload_php_executable_content" },
+    upload_php_double     = { php_tag  = "upload_php_double_content" },
+    upload_apache_config  = { handler  = "upload_apache_handler_content" },
+    upload_php_config     = { autoload = "upload_php_autoload_content" },
+}
+_M.SAME_PART = SAME_PART
+
+-- Luat cung-part cua mot (ten, co), hoac nil.
+function _M.same_part_rule(name_flags, content_flag)
+    local by_name = name_flags and SAME_PART[name_flags]
+    return by_name and by_name[content_flag] or nil
+end
+
 local CORRELATIONS = {
     {
         id = "corr_upload_php_payload",

@@ -38,7 +38,9 @@ local OUT    = os.getenv("OUT")   -- run.sh dat: thu muc tam RIENG cua lan chay
 if not SRC or not DUMP or not OUT then
     io.write("wafdiff: thieu ANTIBOT_SRC/WAFDIFF_DUMP/OUT — chay qua run.sh\n"); os.exit(2)
 end
-for _, m in ipairs({ "upload", "body_core", "body_worker" }) do
+-- `body_core` require `upload_content` (buoc 3) — thieu no o day thi wafdiff CHET luc
+-- nap, va `resty` tra ma 1: trung ma "co vi pham". Da xay ra that.
+for _, m in ipairs({ "upload", "upload_content", "body_core", "body_worker" }) do
     package.preload["antibot.waf." .. m] = function()
         return dofile(SRC .. "waf/" .. m .. ".lua")
     end

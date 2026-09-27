@@ -1637,6 +1637,56 @@ do
     end
 end
 
+-- ── Moi module `waf.*` ma `body_core` require phai duoc PRELOAD trong cac bo test ──
+--
+-- Xay ra that hom nay: them `require "antibot.waf.upload_content"` vao `body_core`
+-- lam BA bo test chet ngay luc nap (`module not found`) chu khong hong mot assertion
+-- — va `run.sh` in "0 hong" cho cac bo con lai nen output trong nhu chi mot bo hong.
+-- Phep kiem nay ghim: moi `require "antibot.waf.X"` trong `body_core`/`args`/`upload`
+-- phai co mot dong `package.preload["antibot.waf.X"]` trong MOI bo test tu preload.
+io.write("\nhop dong: bo test preload moi module ma body_core require\n")
+do
+    local needed = {}
+    for _, src in ipairs({ "waf/body_core.lua", "waf/args.lua", "waf/upload.lua" }) do
+        local s = slurp(SRC .. src) or ""
+        for m in s:gmatch('require "antibot%.waf%.([%w_]+)"') do needed[m] = true end
+    end
+    local suites = { "body_test.lua", "args_test.lua", "policy_test.lua" }
+    local n = 0
+    for _, suite in ipairs(suites) do
+        local s = slurp(SRC .. "waf/scripts/" .. suite) or ""
+        -- Bo test dung `package.preload` moi phai co day du; bo nao nap qua
+        -- `package.path` that thi khong can.
+        if s:find("package.preload", 1, true) then
+            for m in pairs(needed) do
+                n = n + 1
+                -- HAI dang preload deu hop le, va phep kiem dau tien cua toi chi nhan
+                -- dang thu nhat nen bao SAI oan cho `policy_test`:
+                --   `package.preload["antibot.waf.upload"] = ...`   (chuoi co dinh)
+                --   `for _, name in ipairs({ "upload", ... })`      (vong lap)
+                -- Dang thu hai nhan bang cach tim TEN MODULE trong mot danh sach
+                -- ipairs cung file. Dung khuon "doc ma, khong doc gia dinh ve hinh
+                -- dang" — cung ho loi da lam `paste - -` bao 0 khi thuc te 87.099.
+                local direct = s:find('package.preload["antibot.waf.' .. m .. '"]', 1, true)
+                local looped = s:find('"' .. m .. '"', 1, true) and
+                               s:find("package.preload%[\"antibot%.waf%.\" %.%. name%]")
+                if direct or looped then
+                    pass = pass + 1
+                else
+                    bad("  SAI  `%s` KHONG preload `antibot.waf.%s` — bo test se CHET luc\n" ..
+                        "       nap (module not found), khong phai hong mot assertion.\n",
+                        suite, m)
+                end
+            end
+        end
+    end
+    if n == 0 then
+        bad("  SAI  khong doc duoc `require` nao — phep kiem nay khong kiem gi\n")
+    else
+        io.write(string.format("  %d cap (bo test, module) deu co preload\n", n))
+    end
+end
+
 -- ── V8: giao thuc `pack`/`unpack` phai KHOP nhau, va phien ban phai duoc nang ──
 --
 -- `unpack` gac bang `#f ~= <so truong>`. Neu ai do them mot truong vao `pack` ma

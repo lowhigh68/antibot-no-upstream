@@ -25,6 +25,10 @@ end
 package.preload["antibot.waf.upload"] = function()
     return dofile(SRC .. "waf/upload.lua")
 end
+-- `body_core` require `upload_content` (buoc 3: noi dung tep cau hinh) — preload ca no.
+package.preload["antibot.waf.upload_content"] = function()
+    return dofile(SRC .. "waf/upload_content.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end

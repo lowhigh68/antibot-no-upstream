@@ -22,6 +22,10 @@ end
 package.preload["antibot.waf.upload"] = function()
     return dofile(SRC .. "waf/upload.lua")
 end
+-- `body_core` require `upload_content` (buoc 3: noi dung tep cau hinh) — preload ca no.
+package.preload["antibot.waf.upload_content"] = function()
+    return dofile(SRC .. "waf/upload_content.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end
@@ -1015,9 +1019,9 @@ do
     -- Goi tin HONG khong duoc cap phat bang khong gioi han trong tien trinh chinh:
     -- `parts_of` chan bang `MAX_PARTS` y nhu `file_ranges`.
     local rec = {}
-    for i = 1, 70 do rec[i] = i .. ":0:0:4" end
+    for i = 1, 70 do rec[i] = i .. ":0:0:4:ok" end
     local flood = core.pack(scan(mp({ filepart("ok.jpg", "JFIF") })))
-                      :gsub("1:0:0:4$", table.concat(rec, ";"))
+                      :gsub("1:0:0:4:ok$", table.concat(rec, ";"))
     check("(18) hon MAX_PARTS record trong goi tin -> bad_payload",
           select(2, core.unpack(flood)), "bad_payload")
 

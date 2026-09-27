@@ -21,6 +21,10 @@ end
 package.preload["antibot.waf.wordpress.paths"] = function()
     return dofile(SRC .. "waf/wordpress/paths.lua")
 end
+-- `body_core` require `upload_content` (buoc 3: noi dung tep cau hinh) — preload ca no.
+package.preload["antibot.waf.upload_content"] = function()
+    return dofile(SRC .. "waf/upload_content.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end
@@ -533,6 +537,74 @@ do
         eq("B1 fntr=" .. code .. " (da soi tron) -> KHONG phat",
            h.body_multipart_incomplete, nil)
     end
+    -- ── Buoc 4 dau-cuoi: composite CUNG PART khong duoc chan, khong duoc cong diem ──
+    --
+    -- Hai bat bien phai giu du `mode` toan cuc dang `enforce`:
+    --   1. `mode = "shadow"` cua chinh luat -> KHONG chan. Promote can so lieu.
+    --   2. `family = "correlation"` -> KHONG cong vao `state.score`. Cong lan nua la
+    --      dem mot bang chung hai lan (fact `up_rule` va co noi dung da duoc dem).
+    do
+        local core_v8 = require "antibot.waf.body_core"
+        local B8 = "----WebKitFormBoundarySamePart"
+        local CT8 = "multipart/form-data; boundary=" .. B8
+        local function fp8(fn, content)
+            return "--" .. B8 .. "\r\n" ..
+                   'Content-Disposition: form-data; name="f"; filename="' .. fn .. '"' ..
+                   "\r\n\r\n" .. content .. "\r\n"
+        end
+        local function body8(parts) return table.concat(parts) .. "--" .. B8 .. "--\r\n" end
+
+        local same = run_with_body(core_v8.scan(body8({ fp8("shell.php", "<?php echo 1;") }), CT8))
+        local h = hits_by_rule(same)
+        eq("cung part: phat upload_php_executable_content",
+           h.upload_php_executable_content ~= nil, true)
+        eq("cung part: o che do shadow",
+           h.upload_php_executable_content and h.upload_php_executable_content.mode, "shadow")
+        eq("cung part: KHONG chan", same.waf_decision.action, "allow")
+        eq("cung part: nhung would_action la block", same.waf_decision.would_action, "block")
+        eq("cung part: target la MULTIPART_PART",
+           h.upload_php_executable_content and h.upload_php_executable_content.target,
+           "MULTIPART_PART")
+        -- `matched` KHONG duoc mang ten tep: no do ke gui dieu khien va waf.log giu 30 ngay.
+        eq("cung part: matched khong chua ten tep",
+           (h.upload_php_executable_content.matched or ""):find("shell", 1, true), nil)
+        eq("cung part: matched mang slot va luat",
+           h.upload_php_executable_content.matched, "slot=1 upload_php_ext+php_tag")
+
+        -- HAI part khac nhau: correlation cu ban, composite cung-part thi KHONG.
+        local split = hits_by_rule(run_with_body(core_v8.scan(
+            body8({ fp8("shell.php", "khong co gi"), fp8("a.txt", "<?php echo 1;") }), CT8)))
+        eq("hai part khac nhau: KHONG co composite cung part",
+           split.upload_php_executable_content, nil)
+        eq("hai part khac nhau: correlation CU van ban (de so sanh)",
+           split.corr_upload_php_payload ~= nil, true)
+
+        -- `init.lua` phai lay luat tu `name_flags` CUA CHINH PART, khong tu `up_rule`
+        -- toan request. Trong moi ca o tren hai gia tri do TRUNG nhau, nen mot ban cai
+        -- dat dung `up_rule` van bao xanh — da kiem bang dot bien va no LOT.
+        --
+        -- Ca nay tach chung ra: `.htaccess` SACH o part 1 lam `up_rule` thanh
+        -- `upload_apache_config` (UP_RANK 7 > php_ext 6), con part 2 moi la
+        -- `shell.php` co `php_tag`. Tra cuu theo `up_rule` se ra (apache_config,
+        -- php_tag) = nil, tuc composite BIEN MAT.
+        local other = hits_by_rule(run_with_body(core_v8.scan(body8({
+            fp8(".htaccess", "RewriteRule ^a$ b [L]"),
+            fp8("shell.php", "<?php echo 1;") }), CT8)))
+        eq("luat lay tu part, khong tu up_rule manh hon o part khac",
+           other.upload_php_executable_content ~= nil, true)
+        eq("va KHONG phat luat cua part .htaccess sach",
+           other.upload_apache_handler_content, nil)
+
+        -- `.htaccess` + AddType: `php` MU hoan toan, nen correlation cu khong ban —
+        -- day la vung composite moi phu ma cai cu khong.
+        local ht = hits_by_rule(run_with_body(core_v8.scan(
+            body8({ fp8(".htaccess", "AddType application/x-httpd-php .jpg") }), CT8)))
+        eq(".htaccess + AddType: composite cung part ban",
+           ht.upload_apache_handler_content ~= nil, true)
+        eq(".htaccess + AddType: correlation cu KHONG ban (php mu)",
+           ht.corr_upload_config_php_payload, nil)
+    end
+
     local clean = hits_by_rule(run_with_body({ family = "multipart", spill = false,
                                                len = 900, scan = "ok", fn_trunc = false }))
     eq("B1 multipart soi het -> KHONG phat", clean.body_multipart_incomplete, nil)

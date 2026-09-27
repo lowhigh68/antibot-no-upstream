@@ -119,8 +119,13 @@ local function parts_col(parts)
             for k in pairs(p.content_flags) do names[#names + 1] = k end
             table.sort(names)
         end
+        -- `scan_state` chi in khi KHAC `ok`: mot tep cau hinh soi khong het
+        -- (`config_trunc`) la thong tin, con `ok` thi lap lai cho moi part chi lam
+        -- dong log dai ra. `-` o day KHONG bao gio xuat hien — record nao cung co
+        -- `scan_state`.
+        local st = (p.scan_state and p.scan_state ~= "ok") and (":" .. p.scan_state) or ""
         out[i] = tostring(p.slot or 0) .. ":" .. (p.name_flags or "0") ..
-                 ":" .. (#names > 0 and table.concat(names, ",") or "0")
+                 ":" .. (#names > 0 and table.concat(names, ",") or "0") .. st
     end
     return scrub(table.concat(out, ";"), 400)
 end
@@ -337,6 +342,12 @@ function _M.run_body(ctx)
         -- hiem va noi dung nguy hiem co nam trong CUNG mot tep hay khong.
         --     parts=1:upload_php_ext:php_tag     -> CUNG part: ten .php VA co ma PHP
         --     parts=1:upload_php_ext:0;3:0:php_tag -> HAI part khac nhau
+        --     parts=1:upload_apache_config:handler -> .htaccess doi handler sang PHP/CGI
+        --     parts=1:upload_php_config:autoload   -> .user.ini/php.ini nap ma
+        --     parts=1:upload_php_config:0:config_trunc -> tep cau hinh soi KHONG HET
+        -- Co noi dung (`handler`, `autoload`) do `waf/upload_content.lua` dat, va CHI
+        -- chay khi ten cua chinh part la tep cau hinh — mot bai viet chua chu
+        -- `AddHandler` khong duoc ban.
         parts_col(b.parts),
         -- B3 (roadmap muc 2, GIAI DOAN DO): hang doi soi file tam cua worker nay
         -- luc than nay vao pool. `-` = than khong qua pool (trong bo nho, rong).

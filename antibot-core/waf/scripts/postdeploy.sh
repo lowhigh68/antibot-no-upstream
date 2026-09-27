@@ -206,8 +206,10 @@ f["parts"] != "-" && f["parts"] != "" {
         nf = fld[2]; cf = fld[3]
         if (nf != "0") namebad++
         if (cf != "0") cfbad++
-        # CUNG part: ten co luat VA noi dung co co
+        # CUNG part: ten co luat VA noi dung co co. `cf` co the mang ca `config_trunc`
+        # o truong thu tu, nen chi lay truong 3 lam co noi dung.
         if (nf != "0" && cf != "0") { same++; sk[nf "  +  " cf] += s }
+        if (fld[4] != "") trunc++
     }
     tot += s
     if (same) cung += s
@@ -224,4 +226,5 @@ END {
     printf "    chi ten nguy hiem: %d    chi noi dung nguy hiem: %d    sach: %d\n",
            chiten, chinoidung, sach
     for (k in sk) printf "    cung part: %-44s %6d\n", k, sk[k]
+    if (trunc) printf "    (tep cau hinh soi KHONG HET: %d part — doc `config_trunc`)\n", trunc
 }'

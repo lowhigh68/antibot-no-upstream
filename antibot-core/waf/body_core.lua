@@ -26,6 +26,9 @@ local _M = {}
 -- KHAC — "server co chay file nay khong" — chu khong phai "gia tri nay co chua
 -- mau tan cong khong". Cung phai la Lua thuan, cung ly do da ghi o dau file.
 local upload = require "antibot.waf.upload"
+-- Buoc 3: NOI DUNG tep cau hinh (`.htaccess` doi handler, `.user.ini`/`php.ini` nap
+-- ma). Cung la Lua thuan, cung ly do.
+local upload_content = require "antibot.waf.upload_content"
 
 local MAX_PARTS   = 64     -- so phan multipart soi toi da
 local MAX_HDR_LEN = 2048   -- do dai vung header cua MOT phan
@@ -1069,10 +1072,31 @@ function _M.scan(body, ct)
             local rg = ranges[i]
             -- `content_flags`: bang co NOI DUNG cua part. Hom nay mot co; buoc 3 them
             -- `handler`/`autoload` tu `upload_content.lua`. `false` = da soi, sach.
+            local cf = nil
             if php_rg[rg] then
-                rg.content_flags = { php_tag = true }
+                cf = { php_tag = true }
                 php_file = true
             end
+            -- Buoc 3: NOI DUNG tep cau hinh. Chi chay khi TEN cua chinh part do la
+            -- tep cau hinh — do la do chinh xac, khong phai toi uu: mot bai viet
+            -- chua chu `AddHandler` khong duoc ban.
+            --
+            -- `body:sub` sao chep noi dung part NAY. Chi xay ra khi `name_flags` la
+            -- mot trong hai nhan cau hinh, tuc mot phan nghin luu luong — khong phai
+            -- moi upload.
+            if rg.name_flags == "upload_apache_config" or
+               rg.name_flags == "upload_php_config" then
+                local extra, partial = upload_content.scan_part(
+                    body:sub(rg[1], rg[2]), rg.name_flags)
+                if extra then
+                    cf = cf or {}
+                    for k in pairs(extra) do cf[k] = true end
+                end
+                -- Tep cau hinh soi khong het: `scan_state` mang ly do, va policy
+                -- KHONG duoc doc `content_flags` rong thanh "sach".
+                if partial then rg.scan_state = "config_trunc" end
+            end
+            if cf then rg.content_flags = cf end
         end
     else
         -- Khong tach duoc tep khoi field: quet phang `binary = true` voi
@@ -1153,7 +1177,10 @@ local function list_str(t) return t and table.concat(t, ",") or nil end
 --
 -- `bytes` co y la SO BYTE chu khong phai vi tri: vi tri chi co nghia trong than
 -- goc, ma than goc khong di qua ranh gioi nay.
-local CONTENT_FLAGS = { "php_tag" }
+-- Buoc 3 them `handler` va `autoload`. Danh sach nay la nguon DUY NHAT: `flags_str`
+-- chi dong goi co nao co o day, nen THIEU mot ten la co do bien mat TRONG IM LANG
+-- tren duong spill (da xay ra: `handler` mat, test "spill giong memory" bat duoc).
+local CONTENT_FLAGS = { "php_tag", "handler", "autoload" }
 _M.CONTENT_FLAGS = CONTENT_FLAGS
 
 local function flags_str(f)
@@ -1192,6 +1219,10 @@ local function parts_str(parts)
             p.name_flags or "0",
             flags_str(p.content_flags),
             tostring(p[2] - p[1] + 1),
+            -- `scan_state`: `ok` hoac `config_trunc` (tep cau hinh soi khong het).
+            -- Phai di qua ranh gioi thread, neu khong thi than SPILL luon bao `ok` —
+            -- tuc "chua soi het" thanh "da soi, sach" o dung nhom tep lon.
+            p.scan_state or "ok",
         }, ":")
     end
     return table.concat(out, ";")
@@ -1202,7 +1233,7 @@ local function parts_of(s)
     if s == "-" or s == "" then return nil end
     local out = {}
     for rec in s:gmatch("[^;]+") do
-        local slot, nf, cf, bytes = rec:match("^(%d+):([%w_]+):([%w_,]+):(%d+)$")
+        local slot, nf, cf, bytes, st = rec:match("^(%d+):([%w_]+):([%w_,]+):(%d+):([%w_]+)$")
         if not slot then return nil, true end
         local flags = flags_of(cf)
         if flags == nil and cf ~= "0" then return nil, true end
@@ -1210,7 +1241,7 @@ local function parts_of(s)
             slot        = tonumber(slot),
             name_flags  = nf ~= "0" and nf or false,
             content_flags = flags,
-            scan_state  = "ok",
+            scan_state  = st,
             bytes       = tonumber(bytes),
         }
         -- Chan bang `MAX_PARTS` y nhu `file_ranges`: mot goi tin hong khong duoc

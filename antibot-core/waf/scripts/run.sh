@@ -49,4 +49,8 @@ echo
 echo "── upload (P1) ───────────────────────────────────────"
 "$RESTY" "$HERE/upload_test.lua" || rc=1
 
+echo
+echo "── upload_content + cung part (buoc 3-4) ─────────────"
+"$RESTY" "$HERE/upload_content_test.lua" || rc=1
+
 exit $rc
