@@ -1646,14 +1646,28 @@ end
 -- phai co mot dong `package.preload["antibot.waf.X"]` trong MOI bo test tu preload.
 io.write("\nhop dong: bo test preload moi module ma body_core require\n")
 do
-    local needed = {}
-    for _, src in ipairs({ "waf/body_core.lua", "waf/args.lua", "waf/upload.lua" }) do
-        local s = slurp(SRC .. src) or ""
-        for m in s:gmatch('require "antibot%.waf%.([%w_]+)"') do needed[m] = true end
-    end
-    local suites = { "body_test.lua", "args_test.lua", "policy_test.lua" }
+    -- MOI bo test co GOC NAP RIENG, va phep kiem phai theo dung goc do. Ban dau
+    -- toi hop `require` cua ca bon file nguon lai roi doi MOI bo test preload het
+    -- — sai theo huong nguoc: `body_test` khong nap `init.lua` nen no khong can
+    -- `args`/`body`, va phep kiem bao SAI oan.
+    --
+    -- `waf/init.lua` CO trong bang nay, va do la lo vua bi bat sot: muc 5 them
+    -- `require "antibot.waf.routes"` vao `init.lua` (khong phai vao `body_core`),
+    -- nen phep kiem cu khong thay, va `policy_test` CHET luc nap — `run.sh` in
+    -- "0 hong" cho cac bo con lai nen output trong nhu chi mot bo vang mat.
+    local ROOTS = {
+        ["body_test.lua"]   = { "waf/body_core.lua" },
+        ["args_test.lua"]   = { "waf/args.lua", "waf/body_core.lua" },
+        ["policy_test.lua"] = { "waf/init.lua", "waf/body_core.lua",
+                                "waf/args.lua", "waf/upload.lua" },
+    }
     local n = 0
-    for _, suite in ipairs(suites) do
+    for suite, srcs in pairs(ROOTS) do
+        local needed = {}
+        for _, src in ipairs(srcs) do
+            local s = slurp(SRC .. src) or ""
+            for m in s:gmatch('require "antibot%.waf%.([%w_]+)"') do needed[m] = true end
+        end
         local s = slurp(SRC .. "waf/scripts/" .. suite) or ""
         -- Bo test dung `package.preload` moi phai co day du; bo nao nap qua
         -- `package.path` that thi khong can.

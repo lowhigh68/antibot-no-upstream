@@ -201,6 +201,32 @@ add("upload_magic_exec", "body", "request_body", "generic", "observe", "enforce"
 add("upload_magic_mismatch", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 1.00, { "upload.magic_mismatch" })
 
+-- ── Muc 5: HOP DONG ENDPOINT (route policy) ─────────────────────────
+--
+-- `routes.lua` tra loi mot cau ma khong tang nao khac tra loi duoc: HINH DANG cua
+-- request co dung hop dong cua route khong (method, content-type, co tep khong).
+-- Mot `POST /wp-cron.php` multipart chua mot tep `.php` khong vi pham luat nao o
+-- tang "ai gui" (`wp_hardening`) lan tang "trong than co gi" (`args`/`body_core`):
+-- UA co the la `WordPress/6.4`, than co the khong co `<?php`, ten tep co the sach.
+-- Nhung `wp-cron.php` khong bao gio nhan upload.
+--
+-- BA luat rieng chu khong mot luat `route_violation`: ba cau hoi khac nhau se co
+-- ba ty le FP khac nhau, va gop lai thi khong doc duoc cai nao dang gay nhieu.
+-- `route_upload` la cai HEP nhat (mot multipart tren route khong bao gio nhan tep)
+-- nen no se duoc xet promote truoc; `route_ct` rong nhat (mot plugin gui JSON den
+-- `wp-comments-post.php` la chuyen co the xay ra).
+--
+-- `observe`, diem 0 — GIAI DOAN DO, cung khuon B1/B3 va muc 7/8. Positive security
+-- la mot phep dao nguoc nguy hiem: moi thu khong khai bao thanh dang nghi. Bang
+-- hop dong CO Y chi co bon route co bat bien doc tu chinh ma WordPress; quyet tu
+-- `postdeploy.sh` muc 14.
+add("route_method", "protocol", "uri", "generic", "observe", "enforce",
+    0, 1, 1.00, { "route.method" })
+add("route_ct", "protocol", "uri", "generic", "observe", "enforce",
+    0, 1, 1.00, { "route.content_type" })
+add("route_upload", "protocol", "uri", "generic", "observe", "enforce",
+    0, 1, 1.00, { "route.upload_forbidden" })
+
 -- ── Muc 8: tep CAU HINH vua bi sua o thu muc cua URI dang goi ───────
 --
 -- `fim.sh` da bao `NEW` (file moi) qua `waf:fimnew:` tu lau. Nhom nay la duong ma

@@ -94,6 +94,13 @@ echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_exec
 echo "[$N] [waf] ts=7 rid=r24 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.htaccess score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
 # smp=20 -> phai nhan 20
 echo "[$N] [waf] ts=8 rid=r25 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.user.ini score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
+
+# ── Muc 14: hop dong endpoint (muc 5 cua roadmap) ──
+# `matched` la TEN ROUTE (khoa bang CONTRACTS), khong phai URI tho.
+echo "[$N] [waf] ts=9 rid=r26 id=- domain=k.test ip=6.6.6.6 rule=route_upload target=URI sev=notice pl=0 matched=/wp-cron.php score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
+# smp=20 -> phai nhan 20
+echo "[$N] [waf] ts=10 rid=r27 id=- domain=k.test ip=6.6.6.6 rule=route_ct target=URI sev=notice pl=0 matched=/xmlrpc.php score=0.00 action=observe class=api_callback richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
+echo "[$N] [waf] ts=11 rid=r28 id=- domain=k.test ip=6.6.6.6 rule=route_method target=URI sev=notice pl=0 matched=/wp-login.php score=0.00 action=observe class=auth_endpoint richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
 } > "$R/L/waf.log"
 {
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
@@ -111,7 +118,7 @@ nwant() { if printf '%s\n' "$OUT" | grep -qE "$2"; then
 echo "postdeploy_test: doi chieu voi dap an tinh tay"
 
 # ── Muc 0: cua so, va dong TRUOC moc deploy phai bi loai ───────────────────
-want  "0 so dong"              'dong \[waf\] 7   dong \[waf-body\] 19'
+want  "0 so dong"              'dong \[waf\] 10   dong \[waf-body\] 19'
 want  "0 rid tren >1 dong"     'rid tren >1 dong: 1   request co CA dong luat lan dong than: 1'
 nwant "0 loai dong truoc moc"  'old\.test'
 
@@ -200,6 +207,17 @@ want  "13 htaccess"            'tep cau hinh: \.htaccess +1'
 want  "13 user.ini nhan smp"   'tep cau hinh: \.user\.ini +20'
 want  "13 domain"              'domain: j\.test +21'
 want  "13 final monitor"       'phan quyet THAT cua engine: monitor +20'
+
+
+# ── Muc 14 (roadmap muc 5): hop dong endpoint ──────────────────────────────
+# Dap an tinh TAY: r26(1) + r27(20) + r28(1) = 22.
+want  "14 tong luot"           'tong: 22 luot'
+want  "14 route_upload"        'route_upload +1'
+want  "14 route_ct nhan smp"   'route_ct +20'
+want  "14 route_method"        'route_method +1'
+want  "14 theo route cron"     '/wp-cron\.php +1'
+want  "14 theo route xmlrpc"   '/xmlrpc\.php +20'
+want  "14 domain"              'domain: k\.test +22'
 
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

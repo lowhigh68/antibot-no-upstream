@@ -6,6 +6,7 @@ local args      = require "antibot.waf.args"
 local body      = require "antibot.waf.body"
 local body_core = require "antibot.waf.body_core"
 local upload    = require "antibot.waf.upload"
+local routes    = require "antibot.waf.routes"
 local registry  = require "antibot.waf.registry"
 local policy    = require "antibot.waf.policy"
 local config    = require "antibot.waf.config"
@@ -106,6 +107,10 @@ local function request_of(rt)
         host   = rt.var.host or "-",
         uri    = rt.var.uri or "/",
         method = method,
+        -- Muc 5 can content-type de kiem hop dong route. Doc o day chu khong o
+        -- cho dung de moi tang nhin cung mot `request` — va `rt.var` la mot phep
+        -- tra bien nginx, khong nen goi hai lan o hai noi.
+        ct     = rt.var.http_content_type,
     }
 end
 
@@ -397,6 +402,18 @@ local function run_pre(ctx, rt)
             rt.log(rt.ERR, "[waf-v2] registry mismatch: ",
                    table.concat(registry_errors, "; "))
         end
+    end
+
+    -- Muc 5: HOP DONG ENDPOINT. Dat o day, truoc moi thu khac, vi no la phep kiem
+    -- RE NHAT trong ca `run_pre` — mot phep tra bang theo path, khong doc than,
+    -- khong tra Redis, khong chay regex. Va no khong phu thuoc ket qua nao o duoi.
+    --
+    -- `matched` la TEN VI PHAM (mot chuoi tu tap co dinh trong `routes.lua`) chu
+    -- KHONG phai URI hay content-type: ca hai thu do ke gui dat, va `waf.log` giu
+    -- 30 ngay. Route thi doc duoc tu `matched` cua cac dong khac tren cung `rid`.
+    local route_bad, route_name = routes.check(request.uri, request.method, request.ct)
+    if route_bad then
+        policy.emit(state, route_bad, { target = "URI", matched = route_name })
     end
 
     local uri_rule, detector_rules = find_uri_rule(request.uri, request.host, resolved)

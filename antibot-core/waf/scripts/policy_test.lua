@@ -12,7 +12,7 @@ end
 -- luot Redis nao xay ra. Stub o day de khong phu thuoc `resty.redis`.
 for _, name in ipairs({
     "registry", "policy", "config", "telemetry",
-    "exposed", "args", "upload", "body",
+    "exposed", "args", "upload", "body", "routes",
 }) do
     package.preload["antibot.waf." .. name] = function()
         return dofile(SRC .. "waf/" .. name .. ".lua")

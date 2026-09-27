@@ -317,3 +317,42 @@ END {
     print  "  (diem 0 nen `final` o day la phan quyet do luat KHAC quyet — doi chieu"
     print  "   voi cot `fim=` de biet nhom `fimnew` co cung bao khong)"
 }'
+
+echo "=== 14. Muc 5: HOP DONG ENDPOINT (route policy) ==="
+# Ba luat `observe` diem 0. Con so quyet dinh promote la ty le giua chung, KHONG
+# phai tong: `route_upload` la ca HEP nhat (multipart tren route khong bao gio nhan
+# tep — khong tang nao khac bat duoc) nen no duoc xet truoc; `route_ct` rong nhat
+# (mot plugin gui JSON den `wp-comments-post.php` la chuyen co the xay ra).
+#
+# `matched=` mang TEN ROUTE (khoa cua bang CONTRACTS, mot hang so trong ma), nen
+# doc duoc route nao dang sinh so ma khong lo URI tho.
+#
+# Cot `final=` la phan quyet THAT cua engine: diem 0 nen moi phan quyet o day do
+# luat KHAC quyet. Mot `final=allow` ap dao nghia la ba luat nay dang thay thu ma
+# khong ai khac thay — dung cai muc 5 sinh ra de tim.
+grep -F '[waf]' "$W" | grep -E 'rule=route_(method|ct|upload)' | awk "$P"'
+{
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    tot += s
+    r[f["rule"]] += s
+    rr[f["rule"] "  @  " f["matched"]] += s
+    d[f["domain"]] += s
+    if (f["final"] != "" && f["final"] != "-") fin[f["final"]] += s
+}
+END {
+    if (!tot) {
+        print "  (khong co luot nao — khong request nao vi pham hop dong cua bon"
+        print "   route, hoac khong co luu luong den chung trong cua so nay)"
+        exit
+    }
+    printf "  tong: %d luot\n", tot
+    # In theo thu tu HEP -> RONG, khong theo thu tu bang: thu tu nay la thu tu xet
+    # promote, nen no phai hien ra ngay trong bao cao.
+    split("route_upload route_method route_ct", ord, " ")
+    for (i = 1; i <= 3; i++) if (r[ord[i]]) printf "    %-14s %6d\n", ord[i], r[ord[i]]
+    print  "    ---- theo route:"
+    for (k in rr) printf "    %-46s %6d\n", k, rr[k]
+    for (k in d)  printf "    domain: %-32s %6d\n", k, d[k]
+    for (k in fin) printf "    phan quyet THAT cua engine: %-12s %6d\n", k, fin[k]
+    print  "  (thu tu in la thu tu XET PROMOTE: upload hep nhat, ct rong nhat)"
+}'

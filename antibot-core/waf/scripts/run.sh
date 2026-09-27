@@ -57,6 +57,10 @@ echo
 echo "── upload_magic (muc 7: duoi vs byte dau) ────────────"
 "$RESTY" "$HERE/upload_magic_test.lua" || rc=1
 
+echo
+echo "── routes (muc 5: hop dong endpoint) ─────────────────"
+"$RESTY" "$HERE/routes_test.lua" || rc=1
+
 # `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
 # trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
 # bash chu khong resty (no kiem mot script shell).
