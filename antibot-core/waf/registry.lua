@@ -174,6 +174,53 @@ add("upload_apache_handler_content", "correlation", "decision", "generic", "bloc
 add("upload_php_autoload_content", "correlation", "decision", "generic", "block", "shadow",
     100, 5, 0.96, { "correlation.same_part_php_autoload" })
 
+-- ── Muc 7: DUOI hua mot dinh dang, BYTE DAU noi dang khac ───────────
+--
+-- KHONG phai composite cung-part, va do la diem chinh. Bon luat o tren doi hoi
+-- `name_flags` khac `false` — tuc TEN da dang nghi. Hai luat duoi day quan trong
+-- nhat dung khi TEN SACH:
+--
+--     shell.jpg   ten sach (`name_flags = false`), byte dau `MZ` hoac `\127ELF`
+--
+-- Do la duong ma ca kenh TEN (`upload.lua`) lan `find_php_tag` deu mu: khong co
+-- duoi chay duoc, khong co the mo PHP. Nen day la fact DOC LAP theo part, khong
+-- phai mot phan quyet suy ra tu fact khac.
+--
+-- `observe`, diem 0 — GIAI DOAN DO, cung khuon B1/B3 (roadmap muc 2) va cung ly
+-- do: chua co MOT con so nao tren dan may nay ve bao nhieu upload THAT co duoi
+-- lech byte dau. Nguon FP nghi ra duoc ngay: `.doc` cu (OLE2) vs `.docx` (ZIP),
+-- cong cu ghi JFIF/Exif khac nhau, va tep 2 byte chua du de ket luan. Chua co so
+-- thi khong cong diem. Quyet tu `postdeploy.sh` muc 12.
+--
+-- Hai luat RIENG chu khong mot luat "magic": chung tra loi hai cau khac nhau va
+-- se co hai ty le FP khac nhau. `magic_exec` la "day la ma da bien dich" — dung
+-- ke ca khi duoi khong biet. `magic_mismatch` la "duoi nay co trong bang va byte
+-- dau khong khop" — mot cau yeu hon, va la cau co nhieu FP hop le hon.
+add("upload_magic_exec", "body", "request_body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "upload.magic_exec" })
+add("upload_magic_mismatch", "body", "request_body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "upload.magic_mismatch" })
+
+-- ── Muc 8: tep CAU HINH vua bi sua o thu muc cua URI dang goi ───────
+--
+-- `fim.sh` da bao `NEW` (file moi) qua `waf:fimnew:` tu lau. Nhom nay la duong ma
+-- `NEW` MU: mot dong `AddType application/x-httpd-lsphp .jpg` them vao mot
+-- `.htaccess` DA CO bat lai PHP cho ca thu muc, ma khong tao file moi nao.
+--
+-- `observe`, diem 0 — GIAI DOAN DO, va o day ly do dac biet manh: `.htaccess` bi
+-- ghi lai HOP LE boi LiteSpeed Cache, Wordfence, va moi lan doi permalink cua
+-- WordPress. Chua co mot con so nao ve tan suat do tren 43 domain. Nguoi dung
+-- 27-09 chon dung: chi them khoa, diem 0, do truoc quyet sau. Quyet tu
+-- `postdeploy.sh` muc 13.
+--
+-- KHONG dung `fim_new_executable` voi mot `factor` nho: mot `factor` VAN de lai
+-- nhan (`policy.lua` goi `add_labels` theo `action`, khong theo `score`), nen
+-- nhom nay se kich hoat duoc moi correlation dung nhan `fs.new_executable` — tuc
+-- mot lan plugin ghi `.htaccess` doc thanh "co file thuc thi moi". Mot luat rieng
+-- voi nhan rieng thi khong. Cung lap luan da dung cho `body_file_traversal`.
+add("fim_config_changed", "correlation", "uri", "generic", "observe", "enforce",
+    0, 1, 1.00, { "fs.config_changed" })
+
 -- Ten tep + co noi dung -> luat cung-part. `body_core` bao `name_flags` va
 -- `content_flags` cua CUNG mot part; bang nay la noi DUY NHAT quyet chung thanh mot
 -- phan quyet.

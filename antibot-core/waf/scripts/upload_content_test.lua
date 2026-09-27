@@ -8,7 +8,7 @@ local SRC = os.getenv("ANTIBOT_SRC")
 if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
 end
-for _, m in ipairs({ "upload", "upload_content", "body_core", "body_worker" }) do
+for _, m in ipairs({ "upload", "upload_content", "upload_magic", "body_core", "body_worker" }) do
     package.preload["antibot.waf." .. m] = function()
         return dofile(SRC .. "waf/" .. m .. ".lua")
     end

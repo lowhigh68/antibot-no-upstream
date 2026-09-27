@@ -25,6 +25,9 @@ end
 package.preload["antibot.waf.upload_content"] = function()
     return dofile(SRC .. "waf/upload_content.lua")
 end
+package.preload["antibot.waf.upload_magic"] = function()
+    return dofile(SRC .. "waf/upload_magic.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end

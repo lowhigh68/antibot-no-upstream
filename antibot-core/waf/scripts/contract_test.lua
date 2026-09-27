@@ -1685,6 +1685,42 @@ do
     else
         io.write(string.format("  %d cap (bo test, module) deu co preload\n", n))
     end
+
+    -- `tools/wafdiff` co HAI danh sach preload, o hai file khac nhau: mot trong
+    -- `wafdiff.lua` (bo do that) va mot trong `run.sh` (phep tien-kiem "nap duoc
+    -- khong"). Lech nhau thi `run.sh` thoat 2 truoc khi chay mot ca nao — tuc fuzz
+    -- KHONG chay, va no bao dung nhu the. Da xay ra that khi them `upload_magic`.
+    --
+    -- Duong dan tu `SRC` (`antibot-core/`) len `tools/`: bo test nay khong biet goc
+    -- repo, nen di len mot muc. Doc khong duoc thi BAO SAI chu khong bo qua im lang
+    -- — mot phep kiem tu tat khi doi cay thu muc la mot phep kiem vo dung.
+    local wd_lua = slurp(SRC .. "../tools/wafdiff/wafdiff.lua")
+    local wd_sh  = slurp(SRC .. "../tools/wafdiff/run.sh")
+    if not wd_lua or not wd_sh then
+        bad("  SAI  khong doc duoc `tools/wafdiff` — hai danh sach preload khong duoc gac\n")
+    else
+        local function modlist(s)
+            local out = {}
+            -- Ca hai file dung mot vong `ipairs({ ... })` liet ke ten module.
+            local body = s:match("ipairs%(%{([^}]*)%}%)") or ""
+            for m in body:gmatch("['\"]([%w_]+)['\"]") do out[m] = true end
+            return out
+        end
+        local a, b = modlist(wd_lua), modlist(wd_sh)
+        local diff = {}
+        for m in pairs(a) do if not b[m] then diff[#diff + 1] = "run.sh thieu " .. m end end
+        for m in pairs(b) do if not a[m] then diff[#diff + 1] = "wafdiff.lua thieu " .. m end end
+        if next(a) == nil then
+            bad("  SAI  khong doc duoc danh sach preload trong `wafdiff.lua`\n")
+        elseif #diff > 0 then
+            bad("  SAI  hai danh sach preload cua wafdiff LECH nhau: %s\n" ..
+                "       `run.sh` se thoat 2 (hoac bo qua mot module) truoc khi chay ca nao.\n",
+                table.concat(diff, ", "))
+        else
+            pass = pass + 1
+            io.write("  wafdiff: hai danh sach preload khop nhau\n")
+        end
+    end
 end
 
 -- ── V8: giao thuc `pack`/`unpack` phai KHOP nhau, va phien ban phai duoc nang ──
@@ -1730,9 +1766,16 @@ do
     local nflag = 0
     for name in flags:gmatch('"([%w_]+)"') do
         nflag = nflag + 1
-        -- Dat o `body_core` (hom nay: `php_tag`) hoac o `upload_content.lua` (buoc 3).
-        local uc = slurp(SRC .. "waf/upload_content.lua") or ""
-        if core_src:find(name .. " = true", 1, true) or uc:find(name, 1, true) then
+        -- Dat o `body_core` (`php_tag`), `upload_content.lua` (buoc 3: `handler`/
+        -- `autoload`) hoac `upload_magic.lua` (muc 7: `magic_exec`/`magic_mismatch`).
+        --
+        -- Danh sach nguon nay phai MO RONG khi co nguon moi, khong duoc noi thanh
+        -- "tim o moi file trong waf/": cai gia tri cua phep kiem nay la no biet
+        -- CHINH XAC cho nao duoc quyen dat co noi dung. Mot `find` toan thu muc se
+        -- xanh khi ten co chi tinh co xuat hien trong mot chu thich.
+        local uc = (slurp(SRC .. "waf/upload_content.lua") or "") ..
+                   (slurp(SRC .. "waf/upload_magic.lua") or "")
+        if core_src:find(name .. " = true", 1, true) or uc:find(name .. " = true", 1, true) then
             pass = pass + 1
         else
             bad("  SAI  co `%s` co trong CONTENT_FLAGS nhung KHONG cho nao dat no —\n" ..

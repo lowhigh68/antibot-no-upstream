@@ -70,6 +70,14 @@ echo "[$N] [waf-body] ts=1 $B rid=r15 domain=f.test uri=/media ct=multipart clas
 # the PHP o FORM FIELD, khong trong tep
 echo "[$N] [waf-body] ts=1 $B rid=r16 domain=f.test uri=/form ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=- pf=ok pnf=1 pfl=0 parts=1:0:0 php=1 smp=20"
 
+# ── Muc 12: duoi vs byte dau (muc 7 cua roadmap) ──
+# TEN SACH + ca hai co: nhom ma ca kenh ten lan find_php_tag deu MU.
+echo "[$N] [waf-body] ts=1 $B rid=r17 domain=i.test uri=/up ct=multipart class=interaction scan=ok fntr=0 nf=- fl=- fn=- uprule=- pf=ok pnf=0 pfl=0 parts=1:0:magic_exec,magic_mismatch php=0 smp=1"
+# TEN SACH + CHI mismatch, smp=20 -> phai nhan 20
+echo "[$N] [waf-body] ts=1 $B rid=r18 domain=i.test uri=/up ct=multipart class=interaction scan=ok fntr=0 nf=- fl=- fn=- uprule=- pf=ok pnf=0 pfl=0 parts=1:0:magic_mismatch php=0 smp=20"
+# TEN DA NGHI + exec: phai vao nhom `ten da nghi`, KHONG vao `ten sach`
+echo "[$N] [waf-body] ts=1 $B rid=r19 domain=i.test uri=/up ct=multipart class=interaction scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_php_ext pf=ok pnf=0 pfl=0 parts=1:upload_php_ext:magic_exec php=0 smp=1"
+
 # ── Muc 6: phien co cookie WP dang nhap ──
 echo "[$N] [waf] ts=2 rid=r20 id=u1 domain=g.test ip=9.9.9.9 rule=wp_plugin_direct target=URI sev=notice pl=0 matched=/wp-content/plugins/x/a.php score=12.50 action=signal class=navigation richness=0.80 wpauth=1 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=12.50 pver=2.0"
 echo "[$N] [waf] ts=3 rid=r21 id=u2 domain=g.test ip=9.9.9.9 rule=wp_root_unknown target=URI sev=notice pl=0 matched=/get.php score=25.00 action=signal class=navigation richness=0.80 wpauth=1 vfy=0 status=200 exists=1 final=challenge fim=0 mode=enforce exc=- wact=allow would=allow wscore=25.00 pver=2.0"
@@ -80,6 +88,12 @@ echo "[$N] [waf] ts=4 rid=r22 id=- domain=h.test ip=8.8.8.8 rule=wp_theme_direct
 echo "[$N] [waf] ts=5 rid=r23 id=- domain=h.test ip=8.8.8.8 rule=wp_root_unknown target=URI sev=notice pl=0 matched=/none.php score=25.00 action=signal class=navigation richness=- wpauth=0 vfy=0 status=404 exists=0 final=block fim=0 mode=enforce exc=- wact=allow would=allow wscore=25.00 pver=2.0"
 # MOT request vua co than VUA khop luat -> rid trung
 echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_executable_content target=MULTIPART_PART sev=notice pl=0 matched=slot=1_upload_php_ext+php_tag score=100.00 action=block class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=monitor fim=0 mode=shadow exc=- wact=allow would=block wscore=50.00 pver=2.0"
+
+# ── Muc 13: tep cau hinh vua bi sua (muc 8 cua roadmap) ──
+# `matched` la TEN TEP CAU HINH (hang so trong ma), khong phai duong dan.
+echo "[$N] [waf] ts=7 rid=r24 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.htaccess score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
+# smp=20 -> phai nhan 20
+echo "[$N] [waf] ts=8 rid=r25 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.user.ini score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
 } > "$R/L/waf.log"
 {
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
@@ -97,7 +111,7 @@ nwant() { if printf '%s\n' "$OUT" | grep -qE "$2"; then
 echo "postdeploy_test: doi chieu voi dap an tinh tay"
 
 # ── Muc 0: cua so, va dong TRUOC moc deploy phai bi loai ───────────────────
-want  "0 so dong"              'dong \[waf\] 5   dong \[waf-body\] 16'
+want  "0 so dong"              'dong \[waf\] 7   dong \[waf-body\] 19'
 want  "0 rid tren >1 dong"     'rid tren >1 dong: 1   request co CA dong luat lan dong than: 1'
 nwant "0 loai dong truoc moc"  'old\.test'
 
@@ -112,7 +126,7 @@ want  "3 fl traversal"         'fl  arg_traversal  pf=ok +1 +1'
 
 # ── Muc 4: 16 dong multipart, tong smp 54 ──────────────────────────────────
 # 15 dong multipart (r07 la urlencoded nen KHONG tinh), tong smp 53.
-want  "4 tong multipart"       'tong multipart: 53'
+want  "4 tong multipart"       'tong multipart: 75'
 want  "4 pf=hdr"               'pf=hdr  fntr=hdr +1'
 
 # ── Muc 5: KHONG soi duoc, ke ca urlencoded ────────────────────────────────
@@ -147,10 +161,10 @@ want  "10 chi trong tep"       'CHI trong tep: 4\.  Co ngoai tep: 21'
 want  "10 nhom pnf=1"          'php=1  pnf=1  pfl=0  pf=ok +21'
 
 # ── Muc 11 (V8): part record ───────────────────────────────────────────────
-want  "11 tong than co part"   'tong than co part tep: 50'
-want  "11 cung part"           'CUNG part \(ten nguy hiem \+ noi dung nguy hiem\): 3'
+want  "11 tong than co part"   'tong than co part tep: 72'
+want  "11 cung part"           'CUNG part \(ten nguy hiem \+ noi dung nguy hiem\): 4'
 want  "11 hai part khac nhau"  'hai part KHAC nhau .*: 1'
-want  "11 chi ten / chi noi dung" 'chi ten nguy hiem: 1    chi noi dung nguy hiem: 2'
+want  "11 chi ten / chi noi dung" 'chi ten nguy hiem: 1    chi noi dung nguy hiem: 23'
 want  "11 apache handler"      'cung part: upload_apache_config  \+  handler'
 want  "11 php_ext php_tag"     'cung part: upload_php_ext  \+  php_tag'
 want  "11 php_config autoload" 'cung part: upload_php_config  \+  autoload'
@@ -162,6 +176,30 @@ want  "7 exists=1 dem dung"    '4 luot luat duong dan, 2 tren file co that'
 nwant "7 exists=0 KHONG dem"   'none\.php'
 want  "7 ghep antibot.log"     'antibot.log cung ts\+ip\+domain: 1 dong'
 want  "7 ly do engine chan"    'block  reason=score  waf_wp_path=39%'
+
+
+# ── Muc 12 (roadmap muc 7): duoi vs byte dau ───────────────────────────────
+# Dap an tinh TAY, dem part x smp:
+#   r01 20, r02/r06/r09 3, r08/r15 2, r10 1, r11 2 (hai record), r12/r13/r14 3,
+#   r16 20  = 51; cong r17 1 + r18 20 + r19 1 = 73.
+#   magic_exec: r17(1) + r19(1) = 2   (ten sach 1, ten da nghi 1)
+#   magic_mismatch: r17(1) + r18(20) = 21   (ten sach 21, ten da nghi 0)
+#   ca hai tren cung part: r17 = 1
+want  "12 tong part tep"       'tong part tep: 73'
+want  "12 magic_exec"          'magic_exec .*: +2 +ten sach: +1 +ten da nghi: +1'
+want  "12 magic_mismatch"      'magic_mismatch .*: +21 +ten sach: +21 +ten da nghi: +0'
+want  "12 ca hai cung part"    'ca hai co tren cung mot part: +1'
+# Muc 11 va muc 12 phai NHAT QUAN tren cung mot dong log: r19 (`upload_php_ext` +
+# `magic_exec`) la mot part "ten da nghi" o muc 12, va cung part do o muc 11.
+want  "12 nhat quan voi muc 11" 'cung part: upload_php_ext  \+  magic_exec'
+
+# ── Muc 13 (roadmap muc 8): tep cau hinh bi sua ────────────────────────────
+# Dap an tinh TAY: r24 smp=1 + r25 smp=20 = 21.
+want  "13 tong luot"           'tong: 21 luot'
+want  "13 htaccess"            'tep cau hinh: \.htaccess +1'
+want  "13 user.ini nhan smp"   'tep cau hinh: \.user\.ini +20'
+want  "13 domain"              'domain: j\.test +21'
+want  "13 final monitor"       'phan quyet THAT cua engine: monitor +20'
 
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

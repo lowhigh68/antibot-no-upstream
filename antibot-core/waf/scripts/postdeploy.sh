@@ -242,3 +242,78 @@ END {
     for (k in sk) printf "    cung part: %-44s %6d\n", k, sk[k]
     if (trunc) printf "    (tep cau hinh soi KHONG HET: %d part — doc `config_trunc`)\n", trunc
 }'
+
+echo "=== 12. Muc 7: DUOI hua mot dinh dang, BYTE DAU noi dang khac ==="
+# Dem theo TUNG CO, khong theo "part co co gi khong": nhom quan trong nhat la TEN
+# SACH + byte dau la MA (`shell.jpg` mang `MZ`/ELF) — muc 11 xep nhom do vao "chi
+# noi dung nguy hiem" nen khong doc ra duoc tu do.
+#
+# Ca hai luat la `observe` diem 0. Con so quyet dinh co bat hay khong la ty le
+# `magic_mismatch` MOT MINH (nghi ngo yeu, nhieu FP hop le: `.doc` cu vs `.docx`,
+# cong cu ghi Exif khac nhau) so voi `magic_exec` (byte dau la ma da bien dich).
+grep -F '[waf-body]' "$W" | grep -F ' parts=' | awk "$P"'
+f["parts"] != "-" && f["parts"] != "" {
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    n = split(f["parts"], recs, ";")
+    for (i = 1; i <= n; i++) {
+        split(recs[i], fld, ":")
+        nf = fld[2]; cf = fld[3]
+        parts_tot += s
+        if (cf == "0") { continue }
+        ex = (cf ~ /magic_exec/);  mm = (cf ~ /magic_mismatch/)
+        if (!ex && !mm) next
+        if (ex) e_tot += s
+        if (mm) m_tot += s
+        # TEN SACH (`nf == "0"`) la nhom ca muc 7 ton tai vi no: kenh ten mu, va
+        # `find_php_tag` cung mu neu khong co the mo PHP.
+        if (nf == "0") {
+            if (ex) e_clean += s
+            if (mm) m_clean += s
+        } else {
+            if (ex) e_named += s
+            if (mm) m_named += s
+        }
+        if (ex && mm) both += s
+    }
+}
+END {
+    if (!parts_tot) { print "  (khong co part tep nao)"; exit }
+    printf "  tong part tep: %d\n", parts_tot
+    printf "    magic_exec     (byte dau la MA):      %6d   ten sach: %6d   ten da nghi: %6d\n",
+           e_tot, e_clean, e_named
+    printf "    magic_mismatch (duoi khong khop):     %6d   ten sach: %6d   ten da nghi: %6d\n",
+           m_tot, m_clean, m_named
+    printf "    ca hai co tren cung mot part:         %6d\n", both
+    if (!e_tot && !m_tot) print "  (khong co part nao lech — muc 7 chua co du lieu de quyet)"
+    print  "  (`ten sach` + magic_exec = duong ca kenh TEN lan `find_php_tag` deu MU)"
+}'
+
+echo "=== 13. Muc 8: tep CAU HINH vua bi sua o thu muc cua tep dang bi goi ==="
+# `fim_config_changed` tra `waf:fimchg:<docroot><thu muc>/<ten>` va chi hoi khi URI
+# la mot tep PHP chay duoc. Luat `fim_config_changed` la `observe` diem 0.
+#
+# So sanh voi `fim=` (nhom `fimnew`) o cung cua so: hai nhom DOC LAP, va ty le giua
+# chung la con so quyet dinh co nang diem nhom moi hay khong. `.htaccess` bi ghi lai
+# HOP LE boi LiteSpeed Cache / Wordfence / doi permalink, nen mot so lon o day KHONG
+# phai tin xau — no la ly do de KHONG bat.
+grep -F '[waf]' "$W" | grep -F 'rule=fim_config_changed' | awk "$P"'
+{
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    tot += s
+    d[f["domain"]] += s
+    m[f["matched"]] += s
+    if (f["final"] != "" && f["final"] != "-") fin[f["final"]] += s
+}
+END {
+    if (!tot) {
+        print "  (khong co luot nao — hoac fim.sh chua bao `fimchg`, hoac khong co"
+        print "   request nao goi tep PHP trong thu muc vua doi cau hinh)"
+        exit
+    }
+    printf "  tong: %d luot\n", tot
+    for (k in m)   printf "    tep cau hinh: %-16s %6d\n", k, m[k]
+    for (k in d)   printf "    domain: %-32s %6d\n", k, d[k]
+    for (k in fin) printf "    phan quyet THAT cua engine: %-12s %6d\n", k, fin[k]
+    print  "  (diem 0 nen `final` o day la phan quyet do luat KHAC quyet — doi chieu"
+    print  "   voi cot `fim=` de biet nhom `fimnew` co cung bao khong)"
+}'

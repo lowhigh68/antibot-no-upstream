@@ -1100,11 +1100,14 @@ fi
 # Tien to bi cat khi in (xem `lbl()`), nen nguoi doc khong thay no.
 # (STATE = file trang thai, xem $PREVCHG.)
 marks=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$marks" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+# Muc 8: tep cau hinh bi SUA di mot khoa RIENG (`waf:fimchg:`), khong tron vao
+# `$marks` — hai nhom tra loi hai cau khac nhau va se co hai ty le FP khac nhau.
+chgs=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
 
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
              -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
-             -v clfile="$CLFILE" '
+             -v clfile="$CLFILE" -v chgfile="$chgs" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
         # lan chay dau tien (chua co prevchg) di thang qua day.
@@ -1447,6 +1450,25 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # lien tuc. O mu-plugins thi khong co "cap nhat" — file o day khong doi.
         if (markfile != "" && ($1 == "NEW" || ($1 == "CHG" && $2 ~ /\/wp-content\/mu-plugins\//)))
             allnew[key] = allnew[key] $2 "\n"
+
+        # ── Muc 8: TEP CAU HINH bi SUA (khac han "file moi") ───────────────
+        #
+        # `.htaccess` / `.user.ini` / `php.ini` DOI HANDLER: mot dong `AddType`
+        # them vao mot `.htaccess` DA CO bat lai PHP cho ca thu muc, ma khong tao
+        # file moi nao — nen `NEW` o tren mu, va do la mot duong VAO that.
+        #
+        # VI SAO MOT KHOA KHAC (`fimchg`) chu khong nhet vao `fimnew`:
+        # `waf/init.lua` doc `fimnew` de NANG DIEM cua mot signal rule. Nhom nay
+        # CHUA co mot con so nao — `.htaccess` bi ghi lai hop le boi LiteSpeed
+        # Cache, Wordfence, va moi lan doi permalink cua WordPress. Tron vao
+        # `fimnew` la nang diem cho ca nhom do ngay hom nay, tren 43 domain that.
+        # Nguoi dung 27-09 chon: chi them khoa, diem 0, do truoc quyet sau.
+        #
+        # `scan_hot` quet `.htaccess`/`.user.ini` (xem NAMES), nen nhom nay CO du
+        # lieu; con `php.ini` thi chi co neu no nam trong pham vi quet.
+        if (chgfile != "" && $1 == "CHG" && \
+            $2 ~ /\/(\.htaccess|\.user\.ini|php\.ini)$/)
+            allchg[gkey($2)] = allchg[gkey($2)] $2 "\n"
     }
     END {
         for (k in n) {
@@ -1482,6 +1504,16 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                     printf "%s|%s\n", boost(L[i], bulk), L[i] > markfile
             }
         }
+        # Muc 8: tep cau hinh bi sua. KHONG qua `boost()` — `boost` tra muc tin cay
+        # "file moi = doc hai", mot thang do cho cau hoi KHAC. Nhom nay ghi `1` nhu
+        # mot dau HIEN DIEN ("co, tep cau hinh o day vua doi"), khong phai muc tin
+        # cay; WAF chi dem no. Dat thang do khi co so lieu.
+        if (chgfile != "") {
+            for (k in allchg) {
+                m = split(allchg[k], L, "\n")
+                for (i = 1; i < m; i++) printf "1|%s\n", L[i] > chgfile
+            }
+        }
     }' "$new_scan" "$diff_out" | sort)
 
 # Chi dem cac dong DUOC LIET KE TUNG FILE. Dong tom tat cua mot nhom dong la cap
@@ -1504,8 +1536,11 @@ crit=$((crit + muplug))
 
 # ── Day danh dau sang Redis cho WAF ───────────────────────────────────
 # Bo qua o --dry: --dry nghia la "xem thu", ma ghi Redis la tac dong that.
-marked=0; mark_err=""
-if [ $dry -eq 0 ] && [ -s "$marks" ]; then
+marked=0; marked_chg=0; mark_err=""
+# `-s "$marks" || -s "$chgs"`: hai tap doc lap nhau. Dieu kien cu chi xet `$marks`,
+# nen mot lan chay CHI co tep cau hinh bi sua se bo qua ca khoi — tuc muc 8 im lang
+# dung o truong hop no ton tai de bat.
+if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ]; }; then
   if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
     # KHONG chet: FIM van phat hien va van bao. Chi la WAF khong duoc bao tin.
     mark_err="thieu '$REDIS_CLI' — phat hien van chay, nhung WAF khong nhan duoc tin hieu."
@@ -1526,19 +1561,25 @@ if [ $dry -eq 0 ] && [ -s "$marks" ]; then
     #
     # Gioi han da biet, dong nhat voi `target_exists`: PATH_INFO (`/shell.php/x`)
     # ghep ra mot duong dan khong ton tai nen tra miss.
-    cmds=$(awk -v ttl="$MARK_TTL" '
-        {
-            i = index($0, "|");  if (i == 0) { bad++; next }
-            b = substr($0, 1, i - 1)
-            p = substr($0, i + 1)
-            # Key di qua STDIN cua redis-cli, noi khoang trang la ranh gioi doi
-            # so va dau nhay la cu phap. Mot duong dan chua chung se thanh mot
-            # LENH KHAC. Loc trang, va dem so bi bo de khong mat lang le.
-            if (p !~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) { bad++; next }
-            printf "SETEX waf:fimnew:%s %d %s\n", p, ttl, b
-        }
-        END { if (bad) printf "  [fim] %d duong dan KHONG danh dau duoc (ky tu khong an toan cho key Redis)\n", bad > "/dev/stderr" }
-    ' "$marks" 2>>"$LOG")
+    # Sinh lenh SETEX cho MOT tap danh dau. Mot ham chu khong hai khoi awk: phep
+    # loc ky tu an toan cho key Redis la phan de lech nhat, va hai ban sao cua no
+    # se lech nhau o lan sua thu ba. Tham so 1 = file, tham so 2 = tien to khoa.
+    gen_cmds() {
+        awk -v ttl="$MARK_TTL" -v pfx="$2" '
+            {
+                i = index($0, "|");  if (i == 0) { bad++; next }
+                b = substr($0, 1, i - 1)
+                p = substr($0, i + 1)
+                # Key di qua STDIN cua redis-cli, noi khoang trang la ranh gioi doi
+                # so va dau nhay la cu phap. Mot duong dan chua chung se thanh mot
+                # LENH KHAC. Loc trang, va dem so bi bo de khong mat lang le.
+                if (p !~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) { bad++; next }
+                printf "SETEX %s%s %d %s\n", pfx, p, ttl, b
+            }
+            END { if (bad) printf "  [fim] %d duong dan KHONG danh dau duoc (ky tu khong an toan cho key Redis)\n", bad > "/dev/stderr" }
+        ' "$1" 2>>"$LOG"
+    }
+    cmds=$(gen_cmds "$marks" "waf:fimnew:")
 
     if [ -n "$cmds" ]; then
         marked=$(printf '%s\n' "$cmds" | wc -l)
@@ -1562,10 +1603,39 @@ if [ $dry -eq 0 ] && [ -s "$marks" ]; then
             mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
         fi
     fi
+
+    # ── Muc 8: tep cau hinh bi SUA -> `waf:fimchg:` ────────────────────
+    #
+    # Cung TTL, cung cach ghep khoa (`document_root .. script_path(uri)`), KHAC
+    # tien to. WAF chi DEM nhom nay — `upload_fim_config_chg` la `observe`, diem 0.
+    if [ -s "$chgs" ]; then
+        chgcmds=$(gen_cmds "$chgs" "waf:fimchg:")
+        if [ -n "$chgcmds" ]; then
+            marked_chg=$(printf '%s\n' "$chgcmds" | wc -l)
+            printf '%s\n' "$chgcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+            # XAC MINH VONG TRON cho CA nhom nay, khong dua vao vong o tren: mot
+            # lan chay co the CHI co tep cau hinh bi sua (`$cmds` rong), va khi do
+            # vong tren khong chay mot phep nao — tuc FIM ghi mot noi, WAF doc mot
+            # noi, khong ai bao loi. Dung ho loi "canh bao dung ma khong ai mo".
+            # Chi bao khi vong tren CHUA bao, de khong ghi de mot loi cu the hon.
+            cprobe=$(printf '%s\n' "$chgcmds" | head -1 | awk '{print $2}')
+            cwant=$(printf  '%s\n' "$chgcmds" | head -1 | awk '{print $4}')
+            if [ -z "$mark_err" ] && \
+               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>/dev/null)" != "$cwant" ]; then
+                mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
+                mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
+            fi
+        fi
+    fi
   fi
 fi
 
-header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dang chu y, $marked key bao WAF ==="
+# `$marked_chg` in RIENG chu khong cong vao `$marked`: hai nhom la hai cau hoi va
+# se co hai ty le FP khac nhau. Cong lai thi mot lan `.htaccess` bi plugin ghi lai
+# se doc thanh "FIM thay 1 file MOI", tuc mot ket luan sai ve ban chat.
+chgnote=""
+[ "$marked_chg" -gt 0 ] && chgnote=", $marked_chg cau hinh doi"
+header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dang chu y, $marked key bao WAF$chgnote ==="
 [ -n "$mark_err" ] && header="$header
 !! $mark_err"
 

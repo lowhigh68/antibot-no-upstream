@@ -287,9 +287,29 @@ local function emit_body_facts(ctx, state)
     -- `matched` chi mang SLOT va TEN LUAT, tuyet doi khong mang ten tep hay noi dung:
     -- ca hai do ke gui dieu khien, va `waf.log` giu 30 ngay. Cung ly do `uprule=` chi
     -- ghi RULE_ID.
+    -- Muc 7 phat o CUNG vong nay nhung NGOAI cong `p.name_flags`: co magic quan
+    -- trong nhat dung khi ten SACH (`shell.jpg` mang byte `MZ`), tuc chinh luc cong
+    -- do dong. Nen day la fact doc lap theo part, khong phai composite.
+    local MAGIC_RULE = {
+        magic_exec     = "upload_magic_exec",
+        magic_mismatch = "upload_magic_mismatch",
+    }
+
     for i = 1, #(b.parts or {}) do
         local p = b.parts[i]
         local cf = p.content_flags
+        if type(cf) == "table" then
+            for flag, rule_id in pairs(MAGIC_RULE) do
+                if cf[flag] then
+                    -- `matched` mang SLOT, khong mang ten tep lan duoi: ca hai do ke
+                    -- gui dat. Slot la mot so thu tu do ta dem, nen an toan.
+                    policy.emit(state, rule_id, {
+                        target  = "MULTIPART_PART",
+                        matched = "slot=" .. tostring(p.slot),
+                    })
+                end
+            end
+        end
         if p.name_flags and type(cf) == "table" then
             for flag in pairs(cf) do
                 local rule_id = registry.same_part_rule(p.name_flags, flag)
@@ -326,6 +346,40 @@ local function fim_factor(uri, detector_rule, rt)
     if not root or root == "" then return nil end
     return tonumber(pool.safe_get(
         "waf:fimnew:" .. root .. wp_paths.script_path(uri)))
+end
+
+-- ── Muc 8: tep cau hinh vua bi SUA o thu muc cua URI nay ────────────
+--
+-- KHAC `fim_factor` o ba cho, va ca ba deu co ly do:
+--
+--   1. KHONG gate bang `detector_rule`. `fim_factor` chi tra loi khi URI khop mot
+--      luat duong dan WP, vi no NANG DIEM cua chinh luat do. Nhom nay khong nang
+--      diem cua ai — no la mot fact rieng, nen khong phu thuoc luat nao khop.
+--   2. Tra khoa theo THU MUC, khong theo file. `.htaccess` gan nhu khong bao gio
+--      la URI duoc goi; cai dang quan tam la "co mot `.htaccess` vua doi TRONG
+--      THU MUC chua file dang bi goi". Do la co che that cua `AddType`: no doi
+--      handler cho ca thu muc.
+--   3. Chi mot phep `safe_get`, va chi khi URI co ve la mot tep thuc thi. Mot
+--      `GET /anh.png` khong can hoi Redis — `.htaccess` doi khong lam anh thanh
+--      ma. Gioi han nay lam so luot tra Redis nho di nhieu lan.
+local CONFIG_MARKS = { ".htaccess", ".user.ini", "php.ini" }
+
+local function fim_config_changed(uri, rt)
+    local root = rt.var.document_root
+    if not root or root == "" then return nil end
+    local path = wp_paths.script_path(uri)
+    -- Chi hoi khi URI la mot tep CHAY DUOC: `.htaccess` doi handler chi co nghia
+    -- voi thu nao duoc dem cho PHP. `upload.PHP_EXT` la bang DA DO tren fleet, nen
+    -- o day khong tu viet lai danh sach duoi nao.
+    local ext = path:match("%.([%w]+)$")
+    if not ext or not upload.PHP_EXT[ext:lower()] then return nil end
+    local dir = path:match("^(.*/)") or "/"
+    for i = 1, #CONFIG_MARKS do
+        if pool.safe_get("waf:fimchg:" .. root .. dir .. CONFIG_MARKS[i]) then
+            return CONFIG_MARKS[i]
+        end
+    end
+    return nil
 end
 
 local function run_pre(ctx, rt)
@@ -394,6 +448,17 @@ local function run_pre(ctx, rt)
             ctx.waf_fim_new = factor
             max_field(ctx, "waf_wp_path", factor)
         end
+    end
+
+    -- Muc 8: tep cau hinh trong CUNG thu muc voi tep thuc thi dang bi goi vua doi.
+    -- `matched` mang TEN TEP CAU HINH (`.htaccess`), khong mang duong dan: ba ten do
+    -- la hang so trong ma, khong phai chuoi ke gui dat.
+    local cfg_mark = fim_config_changed(request.uri, rt)
+    if cfg_mark then
+        policy.emit(state, "fim_config_changed", {
+            target  = "URI",
+            matched = cfg_mark,
+        })
     end
 
     local decision = policy.decide(state, true)

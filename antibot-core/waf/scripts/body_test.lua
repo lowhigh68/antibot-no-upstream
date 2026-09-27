@@ -26,6 +26,9 @@ end
 package.preload["antibot.waf.upload_content"] = function()
     return dofile(SRC .. "waf/upload_content.lua")
 end
+package.preload["antibot.waf.upload_magic"] = function()
+    return dofile(SRC .. "waf/upload_magic.lua")
+end
 package.preload["antibot.waf.body_core"] = function()
     return dofile(SRC .. "waf/body_core.lua")
 end
@@ -871,6 +874,11 @@ do
         return part('Content-Disposition: form-data; name="f"; filename="' .. fn .. '"',
                     content)
     end
+    -- Noi dung anh SACH phai la mot JPEG THAT (`FF D8 FF`), khong phai chuoi
+    -- `"JFIF"`. Muc 7 (`upload_magic`) so duoi voi byte dau, nen `ok.jpg` chua
+    -- bon chu `JFIF` la mot LECH that — va do la ket luan dung. Truoc muc 7 khong
+    -- ai doc byte dau nen chuoi do di qua duoc; no chua bao gio la mot anh sach.
+    local JPEG = string.char(255, 216, 255) .. "JFIF"
     -- Bang tra: slot -> record, de doc theo part chu khong theo thu tu mang.
     local function by_slot(r)
         local out = {}
@@ -924,7 +932,7 @@ do
     -- DAO thu tu: ket luan phai y nguyen. `slot` doi, quan he ten<->noi dung thi
     -- khong — day la cho mot ban cai dat "lay part dau tien" se do.
     r = scan(mp({ field("a", "vo hai"),
-                  filepart("ok.jpg", "JFIF"),
+                  filepart("ok.jpg", JPEG),
                   filepart("shell.php", "<?php echo 1;") }))
     s = by_slot(r)
     check("(7) dao thu tu: part vo hai khong co record", s[1], nil)
@@ -980,7 +988,7 @@ do
     check("(13) hon MAX_PARTS -> pf=n", over.proof, "n")
 
     -- ── Memory == spill, va pack/unpack V8 giu record ────────────────────────
-    local data = mp({ filepart("ok.jpg", "JFIF"),
+    local data = mp({ filepart("ok.jpg", JPEG),
                       field("a", "<?php trong field"),
                       filepart("shell.php", "<?php echo 1;") })
     local mem = scan(data)
@@ -1010,7 +1018,7 @@ do
     -- sach phai la `false` — mot gia tri DA BIET — chu khong `nil`. Voi `nil`, moi ma
     -- doc `parts` ve sau khong phan biet duoc "ten nay sach" voi "chua ai phan loai",
     -- va do la ho loi da lam `php=0` che mat "chua soi".
-    local cleanrec = by_slot(scan(mp({ filepart("ok.jpg", "JFIF") })))[1]
+    local cleanrec = by_slot(scan(mp({ filepart("ok.jpg", JPEG) })))[1]
     check("(17) ten sach -> name_flags la false", cleanrec.name_flags, false)
     check("(17) KHONG phai nil", cleanrec.name_flags == nil, false)
     check("(17) noi dung sach -> content_flags false", cleanrec.content_flags, false)
@@ -1020,8 +1028,13 @@ do
     -- `parts_of` chan bang `MAX_PARTS` y nhu `file_ranges`.
     local rec = {}
     for i = 1, 70 do rec[i] = i .. ":0:0:4:ok" end
-    local flood = core.pack(scan(mp({ filepart("ok.jpg", "JFIF") })))
-                      :gsub("1:0:0:4:ok$", table.concat(rec, ";"))
+    -- Neo vao record CUOI bang mot mau KHONG chua so byte: `"1:0:0:4:ok"` cu khoa
+    -- cung do dai noi dung (`"JFIF"` = 4 byte), nen doi du lieu test la gsub im
+    -- lang khong thay gi va phep kiem thanh vo nghia — no se BAO XANH vi `unpack`
+    -- chay tot, chu khong bao do.
+    local packed18 = core.pack(scan(mp({ filepart("ok.jpg", JPEG) })))
+    local flood, nsub = packed18:gsub("1:0:0:%d+:ok$", table.concat(rec, ";"))
+    check("(18) mau neo con khop du lieu test", nsub, 1)
     check("(18) hon MAX_PARTS record trong goi tin -> bad_payload",
           select(2, core.unpack(flood)), "bad_payload")
 

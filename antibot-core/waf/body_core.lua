@@ -29,6 +29,7 @@ local upload = require "antibot.waf.upload"
 -- Buoc 3: NOI DUNG tep cau hinh (`.htaccess` doi handler, `.user.ini`/`php.ini` nap
 -- ma). Cung la Lua thuan, cung ly do.
 local upload_content = require "antibot.waf.upload_content"
+local upload_magic   = require "antibot.waf.upload_magic"
 
 local MAX_PARTS   = 64     -- so phan multipart soi toi da
 local MAX_HDR_LEN = 2048   -- do dai vung header cua MOT phan
@@ -983,7 +984,19 @@ local function file_ranges(body, ct)
                 -- soi moi bien the chuan hoa cua ten (basename, duoi bi che, hoa
                 -- thuong) nen o day khong tu viet phep phan loai nao.
                 name_flags    = upload.check_filename(second) or false,
-                content_flags = false,
+                -- Muc 7: DUOI hua mot dinh dang, BYTE DAU noi dang khac. Tinh NGAY
+                -- TAI DAY vi day la cho duy nhat con giu `second` (ten tep). Record
+                -- KHONG luu ten — `matched=` khong bao gio duoc chua ten tep do ke
+                -- gui dat, nen chi co CO di ra, khong co chuoi nao.
+                --
+                -- `NEED` byte dau, khong phai ca part: moi chu ky nam o offset 0
+                -- (hoac 4/8 voi container), nen doc them khong tra loi cau gi khac.
+                -- `math.min` voi `at - 2` de mot part ngan hon 16 byte khong doc lan
+                -- sang delimiter — khi do `scan_head` tra `nil` (khong ket luan) chu
+                -- khong phai `false` (lech).
+                content_flags = upload_magic.scan_head(
+                    body:sub(cs, math.min(cs + upload_magic.NEED - 1, at - 2)),
+                    (upload.extensions(second))) or false,
                 scan_state    = "ok",
                 -- `bytes` co MAT o ca hai duong (memory va spill): ben spill chi co
                 -- so byte chu khong co vi tri, nen neu duong memory khong mang no
@@ -1072,9 +1085,15 @@ function _M.scan(body, ct)
             local rg = ranges[i]
             -- `content_flags`: bang co NOI DUNG cua part. Hom nay mot co; buoc 3 them
             -- `handler`/`autoload` tu `upload_content.lua`. `false` = da soi, sach.
-            local cf = nil
+            -- Khoi tao TU CO DA CO tren record, khong tu `nil`: `file_ranges` da
+            -- dien co magic (muc 7) luc no con giu ten tep, va dong `rg.content_flags
+            -- = cf` o cuoi vong nay GHI DE. Bat dau tu `nil` la xoa mat chung —
+            -- mot `shell.jpg` co byte `MZ` se mat co `magic_exec` ngay khi part do
+            -- cung chua `<?php`, tuc mat dung o ca nguy hiem nhat.
+            local cf = rg.content_flags or nil
             if php_rg[rg] then
-                cf = { php_tag = true }
+                cf = cf or {}
+                cf.php_tag = true
                 php_file = true
             end
             -- Buoc 3: NOI DUNG tep cau hinh. Chi chay khi TEN cua chinh part do la
@@ -1180,7 +1199,11 @@ local function list_str(t) return t and table.concat(t, ",") or nil end
 -- Buoc 3 them `handler` va `autoload`. Danh sach nay la nguon DUY NHAT: `flags_str`
 -- chi dong goi co nao co o day, nen THIEU mot ten la co do bien mat TRONG IM LANG
 -- tren duong spill (da xay ra: `handler` mat, test "spill giong memory" bat duoc).
-local CONTENT_FLAGS = { "php_tag", "handler", "autoload" }
+local CONTENT_FLAGS = { "php_tag", "handler", "autoload",
+                        -- Muc 7. `magic_mismatch` mang TEN DUOI lam gia tri trong
+                        -- bo nho, nhung giao thuc chi tai TEN CO — duoi la mot
+                        -- chuoi ke gui dat duoc, va cot log khong duoc chua no.
+                        "magic_exec", "magic_mismatch" }
 _M.CONTENT_FLAGS = CONTENT_FLAGS
 
 local function flags_str(f)

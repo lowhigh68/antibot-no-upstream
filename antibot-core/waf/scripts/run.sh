@@ -53,6 +53,10 @@ echo
 echo "── upload_content + cung part (buoc 3-4) ─────────────"
 "$RESTY" "$HERE/upload_content_test.lua" || rc=1
 
+echo
+echo "── upload_magic (muc 7: duoi vs byte dau) ────────────"
+"$RESTY" "$HERE/upload_magic_test.lua" || rc=1
+
 # `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
 # trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
 # bash chu khong resty (no kiem mot script shell).
@@ -62,5 +66,12 @@ echo "── upload_content + cung part (buoc 3-4) ─────────�
 echo
 echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
 bash "$HERE/postdeploy_test.sh" || rc=1
+
+# `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc muc 8 no khong co phep kiem nao.
+# Bo nay chay `baseline` + `check` that tren mot cay thu muc `mktemp -d` voi
+# `redis-cli` GIA — khong cham /home, khong cham Redis, khong cham /var/lib.
+echo
+echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"
+bash "$HERE/fim_test.sh" || rc=1
 
 exit $rc
