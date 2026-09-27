@@ -78,4 +78,10 @@ echo
 echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"
 bash "$HERE/fim_test.sh" || rc=1
 
+# `wpinv` ghi CHINH cac khoa ma `is_wp_root` doc, va ba luat HARD-BLOCK duoc gate
+# bang chung. Lech mot ky tu la inventory ghi mot noi, WAF doc mot noi.
+echo
+echo "── fim.sh wpinv (inventory WordPress root) ───────────"
+bash "$HERE/wpinv_test.sh" || rc=1
+
 exit $rc

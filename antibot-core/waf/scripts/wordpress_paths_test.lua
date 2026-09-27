@@ -155,6 +155,40 @@ local CASES = {
 {"/shell.php/x.jpg", WP, "wp_root_unknown", "PATH_INFO co duoi gia"},
 {"/wp-config.php.bak", WP, "wp_root_unknown",
  "CA THAT tu waf.log — chungkhoanplus.com"},
+-- ── CONG OVERLAY ap cho CA BA luat HARD-BLOCK ──────────────────────────────
+--
+-- Truoc ban nay chi `wp_root_unknown` di qua `is_wp_root`; ba luat block thi
+-- khong. Bat doi xung do nam SAI HUONG: chinh ba luat CHAN lai la nhung luat
+-- khong can bang chung, con luat `signal` thi can. Metadata
+-- `profile = "wordpress"` KHONG chung minh gi — `config.lua` bat profile do mac
+-- dinh tren MOI domain.
+--
+-- `PLAIN` khong co khoa `waf:wphost:` nen ca ba phai IM. Va bo test cu KHONG bat
+-- duoc dieu nay: moi ca cua ba luat do deu dung `WP` (da co khoa), nen mot dot
+-- bien "bo gate" van xanh — da kiem, va do la ly do nhom nay ton tai.
+{"/wp-content/uploads/shell.php", PLAIN, nil,
+ "CONG: host chua chung minh la WordPress -> wp_upload_exec phai IM"},
+{"/wp-content/x.php", PLAIN, nil,
+ "CONG: wp_content_exec cung doi bang chung"},
+{"/wp-includes/shell.php", PLAIN, nil,
+ "CONG: wp_includes_exec cung doi bang chung"},
+{"/wp-admin/includes/shell.php", PLAIN, nil,
+ "CONG: wp_admin_includes_exec cung doi bang chung"},
+{"/wp-content/plugins/x/a.php", PLAIN, nil,
+ "CONG: luat signal trong nhanh marker cung doi bang chung"},
+-- Va huong NGUOC: dung host DA co khoa thi ba luat van ban nhu truoc. Thieu nhom
+-- nay thi mot dot bien "gate luon tra false" se xanh.
+{"/wp-content/uploads/shell.php", WP, "wp_upload_exec",
+ "CONG: host DA chung minh -> van ban nhu truoc"},
+{"/wp-includes/shell.php", WP, "wp_includes_exec",
+ "CONG: wp_includes_exec van ban tren host da chung minh"},
+-- Tien to: `/en` cua WPSUB co khoa, con goc cua no thi KHONG. Hai khong gian khoa
+-- rieng — mot `/en` co WordPress khong mo cong cho goc.
+{"/en/wp-content/uploads/shell.php", WPSUB, "wp_upload_exec",
+ "CONG: tien to /en co khoa -> ban"},
+{"/wp-content/uploads/shell.php", WPSUB, nil,
+ "CONG: goc cua WPSUB KHONG co khoa -> im"},
+
 {"/shell.php", PLAIN, nil,
  "CONG CHONG FP: host khong phai WordPress thi root PHP tuy y la BINH THUONG"},
 {"/shell.php/x", PLAIN, nil, "cong chong FP ap cho ca dang PATH_INFO"},

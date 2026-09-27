@@ -392,21 +392,62 @@ end
 --   3. Chi mot phep `safe_get`, va chi khi URI co ve la mot tep thuc thi. Mot
 --      `GET /anh.png` khong can hoi Redis — `.htaccess` doi khong lam anh thanh
 --      ma. Gioi han nay lam so luot tra Redis nho di nhieu lan.
-local CONFIG_MARKS = { ".htaccess", ".user.ini", "php.ini" }
+-- Executable VUA XUAT HIEN tren filesystem, KHONG gate bang luat duong dan nao.
+--
+-- `fim_factor` doi `detector_rule`, nen no chi nang diem cho path WordPress da dang
+-- nghi — tuc `fim_new_executable` chua phai bao ve filesystem generic. Ham nay tra
+-- loi cau do doc lap.
+--
+-- Chi hoi Redis khi URI la mot tep PHP CHAY DUOC: `waf:fimnew:` chi duoc ghi cho
+-- be mat thuc thi (xem `NAMES` trong `fim.sh`), nen hoi cho `/anh.png` la mot luot
+-- tra chac chan miss. `upload.PHP_EXT` la bang DA DO tren fleet.
+local function fim_new_direct(uri, rt)
+    local root = rt.var.document_root
+    if not root or root == "" then return nil end
+    local path = wp_paths.script_path(uri)
+    local ext  = path:match("%.([%w]+)$")
+    if not ext or not upload.PHP_EXT[ext:lower()] then return nil end
+    return tonumber(pool.safe_get("waf:fimnew:" .. root .. path))
+end
 
+-- ── HAI LOI CUA BAN TRUOC, nguoi dung bat 27-09 ─────────────────────
+--
+-- 1. Loc `upload.PHP_EXT` BIT DUNG CO CHE can bat. `.htaccess` chua
+--        AddType application/x-httpd-php .jpg
+--    roi ke tan cong goi `/shell.jpg`. `.jpg` khong trong `PHP_EXT`, nen ban truoc
+--    KHONG BAO GIO tra khoa — tuc dieu kien loc mau thuan voi chinh ly do luat nay
+--    ton tai. Chu thich cu con tu noi "`.htaccess` doi handler cho ca thu muc" ngay
+--    ben tren dong loc do.
+-- 2. Ba khoa tra TUAN TU = ba round-trip Redis cho moi request PHP.
+--
+-- Sua ca hai bang MOT khoa theo THU MUC, gia tri la danh sach DUOI bi anh xa
+-- (`fim.sh` trich bang dung cu phap ma `upload_content.lua` dung):
+--        waf:fimchg:<docroot><thu-muc>/  ->  "jpg,png"   (`.htaccess`)
+--        waf:fimchg:<docroot><thu-muc>/  ->  "*"         (`.user.ini`/`php.ini`)
+--
+-- `*` = "moi duoi PHP": `auto_prepend_file` nap ma cho MOI script PHP trong thu
+-- muc, khong doi handler cua duoi nao. Nen voi `*` van giu dieu kien `PHP_EXT` —
+-- do la GIOI HAN DUNG cho nhom do, khac han nhom `.htaccess`.
 local function fim_config_changed(uri, rt)
     local root = rt.var.document_root
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
-    -- Chi hoi khi URI la mot tep CHAY DUOC: `.htaccess` doi handler chi co nghia
-    -- voi thu nao duoc dem cho PHP. `upload.PHP_EXT` la bang DA DO tren fleet, nen
-    -- o day khong tu viet lai danh sach duoi nao.
+    local dir  = path:match("^(.*/)") or "/"
+    -- MOT `safe_get`, khong ba.
+    local v = pool.safe_get("waf:fimchg:" .. root .. dir)
+    if not v or v == "" then return nil end
+
     local ext = path:match("%.([%w]+)$")
-    if not ext or not upload.PHP_EXT[ext:lower()] then return nil end
-    local dir = path:match("^(.*/)") or "/"
-    for i = 1, #CONFIG_MARKS do
-        if pool.safe_get("waf:fimchg:" .. root .. dir .. CONFIG_MARKS[i]) then
-            return CONFIG_MARKS[i]
+    ext = ext and ext:lower() or nil
+
+    -- `*` (autoload) chi co nghia voi mot script PHP.
+    if v:find("*", 1, true) then
+        if ext and upload.PHP_EXT[ext] then return "autoload" end
+    end
+    -- Duoi bi `.htaccess` anh xa: KHONG rang buoc `PHP_EXT` — do la ca chinh.
+    if ext then
+        for e in v:gmatch("[^,]+") do
+            if e == ext then return "handler" end
         end
     end
     return nil
@@ -520,6 +561,23 @@ local function run_pre(ctx, rt)
             ctx.waf_fim_new = factor
             max_field(ctx, "waf_wp_path", factor)
         end
+    end
+
+    -- Fact DOC LAP: "request dang goi mot executable VUA XUAT HIEN tren
+    -- filesystem". `fim_factor` o tren gate bang `detector_rule`, nen tren mot CMS
+    -- khac hay site tu viet (`/custom/module/new-shell.php`) no khong bao gio hoi
+    -- Redis du FIM DA co khoa. Nhom nay khong phu thuoc luat duong dan nao.
+    --
+    -- Chay khi `factor` o tren la `nil` HOAC khi no co gia tri: hai nhom dem RIENG,
+    -- va chenh lech la thu noi cho biet bao nhieu file moi bi goi NGOAI path WP.
+    local direct = fim_new_direct(request.uri, rt)
+    if direct then
+        policy.emit(state, "fim_new_exec_direct", {
+            target  = "URI",
+            -- Muc tin cay tu FIM, khong phai duong dan: duong dan la du lieu ke gui
+            -- dieu khien, con `boost` la mot so do chinh ta tinh.
+            matched = string.format("%.2f", direct),
+        })
     end
 
     -- Muc 8: tep cau hinh trong CUNG thu muc voi tep thuc thi dang bi goi vua doi.

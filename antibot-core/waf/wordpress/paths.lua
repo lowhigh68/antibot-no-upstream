@@ -346,6 +346,43 @@ function _M.check(uri, host)
     if not uri or uri == "" then return nil end
     local low = uri:lower()
 
+    -- ── CONG OVERLAY: mọi luật ở đây đòi host ĐÃ được chứng minh là WordPress ──
+    --
+    -- Trước bản này chỉ `wp_root_unknown` đi qua `is_wp_root`; ba luật HARD-BLOCK
+    -- (`wp_upload_exec`, `wp_content_exec`, `wp_includes_exec`,
+    -- `wp_admin_includes_exec`) thì không. Metadata `profile = "wordpress"` KHÔNG
+    -- chứng minh gì — `config.lua` bật profile đó mặc định trên MỌI domain, nên nó
+    -- chỉ là một công tắc tính năng.
+    --
+    -- Đây là bất đối xứng thật, và nó nằm sai hướng: chính ba luật CHẶN lại là
+    -- những luật không cần bằng chứng, còn luật `signal` thì cần.
+    --
+    -- Tiền tố lấy từ `wp_prefix` (cùng hàm `needs_mark` dùng), nên `/en/wp-admin/`
+    -- tra khoá `(host, "/en")` còn `/wp-admin/` tra `(host, "")`. Hai không gian
+    -- khoá riêng — một `/en` có WordPress không mở cổng cho `/vi`.
+    --
+    -- ── CỬA SỔ COLD-START, và cách đóng nó ────────────────────────────────
+    --
+    -- `is_wp_root` học TỪ LƯU LƯỢNG (`mark` ở log phase, chỉ khi thấy file WP thật
+    -- trên đĩa). Nên ngay sau khi gate, một host chưa có khoá thì ba luật block IM
+    -- LẶNG cho tới request WordPress hợp lệ đầu tiên. `fim.sh wpinv` dựng sẵn danh
+    -- sách đó TỪ ĐĨA (DirectAdmin `domains.list` + `.pointers` + `.subdomains`),
+    -- và nó PHẢI được chạy trước khi bản này lên production.
+    -- ── VÌ SAO GATE THEO NHÁNH, KHÔNG PHẢI MỘT LẦN Ở ĐẦU ──────────────────
+    --
+    -- Bản đầu của tôi đặt `wp_prefix(low)` ngay đây rồi `return nil` khi không có
+    -- tiền tố. Sai, và bộ test bắt ngay 7 ca: `wp_prefix` chỉ học tiền tố từ ba
+    -- marker (`/wp-content/`, `/wp-admin/`, `/wp-includes/`), nên `/shell.php` ở
+    -- web root — chính ca của `wp_root_unknown` — không có marker nào và bị chặn ở
+    -- cổng, tức MẤT HẲN một luật đang chạy thật.
+    --
+    -- Nên tiền tố suy theo NHÁNH: nhánh marker dùng `wp_prefix`, còn nhánh web
+    -- root tự tách tiền tố của nó (nó đã làm việc đó và đã gọi `is_wp_root`).
+    local function wp_gate()
+        local prefix = wp_prefix(low)
+        return prefix ~= nil and is_wp_root(host, prefix)
+    end
+
     local wc = low:find("/wp-content/", 1, true)
 
     -- Không đánh dấu host ở đây nữa — `check()` chạy ở access phase và giờ CHỈ
@@ -356,6 +393,9 @@ function _M.check(uri, host)
     -- của tuyệt đại đa số request, và nó chỉ tốn một lượt regex.
     if not ngx.re.find(low, RX_PHP_EXEC, "jo") then return nil end
 
+    -- Ba nhánh marker dưới đây đòi cổng overlay. `wp_root_unknown` ở cuối hàm có
+    -- cổng RIÊNG của nó (nó tự tách tiền tố từ segment đầu), nên không gọi ở đây.
+    if wc and not wp_gate() then return nil end
     if wc then
         local rest = low:sub(wc + 12)             -- 12 = #"/wp-content/"
         local sub  = rest:match("^([^/]+)/")
@@ -408,6 +448,7 @@ function _M.check(uri, host)
     -- /wp-includes/ — thư viện core. Xem chú thích tại WP_INCLUDES_OK.
     local wi = low:find("/wp-includes/", 1, true)
     if wi then
+        if not wp_gate() then return nil end
         local rest = low:sub(wi + 13)              -- 13 = #"/wp-includes/"
         if WP_INCLUDES_OK[rest] then return nil end
         return "wp_includes_exec"
@@ -420,6 +461,7 @@ function _M.check(uri, host)
     -- load-scripts, load-styles, customize, media-upload, nav-menus…) — liệt kê
     -- nó là quay lại đúng cái bẫy mà đầu file này bác bỏ.
     if low:find("/wp-admin/includes/", 1, true) then
+        if not wp_gate() then return nil end
         return "wp_admin_includes_exec"
     end
 

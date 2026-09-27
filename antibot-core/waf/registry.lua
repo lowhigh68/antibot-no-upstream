@@ -150,6 +150,27 @@ add("wp_admin_includes_exec", "wordpress_path", "uri", "wordpress", "block", "en
 -- start in shadow mode and require an explicit measured promotion.
 add("fim_new_executable", "filesystem", "uri", "generic", "signal", "enforce",
     50, 4, 0.85, { "fs.new_executable" })
+
+-- `fim_new_executable` mang `profile = "generic"` nhung THUC TE chi la mot BO
+-- KHUECH DAI cho path detector: `fim_factor()` tra `nil` khi khong co
+-- `detector_rule`, nen tren mot CMS khac hay site tu viet,
+--     /custom/module/new-shell.php
+-- du FIM DA co khoa cho file moi, WAF khong bao gio hoi Redis.
+--
+-- Nen day la fact DOC LAP tra loi dung mot cau: "request dang goi mot executable
+-- VUA XUAT HIEN tren filesystem". Khong phu thuoc luat duong dan nao.
+--
+-- `observe`, diem 0 — GIAI DOAN DO. `fim_new_executable` giu nguyen nghia (bo
+-- khuech dai cho path rule) de moi phep do tren log cu khong doi nghia trong cung
+-- mot commit; nhom nay dem RIENG, va chenh lech giua hai con so la thu noi cho
+-- biet bao nhieu file moi dang bi goi NGOAI cac path WordPress.
+--
+-- CHI hoi Redis khi URI la mot tep PHP CHAY DUOC (`upload.PHP_EXT`) — nguoi dung
+-- 27-09 goi y mot timer nap vao shared dict de bo hoan toan Redis GET tren duong
+-- request. Do la thay doi kien truc rieng; chua lam trong commit nay, va dieu kien
+-- `PHP_EXT` la thu giu chi phi o muc chap nhan duoc cho giai doan do.
+add("fim_new_exec_direct", "filesystem", "uri", "generic", "observe", "enforce",
+    0, 1, 1.00, { "fs.new_executable_direct" })
 add("corr_upload_php_payload", "correlation", "decision", "generic", "block", "shadow",
     100, 5, 0.96, { "correlation.upload_php_payload" })
 add("corr_upload_config_php_payload", "correlation", "decision", "generic", "block", "shadow",

@@ -177,7 +177,7 @@ MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 # `audit` khong nhan co nao: no khong co tier (soi mot tap co dinh — mu-plugins
 # tron do sau, uploads chi tang 1), khong ghi gi nen `--dry` vo nghia, va luon in
 # day du nen `-v` cung vay.
-usage() { echo "dung: $0 {baseline|check|audit|score} [--hot] [--dry] [-v]" >&2; exit 2; }
+usage() { echo "dung: $0 {baseline|check|audit|score|wpinv} [--hot] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
@@ -304,6 +304,196 @@ done
 # tinh, nen phai do NGUOC — cham diem ca tap co san mot luot.
 #
 # KHONG ghi gi: khong manifest, khong Redis, khong $CRITLOG. Chi doc va in.
+# ── mode `wpinv`: DUNG INVENTORY WordPress root tu DIA ────────────────
+#
+# VI SAO CAN, va vi sao la mot MODE RIENG chu khong mot phan cua `check`:
+#
+# `waf/wordpress/paths.lua` co ba luat HARD-BLOCK (`wp_upload_exec`,
+# `wp_includes_exec`, `wp_admin_includes_exec`) va chung duoc GATE bang
+# `is_wp_root` — tuc chi chan khi host DA duoc chung minh la WordPress. Nhung co
+# che hoc `is_wp_root` la HOC TU LUU LUONG (`needs_mark`/`mark` o log phase, chi
+# khi thay mot file WP THAT tren dia). Nghia la ngay sau khi gate:
+#
+#   · host nao chua co khoa -> ba luat block IM LANG cho tới khi co mot request
+#     hop le di qua `/wp-content/` hay `/wp-admin/`
+#   · dung cua so do, mot `POST /wp-content/uploads/shell.php` khong bi chan
+#
+# Do la CUA SO COLD-START, va no dai bang thoi gian den request WP dau tien tren
+# host do. Mode nay dong cua so bang cach dung san danh sach TU DIA.
+#
+# THU TU BAT BUOC khi trien khai: chay `wpinv` TRUOC khi bat gate. Nguoc lai la
+# mot cua so khong bao ve ma khong ai thay.
+#
+# ── KHOA PHAI KHOP CHINH XAC `is_wp_root` ────────────────────────────
+#
+# `waf/wordpress/paths.lua`:
+#     prefix == ""  ->  waf:wphost:<host>
+#     prefix != ""  ->  waf:wproot:<host>:<prefix>
+# Lech mot ky tu la inventory ghi mot noi, WAF doc mot noi, va KHONG AI BAO LOI —
+# dung ho loi da giet `wp_paths.mark()` bon thang. Nen vong XAC MINH VONG TRON o
+# cuoi doc nguoc mot khoa vua ghi.
+#
+# ── ALIAS va POINTER: phai liet ke, khong suy tu duong dan ────────────
+#
+# Duong dan tren dia chua FQDN (`/home/<user>/domains/<fqdn>/public_html`), nen
+# suy host tu duong dan chi ra host CHINH. Mot domain pointer/alias dung CHUNG
+# docroot nhung co Host KHAC, va `is_wp_root` khoa theo host — nen alias se khong
+# co khoa, tuc mat bao ve dung sau khi gate.
+#
+# DirectAdmin liet ke day du o ba cho, va day la nguon DUY NHAT dung:
+#     <DA>/<user>/domains.list                  domain chinh
+#     <DA>/<user>/domains/<domain>.pointers     alias, dang `ten=type=alias`
+#     <DA>/<user>/domains/<domain>.subdomains   subdomain, chi PREFIX
+if [ "$mode" = "wpinv" ]; then
+    DA_DATA="${FIM_DA_DATA:-/usr/local/directadmin/data/users}"
+    WPINV_TTL="${FIM_WPINV_TTL:-2592000}"     # 30 ngay, KHOP WP_HOST_TTL_REDIS
+    # Goc `/home` la hang so cua DirectAdmin, nhung phai doi duoc de bo test dung
+    # mot cay gia — khong thi phep kiem chi chay duoc tren may that, tuc khong
+    # chay o dau ca.
+    HOME_BASE="${FIM_HOME:-/home}"
+
+    if [ ! -d "$DA_DATA" ]; then
+        echo "wpinv: khong thay $DA_DATA -- day la may DirectAdmin khong?" >&2
+        echo "wpinv: dat FIM_DA_DATA neu duong dan khac." >&2
+        exit 2
+    fi
+    if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
+        echo "wpinv: thieu '$REDIS_CLI' -- khong ghi duoc inventory." >&2
+        exit 2
+    fi
+
+    # `wp-settings.php` chu KHONG `wp-includes/version.php`: dong bo voi `iswp`
+    # trong nhanh `check` (xem chu thich o do -- `scan_hot` khong quet
+    # `wp-includes/` nen dung version.php se lam tin hieu tat cam).
+    WPMARK="wp-settings.php"
+
+    inv=$(mktemp) || exit 2
+    roots=$(mktemp) || exit 2
+    trap 'rm -f "$inv" "$roots"' EXIT
+
+    # Mot WP root tren dia -> (docroot, prefix). `prefix` la duong TU docroot tới
+    # thu muc chua `wp-settings.php`, dang `""` hoac `/<mot-cap>`.
+    #
+    # CHI MOT CAP sau: dong bo voi `wp_prefix` trong `paths.lua` (`^/[^/]+$`), va
+    # cung ly do -- tien to do ke gui request dat duoc nen do sau tuy y la khong
+    # gian khoa tuy y.
+    for d in $ROOTS; do
+        [ -d "$d" ] || continue
+        [ -f "$d/$WPMARK" ] && printf '%s\t%s\n' "$d" "" >> "$roots"
+        for sub in "$d"/*/; do
+            [ -d "$sub" ] || continue
+            if [ -f "$sub$WPMARK" ]; then
+                name=$(basename "$sub")
+                # HAI dong cho CUNG mot WordPress, va can ca hai -- vi co HAI
+                # duong HTTP vao no, va `is_wp_root` khoa theo `(host, tien to)`:
+                #
+                #   http://shop.test/sub1/wp-admin/  -> host=shop.test prefix=/sub1
+                #   http://sub1.shop.test/wp-admin/  -> host=sub1...   prefix=""
+                #
+                # Thieu dong thu hai la subdomain (co docroot rieng la chinh thu
+                # muc nay) khong bao gio co khoa -- bo test da bat dung cho nay.
+                printf '%s\t/%s\n' "$d" "$name" >> "$roots"
+                printf '%s\t%s\n' "${sub%/}" "" >> "$roots"
+            fi
+        done
+    done
+    nroots=$(wc -l < "$roots")
+
+    # docroot -> danh sach HOST. Di tu DirectAdmin chu khong suy tu duong dan:
+    # alias/pointer dung chung docroot nhung Host khac.
+    for ulist in "$DA_DATA"/*/domains.list; do
+        [ -f "$ulist" ] || continue
+        duser=$(basename "$(dirname "$ulist")")
+        while IFS= read -r dom || [ -n "$dom" ]; do
+            dom="${dom%%#*}"; dom="${dom// /}"
+            [ -z "$dom" ] && continue
+            main="$HOME_BASE/$duser/domains/$dom/public_html"
+
+            # Domain chinh + moi pointer/alias cua no: CUNG docroot.
+            printf '%s\t%s\n' "$main" "$dom" >> "$inv"
+            ptr="$DA_DATA/$duser/domains/$dom.pointers"
+            if [ -f "$ptr" ]; then
+                while IFS= read -r pline || [ -n "$pline" ]; do
+                    pline="${pline%%#*}"; pline="${pline// /}"
+                    [ -z "$pline" ] && continue
+                    printf '%s\t%s\n' "$main" "${pline%%=*}" >> "$inv"
+                done < "$ptr"
+            fi
+
+            # Subdomain: docroot la THU MUC CON cua public_html cha (xem
+            # `da_to_openresty.sh:315-318`), TRU khi co thu muc rieng.
+            subf="$DA_DATA/$duser/domains/$dom.subdomains"
+            if [ -f "$subf" ]; then
+                while IFS= read -r s || [ -n "$s" ]; do
+                    s="${s%%#*}"; s="${s// /}"
+                    [ -z "$s" ] && continue
+                    sd="$HOME_BASE/$duser/domains/$s.$dom/public_html"
+                    if [ -d "$sd" ]; then
+                        printf '%s\t%s\n' "$sd" "$s.$dom" >> "$inv"
+                    else
+                        printf '%s\t%s\n' "$main/$s" "$s.$dom" >> "$inv"
+                    fi
+                done < "$subf"
+            fi
+        done < "$ulist"
+    done
+    nhosts=$(wc -l < "$inv")
+
+    # Ghep (docroot, prefix) voi (docroot, host) -> khoa.
+    cmds=$(awk -v ttl="$WPINV_TTL" -F'\t' '
+        NR == FNR { hmap[$1] = hmap[$1] "\n" $2; next }
+        {
+            n = split(hmap[$1], hs, "\n")
+            for (i = 1; i <= n; i++) {
+                h = hs[i]
+                if (h == "") continue
+                # Khoa PHAI khop `cache_key`/`redis_key` trong paths.lua.
+                if ($2 == "") {
+                    printf "SETEX waf:wphost:%s %d 1\n", h, ttl
+                } else {
+                    printf "SETEX waf:wproot:%s:%s %d 1\n", h, $2, ttl
+                }
+            }
+        }
+    ' "$inv" "$roots" | sort -u)
+
+    nkeys=0
+    if [ -n "$cmds" ]; then
+        nkeys=$(printf '%s\n' "$cmds" | wc -l)
+        if [ $dry -eq 0 ]; then
+            printf '%s\n' "$cmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1
+            # XAC MINH VONG TRON: doc nguoc mot khoa vua ghi. Lech db, sai host,
+            # Redis chet -- het thay lo ra o day thay vi de inventory ghi mot noi
+            # va WAF doc mot noi, mai mai khong khop ma khong ai bao loi.
+            probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
+            if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "1" ]; then
+                echo "wpinv: KHONG XAC MINH DUOC -- da ghi $nkeys khoa nhung doc nguoc that bai." >&2
+                echo "wpinv: kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua." >&2
+                exit 2
+            fi
+        fi
+    fi
+
+    echo "=== wpinv $(date '+%Y-%m-%d %H:%M') ==="
+    echo "  duong vao WP tren dia   : $nroots (WP trong thu muc con co HAI duong)"
+    echo "  (docroot, host) tu DA   : $nhosts"
+    if [ $dry -eq 0 ]; then
+        echo "  khoa da ghi             : $nkeys (TTL ${WPINV_TTL}s)"
+    else
+        echo "  khoa SE ghi (--dry)     : $nkeys"
+        printf '%s\n' "$cmds" | head -10
+    fi
+    # 0 root la mot ket qua HOP LE (may khong co WordPress), nhung 0 khoa voi
+    # nroots > 0 thi KHONG -- do la ghep that bai, tuc duong dan tu DA khong khop
+    # duong dan tren dia.
+    if [ "$nroots" -gt 0 ] && [ "$nkeys" -eq 0 ]; then
+        echo "wpinv: co $nroots duong vao WP tren dia nhung 0 khoa -- ghep docroot THAT BAI." >&2
+        echo "wpinv: kiem FIM_ROOTS=$ROOTS va $DA_DATA co cung goc $HOME_BASE khong." >&2
+        exit 2
+    fi
+    exit 0
+fi
+
 if [ "$mode" = "score" ]; then
     MANIFEST="$STATE/manifest.$tier.txt"
     if [ ! -s "$MANIFEST" ]; then
@@ -1604,12 +1794,74 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ]; }; then
         fi
     fi
 
-    # ── Muc 8: tep cau hinh bi SUA -> `waf:fimchg:` ────────────────────
+    # ── Muc 8: tep cau hinh bi SUA -> `waf:fimchg:<THU MUC>` ───────────
     #
-    # Cung TTL, cung cach ghep khoa (`document_root .. script_path(uri)`), KHAC
-    # tien to. WAF chi DEM nhom nay — `upload_fim_config_chg` la `observe`, diem 0.
+    # ── HAI LOI CUA BAN TRUOC, nguoi dung bat 27-09 ────────────────────
+    #
+    # 1. Khoa la DUONG DAN TEP (`.../.htaccess`), va `waf/init.lua` chi tra khoa do
+    #    khi URI co duoi trong `upload.PHP_EXT`. Nhung CO CHE dang can bat la:
+    #        AddType application/x-httpd-php .jpg
+    #    roi ke tan cong goi `/shell.jpg`. `.jpg` KHONG trong `PHP_EXT`, nen WAF
+    #    KHONG BAO GIO tra — tuc dieu kien loc bit dung co che ma luat sinh ra de
+    #    bat. Mot mau thuan tu bac.
+    # 2. Ba khoa tra TUAN TU = ba round-trip Redis cho moi request PHP.
+    #
+    # Sua ca hai bang MOT khoa theo THU MUC, gia tri la danh sach DUOI bi anh xa:
+    #        waf:fimchg:/duong/dan/thu-muc/  ->  "jpg,png"   (`.htaccess`)
+    #        waf:fimchg:/duong/dan/thu-muc/  ->  "*"         (`.user.ini`/`php.ini`)
+    # `*` nghia la "moi duoi PHP" — `auto_prepend_file` nap ma cho MOI script PHP
+    # trong thu muc, khong doi handler cua duoi nao.
+    #
+    # Trich duoi bang chinh cu phap ma `upload_content.lua` dung (argument DAU TIEN
+    # anh xa sang PHP/CGI), khong phai tim chuoi tren ca dong — `AddType text/plain
+    # .php` KHONG duoc tinh.
     if [ -s "$chgs" ]; then
-        chgcmds=$(gen_cmds "$chgs" "waf:fimchg:")
+        chgdirs=$(mktemp) || exit 2
+        while IFS='|' read -r _b p; do
+            [ -n "$p" ] || continue
+            d=$(dirname "$p")/
+            case "$(basename "$p")" in
+              .htaccess)
+                # Duoi bi anh xa sang mot bo thuc thi. `$2` la argument DAU TIEN
+                # (mime/handler), cac `$i` sau la duoi. Chi nhan khi `$2` anh xa.
+                exts=$(awk '
+                    { sub(/#.*/, "") }
+                    /^[ \t]*[Aa][Dd][Dd](Type|Handler|TYPE|HANDLER)[ \t]/ {
+                        if (tolower($2) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) {
+                            for (i = 3; i <= NF; i++) {
+                                e = $i; sub(/^\./, "", e)
+                                if (e != "") print tolower(e)
+                            }
+                        }
+                    }' "$p" 2>/dev/null | sort -u | paste -sd, -)
+                [ -n "$exts" ] && printf '%s|%s\n' "$exts" "$d" >> "$chgdirs"
+                ;;
+              .user.ini|php.ini)
+                # `auto_prepend_file` nap ma cho MOI script PHP trong thu muc.
+                # `none` la gia tri VO HIEU HOA (da doi chung voi PHP), va dong
+                # `auto_prepend_file=none` co THAT trong nhieu php.ini hop le de TAT
+                # tinh nang do. Loai no y nhu `upload_content.lua` — hai noi phai
+                # cung mot dinh nghia "gia tri co nap ma".
+                if awk '
+                    { sub(/[;#].*/, "") }
+                    tolower($0) ~ /^[ \t]*auto_(pre|ap)pend_file[ \t]*=/ {
+                        v = $0; sub(/^[^=]*=[ \t]*/, "", v)
+                        gsub(/[ \t"\x27]/, "", v)
+                        if (v != "" && tolower(v) != "none") { found = 1 }
+                    }
+                    END { exit(found ? 0 : 1) }' "$p" 2>/dev/null; then
+                    printf '%s|%s\n' '*' "$d" >> "$chgdirs"
+                fi
+                ;;
+            esac
+        done < "$chgs"
+        # Gop nhieu tep cau hinh trong CUNG thu muc thanh mot khoa.
+        chgmerged=$(mktemp) || exit 2
+        awk -F'|' '{ v[$2] = (v[$2] == "") ? $1 : v[$2] "," $1 }
+                   END { for (k in v) printf "%s|%s\n", v[k], k }' \
+            "$chgdirs" > "$chgmerged"
+        chgcmds=$(gen_cmds "$chgmerged" "waf:fimchg:")
+        rm -f "$chgdirs" "$chgmerged"
         if [ -n "$chgcmds" ]; then
             marked_chg=$(printf '%s\n' "$chgcmds" | wc -l)
             printf '%s\n' "$chgcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"

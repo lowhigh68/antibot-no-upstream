@@ -86,15 +86,36 @@ sleep 1
 printf 'RewriteEngine On\nAddType application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 
-want "2 fimchg co .htaccess" \
-     "$(haskey "waf:fimchg:$WEB/.htaccess")" "yes"
+# ── KHOA LA THU MUC, GIA TRI LA DANH SACH DUOI (nguoi dung bat 27-09) ──
+#
+# Ban truoc khoa theo DUONG DAN TEP (`.../.htaccess`) va `waf/init.lua` chi tra
+# khoa do khi URI co duoi trong `upload.PHP_EXT`. Nhung co che dang can bat la
+# `AddType ... .jpg` roi goi `/shell.jpg` — `.jpg` khong trong `PHP_EXT`, nen WAF
+# KHONG BAO GIO tra. Dieu kien loc BIT dung co che ma luat sinh ra de bat.
+#
+# Nay khoa la THU MUC va gia tri la cac DUOI bi anh xa, nen WAF tra duoc mot lan
+# (khong ba round-trip) va biet `.jpg` la duoi dang nguy hiem trong thu muc do.
+want "2 fimchg theo THU MUC" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "2 KHONG con khoa theo TEP" "$(haskey "waf:fimchg:$WEB/.htaccess")" "no"
 want "2 KHONG co fimnew nao" "$(keys 'waf:fimnew:')" "0"
 want "2 chi 1 key fimchg"    "$(keys 'waf:fimchg:')" "1"
-# TTL va gia tri: gia tri la `1` (dau HIEN DIEN), khong phai muc tin cay cua boost.
-want "2 gia tri la 1" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/.htaccess\" {print \$4}" "$RCLI_OUT")" "1"
+# GIA TRI la duoi bi anh xa — day la thong tin ma ban truoc khong co.
+want "2 gia tri la duoi bi anh xa" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "jpg"
 want "2 TTL dung" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/.htaccess\" {print \$3}" "$RCLI_OUT")" "604800"
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$3}" "$RCLI_OUT")" "604800"
+
+# Nhieu duoi, va CHI duoi cua directive ANH XA duoc tinh: `AddType text/plain .txt`
+# khong duoc vao danh sach (do la FP loi 6 da sua o `upload_content.lua`).
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
+    > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
+want "2b hai duoi duoc anh xa" "$got" "jpg,png"
+case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
+               *)     want "2b .txt KHONG duoc tinh" "khong-txt" "khong-txt" ;; esac
 
 # ══ 3. File PHP MOI -> `fimnew`, KHONG lan sang `fimchg` ════════════════════
 #
@@ -121,8 +142,27 @@ want "4 .user.ini moi -> fimnew" "$(haskey "waf:fimnew:$WEB/.user.ini")" "yes"
 sleep 1
 printf 'memory_limit=128M\nauto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "4 .user.ini SUA -> fimchg" "$(haskey "waf:fimchg:$WEB/.user.ini")" "yes"
+want "4 .user.ini SUA -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
 want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
+# `auto_prepend_file` nap ma cho MOI script PHP trong thu muc, khong doi handler
+# cua duoi nao -> gia tri `*`. Khac han nhom `.htaccess` (danh sach duoi cu the),
+# va `waf/init.lua` giu dieu kien `PHP_EXT` RIENG cho nhom nay.
+want "4 gia tri la * (moi duoi PHP)" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "*"
+
+# Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
+: > "$RCLI_OUT"
+sleep 1
+printf 'memory_limit=256M\nupload_max_filesize=8M\n' > "$WEB/.user.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "4b .user.ini khong autoload -> im" "$(keys 'waf:fimchg:')" "0"
+# Va gia tri RONG / `none` cung khong duoc bao (hai dong CO THAT trong php.ini
+# hop le de TAT tinh nang).
+: > "$RCLI_OUT"
+sleep 1
+printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "4c autoload rong -> im" "$(keys 'waf:fimchg:')" "0"
 
 # ══ 5. File THUONG bi sua -> KHONG nhom nao ═════════════════════════════════
 #
@@ -144,7 +184,7 @@ want "6 --dry khong ghi gi" "$(wc -l < "$RCLI_OUT")" "0"
 # Va khong-dry ngay sau do THI ghi — de chac muc 6 xanh vi `--dry`, khong phai vi
 # thay doi da bi tieu thu mat.
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/.htaccess")" "yes"
+want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/")" "yes"
 
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

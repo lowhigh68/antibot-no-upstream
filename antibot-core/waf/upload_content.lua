@@ -184,11 +184,36 @@ _M.MAX_CONFIG_BYTES = MAX_CONFIG_BYTES
 -- `AddType \<newline> application/x-httpd-php .jpg` lot. Noi TRUOC khi tach dong.
 local BACKSLASH = string.char(92)
 
--- Tra ve `iterator` cac dong da noi tiep, va `incomplete`.
-local function config_lines(s)
+-- Tra ve cac dong (da noi tiep neu `kind` cho phep), va `incomplete`.
+--
+-- ── NOI TIEP DONG CHI DUNG CHO APACHE ───────────────────────────────
+--
+-- Ban truoc noi tiep dong cho CA HAI dinh dang. Sai theo thiet ke: `.htaccess` la
+-- cu phap Apache (gach nguoc cuoi dong = noi dong), con `.user.ini`/`php.ini` la
+-- INI cua Zend, mot dinh dang KHAC khong co luat do. Ap cu phap cua dinh dang nay
+-- cho dinh dang kia thi khong the dung — bat ke ket qua cu the ra sao.
+--
+-- Hau qua theo huong SAI AN (false negative), nen phai sua: neu PHP KHONG noi dong
+-- thi `auto_prepend_file=<gach nguoc>` la mot gia tri KHONG RONG (chinh ky tu gach
+-- nguoc), trong khi ta noi dong thanh `auto_prepend_file= none` roi doc thanh
+-- "none" = vo hieu hoa, tuc BO QUA mot cau hinh co tac dung.
+--
+-- ── TOI KHONG DO DUOC CAI NAY BANG ORACLE ───────────────────────────
+--
+-- Da thu dung oracle `php-cgi` tren WSL: bon ca deu tra `string(0) ""`, KE CA ca
+-- DOI CHUNG DUONG (`auto_prepend_file=/duong/dan/that.php`) va ca phep thu
+-- prepend mot tep that. Nen `.user.ini` khong duoc doc trong moi truong do — phep
+-- do HONG, khong phai "PHP im lang". Ghi lai o day thay vi de mot ket luan dua
+-- tren mot oracle da that bai doi chung duong ([[feedback-read-log-schema-first]]).
+--
+-- Sua theo THIET KE (moi dinh dang mot cu phap), khong theo mot con so chua do
+-- duoc. Neu mai do duoc tren fleet thi chi can doi phan `apache` o day.
+local function config_lines(s, kind)
     local lines, n, truncated = {}, 0, false
-    -- Noi tiep dong: gach nguoc + xuong dong -> mot khoang trang.
-    s = s:gsub(BACKSLASH .. "\r?\n[ \t]*", " ")
+    if kind == "apache" then
+        -- Noi tiep dong: gach nguoc + xuong dong -> mot khoang trang.
+        s = s:gsub(BACKSLASH .. "\r?\n[ \t]*", " ")
+    end
     for line in (s .. "\n"):gmatch("([^\n]*)\n") do
         if line:sub(-1) == "\r" then line = line:sub(1, -2) end
         n = n + 1
@@ -312,7 +337,7 @@ function _M.scan_part(content, name_flags, from, to)
         return nil, false
     end
 
-    local lines, truncated = config_lines(content)
+    local lines, truncated = config_lines(content, kind)
     local flags = nil
     for i = 1, #lines do
         local line = strip(lines[i], kind)
