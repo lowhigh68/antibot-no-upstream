@@ -805,25 +805,36 @@ do
     check("tep 9 KB -> fntr sach (khong con ct)", big.fn_trunc, false)
 end
 
-io.write("\ncore: V7 giao thuc pack/unpack\n")
+io.write("\ncore: V8 giao thuc pack/unpack\n")
 do
+    -- Dau phan cach cua giao thuc, y nhu `body_core.lua`. Dat lai o day chu khong
+    -- export: test PHAI hong khi ai do doi no, do la ca diem cua phep kiem nay.
+    local SEP = string.char(31)
     local r = scan(mp({ part(CD .. 'filename="photo.jpg"', "JFIF../../x") }))
     local rt, err = core.unpack(core.pack(r))
-    check("V7 pack/unpack khong loi", err, nil)
-    check("V7 giu vung file", rt and list(rt.file_rules), "arg_traversal")
-    check("V7 giu nonfile rong", rt and rt.nonfile_rules, nil)
-    check("V7 giu proof", rt and rt.proof, "ok")
+    check("V8 pack/unpack khong loi", err, nil)
+    check("V8 giu vung file", rt and list(rt.file_rules), "arg_traversal")
+    check("V8 giu nonfile rong", rt and rt.nonfile_rules, nil)
+    check("V8 giu proof", rt and rt.proof, "ok")
     -- Than KHONG chuan tac (thieu dong ket thuc): khong co vung `file`.
     local nfr = core.unpack(core.pack(scan("--" .. B .. "\r\n" .. CD ..
                 'filename="x.jpg"' .. "\r\n\r\nJFIF../../x\r\n")))
-    check("V7 giu ly do proof", nfr.proof, "end")
-    check("V7 than khong chung minh -> khong co vung file", nfr.file_rules, nil)
-    check("V7 giu proof nil ngoai multipart",
+    check("V8 giu ly do proof", nfr.proof, "end")
+    check("V8 than khong chung minh -> khong co vung file", nfr.file_rules, nil)
+    check("V8 giu proof nil ngoai multipart",
           core.unpack(core.pack(scan("a=1", URLENC))).proof, nil)
 
-    -- Ban CU phai bi TU CHOI, khong duoc doc nham thanh mot ban V7 thieu truong.
-    local old_ver = core.pack(r):gsub("^V7", "V6")
-    check("ban V6 bi tu choi", select(2, core.unpack(old_ver)), "bad_payload")
+    -- Ban CU phai bi TU CHOI, khong duoc doc nham thanh mot ban V8 thieu truong:
+    -- doc nham se cho `parts = nil` va `php_file = nil` — "chua soi" trong y nhu
+    -- "da soi, khong co tep nguy hiem nao".
+    for _, old in ipairs({ "V6", "V7" }) do
+        check("ban " .. old .. " bi tu choi",
+              select(2, core.unpack((core.pack(r):gsub("^V8", old)))), "bad_payload")
+    end
+    -- Thieu truong (ban V8 bi cat) cung phai bi tu choi, khong doc mot phan.
+    check("V8 thieu truong bi tu choi",
+          select(2, core.unpack((core.pack(r):gsub(SEP .. "[^" .. SEP .. "]*$", "")))),
+          "bad_payload")
 
     -- Than SPILL phai cho ket qua Y HET than trong bo nho — hai duong khac nhau
     -- (`core.scan` truc tiep vs `worker.scan_file` qua pack/unpack).
@@ -836,6 +847,184 @@ do
     check("spill: file giong memory", sp and list(sp.file_rules), mem.fl)
     check("spill: filename giong memory", sp and list(sp.filename_rules), mem.fnr)
     check("spill: proof giong memory", sp and sp.proof, mem.proof)
+end
+
+
+-- ══ V8: PART RECORD — ten nguy hiem va noi dung nguy hiem CUNG mot tep ══════
+--
+-- Cau hoi ma `php` + `up_rule` toan request KHONG tra loi duoc: hai fact do la gia
+-- tri cap request, nen `shell.php` rong o part 1 cong `<?php` trong mot form field
+-- o part 2 cho ra Y HET `shell.php` chua `<?php`. Muc nay ghim su khac biet do.
+--
+-- `scan_state`/`name_flags` phan biet SACH voi CHUA SOI: `false` = da soi/da phan
+-- loai va sach; khong chung minh duoc thi KHONG co record nao (`parts = nil`).
+io.write("\ncore: V8 part record\n")
+do
+    local function field(name, content)
+        return part('Content-Disposition: form-data; name="' .. name .. '"', content)
+    end
+    local function filepart(fn, content)
+        return part('Content-Disposition: form-data; name="f"; filename="' .. fn .. '"',
+                    content)
+    end
+    -- Bang tra: slot -> record, de doc theo part chu khong theo thu tu mang.
+    local function by_slot(r)
+        local out = {}
+        for i = 1, #(r.parts or {}) do out[r.parts[i].slot] = r.parts[i] end
+        return out
+    end
+    local function flags(rec)
+        if not rec then return "KHONG CO RECORD" end
+        return (rec.name_flags or "-") .. "/" ..
+               ((rec.content_flags and rec.content_flags.php_tag) and "php_tag" or "-")
+    end
+
+    -- ── Cac ca PHAI KHONG tao bang chung cung-part ───────────────────────────
+    -- (1) `shell.php` RONG + `<?php` trong mot FORM FIELD.
+    local r = scan(mp({ filepart("shell.php", "khong co gi"),
+                        field("a", "<?php echo 1;") }))
+    local s = by_slot(r)
+    check("(1) ten nguy hiem: name_flags", flags(s[1]), "upload_php_ext/-")
+    check("(1) the PHP o form field -> php_nonfile", r.php_nonfile, true)
+    check("(1) the PHP KHONG o tep nao -> php_file", r.php_file, false)
+    check("(1) co cu `php` van true (hop hai vung)", r.php, true)
+    check("(1) up_rule toan request VAN bao", r.up_rule, "upload_php_ext")
+
+    -- (2) `shell.php` RONG + PHP trong mot tep KHAC (`example.txt`).
+    r = scan(mp({ filepart("shell.php", "khong co gi"),
+                  filepart("example.txt", "<?php echo 1;") }))
+    s = by_slot(r)
+    check("(2) part 1: ten nguy hiem, noi dung sach", flags(s[1]), "upload_php_ext/-")
+    check("(2) part 2: ten sach, noi dung co the PHP", flags(s[2]), "-/php_tag")
+    check("(2) php_file true nhung KHAC part", r.php_file, true)
+
+    -- (3) `.htaccess` chi co RewriteRule + PHP trong tep khac.
+    r = scan(mp({ filepart(".htaccess", "RewriteRule ^a$ b [L]"),
+                  filepart("b.txt", "<?php echo 1;") }))
+    s = by_slot(r)
+    check("(3) .htaccess: noi dung khong co the PHP", flags(s[1]),
+          "upload_apache_config/-")
+    check("(3) part 2: the PHP, ten sach", flags(s[2]), "-/php_tag")
+
+    -- ── Cac ca PHAI tao bang chung cung-part ─────────────────────────────────
+    r = scan(mp({ filepart("shell.php", "<?php echo 1;") }))
+    check("(4) shell.php CHUA <?php -> cung part", flags(by_slot(r)[1]),
+          "upload_php_ext/php_tag")
+    r = scan(mp({ filepart("x.php.jpg", "<?php echo 1;") }))
+    check("(5) x.php.jpg CHUA <?php -> cung part", flags(by_slot(r)[1]),
+          "upload_php_double/php_tag")
+    r = scan(mp({ filepart("a.jpg", "<?= 1 ?>") }))
+    check("(6) `<?=` cung la the mo", flags(by_slot(r)[1]), "-/php_tag")
+
+    -- ── Thu tu part, part vo hai, va slot ────────────────────────────────────
+    -- DAO thu tu: ket luan phai y nguyen. `slot` doi, quan he ten<->noi dung thi
+    -- khong — day la cho mot ban cai dat "lay part dau tien" se do.
+    r = scan(mp({ field("a", "vo hai"),
+                  filepart("ok.jpg", "JFIF"),
+                  filepart("shell.php", "<?php echo 1;") }))
+    s = by_slot(r)
+    check("(7) dao thu tu: part vo hai khong co record", s[1], nil)
+    check("(7) part tep sach", flags(s[2]), "-/-")
+    check("(7) part nguy hiem o slot 3", flags(s[3]), "upload_php_ext/php_tag")
+    check("(7) so record = so part TEP", #r.parts, 2)
+
+    -- Nguoc lai: part nguy hiem dung TRUOC, cong hai part vo hai sau.
+    r = scan(mp({ filepart("shell.php", "<?php echo 1;"),
+                  field("b", "vo hai"),
+                  filepart("ok.png", "PNG") }))
+    s = by_slot(r)
+    check("(8) part nguy hiem o slot 1", flags(s[1]), "upload_php_ext/php_tag")
+    check("(8) part tep sach o slot 3", flags(s[3]), "-/-")
+
+    -- ── The PHP DUNG TAI MEP khoang ──────────────────────────────────────────
+    -- `<?php` dai 5 byte. Mot the bat dau o byte cuoi cua tep va ket thuc trong dau
+    -- phan cach KHONG phai PHP cua tep do — nhung mot the KET THUC dung byte cuoi
+    -- thi phai tinh.
+    check("(9) the ket thuc dung byte cuoi -> tinh",
+          flags(by_slot(scan(mp({ filepart("a.jpg", "x<?php") })))[1]), "-/php_tag")
+    check("(9) the BAT DAU dung byte cuoi (bi cat) -> KHONG tinh",
+          flags(by_slot(scan(mp({ filepart("a.jpg", "xxx<") })))[1]), "-/-")
+    check("(9) `<?p` cham mep -> KHONG tinh",
+          flags(by_slot(scan(mp({ filepart("a.jpg", "xxx<?p") })))[1]), "-/-")
+    -- Mot `<?=` cham mep KHONG duoc che mot `<?php` nam tron ben trong: dung o lan
+    -- khop dau la ho loi da tung lam mat `shell.php` o part thu hai.
+    check("(9) `<?php` sau mot `<?=` bi cat -> VAN tinh",
+          flags(by_slot(scan(mp({ filepart("a.jpg", "<?php x") })))[1]), "-/php_tag")
+
+    -- ── Khong chung minh duoc: KHONG co record nao ───────────────────────────
+    -- `filename*=` (PHP khong biet tham so nay) -> khong chuan tac.
+    local nore = scan(mp({ part('Content-Disposition: form-data; name="f"; ' ..
+                                "filename*=UTF-8''shell.php", "<?php echo 1;") }))
+    check("(10) khong chuan tac -> parts nil", nore.parts, nil)
+    check("(10) khong chuan tac -> php_file false, KHONG phai nil", nore.php_file, false)
+    check("(10) khong chuan tac -> the PHP vao nonfile", nore.php_nonfile, true)
+    check("(10) khong chuan tac -> co pf", nore.proof ~= nil and nore.proof ~= "ok", true)
+    -- Ngoai multipart: khong co khai niem part.
+    check("(11) urlencoded -> parts nil", scan("a=%3C%3Fphp", URLENC).parts, nil)
+    check("(11) urlencoded -> the PHP o nonfile",
+          scan("a=<?php", URLENC).php_nonfile, true)
+    -- Part tep RONG: khong co khoang nao de soi -> khong co record.
+    local emptyf = scan(mp({ filepart("shell.php", "") }))
+    check("(12) part tep rong -> khong co record", #(emptyf.parts or {}), 0)
+    check("(12) part tep rong -> up_rule VAN bao", emptyf.up_rule, "upload_php_ext")
+
+    -- Hon MAX_PARTS: `file_ranges` tra `pf=n`, nen khong co record nao.
+    local many = {}
+    for i = 1, 70 do many[i] = filepart("a" .. i .. ".jpg", "<?php") end
+    local over = scan(mp(many))
+    check("(13) hon MAX_PARTS -> parts nil", over.parts, nil)
+    check("(13) hon MAX_PARTS -> pf=n", over.proof, "n")
+
+    -- ── Memory == spill, va pack/unpack V8 giu record ────────────────────────
+    local data = mp({ filepart("ok.jpg", "JFIF"),
+                      field("a", "<?php trong field"),
+                      filepart("shell.php", "<?php echo 1;") })
+    local mem = scan(data)
+    local fh = io.open(tmp, "wb"); fh:write(data); fh:close()
+    local sp = core.unpack(worker.scan_file(tmp, MULTI))
+    check("(14) spill: php_nonfile giong memory", sp and sp.php_nonfile, mem.php_nonfile)
+    check("(14) spill: php_file giong memory", sp and sp.php_file, mem.php_file)
+    check("(14) spill: so record giong memory", sp and #(sp.parts or {}), #(mem.parts or {}))
+    local ms, ss = by_slot(mem), by_slot(sp or {})
+    for slot in pairs(ms) do
+        check("(14) spill: record slot " .. slot .. " giong memory",
+              flags(ss[slot]), flags(ms[slot]))
+    end
+    -- Part nguy hiem la part thu BA cua than (slot 3), khong phai record thu ba.
+    check("(14) spill: bytes cua part giong memory", ss[3] and ss[3].bytes, ms[3] and ms[3].bytes)
+    check("(14) spill: bytes co gia tri THAT", ms[3] and ms[3].bytes, 13)
+    check("(14) spill: scan_state", ss[3] and ss[3].scan_state, "ok")
+
+    -- Goi tin hong o phan `parts` la `bad_payload` — KHONG phai "khong co part nao".
+    local packed = core.pack(mem)
+    check("(15) parts hong -> bad_payload",
+          select(2, core.unpack((packed:gsub("3:upload_php_ext", "3:upload_php_ext:x")))),
+          "bad_payload")
+    check("(15) co la KHONG biet ten -> bad_payload",
+          select(2, core.unpack((packed:gsub("php_tag", "php_zzz")))), "bad_payload")
+    -- SACH khac CHUA SOI, va day la phep kiem ghim dieu do: `name_flags` cua mot ten
+    -- sach phai la `false` — mot gia tri DA BIET — chu khong `nil`. Voi `nil`, moi ma
+    -- doc `parts` ve sau khong phan biet duoc "ten nay sach" voi "chua ai phan loai",
+    -- va do la ho loi da lam `php=0` che mat "chua soi".
+    local cleanrec = by_slot(scan(mp({ filepart("ok.jpg", "JFIF") })))[1]
+    check("(17) ten sach -> name_flags la false", cleanrec.name_flags, false)
+    check("(17) KHONG phai nil", cleanrec.name_flags == nil, false)
+    check("(17) noi dung sach -> content_flags false", cleanrec.content_flags, false)
+    check("(17) da soi -> scan_state ok", cleanrec.scan_state, "ok")
+
+    -- Goi tin HONG khong duoc cap phat bang khong gioi han trong tien trinh chinh:
+    -- `parts_of` chan bang `MAX_PARTS` y nhu `file_ranges`.
+    local rec = {}
+    for i = 1, 70 do rec[i] = i .. ":0:0:4" end
+    local flood = core.pack(scan(mp({ filepart("ok.jpg", "JFIF") })))
+                      :gsub("1:0:0:4$", table.concat(rec, ";"))
+    check("(18) hon MAX_PARTS record trong goi tin -> bad_payload",
+          select(2, core.unpack(flood)), "bad_payload")
+
+    -- Truong `parts` rong hop le (than khong co part tep nao) van doc duoc.
+    local nofile = core.unpack(core.pack(scan(mp({ field("a", "x") }))))
+    check("(16) than khong co part tep -> parts nil", nofile.parts, nil)
+    check("(16) va do la 'da soi': proof=ok", nofile.proof, "ok")
 end
 
 -- ── V6: phep chung minh theo DUNG parser PHP ─────────────────────────────────

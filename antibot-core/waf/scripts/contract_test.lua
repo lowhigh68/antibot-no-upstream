@@ -1637,6 +1637,61 @@ do
     end
 end
 
+-- ── V8: giao thuc `pack`/`unpack` phai KHOP nhau, va phien ban phai duoc nang ──
+--
+-- `unpack` gac bang `#f ~= <so truong>`. Neu ai do them mot truong vao `pack` ma
+-- quen so do, hoac quen nang phien ban, thi than DA SPILL tra `bad_payload` trong
+-- im lang — tuc dung nhom upload lon. Muc nay dem `enc(` trong `pack` roi doi chieu
+-- voi con so trong `unpack`, va doi hai ben cung mot chuoi phien ban.
+io.write("\nhop dong: V8 — so truong cua pack == so truong unpack gac\n")
+do
+    local core_src = slurp(SRC .. "waf/body_core.lua") or ""
+    -- BO CHU THICH truoc khi dem: chinh chu thich cua `pack` co nhac `enc(`, va
+    -- phep dem dau tien cua toi dem ca no (17 thay vi 15). Dung khuon "doc ma, khong
+    -- doc chu thich" da dung cho `scanfn` o muc V7.
+    local pack = (core_src:match("function _M%.pack%b()(.-)\nend") or "")
+                     :gsub("%-%-[^\n]*", "")
+    local n_enc = 0
+    for _ in pack:gmatch("enc%(") do n_enc = n_enc + 1 end
+    local ver_pack = pack:match('"(V%d+)"')
+    local ver_un, n_gate = core_src:match('f%[1%] ~= "(V%d+)" or #f ~= (%d+)')
+    if not ver_pack or not ver_un then
+        bad("  SAI  khong doc duoc chuoi phien ban o `pack` hoac `unpack`\n")
+    else
+        -- `enc(` dem ca chuoi phien ban? Khong: `"V8"` di truc tiep, nen so truong
+        -- tong la `enc(` + 1.
+        local total = n_enc + 1
+        if ver_pack ~= ver_un then
+            bad("  SAI  `pack` ghi %s nhung `unpack` gac %s — than spill se `bad_payload`\n",
+                ver_pack, ver_un)
+        else pass = pass + 1 end
+        if tonumber(n_gate) ~= total then
+            bad("  SAI  `pack` co %d truong nhung `unpack` gac `#f ~= %s`\n", total, n_gate)
+        else
+            pass = pass + 1
+            io.write(string.format("  %s, %d truong, hai ben khop\n", ver_pack, total))
+        end
+    end
+
+    -- Moi co trong `CONTENT_FLAGS` phai duoc mot cho nao do DAT, neu khong no la mot
+    -- co khai bao roi khong ai ghi — dung ho loi `canvas_change` (trong so 50, ghi
+    -- theo identity doc theo ip, vinh vien bang 0).
+    local flags = core_src:match("local CONTENT_FLAGS = (%b{})") or ""
+    local nflag = 0
+    for name in flags:gmatch('"([%w_]+)"') do
+        nflag = nflag + 1
+        -- Dat o `body_core` (hom nay: `php_tag`) hoac o `upload_content.lua` (buoc 3).
+        local uc = slurp(SRC .. "waf/upload_content.lua") or ""
+        if core_src:find(name .. " = true", 1, true) or uc:find(name, 1, true) then
+            pass = pass + 1
+        else
+            bad("  SAI  co `%s` co trong CONTENT_FLAGS nhung KHONG cho nao dat no —\n" ..
+                "       mot co khai bao ma khong ai ghi thi vinh vien bang false.\n", name)
+        end
+    end
+    if nflag == 0 then bad("  SAI  `CONTENT_FLAGS` rong\n") end
+end
+
 -- ── B1: moi ma trong `FN_INCOMPLETE` phai la trang thai bo quet SINH RA ──────
 --
 -- Go sai mot ma (`hdrs`, `bmx`) thi `body_multipart_incomplete` khong bao gio ban

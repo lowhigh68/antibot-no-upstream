@@ -244,6 +244,59 @@ end
 -- `binary = true`, `decode = false` nhu phep quet phang cu tren multipart: byte 0
 -- tho la cua dinh dang nhi phan, noi dung part khong percent-encode (RFC 7578).
 local function find_nul_text(s, init) return s:find("%00", init, true) end
+
+-- ── The mo PHP: MOT phep tim, dung o ca hai vung ────────────────────────────
+--
+-- `<?PHP` cung la PHP hop le (nen tim tren ban lower), `<?=` la short echo tag.
+-- KHONG bat `<?` tran: `short_open_tag` mac dinh TAT tu PHP 5.4 nen `<?` khong
+-- chay tren fleet nay, con bat no thi moi `<?xml` — SVG, RSS, SOAP, file Office —
+-- thanh duong tinh. Do la doi mot FP that lay mot duong chi ton tai neu khach tu
+-- bat lai cau hinh do.
+local function find_php_tag(low, init)
+    local a = low:find("<?php", init, true)
+    local b = low:find("<?=", init, true)
+    if a and b then return math.min(a, b) end
+    return a or b
+end
+_M.find_php_tag = find_php_tag
+
+-- Co PHP cua CAC KHOANG (noi dung tep), bang mot luot tien tren `low`. Cung khuon
+-- `any_in_ranges`: nhay qua khe, khong sao chep byte nao.
+-- Do dai cua the bat dau tai `at`, hoac nil. `<?php` phai kiem TRUOC `<?=` chi de
+-- lay dung do dai; ca hai deu la the mo.
+local function php_tag_len(low, at)
+    if low:find("<?php", at, true) == at then return 5 end
+    if low:find("<?=", at, true) == at then return 3 end
+    return nil
+end
+
+local function php_in_ranges(low, ranges)
+    local out = {}
+    for i = 1, #ranges do
+        local rg = ranges[i]
+        local at = rg[1]
+        while true do
+            at = find_php_tag(low, at)
+            if not at or at > rg[2] then break end
+            -- The mo dai 3–5 byte, nen phai nam TRON trong khoang.
+            --
+            -- HOM NAY PHEP KIEM NAY KHONG THE KICH HOAT, va ghi ra vi mot phep kiem
+            -- khong chay duoc thi khong ai biet no con dung hay khong: o dang chuan
+            -- tac, ngay sau noi dung tep LUON la `\r\n--`, nen khong the co the nao bi
+            -- ranh gioi khoang cat doi (da do: dot bien bo phep kiem nay khong lam
+            -- test nao do). Giu lai vi `file_ranges` la thu duy nhat bao dam dieu do,
+            -- va mot thay doi o do se lam gia thiet nay sai TRONG IM LANG.
+            --
+            -- KHONG `break` khi mot the bi cat o mep: mot `<?=` cham mep co the dung
+            -- truoc mot `<?php` nam tron ben trong. Dung o lan khop dau la ho loi da
+            -- tung lam mat `shell.php` o part thu hai.
+            local n = php_tag_len(low, at)
+            if n and at + n - 1 <= rg[2] then out[rg] = true; break end
+            at = at + 1
+        end
+    end
+    return out
+end
 local function rules_in_ranges(low, ranges, out)
     if #ranges == 0 then return out end
     if any_in_ranges(low, ranges, find_nul_text) then out.arg_null_byte = true end
@@ -817,8 +870,24 @@ end
 -- `waf:v2:scan:*`, nen KHONG duoc them vao `SCAN_STATUS`.
 local function no_proof(why) return nil, why end
 
--- Vung header cua MOT part (khong ke CRLF ket thuc): "file", "field", hoac
--- `nil, ly_do`.
+-- Hai mau Content-Disposition o DANG CHUAN TAC. Dat thanh hang so vi chung duoc
+-- dung ca o `canonical_part_head` (chung minh) lan o test: mot ban sao thu hai la
+-- mot cho de hai ban lech nhau.
+--
+-- `BSQ` la mot lop ky tu "khong phai nhay kep, khong phai gach nguoc" — dung
+-- `string.char(92)` chu khong viet gach nguoc truc tiep vi gia tri KHONG duoc chua
+-- hai ky tu do: o dang do ten PHP doc ra va ten ta doc ra la MOT.
+local BSQ      = '[^"' .. string.char(92) .. ']*'
+local FILE_CD  = '^form%-data; name="' .. BSQ .. '"; filename="(' .. BSQ .. ')"$'
+local FIELD_CD = '^form%-data; name="' .. BSQ .. '"$'
+
+-- Vung header cua MOT part (khong ke CRLF ket thuc): tra `"file", ten_tep`,
+-- `"field", nil`, hoac `nil, ly_do`.
+--
+-- V8: tra CA ten tep, de `file_ranges` phan loai `name_flags` cua part. Lay bang
+-- `match` tren DUNG mau `find` cu — khong noi long dieu kien chuan tac nao. Kenh
+-- BAT ten tep van soi moi bien the (nhay don, `filename*`) o
+-- `scan_disposition_headers`; day chi la duong CHUNG MINH.
 local function canonical_part_head(head)
     local cd, has_ct = nil, false
     for line in (head .. "\r\n"):gmatch("(.-)\r\n") do
@@ -838,14 +907,42 @@ local function canonical_part_head(head)
         end
     end
     if not cd then return no_proof("cd") end
-    if cd:find('^form%-data; name="[^"\\]*"; filename="[^"\\]*"$') then
-        return "file"
-    end
-    if cd:find('^form%-data; name="[^"\\]*"$') then return "field" end
+    local fname = cd:match(FILE_CD)
+    if fname then return "file", fname end
+    if cd:find(FIELD_CD) then return "field", nil end
     return no_proof("cd")
 end
 
--- Cac khoang `{dau, cuoi}` la NOI DUNG TEP da chung minh, hoac `nil, ly_do`.
+-- ── V8: PART RECORD, khong chi la khoang byte ───────────────────────────────
+--
+-- Tra ve mot mang cac record da CHUNG MINH, hoac `nil, ly_do`. Moi record vua la
+-- khoang byte (`[1]`, `[2]` — `projection` va `rules_in_ranges` doc y nhu truoc)
+-- vua mang thong tin cua CHINH part do:
+--
+--   [1], [2]     dau/cuoi noi dung tep trong `body`
+--   slot         so thu tu part trong than (1-based), de doi chieu log
+--   name_flags   phan loai TEN TEP cua part — mot `UP_RANK` id, hoac `false`
+--                khi ten sach. KHONG BAO GIO nil o day: nil danh cho "chua soi".
+--   content_flags cac co NOI DUNG (`upload_content.lua`) — dien o buoc 3.
+--   scan_state   "ok" = noi dung part nay da soi TRON.
+--
+-- VI SAO cac truong nay: `php` hom nay la mot co BOOLEAN toan than, nen mot the
+-- `<?php` trong byte cua mot tep anh va mot the trong mot form field cho ra cung
+-- mot fact. Ghep no voi `up_rule` (cung la mot gia tri toan request) chi chung minh
+-- duoc "trong request nay co mot ten tep chay duoc, VA o dau do co the PHP" — hai
+-- part khac nhau cung thoa. Record theo part la de tra loi cau DUNG: ten nguy hiem
+-- VA noi dung nguy hiem nam trong CUNG MOT tep.
+--
+-- KHONG giu luat tham so (`arg_*`) theo part, co y: ba vung `nonfile`/`file`/
+-- `filename` da la duong duy nhat bao luat tham so va da duoc fuzz chung minh
+-- (P1/P6/P7/P8/P9 = 0). Them mot duong thu hai bao cung loai luat voi ranh gioi
+-- khac la khuon loi "hai duong, mot duong khong duoc cap nhat" da mat bon thang o
+-- `wp_paths.mark()`.
+--
+-- SACH khac CHUA SOI: `name_flags = false` nghia la da phan loai va ten sach;
+-- `scan_state = "ok"` nghia la da soi tron noi dung. Khong chung minh duoc thi
+-- KHONG co record nao ca (`nil, ly_do`) — khong co record "mot nua".
+--
 -- Ly do ra log o cot `pf=`:
 --   ct   Content-Type khong chuan tac    pre  co byte truoc dong phan cach dau
 --   hdr  vung header cua mot part        cd   Content-Disposition
@@ -863,14 +960,35 @@ local function file_ranges(body, ct)
         if nparts > MAX_PARTS then return no_proof("n") end
         local he = body:find("\r\n\r\n", pos, true)
         if not he or he - pos > MAX_HDR_LEN then return no_proof("hdr") end
-        local kind, why = canonical_part_head(body:sub(pos, he - 1))
-        if not kind then return nil, why end
+        -- Bien thu hai mang HAI nghia theo `kind`: ly do khi `kind` la nil, ten tep
+        -- khi `kind == "file"`. Dat mot ten trung tinh de khong ai doc nham.
+        local kind, second = canonical_part_head(body:sub(pos, he - 1))
+        if not kind then return nil, second end
         local cs = he + 4
         local at = body:find(next_delim, cs, true)
         if not at then return no_proof("end") end
         if at <= cs or body:byte(at - 1) ~= 13 then return no_proof("dl") end
+        -- `at - 2 >= cs`: part tep RONG (`filename="x"` khong co byte nao) khong co
+        -- khoang nao de soi, nen khong co record — mot record voi khoang rong se lam
+        -- moi phep dem "so tep" lech. `filename=""` van vao day nhu mot tep: do la
+        -- goc nhin cua PHP (`UPLOAD_ERR_NO_FILE`) va wafdiff dem no rieng o P2.
         if kind == "file" and at - 2 >= cs then
-            ranges[#ranges + 1] = { cs, at - 2 }
+            ranges[#ranges + 1] = {
+                cs, at - 2,
+                slot          = nparts,
+                -- `false` chu khong `nil`: "da phan loai, ten sach". `check_filename`
+                -- soi moi bien the chuan hoa cua ten (basename, duoi bi che, hoa
+                -- thuong) nen o day khong tu viet phep phan loai nao.
+                name_flags    = upload.check_filename(second) or false,
+                content_flags = false,
+                scan_state    = "ok",
+                -- `bytes` co MAT o ca hai duong (memory va spill): ben spill chi co
+                -- so byte chu khong co vi tri, nen neu duong memory khong mang no
+                -- thi hai duong co hai hinh dang record khac nhau — va moi ma doc
+                -- `parts` se phai biet no dang o duong nao. Do la khuon loi ma phep
+                -- kiem P3 (`spill == memory`) ton tai de chan.
+                bytes         = at - 2 - cs + 1,
+            }
         end
         local after = at + #next_delim
         local tail = body:sub(after, after + 1)
@@ -934,16 +1052,36 @@ function _M.scan(body, ct)
         ranges, proof = file_ranges(body, ct)
         if ranges then proof = "ok" end
     end
+    -- V8: co PHP theo VUNG. `php_nonfile` la the mo ngoai noi dung tep (form field,
+    -- header, hoac ca than khi chua chung minh duoc); `php_file` la co cua tung
+    -- record. Co cu `php` giu nguyen nghia (hop hai vung) de `compute.lua` va moi
+    -- phep do tren log cu khong doi nghia trong cung mot commit.
+    local php_nonfile, php_file = false, false
     if ranges then
         -- `lower()` giu nguyen do dai byte, nen khoang cua `file_ranges` (do tren
         -- `body`) dung duoc tren `low`.
-        rules_in_lower(projection(low, ranges), false, false, nonfile)
+        local proj = projection(low, ranges)
+        rules_in_lower(proj, false, false, nonfile)
         rules_in_ranges(low, ranges, file)
+        php_nonfile = find_php_tag(proj, 1) ~= nil
+        local php_rg = php_in_ranges(low, ranges)
+        for i = 1, #ranges do
+            local rg = ranges[i]
+            -- `content_flags`: bang co NOI DUNG cua part. Hom nay mot co; buoc 3 them
+            -- `handler`/`autoload` tu `upload_content.lua`. `false` = da soi, sach.
+            if php_rg[rg] then
+                rg.content_flags = { php_tag = true }
+                php_file = true
+            end
+        end
     else
         -- Khong tach duoc tep khoi field: quet phang `binary = true` voi
         -- multipart/other, neu khong moi byte 0 cua mot tep thanh `arg_null_byte`.
         rules_in_lower(low, family == "urlencoded",
                        family == "multipart" or family == "other", nonfile)
+        -- Chua chung minh duoc thi MOI byte la `nonfile` — ke ca byte cua mot tep.
+        -- Ghi vao `php_file` la bia ra mot ket luan ve vi tri ma khong co bang chung.
+        php_nonfile = find_php_tag(low, 1) ~= nil
     end
 
     return {
@@ -952,9 +1090,14 @@ function _M.scan(body, ct)
         source = "memory",
         scan   = "ok",
         len    = #body,
-        -- `<?PHP` cung la PHP hop le; `<?=` la short echo tag. KHONG bat `<?`
-        -- tran: `<?xml` se lam nhieu moi upload SVG/RSS.
-        php    = low:find("<?php", 1, true) ~= nil or low:find("<?=", 1, true) ~= nil,
+        -- Co CU, giu nguyen nghia: co the mo PHP o BAT KY dau trong than. Moi phep
+        -- do tren `waf.log` va `compute.lua` (`waf_body_php`, trong so 50) doc no,
+        -- nen no khong doi nghia trong commit nay.
+        php    = php_nonfile or php_file,
+        -- V8: CUNG mot bang chung, tach theo VUNG. Day moi la thu tra loi duoc "the
+        -- PHP nam trong form field hay trong byte cua mot tep".
+        php_nonfile = php_nonfile,
+        php_file    = php_file,
         nargs  = count_args(body, family),
         -- Mang da sap xep, `nil` khi vung khong co luat nao HOAC khong ton tai
         -- (`file` ngoai `proof = "ok"`). Da soi hay chua thi doc `scan`.
@@ -971,6 +1114,14 @@ function _M.scan(body, ct)
         -- LY DO khi khong chung minh duoc — cot `pf=`, de do duoc upload that hong
         -- o buoc nao. `nil` ngoai multipart.
         proof    = proof,
+        -- V8: part record da CHUNG MINH (`slot`, `name_flags`, `content_flags`,
+        -- `scan_state`), hoac `nil` khi khong chung minh duoc. `nil` o day KHONG
+        -- bao gio duoc doc thanh "khong co tep nao" — doc `proof`.
+        --
+        -- `parts` la THU tra loi duoc cau ma `php` + `up_rule` toan request khong
+        -- tra loi duoc: ten nguy hiem va noi dung nguy hiem co nam trong CUNG mot
+        -- tep khong.
+        parts    = ranges,
     }
 end
 
@@ -989,21 +1140,106 @@ end
 -- khong bao gio chua `,` hay `SEP`.
 local function list_str(t) return t and table.concat(t, ",") or nil end
 
+-- ── V8: part record qua ranh gioi thread ────────────────────────────────────
+--
+-- Mot record thanh `slot:name_flags:content_flags:bytes`, cac record cach nhau bang
+-- `;`. KHONG truyen ten tep lan noi dung — ca hai do ke gui dieu khien, va giao
+-- thuc nay di vao `ctx` roi ra log.
+--
+--   slot          so nguyen
+--   name_flags    rule_id (`[%w_]`), hoac `0` khi ten sach
+--   content_flags cac co cach nhau bang `,` (hom nay chi `php_tag`), hoac `0`
+--   bytes         so byte noi dung part — de doc log, KHONG dung cho quyet dinh nao
+--
+-- `bytes` co y la SO BYTE chu khong phai vi tri: vi tri chi co nghia trong than
+-- goc, ma than goc khong di qua ranh gioi nay.
+local CONTENT_FLAGS = { "php_tag" }
+_M.CONTENT_FLAGS = CONTENT_FLAGS
+
+local function flags_str(f)
+    if type(f) ~= "table" then return "0" end
+    local out = {}
+    -- Theo DANH SACH biet truoc, khong `pairs`: thu tu `pairs` khong xac dinh, nen
+    -- memory va spill co the ra hai chuoi khac nhau cho cung mot ket qua — va phep
+    -- kiem P3 cua wafdiff so sanh chuoi.
+    for i = 1, #CONTENT_FLAGS do
+        if f[CONTENT_FLAGS[i]] then out[#out + 1] = CONTENT_FLAGS[i] end
+    end
+    if #out == 0 then return "0" end
+    return table.concat(out, ",")
+end
+
+local function flags_of(s)
+    if s == "0" or s == "" then return false end
+    local out, known = {}, {}
+    for i = 1, #CONTENT_FLAGS do known[CONTENT_FLAGS[i]] = true end
+    for name in s:gmatch("[^,]+") do
+        -- Co KHONG biet ten thi ca goi tin la hong, khong phai "bo qua co do": mot
+        -- ban `pack` moi hon gap `unpack` cu se lang le mat mot co.
+        if not known[name] then return nil end
+        out[name] = true
+    end
+    return out
+end
+
+local function parts_str(parts)
+    if type(parts) ~= "table" or #parts == 0 then return nil end
+    local out = {}
+    for i = 1, #parts do
+        local p = parts[i]
+        out[i] = table.concat({
+            tostring(p.slot or 0),
+            p.name_flags or "0",
+            flags_str(p.content_flags),
+            tostring(p[2] - p[1] + 1),
+        }, ":")
+    end
+    return table.concat(out, ";")
+end
+
+-- `nil` khi chuoi la `-`; `nil, true` khi chuoi HONG (loi phan biet voi rong).
+local function parts_of(s)
+    if s == "-" or s == "" then return nil end
+    local out = {}
+    for rec in s:gmatch("[^;]+") do
+        local slot, nf, cf, bytes = rec:match("^(%d+):([%w_]+):([%w_,]+):(%d+)$")
+        if not slot then return nil, true end
+        local flags = flags_of(cf)
+        if flags == nil and cf ~= "0" then return nil, true end
+        out[#out + 1] = {
+            slot        = tonumber(slot),
+            name_flags  = nf ~= "0" and nf or false,
+            content_flags = flags,
+            scan_state  = "ok",
+            bytes       = tonumber(bytes),
+        }
+        -- Chan bang `MAX_PARTS` y nhu `file_ranges`: mot goi tin hong khong duoc
+        -- cap phat bang khong gioi han trong tien trinh chinh.
+        if #out > MAX_PARTS then return nil, true end
+    end
+    if #out == 0 then return nil, true end
+    return out
+end
+
 function _M.pack(r)
-    -- V7 thay bay truong (`arg_rule`, `fnm`, `fn_rule`, `arg_origin`, `arg_field`,
-    -- `arg_content`, `fields_complete`) bang BA VUNG. PHAI nang phien ban khi doi
-    -- truong: `unpack` gac bang `#f ~= <so truong>`, nen mot ban `pack` moi gap
-    -- mot ban `unpack` cu se tra `bad_payload` — TRONG IM LANG, va chi voi than
-    -- DA SPILL, tuc dung nhom upload lon. Doi phien ban lam cho su khong khop do
-    -- CO TEN.
+    -- V8 them BA truong: `php_nonfile`, `php_file`, `parts`. PHAI nang phien ban khi
+    -- doi truong: `unpack` gac bang `#f ~= <so truong>`, nen mot ban `pack` moi gap
+    -- mot ban `unpack` cu se tra `bad_payload` — TRONG IM LANG, va chi voi than DA
+    -- SPILL, tuc dung nhom upload lon. Doi phien ban lam cho su khong khop do CO TEN.
+    --
+    -- (V7 truoc do thay bay truong `arg_rule`/`fnm`/`fn_rule`/`arg_origin`/
+    -- `arg_field`/`arg_content`/`fields_complete` bang ba vung.)
     --
     -- Moi truong di qua `enc(` — hop dong [27c] dem `enc(` de doi chieu so truong
     -- voi `unpack`.
     return table.concat({
-        "V7", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
+        "V8", enc(r.family), enc(r.len), enc(r.php), enc(r.nargs),
         enc(list_str(r.nonfile_rules)), enc(list_str(r.file_rules)),
         enc(list_str(r.filename_rules)),
         enc(r.fn_trunc), enc(r.scan), enc(r.up_rule), enc(r.proof),
+        -- V8: ba truong moi. `php_nonfile`/`php_file` la co PHP theo vung, `parts` la
+        -- chuoi record (`slot:name_flags:cflags:bytes`, cach nhau `;`).
+        enc(r.php_nonfile), enc(r.php_file), enc(parts_str(r.parts)),
     }, SEP)
 end
 
@@ -1089,15 +1325,23 @@ function _M.unpack(payload)
     if type(payload) ~= "string" then return nil, "bad_payload" end
     local f = split(payload)
     if f[1] == "E"  then return nil, f[2] or "worker", tonumber(f[3]) end
-    -- CHI nhan V7. KHONG chap nhan ban cu nhu mot ban tuong thich nguoc, va do la
+    -- CHI nhan V8. KHONG chap nhan ban cu nhu mot ban tuong thich nguoc, va do la
     -- quyet dinh co y: `body_worker.lua` chay trong MOT VM RIENG do
     -- `ngx.run_worker_thread` dung len, nhung ca hai ben deu nap tu CUNG mot file
     -- tren dia — nen chung khong bao gio lech phien ban TRU trong khoang giua hai
     -- lan `nginx -s reload` cua mot lan deploy. Trong khoang do, `bad_payload` la
     -- cau tra loi DUNG: no co ten, di vao `waf:v2:scan:bad_payload`, va chi anh
-    -- huong than da spill. Chap nhan V6 se lam khoang do trong nhu binh thuong
-    -- trong khi ba vung lang le bang nil.
-    if f[1] ~= "V7" or #f ~= 12 then return nil, "bad_payload" end
+    -- huong than da spill.
+    --
+    -- Mot goi V7 PHAI bi tu choi RO RANG chu khong doc nhu V8 thieu truong: `#f`
+    -- gac dieu do (V7 co 12 truong, V8 co 15), nen mot goi V7 khong bao gio di tiep
+    -- voi `parts = nil` va `php_file = nil` — do se la "chua soi" trong nhu "da soi,
+    -- khong co tep nguy hiem nao".
+    if f[1] ~= "V8" or #f ~= 15 then return nil, "bad_payload" end
+    -- Goi tin co `parts` HONG cung la `bad_payload`, khong phai "khong co part nao":
+    -- mot chuoi record khong doc duoc nghia la ta khong biet than do co gi.
+    local parts, broken = parts_of(f[15])
+    if broken then return nil, "bad_payload" end
     return {
         family   = dec(f[2]),
         len      = tonumber(f[3]),
@@ -1110,6 +1354,9 @@ function _M.unpack(payload)
         scan     = dec(f[10]) or "ok",
         up_rule  = dec(f[11]),
         proof    = dec(f[12]),
+        php_nonfile = dec_bool(f[13]),
+        php_file    = dec_bool(f[14]),
+        parts       = parts,
     }
 end
 

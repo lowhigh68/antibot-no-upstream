@@ -175,3 +175,53 @@ END {
     printf "  qms lon nhat %d ms   >1s: %d   >5s: %d   KiB dang bay lon nhat (worker): %d\n", mm, s1, s5, mk
     for (d in hmax) if (hmax[d] > 1) printf "  qh lon nhat %3d  %s\n", hmax[d], d
 }'
+
+# V8 (buoc 1–2): the mo PHP theo VUNG, va gan ghep ten<->noi dung trong CUNG part.
+# Muc nay tra loi cau quyet dinh cach BAT: hom nay `waf_body_php` trong so 50 ban
+# theo mot co BOOLEAN toan than, nen mot `<?=` trong byte cua mot anh cho diem y
+# nhu mot tep chua ma PHP that.
+echo "=== 10. V8: the mo PHP nam o VUNG nao (multipart, da nhan smp) ==="
+grep -F '[waf-body]' "$W" | grep -F ' pnf=' | awk "$P"'
+f["ct"] == "multipart" && f["php"] != "-" && f["php"] != "" {
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    c["php=" f["php"] "  pnf=" f["pnf"] "  pfl=" f["pfl"] "  pf=" f["pf"]] += s; t += s
+    if (f["php"] == "1" && f["pnf"] == "0" && f["pfl"] == "1") only_file += s
+    if (f["php"] == "1" && f["pnf"] == "1") has_nonfile += s
+}
+END {
+    if (!t) { print "  (khong co than multipart nao da soi)"; exit }
+    for (k in c) printf "  %-44s %8d\n", k, c[k]
+    printf "  ---- tong %d. CHI trong tep: %d.  Co ngoai tep: %d\n", t, only_file, has_nonfile
+    print  "  (`php=1 pnf=1 pfl=0` = the mo o form field/header, KHONG trong tep)"
+}'
+
+echo "=== 11. V8: part record — ten nguy hiem VA noi dung nguy hiem CUNG mot tep? ==="
+grep -F '[waf-body]' "$W" | grep -F ' parts=' | awk "$P"'
+f["parts"] != "-" && f["parts"] != "" {
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    n = split(f["parts"], recs, ";")
+    same = 0; namebad = 0; cfbad = 0
+    for (i = 1; i <= n; i++) {
+        split(recs[i], fld, ":")
+        nf = fld[2]; cf = fld[3]
+        if (nf != "0") namebad++
+        if (cf != "0") cfbad++
+        # CUNG part: ten co luat VA noi dung co co
+        if (nf != "0" && cf != "0") { same++; sk[nf "  +  " cf] += s }
+    }
+    tot += s
+    if (same) cung += s
+    else if (namebad && cfbad) khac += s
+    else if (namebad) chiten += s
+    else if (cfbad) chinoidung += s
+    else sach += s
+}
+END {
+    if (!tot) { print "  (khong co than multipart nao chung minh duoc co part tep)"; exit }
+    printf "  tong than co part tep: %d\n", tot
+    printf "    CUNG part (ten nguy hiem + noi dung nguy hiem): %d\n", cung
+    printf "    hai part KHAC nhau (correlation cu SE ban, V8 thi khong): %d\n", khac
+    printf "    chi ten nguy hiem: %d    chi noi dung nguy hiem: %d    sach: %d\n",
+           chiten, chinoidung, sach
+    for (k in sk) printf "    cung part: %-44s %6d\n", k, sk[k]
+}'

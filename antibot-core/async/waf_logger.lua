@@ -101,6 +101,30 @@ end
 
 -- Đếm per-worker để LẤY MẪU những dòng không có gì đáng chú ý. Không cần chính
 -- xác tuyệt đối, không cần chia sẻ giữa worker — chỉ cần giảm đều.
+-- V8: `parts=` — `slot:name_flags:content_flags` cho moi part TEP da chung minh.
+--
+-- Ham RIENG chu khong viet nội tuyến trong `string.format`: dong nay ban cho moi
+-- POST co than spill, va mot ham nội tuyến trong danh sach 30 doi so la cho de dem
+-- lech mot dau phay ma trinh bien dich khong bao.
+--
+-- Thu tu co lay bang `sort` de memory va spill ra CUNG mot chuoi — `pairs` khong
+-- xac dinh thu tu, va hai duong do phai giong nhau tung byte.
+local function parts_col(parts)
+    if type(parts) ~= "table" or #parts == 0 then return "-" end
+    local out = {}
+    for i = 1, #parts do
+        local p = parts[i]
+        local names = {}
+        if type(p.content_flags) == "table" then
+            for k in pairs(p.content_flags) do names[#names + 1] = k end
+            table.sort(names)
+        end
+        out[i] = tostring(p.slot or 0) .. ":" .. (p.name_flags or "0") ..
+                 ":" .. (#names > 0 and table.concat(names, ",") or "0")
+    end
+    return scrub(table.concat(out, ";"), 400)
+end
+
 local body_seen = 0
 local BODY_SAMPLE = 20
 
@@ -159,7 +183,7 @@ function _M.run_body(ctx)
         "[%s] [waf-body] ts=%d rid=%s id=%s domain=%s ip=%s method=%s uri=%s"
         .. " ct=%s cl=%s te=%s proto=%s blen=%d spill=%d php=%s nargs=%s"
         .. " class=%s richness=%s vfy=%d scan=%s nf=%s fl=%s fn=%s fntr=%s uprule=%s"
-        .. " pf=%s qh=%s qw=%s qhk=%s qwk=%s qms=%s smp=%d\n",
+        .. " pf=%s pnf=%s pfl=%s parts=%s qh=%s qw=%s qhk=%s qwk=%s qms=%s smp=%d\n",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         req_id(ctx),
@@ -290,6 +314,30 @@ function _M.run_body(ctx)
         -- Moi gia tri khac `ok` la GIU NGUYEN DIEM: khong co vung `fl=`, ca than
         -- nam o `nf=`. Cot nay ton tai de do upload THAT hong o buoc nao.
         scrub(b.proof, 8),
+        -- V8: the mo PHP theo VUNG. Co cu `php=` la HOP hai cot nay, nen doc rieng
+        -- moi tra loi duoc cau "the PHP nam trong form field hay trong byte cua tep":
+        --     pnf=1  co the mo NGOAI noi dung tep (form field, header, hoac ca than
+        --            khi `pf` khac ok)
+        --     pfl=1  co the mo TRONG noi dung mot tep da chung minh
+        --     `-`    chua soi (doc `scan=`)
+        -- `php=1 pnf=1 pfl=0` la nhom da do 26-09: upload anh lon co `<?=` trong byte
+        -- tep — no KHONG con trong nhu `php=1 pnf=0 pfl=1` (tep that su chua ma PHP).
+        (b.php_nonfile == nil) and "-" or (b.php_nonfile and "1" or "0"),
+        (b.php_file == nil) and "-" or (b.php_file and "1" or "0"),
+        -- V8 PART RECORD: `slot:name_flags:content_flags` cho moi part TEP da chung
+        -- minh, cach nhau `;`. `-` = khong chung minh duoc (doc `pf=`) hoac khong co
+        -- part tep nao.
+        --
+        -- KHONG ghi ten tep lan noi dung — ca hai do ke gui dieu khien, cung ly do da
+        -- khong ghi than request vao `matched=` va chi ghi RULE_ID o `uprule=`.
+        -- `bytes` cung khong ghi: no co trong giao thuc de doc khi can, nhung mot dong
+        -- log dai them cho moi upload thi khong doi lai duoc gi o giai doan nay.
+        --
+        -- Day la cot tra loi cau ma `uprule=` + `php=` khong tra loi duoc: ten nguy
+        -- hiem va noi dung nguy hiem co nam trong CUNG mot tep hay khong.
+        --     parts=1:upload_php_ext:php_tag     -> CUNG part: ten .php VA co ma PHP
+        --     parts=1:upload_php_ext:0;3:0:php_tag -> HAI part khac nhau
+        parts_col(b.parts),
         -- B3 (roadmap muc 2, GIAI DOAN DO): hang doi soi file tam cua worker nay
         -- luc than nay vao pool. `-` = than khong qua pool (trong bo nho, rong).
         --   qh=   so luot dang bay cua CHINH server block nay trong worker, ke ca

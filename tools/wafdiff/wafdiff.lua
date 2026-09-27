@@ -12,6 +12,10 @@
 --                  o vung `filename`; va khi `pf=ok` ca o `nonfile` — header khong
 --                  bao gio la noi dung tep. P7 chi hoi HOP cac vung nen khong thay
 --                  "dung luat, sai vung".
+--   P11 NGUY HIEM  V8 part record: voi MOI record, ten PHP doc ra phai cho dung
+--                  `name_flags`, va noi dung PHP luu phai cho dung co `php_tag`.
+--                  Day la thuoc tinh ma `php`/`up_rule` toan request khong kiem duoc:
+--                  ten nguy hiem va noi dung nguy hiem co CUNG mot tep hay khong.
 --   P5  NGUY HIEM  ten tep PHP thay (sau basename) ma `upload.check_filename` bat
 --                  thi `up_rule` cua WAF phai nghiem trong it nhat bang.
 --   P9  LOI        luat trong noi dung tep PHP: `pf=ok` -> o vung `file`; khong ->
@@ -349,6 +353,47 @@ local function check(body, ct)
         end
     end
 
+    -- ── P11: gan ghep TEN <-> NOI DUNG trong CUNG mot part ───────────────────
+    --
+    -- Day la thuoc tinh cua V8, va la thu ma `php` + `up_rule` toan request khong
+    -- kiem duoc: voi MOI part record cua WAF, doi chieu voi tep PHP THAT o cung vi
+    -- tri — ten PHP doc ra phai cho ra dung `name_flags`, va noi dung PHP luu phai
+    -- cho ra dung co `php_tag`. Lech mot chieu la FP (bao cung-part khi khong phai),
+    -- lech chieu kia la mat bang chung.
+    if proof and r.parts then
+        -- `$_FILES` cua PHP theo THU TU part, va WAF chi tao record cho part tep co
+        -- noi dung — nen doi chieu theo noi dung, khong theo chi so.
+        local php_by_content = {}
+        for _, pf in ipairs(php.files) do
+            local c = s64(pf.content)
+            if c and c ~= "" then
+                php_by_content[c] = php_by_content[c] or {}
+                local t = php_by_content[c]
+                t[#t + 1] = s64(pf.full_path) or s64(pf.name) or ""
+            end
+        end
+        for _, p in ipairs(r.parts) do
+            local content = body:sub(p[1], p[2])
+            local names = php_by_content[content]
+            local nm = names and table.remove(names, 1)
+            if nm then
+                local want_name = upload.check_filename(nm) or false
+                if p.name_flags ~= want_name then
+                    flag("P11", string.format("slot %d: name_flags=%s nhung PHP thay ten -> %s",
+                                              p.slot, tostring(p.name_flags), tostring(want_name)),
+                         body, ct)
+                end
+                local want_php = core.find_php_tag(content:lower(), 1) ~= nil
+                local got_php = (p.content_flags and p.content_flags.php_tag) and true or false
+                if got_php ~= want_php then
+                    flag("P11", string.format("slot %d: php_tag=%s nhung noi dung PHP luu -> %s",
+                                              p.slot, tostring(got_php), tostring(want_php)),
+                         body, ct)
+                end
+            end
+        end
+    end
+
     if proof then
         local cnt = {}
         for n in body:gmatch(CD_FILE) do cnt[n] = (cnt[n] or 0) + 1 end
@@ -423,11 +468,12 @@ local DESC = {
     P8 = "NGUY HIEM  luat trong ten tep sai vung (khong o filename; hoac khong o nonfile khi pf=ok)",
     P5 = "NGUY HIEM  ten tep nguy hiem PHP thay ma up_rule nhe hon",
     P9 = "LOI        luat trong noi dung tep sai vung",
+    P11 = "NGUY HIEM  part record: ten hoac co noi dung khong khop tep PHP luu",
     P3 = "LOI        spill khac memory",
 }
 io.write(string.format("\nwafdiff: %d ca, %d ca pf=ok (seed %d)\n", n_cases, n_proof, SEED))
 local bad = 0
-for _, k in ipairs({ "P1", "P6", "P7", "P8", "P5", "P9", "P3" }) do
+for _, k in ipairs({ "P1", "P6", "P7", "P8", "P11", "P5", "P9", "P3" }) do
     bad = bad + (viol[k] or 0)
     io.write(string.format("  %-3s %6d  %s\n", k, viol[k] or 0, DESC[k]))
 end

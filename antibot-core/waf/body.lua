@@ -70,6 +70,12 @@ local function unscanned(family, spilled, reason, len)
         scan   = reason,
         len    = len or (spilled and -1 or 0),
         php      = nil,
+        -- V8: hai co PHP theo vung va `parts` cung `nil` — CHUA SOI. `false` o day
+        -- se la "da soi, khong co the PHP trong tep nao", tuc bien mot khoang trong
+        -- thanh mot am tinh.
+        php_nonfile = nil,
+        php_file    = nil,
+        parts       = nil,
         nargs    = nil,
         -- V7: ba vung deu `nil` — than CHUA duoc soi. Ly do nam o `scan` va
         -- `fn_trunc`, khong o day.
