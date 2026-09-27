@@ -2,15 +2,20 @@
 -- CHAY: ./run.sh
 --
 -- Cau hoi ma bo nay tra loi: "HINH DANG cua request co dung hop dong cua route
--- khong" — method, content-type, co tep khong. Khac `wp_hardening` (ai gui) va
--- khac `args`/`body_core` (trong than co gi).
+-- khong" — method, content-type, co tep dinh kem khong. Khac `wp_hardening` (ai
+-- gui) va khac `args`/`body_core` (trong than co gi).
 --
--- ── PHAN QUAN TRONG NHAT CUA BO NAY LA MUC 1, KHONG PHAI MUC 2 ──────
+-- ── BAN TRUOC CUA BO NAY KHOA DUNG CAI SAI ──────────────────────────
 --
--- Positive security la mot phep dao nguoc nguy hiem: moi thu khong khai bao thanh
--- dang nghi. Nen phep kiem co gia tri nhat o day KHONG phai "co bat duoc tan cong
--- khong" ma la "co IM LANG dung nhung luu luong that khong". Muc 1 dai nhat vi
--- the.
+-- Nguoi dung bat 27-09: ban truoc cua `routes_test` "chu dong coi moi multipart la
+-- route_upload" — tuc no ghi nhan mot premise SAI nhu the la dung. `route_upload`
+-- phai doi PARSER chung minh co part tep; mot form multipart chi co field, hay mot
+-- than RONG khai bao multipart, khong phai upload.
+--
+-- Nen bo nay kiem CA BA truc:
+--   1. luu luong THAT phai im lang (chong FP — phan dai nhat)
+--   2. `route_upload` chi ban khi CO part tep da chung minh
+--   3. hop dong chi ap khi host DA duoc chung minh la WordPress
 local SRC = os.getenv("ANTIBOT_SRC")
 if not SRC or SRC == "" then
     io.write("thieu bien moi truong ANTIBOT_SRC\n"); os.exit(2)
@@ -31,16 +36,39 @@ local function check(name, got, want)
     end
 end
 
--- `r()` tra ten vi pham, hoac "-" khi khong co gi de noi.
-local function r(uri, method, ct)
-    local bad = routes.check(uri, method, ct)
-    return bad or "-"
-end
+-- Cong nhan CMS: `true` = host da duoc chung minh la WordPress. Mot ham, vi
+-- `is_wp_root` that khoa theo `(host, tien to)`.
+local WP    = function() return true end
+local NOTWP = function() return false end
 
 local URLENC = "application/x-www-form-urlencoded"
 local MULTI  = "multipart/form-data; boundary=----x"
 local XML    = "text/xml"
 local JSON   = "application/json"
+
+-- Than co MOT part tep da chung minh.
+local WITH_FILE = {
+    family = "multipart", proof = "ok", scan = "ok",
+    parts = { { slot = 1, name_flags = false, content_flags = false,
+                scan_state = "ok", bytes = 9 } },
+}
+-- Than multipart KHONG co part tep (chi field), da soi tron.
+local NO_FILE = { family = "multipart", proof = "ok", scan = "ok", parts = nil }
+-- Than KHONG chung minh duoc: `parts = nil` vi khong soi noi, khong phai vi sach.
+local UNPROVEN = { family = "multipart", proof = "hdr", scan = "ok", parts = nil }
+-- Than urlencoded thuong.
+local FORM = { family = "urlencoded", proof = "ok", scan = "ok" }
+
+-- `pre()` = pha 1 (chi method). `post()` = pha 2. `mp()` = do multipart rieng.
+local function pre(uri, method, wp)
+    return routes.check_pre(uri, method, wp or WP, "a.test") or "-"
+end
+local function post(uri, ct, has_body, body, wp)
+    return routes.check_post(uri, ct, has_body, body, wp or WP, "a.test") or "-"
+end
+local function mp(uri, ct, has_body, wp)
+    return routes.check_multipart(uri, ct, has_body, wp or WP, "a.test") or "-"
+end
 
 -- ══ 1. KHONG DUOC BAO GI: luu luong THAT tren bon route ═════════════════════
 --
@@ -49,116 +77,162 @@ local JSON   = "application/json"
 io.write("routes: luu luong THAT phai IM LANG\n")
 
 -- wp-login.php: GET render form, POST urlencoded dang nhap.
-check("login GET",            r("/wp-login.php", "GET", nil),          "-")
-check("login GET co ct",      r("/wp-login.php", "GET", URLENC),       "-")
-check("login POST urlenc",    r("/wp-login.php", "POST", URLENC),      "-")
+check("login GET",            pre("/wp-login.php", "GET"),            "-")
+check("login GET ph2",        post("/wp-login.php", nil, false, nil), "-")
+check("login POST urlenc",    post("/wp-login.php", URLENC, true, FORM), "-")
 -- Query string: `?action=logout&_wpnonce=...`, `?loggedout=true`, `?redirect_to=`
-check("login POST co query",  r("/wp-login.php?action=postpass", "POST", URLENC), "-")
-check("login GET logout",     r("/wp-login.php?action=logout&_wpnonce=ab12", "GET", nil), "-")
+check("login POST co query",
+      post("/wp-login.php?action=postpass", URLENC, true, FORM),      "-")
+check("login GET logout",
+      pre("/wp-login.php?action=logout&_wpnonce=ab12", "GET"),        "-")
 -- `charset` trong content-type: phai bi cat truoc khi so.
 check("login ct co charset",
-      r("/wp-login.php", "POST", URLENC .. "; charset=UTF-8"), "-")
+      post("/wp-login.php", URLENC .. "; charset=UTF-8", true, FORM), "-")
 -- Hoa thuong trong content-type: HTTP khong phan biet.
 check("login ct HOA",
-      r("/wp-login.php", "POST", "APPLICATION/X-WWW-FORM-URLENCODED"), "-")
--- HEAD: bo kiem uptime va mot so proxy dung HEAD.
-check("login HEAD",           r("/wp-login.php", "HEAD", nil),         "-")
+      post("/wp-login.php", "APPLICATION/X-WWW-FORM-URLENCODED", true, FORM), "-")
+check("login HEAD",           pre("/wp-login.php", "HEAD"),           "-")
 
 -- xmlrpc.php: Jetpack va WP Core gui XML. GET tra mot dong text.
-check("xmlrpc POST xml",      r("/xmlrpc.php", "POST", XML),           "-")
-check("xmlrpc POST app/xml",  r("/xmlrpc.php", "POST", "application/xml"), "-")
+check("xmlrpc POST xml",      post("/xmlrpc.php", XML, true, FORM),   "-")
+check("xmlrpc POST app/xml",  post("/xmlrpc.php", "application/xml", true, FORM), "-")
 check("xmlrpc xml co charset",
-      r("/xmlrpc.php", "POST", "text/xml; charset=utf-8"),             "-")
-check("xmlrpc GET",           r("/xmlrpc.php", "GET", nil),            "-")
--- `?for=jetpack` la query that cua Jetpack.
-check("xmlrpc jetpack query", r("/xmlrpc.php?for=jetpack", "POST", XML), "-")
+      post("/xmlrpc.php", "text/xml; charset=utf-8", true, FORM),     "-")
+check("xmlrpc GET",           pre("/xmlrpc.php", "GET"),              "-")
+check("xmlrpc jetpack query",
+      post("/xmlrpc.php?for=jetpack", XML, true, FORM),               "-")
 
 -- wp-cron.php: WordPress tu goi. `spawn_cron` gui body RONG.
-check("cron GET",             r("/wp-cron.php", "GET", nil),           "-")
-check("cron POST khong ct",   r("/wp-cron.php", "POST", nil),          "-")
-check("cron POST body rong",  r("/wp-cron.php", "POST", URLENC),       "-")
-check("cron co doing_wp_cron",
-      r("/wp-cron.php?doing_wp_cron=1727000000.1", "GET", nil),        "-")
+check("cron GET",             pre("/wp-cron.php", "GET"),             "-")
+check("cron POST khong ct",   post("/wp-cron.php", nil, true, nil),   "-")
+check("cron POST body rong",  post("/wp-cron.php", URLENC, true, FORM), "-")
+check("cron doing_wp_cron",
+      pre("/wp-cron.php?doing_wp_cron=1727000000.1", "GET"),          "-")
 
--- wp-comments-post.php: form comment.
-check("comment POST urlenc",  r("/wp-comments-post.php", "POST", URLENC), "-")
-check("comment GET",          r("/wp-comments-post.php", "GET", nil),  "-")
+-- wp-comments-post.php
+check("comment POST urlenc",  post("/wp-comments-post.php", URLENC, true, FORM), "-")
+check("comment GET",          pre("/wp-comments-post.php", "GET"),    "-")
 
--- ── Route KHONG co hop dong: phai im lang TUYET DOI ──
---
--- Day la nua con lai cua chong-FP. Bang hop dong CO Y hep; moi thu khac khong
--- duoc noi gi, ke ca khi trong nhu tan cong.
+-- ── Route KHONG co hop dong: im lang TUYET DOI ──
 io.write("routes: route KHONG khai bao -> im lang tuyet doi\n")
-check("admin-ajax multipart", r("/wp-admin/admin-ajax.php", "POST", MULTI), "-")
-check("admin-ajax PUT",       r("/wp-admin/admin-ajax.php", "PUT", JSON),   "-")
-check("async-upload",         r("/wp-admin/async-upload.php", "POST", MULTI), "-")
-check("wp-json PUT json",     r("/wp-json/wp/v2/posts/1", "PUT", JSON),     "-")
-check("wp-json DELETE",       r("/wp-json/wp/v2/posts/1", "DELETE", nil),   "-")
-check("goc GET",              r("/", "GET", nil),                           "-")
-check("index.php POST",       r("/index.php", "POST", MULTI),               "-")
-check("route la PATCH",       r("/api/x", "PATCH", JSON),                   "-")
--- Mot file TEN GIONG nhung o thu muc khac: hop dong khoa theo path CHINH XAC,
--- nen `/sub/wp-login.php` KHONG bi rang buoc. Dung — WordPress cai trong thu muc
--- con thi `document_root` khac, va URI cua no khong phai `/wp-login.php`.
-check("wp-login trong subdir", r("/blog/wp-login.php", "POST", MULTI),      "-")
-check("xmlrpc trong subdir",   r("/sub/xmlrpc.php", "POST", MULTI),         "-")
+check("admin-ajax multipart",
+      post("/wp-admin/admin-ajax.php", MULTI, true, WITH_FILE),       "-")
+check("admin-ajax mp do",
+      mp("/wp-admin/admin-ajax.php", MULTI, true),                    "-")
+check("admin-ajax PUT",       pre("/wp-admin/admin-ajax.php", "PUT"), "-")
+check("async-upload",
+      post("/wp-admin/async-upload.php", MULTI, true, WITH_FILE),     "-")
+check("wp-json PUT",          pre("/wp-json/wp/v2/posts/1", "PUT"),   "-")
+check("goc GET",              pre("/", "GET"),                        "-")
+check("index.php multipart",  post("/index.php", MULTI, true, WITH_FILE), "-")
+check("route la PATCH",       pre("/api/x", "PATCH"),                 "-")
+-- Sau HAI cap thi khong rang buoc: cung cap do `wp_prefix` cho phep hoc.
+check("sau hai cap",          pre("/a/b/wp-login.php", "PUT"),        "-")
 
--- ══ 2. PHAI BAO: vi pham hop dong ═══════════════════════════════════════════
-io.write("routes: vi pham hop dong\n")
-
--- `route_upload` — HEP nhat, va la ca dong luc cua ca muc 5: mot multipart tren
--- route khong bao gio nhan tep. Khong tang nao khac bat duoc ca nay.
-check("cron multipart",       r("/wp-cron.php", "POST", MULTI),       "route_upload")
-check("login multipart",      r("/wp-login.php", "POST", MULTI),      "route_upload")
-check("xmlrpc multipart",     r("/xmlrpc.php", "POST", MULTI),        "route_upload")
-check("comment multipart",    r("/wp-comments-post.php", "POST", MULTI), "route_upload")
--- multipart KHONG co boundary van la multipart.
-check("multipart khong bound", r("/wp-cron.php", "POST", "multipart/form-data"), "route_upload")
-
--- `route_ct` — rong hon, nen se duoc xet promote SAU.
-check("login json",           r("/wp-login.php", "POST", JSON),       "route_ct")
-check("login xml",            r("/wp-login.php", "POST", XML),        "route_ct")
-check("xmlrpc urlencoded",    r("/xmlrpc.php", "POST", URLENC),       "route_ct")
-check("xmlrpc json",          r("/xmlrpc.php", "POST", JSON),         "route_ct")
-check("cron json",            r("/wp-cron.php", "POST", JSON),        "route_ct")
-check("comment json",         r("/wp-comments-post.php", "POST", JSON), "route_ct")
--- Content-type la dang KHONG nhan ra: `other`, khong nam trong tap cho phep.
-check("login ct la la",       r("/wp-login.php", "POST", "x/y"),      "route_ct")
-
--- `route_method`
-check("login PUT",            r("/wp-login.php", "PUT", URLENC),      "route_method")
-check("login DELETE",         r("/wp-login.php", "DELETE", nil),      "route_method")
-check("xmlrpc PATCH",         r("/xmlrpc.php", "PATCH", XML),         "route_method")
-check("cron TRACE",           r("/wp-cron.php", "TRACE", nil),        "route_method")
--- method chu thuong: phai chuan hoa.
-check("method chu thuong ok",  r("/wp-login.php", "post", URLENC),    "-")
-check("method thuong vi pham", r("/wp-login.php", "put", URLENC),     "route_method")
-
--- ══ 3. THU TU uu tien: `route_upload` manh hon `route_ct` ═══════════════════
+-- ══ 2. `route_upload` doi PARSER chung minh co tep ══════════════════════════
 --
--- Mot multipart tren `/xmlrpc.php` vi pham CA HAI (khong phai xml, VA la upload
--- tren route khong nhan tep). Phai bao cai MANH hon — nguoc lai thi mot upload
--- vao xmlrpc chi duoc bao la "content-type sai", dung nhung nhe hon han su that.
-io.write("routes: multipart vi pham ca hai -> bao cai MANH hon\n")
-check("xmlrpc multipart uu tien upload", r("/xmlrpc.php", "POST", MULTI), "route_upload")
-check("cron multipart uu tien upload",   r("/wp-cron.php", "POST", MULTI), "route_upload")
--- Nhung `route_method` uu tien CAO NHAT: mot `PUT` multipart la sai method truoc
--- da, va do la cau tra loi dung nhat ve cai request do.
-check("method sai uu tien nhat", r("/wp-cron.php", "PUT", MULTI),      "route_method")
+-- Day la loi 3 nguoi dung bat, va la truc ma ban truoc cua bo nay khoa SAI.
+io.write("routes: route_upload chi ban khi CO part tep da chung minh\n")
+check("cron + part tep",      post("/wp-cron.php", MULTI, true, WITH_FILE), "route_upload")
+check("login + part tep",     post("/wp-login.php", MULTI, true, WITH_FILE), "route_upload")
+check("xmlrpc + part tep",    post("/xmlrpc.php", MULTI, true, WITH_FILE), "route_upload")
+check("comment + part tep",
+      post("/wp-comments-post.php", MULTI, true, WITH_FILE),          "route_upload")
 
--- ══ 4. `nil` (khong body) KHAC `other` (body dang la) ═══════════════════════
+-- CHI CO FIELD: khong phai upload. `route_ct` van ban (multipart khong duoc phep).
+check("chi co field -> KHONG upload", post("/wp-cron.php", MULTI, true, NO_FILE), "route_ct")
+-- KHONG chung minh duoc: khong duoc bia ra "co tep".
+check("khong chung minh -> KHONG upload",
+      post("/wp-cron.php", MULTI, true, UNPROVEN),                    "route_ct")
+-- `body = nil` (khong soi gi ca): cung khong duoc ket luan co tep.
+check("body nil -> KHONG upload", post("/wp-cron.php", MULTI, true, nil), "route_ct")
+-- `parts` RONG (bang rong, khong phai nil): cung khong co tep.
+check("parts rong -> KHONG upload",
+      post("/wp-cron.php", MULTI, true,
+           { family = "multipart", proof = "ok", scan = "ok", parts = {} }), "route_ct")
+
+-- `route_multipart` do RIENG: no ban cho MOI multipart, bat ke co tep. Do la cach
+-- biet `route_upload` bo qua bao nhieu.
+io.write("routes: route_multipart do RIENG, bat ke co tep\n")
+check("mp co tep",            mp("/wp-cron.php", MULTI, true),        "route_multipart")
+check("mp chi field",         mp("/wp-cron.php", MULTI, true),        "route_multipart")
+check("mp khong than",        mp("/wp-cron.php", MULTI, false),       "-")
+check("mp khong phai multipart", mp("/wp-cron.php", URLENC, true),    "-")
+-- Route KHONG cam upload thi khong do (bang hop dong hom nay: khong co route nao
+-- nhu vay, nen day la phep kiem ve CO CHE).
+check("mp tren route khong khai bao", mp("/index.php", MULTI, true),  "-")
+
+-- ══ 3. `route_ct` va `has_body` ═════════════════════════════════════════════
 --
--- Hai thu nay khong duoc gop: mot `POST` khong `Content-Type` la request khong
--- khai bao than — no khong vi pham `ct` (khong co gi de so). Gop lai thi moi
--- `POST /wp-cron.php` cua WordPress (body rong, co the khong co ct) bi bao.
-io.write("routes: khong co content-type KHAC content-type la la\n")
-check("ct nil",               r("/wp-login.php", "POST", nil),        "-")
-check("ct chuoi rong",        r("/wp-login.php", "POST", ""),         "-")
-check("ct chi khoang trang",  r("/wp-login.php", "POST", "  "),       "route_ct")
-check("ct la la",             r("/wp-login.php", "POST", "zzz"),      "route_ct")
+-- Loi 3 phan hai: mot `GET` mang `Content-Type` la la KHONG duoc sinh fact.
+io.write("routes: khong co THAN -> content-type khong rang buoc gi\n")
+check("GET + ct json",        post("/wp-login.php", JSON, false, nil), "-")
+check("GET + ct la la",       post("/wp-login.php", "x/y", false, nil), "-")
+check("POST co than + json",  post("/wp-login.php", JSON, true, FORM), "route_ct")
+check("POST co than + xml",   post("/wp-login.php", XML, true, FORM),  "route_ct")
+check("xmlrpc + urlencoded",  post("/xmlrpc.php", URLENC, true, FORM), "route_ct")
+check("cron + json",          post("/wp-cron.php", JSON, true, FORM),  "route_ct")
+check("ct la la",             post("/wp-login.php", "x/y", true, FORM), "route_ct")
+-- `nil` (khong content-type) KHAC `other`: khong co gi de so.
+check("co than nhung ct nil", post("/wp-login.php", nil, true, FORM),  "-")
+check("co than nhung ct rong", post("/wp-login.php", "", true, FORM),  "-")
 
--- ══ 5. `ct_family` — phep phan loai ═════════════════════════════════════════
-io.write("routes: ct_family\n")
+-- ══ 4. `route_method` la PHA 1 — khong can than ═════════════════════════════
+io.write("routes: route_method o pha 1\n")
+check("login PUT",            pre("/wp-login.php", "PUT"),            "route_method")
+check("login DELETE",         pre("/wp-login.php", "DELETE"),         "route_method")
+check("xmlrpc PATCH",         pre("/xmlrpc.php", "PATCH"),            "route_method")
+check("cron TRACE",           pre("/wp-cron.php", "TRACE"),           "route_method")
+check("method chu thuong ok", pre("/wp-login.php", "post"),           "-")
+check("method thuong vi pham", pre("/wp-login.php", "put"),           "route_method")
+
+-- ══ 5. Hop dong la OVERLAY WordPress ═══════════════════════════════════════
+--
+-- Loi 4 nguoi dung bat. Site khong phai WordPress co quyen dung `/wp-login.php`.
+io.write("routes: chi ap khi host DA duoc chung minh la WordPress\n")
+check("khong WP: PUT im",     pre("/wp-login.php", "PUT", NOTWP),     "-")
+check("khong WP: json im",    post("/wp-login.php", JSON, true, FORM, NOTWP), "-")
+check("khong WP: upload im",
+      post("/wp-cron.php", MULTI, true, WITH_FILE, NOTWP),            "-")
+check("khong WP: mp im",      mp("/wp-cron.php", MULTI, true, NOTWP), "-")
+-- Cong nhan CMS thieu hoan toan (khong truyen ham): cung im.
+check("khong co ham cong nhan",
+      routes.check_pre("/wp-login.php", "PUT", nil, "a.test") == nil, true)
+
+-- ══ 6. TIEN TO: WordPress cai trong thu muc con ════════════════════════════
+--
+-- Ban truoc khoa theo path CHINH XAC nen `/blog/wp-login.php` bi bo qua hoan toan
+-- — mot lo FN ma nguoi dung chi ra.
+io.write("routes: tien to (WordPress trong thu muc con)\n")
+check("blog PUT",             pre("/blog/wp-login.php", "PUT"),       "route_method")
+check("blog upload",
+      post("/blog/wp-cron.php", MULTI, true, WITH_FILE),              "route_upload")
+check("blog luu luong that im", post("/blog/wp-login.php", URLENC, true, FORM), "-")
+-- `split_route` tra CA tien to: kiem truc tiep.
+do
+    local p1, r1 = routes.split_route("/wp-login.php")
+    check("split goc: tien to rong", p1, "")
+    check("split goc: route",        r1, "/wp-login.php")
+    local p2, r2 = routes.split_route("/blog/wp-login.php")
+    check("split blog: tien to",     p2, "/blog")
+    check("split blog: route",       r2, "/wp-login.php")
+    check("split sau hai cap",       routes.split_route("/a/b/wp-login.php"), nil)
+    check("split route khong biet",  routes.split_route("/index.php"), nil)
+end
+-- Tien to di vao `is_wp_root`: mot `/blog` co WordPress KHONG lam `/shop` bi rang
+-- buoc. Kiem bang mot ham cong nhan CHI dung cho `/blog`.
+do
+    local only_blog = function(_, prefix) return prefix == "/blog" end
+    check("chi /blog duoc cong nhan",
+          routes.check_pre("/blog/wp-login.php", "PUT", only_blog, "a.test"),
+          "route_method")
+    check("/shop khong duoc cong nhan",
+          routes.check_pre("/shop/wp-login.php", "PUT", only_blog, "a.test") == nil,
+          true)
+end
+
+-- ══ 7. `ct_family` va `path_of` ════════════════════════════════════════════
+io.write("routes: ct_family va path_of\n")
 check("fam nil",       routes.ct_family(nil),        nil)
 check("fam rong",      routes.ct_family(""),         nil)
 check("fam urlenc",    routes.ct_family(URLENC),     "urlencoded")
@@ -167,12 +241,8 @@ check("fam text/xml",  routes.ct_family(XML),        "xml")
 check("fam app/xml",   routes.ct_family("application/xml"), "xml")
 check("fam json",      routes.ct_family(JSON),       "json")
 check("fam khac",      routes.ct_family("image/png"), "other")
--- Khoang trang dau/cuoi va tham so.
 check("fam co space",  routes.ct_family("  application/json  "), "json")
 check("fam co param",  routes.ct_family("application/json; charset=utf-8"), "json")
-
--- ══ 6. `path_of` — tach path khoi query ═════════════════════════════════════
-io.write("routes: path_of\n")
 check("path thuong",   routes.path_of("/wp-login.php"),        "/wp-login.php")
 check("path co query", routes.path_of("/wp-login.php?a=1"),    "/wp-login.php")
 check("path co frag",  routes.path_of("/wp-login.php#x"),      "/wp-login.php")
@@ -181,33 +251,31 @@ check("path nil",      routes.path_of(nil),                     "/")
 check("path rong",     routes.path_of(""),                      "/")
 check("path chi query", routes.path_of("?a=1"),                 "/")
 
--- ══ 7. Hop dong phai co MOT luat trong registry ════════════════════════════
+-- ══ 8. Moi ten vi pham phai co MOT luat trong registry ═════════════════════
 --
--- Mot ten vi pham ma `registry` khong biet thi `policy.emit` bo qua trong IM
--- LANG — luat khong bao gio chay, va khong ai bao loi. Dung ho loi `canvas_change`
--- (trong so 50, ghi theo identity doc theo ip, vinh vien bang 0).
+-- Mot ten ma `registry` khong biet thi `policy.emit` bo qua trong IM LANG — luat
+-- khong bao gio chay, va khong ai bao loi.
 io.write("routes: moi ten vi pham phai co luat trong registry\n")
-for _, id in ipairs({ "route_method", "route_ct", "route_upload" }) do
+for _, id in ipairs({ "route_method", "route_ct", "route_upload", "route_multipart" }) do
     local rule = registry.get(id)
     check("registry co " .. id, rule ~= nil, true)
     if rule then
-        -- Giai doan DO: diem 0 va `observe`. Doi cho nay phai la mot quyet dinh
-        -- CO Y, khong phai mot lan sua tay lot qua.
-        check(id .. " diem 0",       rule.score,  0)
-        check(id .. " la observe",   rule.action, "observe")
-        check(id .. " ho protocol",  rule.family, "protocol")
+        check(id .. " diem 0",       rule.score,   0)
+        check(id .. " la observe",   rule.action,  "observe")
+        check(id .. " ho protocol",  rule.family,  "protocol")
+        -- Loi 4: PHAI la overlay wordpress, khong phai generic.
+        check(id .. " profile wordpress", rule.profile, "wordpress")
     end
 end
 
--- Va nguoc lai: moi luat `route_*` trong registry phai duoc `routes.check` tra ve
--- o mot ca nao do. Mot luat khai bao ma khong ai phat thi vinh vien bang 0.
+-- Nguoc lai: moi luat `route_*` phai duoc tra ve o mot ca nao do.
 io.write("routes: moi luat route_* phai duoc phat o mot ca nao do\n")
 do
     local emitted = {}
-    -- Ba ca dai dien, lay tu chinh muc 2 o tren.
-    emitted[routes.check("/wp-login.php", "PUT", URLENC)] = true
-    emitted[routes.check("/wp-login.php", "POST", JSON)]  = true
-    emitted[routes.check("/wp-cron.php", "POST", MULTI)]  = true
+    emitted[routes.check_pre("/wp-login.php", "PUT", WP, "a.test")] = true
+    emitted[routes.check_post("/wp-login.php", JSON, true, FORM, WP, "a.test")] = true
+    emitted[routes.check_post("/wp-cron.php", MULTI, true, WITH_FILE, WP, "a.test")] = true
+    emitted[routes.check_multipart("/wp-cron.php", MULTI, true, WP, "a.test")] = true
     for id in pairs(registry.all()) do
         if id:sub(1, 6) == "route_" then
             check("luat " .. id .. " co duong phat", emitted[id] == true, true)
@@ -215,10 +283,7 @@ do
     end
 end
 
--- ══ 8. Bang hop dong: moi dong phai co `why` ════════════════════════════════
---
--- `why` la cho ghi BAT BIEN dan ra dong do. Mot hop dong khong co ly do la mot
--- hop dong lay tu log — dung thu ma muc 5 khong duoc phep lam.
+-- ══ 9. Bang hop dong: moi dong phai co `why` ═══════════════════════════════
 io.write("routes: moi hop dong phai co `why`\n")
 do
     local n = 0
@@ -226,8 +291,9 @@ do
         n = n + 1
         check("hop dong " .. path .. " co why",
               type(c.why) == "string" and #c.why > 10, true)
-        -- Bon route deu cho GET: chan GET khong bat duoc gi ma pha ca bon.
         check("hop dong " .. path .. " cho GET", c.methods.GET, true)
+        -- Bon route deu KHONG nhan tep — do la bat bien chung cua bang hom nay.
+        check("hop dong " .. path .. " cam tep", c.upload, false)
     end
     check("co du bon hop dong", n, 4)
 end

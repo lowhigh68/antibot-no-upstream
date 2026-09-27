@@ -103,8 +103,20 @@ end
 -- otherwise; the exact sub-label is retained for tuning.
 add("upload_apache_config", "upload", "request_body", "generic", "signal", "enforce",
     45, 5, 0.90, { "upload.config", "upload.handler_config" })
-add("upload_php_config", "upload", "request_body", "generic", "signal", "enforce",
+-- `.user.ini` va `php.ini` TACH THAT SU (truoc ban nay ca hai vao
+-- `upload_php_config`, va chu thich noi "tach o name_flags" trong khi ma KHONG
+-- tach — nen so lieu khong tra loi duoc hit nao tu ten nao).
+--
+-- Diem giu nguyen 40 cho `.user.ini`: PHP doc no THEO THU MUC o FPM/CGI
+-- (`HAVE_PHP1_FPM` tren 74/74 domain, do 27-09) nen mot tep upload vao webroot co
+-- tac dung THAT. `php.ini` xuong 5 — ngang `upload_foreign_config`: no KHONG duoc
+-- doc theo thu muc o FPM/CGI, nen gan nhu vo hai va la dau hieu scanner. Tron hai
+-- cai lam con so `.user.ini` phong len bang luu luong vo hai, dung loi da tranh
+-- cho `web.config`.
+add("upload_user_ini", "upload", "request_body", "generic", "signal", "enforce",
     40, 5, 0.88, { "upload.config", "upload.php_config" })
+add("upload_php_ini", "upload", "request_body", "generic", "signal", "enforce",
+    5, 2, 0.35, { "upload.config", "upload.php_config" })
 add("upload_foreign_config", "upload", "request_body", "generic", "signal", "enforce",
     5, 2, 0.35, { "upload.config", "upload.foreign_config" })
 add("upload_config_case", "upload", "request_body", "generic", "signal", "enforce",
@@ -171,8 +183,19 @@ add("upload_php_double_content", "correlation", "decision", "generic", "block", 
     100, 5, 0.95, { "correlation.same_part_php_double" })
 add("upload_apache_handler_content", "correlation", "decision", "generic", "block", "shadow",
     100, 5, 0.97, { "correlation.same_part_apache_handler" })
-add("upload_php_autoload_content", "correlation", "decision", "generic", "block", "shadow",
-    100, 5, 0.96, { "correlation.same_part_php_autoload" })
+-- HAI composite autoload, khong mot: `.user.ini` la duong chay ma THAT (PHP doc
+-- theo thu muc o FPM/CGI), con `php.ini` gan nhu vo hai. Gop lai thi so lieu
+-- khong noi duoc nen promote cai nao — va day chinh la con so can co TRUOC khi
+-- promote, nen khong the "de sau moi tach".
+--
+-- `.user.ini` la ung vien shadow MANH; `php.ini` de `observe` rieng va diem 0:
+-- mot `php.ini` upload kem `auto_prepend_file` la dau hieu ro rang ve Y DINH,
+-- nhung khong phai mot duong chay ma tren stack nay — chan no la chan mot y dinh
+-- chu khong chan mot co che.
+add("upload_user_ini_autoload_content", "correlation", "decision", "generic", "block", "shadow",
+    100, 5, 0.96, { "correlation.same_part_user_ini_autoload" })
+add("upload_php_ini_autoload_content", "correlation", "decision", "generic", "observe", "enforce",
+    0, 2, 0.60, { "correlation.same_part_php_ini_autoload" })
 
 -- ── Muc 7: DUOI hua mot dinh dang, BYTE DAU noi dang khac ───────────
 --
@@ -201,6 +224,28 @@ add("upload_magic_exec", "body", "request_body", "generic", "observe", "enforce"
 add("upload_magic_mismatch", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 1.00, { "upload.magic_mismatch" })
 
+-- ── DUONG BYPASS: tep cau hinh soi KHONG HET ────────────────────────
+--
+-- `body_core` DA dat `scan_state = "config_trunc"` dung cach khi `upload_content`
+-- cham tran, nhung TRUOC ban nay khong ai DOC no. `init.lua` chi tieu thu
+-- `content_flags`, nen mot payload nhu the nay ne duoc composite:
+--
+--     <512 dong vo hai>
+--     AddType application/x-httpd-php .jpg
+--
+-- Ten `.htaccess` van sinh signal, nhung `upload_apache_handler_content` KHONG
+-- xuat hien — va `content_flags = false` doc thanh "da soi, sach". Do la mot vung
+-- mu KE GUI CHON DUOC, tuc dung loai vung mu ma [[feedback-record-then-decide]]
+-- noi phai bat bang thuoc tinh chu khong cho log.
+--
+-- `observe`, diem 0 nhu moi fact moi. Nhung no KHONG vo nghia: mot `.htaccess`
+-- hop le la cau hinh cho MOT thu muc — do 27-09 tren fleet, lon nhat 4,1 KiB —
+-- nen mot tep cau hinh cham tran 512 dong / 64 KiB gan nhu chac chan khong phai
+-- cau hinh that. Day la nhom co ty le nen RAT cao, va `postdeploy.sh` muc 15 do
+-- chinh dieu do truoc khi promote.
+add("upload_config_scan_incomplete", "upload", "request_body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "upload.config_scan_incomplete" })
+
 -- ── Muc 5: HOP DONG ENDPOINT (route policy) ─────────────────────────
 --
 -- `routes.lua` tra loi mot cau ma khong tang nao khac tra loi duoc: HINH DANG cua
@@ -220,12 +265,28 @@ add("upload_magic_mismatch", "body", "request_body", "generic", "observe", "enfo
 -- la mot phep dao nguoc nguy hiem: moi thu khong khai bao thanh dang nghi. Bang
 -- hop dong CO Y chi co bon route co bat bien doc tu chinh ma WordPress; quyet tu
 -- `postdeploy.sh` muc 14.
-add("route_method", "protocol", "uri", "generic", "observe", "enforce",
+-- `profile = "wordpress"` — KHONG phai `generic`, va do la mot sua loi kien truc:
+-- bon hop dong trong `routes.lua` la route CUA WORDPRESS. Mot site tu viet co
+-- quyen dung `/wp-login.php` cho muc dich rieng, nen ap chung cho moi host la FP
+-- ngay khi promote. `policy.emit` tu gate theo `rule.profile`, va `routes.lua` con
+-- doi mot cong nhan CMS bang BANG CHUNG TREN DIA (`wp_paths.is_wp_root`) — hai
+-- lop, va lop thu hai la lop that su chan.
+add("route_method", "protocol", "uri", "wordpress", "observe", "enforce",
     0, 1, 1.00, { "route.method" })
-add("route_ct", "protocol", "uri", "generic", "observe", "enforce",
+add("route_ct", "protocol", "uri", "wordpress", "observe", "enforce",
     0, 1, 1.00, { "route.content_type" })
-add("route_upload", "protocol", "uri", "generic", "observe", "enforce",
+-- `route_upload` doi PARSER CHUNG MINH co part tep (`body.parts` khong rong), chu
+-- khong chi doi `Content-Type: multipart/form-data`. Ban truoc chi xem content-type
+-- nen mot form multipart CHI CO FIELD, hay mot than RONG khai bao multipart, deu bi
+-- goi la "upload bi cam" — telemetry mang mot ten noi dieu no khong do.
+add("route_upload", "protocol", "uri", "wordpress", "observe", "enforce",
     0, 1, 1.00, { "route.upload_forbidden" })
+-- `route_multipart` DO RIENG: "route nay co nhan than multipart khong", bat ke co
+-- tep. Can de biet `route_upload` bo qua bao nhieu — multipart chi co field, va
+-- multipart KHONG soi duoc. Khong co con so nay thi khong phan biet duoc
+-- `route_upload` im lang vi SACH hay vi KHONG CHUNG MINH DUOC.
+add("route_multipart", "protocol", "uri", "wordpress", "observe", "enforce",
+    0, 1, 1.00, { "route.multipart" })
 
 -- ── Muc 8: tep CAU HINH vua bi sua o thu muc cua URI dang goi ───────
 --
@@ -251,17 +312,18 @@ add("fim_config_changed", "correlation", "uri", "generic", "observe", "enforce",
 -- `content_flags` cua CUNG mot part; bang nay la noi DUY NHAT quyet chung thanh mot
 -- phan quyet.
 --
--- `upload_php_config` (`.user.ini` VA `php.ini`) dung CHUNG co `autoload` — cung mot
--- directive, cung co che — nhung tach o day va o `name_flags`: `.user.ini` duoc PHP
--- doc THEO THU MUC o FPM/CGI nen mot tep upload vao webroot co tac dung THAT, con
--- `php.ini` thi khong. Hom nay ca hai vao cung mot rule id vi `name_flags` chua phan
--- biet duoc hai ten; khi so lieu cho thay `php.ini` chiem phan lon thi tach
--- `name_flags` truoc, roi tach rule sau.
+-- `.user.ini` va `php.ini` di HAI rule id khac nhau, khong dung chung: `.user.ini`
+-- duoc PHP doc THEO THU MUC o FPM/CGI nen mot tep upload vao webroot co tac dung
+-- THAT, con `php.ini` thi khong. Ban truoc gop chung VA chu thich noi "tach o
+-- name_flags" — chu thich SAI so voi ma, va hau qua la so lieu khong tra loi duoc
+-- hit nao den tu ten nao. Logic PHAT HIEN `autoload` van dung chung trong
+-- `upload_content.lua` (cung directive, cung co che); tach o TEN va o day.
 local SAME_PART = {
     upload_php_ext        = { php_tag  = "upload_php_executable_content" },
     upload_php_double     = { php_tag  = "upload_php_double_content" },
     upload_apache_config  = { handler  = "upload_apache_handler_content" },
-    upload_php_config     = { autoload = "upload_php_autoload_content" },
+    upload_user_ini       = { autoload = "upload_user_ini_autoload_content" },
+    upload_php_ini        = { autoload = "upload_php_ini_autoload_content" },
 }
 _M.SAME_PART = SAME_PART
 

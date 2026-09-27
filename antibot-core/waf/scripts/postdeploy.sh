@@ -330,7 +330,7 @@ echo "=== 14. Muc 5: HOP DONG ENDPOINT (route policy) ==="
 # Cot `final=` la phan quyet THAT cua engine: diem 0 nen moi phan quyet o day do
 # luat KHAC quyet. Mot `final=allow` ap dao nghia la ba luat nay dang thay thu ma
 # khong ai khac thay — dung cai muc 5 sinh ra de tim.
-grep -F '[waf]' "$W" | grep -E 'rule=route_(method|ct|upload)' | awk "$P"'
+grep -F '[waf]' "$W" | grep -E 'rule=route_(method|ct|upload|multipart)' | awk "$P"'
 {
     s = (f["smp"] == "") ? 1 : f["smp"] + 0
     tot += s
@@ -348,11 +348,50 @@ END {
     printf "  tong: %d luot\n", tot
     # In theo thu tu HEP -> RONG, khong theo thu tu bang: thu tu nay la thu tu xet
     # promote, nen no phai hien ra ngay trong bao cao.
-    split("route_upload route_method route_ct", ord, " ")
-    for (i = 1; i <= 3; i++) if (r[ord[i]]) printf "    %-14s %6d\n", ord[i], r[ord[i]]
+    split("route_upload route_method route_ct route_multipart", ord, " ")
+    for (i = 1; i <= 4; i++) if (r[ord[i]]) printf "    %-14s %6d\n", ord[i], r[ord[i]]
     print  "    ---- theo route:"
     for (k in rr) printf "    %-46s %6d\n", k, rr[k]
     for (k in d)  printf "    domain: %-32s %6d\n", k, d[k]
     for (k in fin) printf "    phan quyet THAT cua engine: %-12s %6d\n", k, fin[k]
     print  "  (thu tu in la thu tu XET PROMOTE: upload hep nhat, ct rong nhat)"
+}'
+
+echo "=== 15. Tep CAU HINH soi KHONG HET (duong bypass da dong) ==="
+# `body_core` DA dat `scan_state = "config_trunc"` tu buoc 3, nhung TRUOC ad48546
+# khong ai doc no — nen payload "<512 dong vo hai> + AddType ... .jpg" ne duoc
+# composite, va `content_flags = false` doc thanh "da soi, sach".
+#
+# Con so quyet dinh: mot `.htaccess` HOP LE la cau hinh cho MOT thu muc (do 27-09
+# tren fleet: lon nhat 4,1 KiB). Nen mot tep cau hinh cham tran 512 dong / 64 KiB
+# gan nhu chac chan khong phai cau hinh that. Ty le nen RAT cao — neu no cao that
+# thi day la nhom promote duoc SOM, va day la muc do chinh dieu do.
+grep -F '[waf]' "$W" | grep -F 'rule=upload_config_scan_incomplete' | awk "$P"'
+{
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    tot += s
+    d[f["domain"]] += s
+    # `matched` = "slot=N <ly do>" trong MA, nhung `scrub` o `waf_logger.lua:43`
+    # doi MOI khoang trang thanh `_` truoc khi ghi — nen tren log that no la
+    # `slot=1_config_trunc`. Tach bang `_`, khong bang khoang trang: mot phep tach
+    # theo `" "` se chi thay `slot=1` va nhom moi ly do vao "-".
+    #
+    # Va KHONG tach theo `_` roi lay `p[2]`: `config_trunc` TU NO chua mot `_`, nen
+    # phep tach cho `p[2] = "config"` — dung mot nua, tuc mot nhan SAI. Bo TIEN TO
+    # `slot=<so>_` thay vi tach.
+    ly = f["matched"]
+    sub(/^slot=[0-9]+_/, "", ly)
+    r[(ly == "" || ly == f["matched"]) ? "-" : ly] += s
+}
+END {
+    if (!tot) {
+        print "  (khong co luot nao — khong tep cau hinh nao cham tran)"
+        exit
+    }
+    printf "  tong: %d luot\n", tot
+    for (k in r) printf "    ly do: %-18s %6d\n", k, r[k]
+    for (k in d) printf "    domain: %-32s %6d\n", k, d[k]
+    print  "  (doi chieu muc 11: `cung part` DEM part co CA ten lan co noi dung;"
+    print "   nhom o day la part co ten cau hinh ma noi dung CHUA soi het — tuc"
+    print "   nhom muc 11 KHONG the ket luan gi ve)"
 }'

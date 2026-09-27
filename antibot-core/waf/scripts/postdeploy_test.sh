@@ -62,9 +62,9 @@ echo "[$N] [waf-body] ts=1 $B rid=r11 domain=e.test uri=/up ct=multipart class=n
 # .htaccess doi handler (php MU)
 echo "[$N] [waf-body] ts=1 $B rid=r12 domain=e.test uri=/up ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_apache_config pf=ok pnf=0 pfl=0 parts=1:upload_apache_config:handler php=0 smp=1"
 # .user.ini nap ma
-echo "[$N] [waf-body] ts=1 $B rid=r13 domain=e.test uri=/up ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_php_config pf=ok pnf=0 pfl=0 parts=1:upload_php_config:autoload php=0 smp=1"
+echo "[$N] [waf-body] ts=1 $B rid=r13 domain=e.test uri=/up ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_user_ini pf=ok pnf=0 pfl=0 parts=1:upload_user_ini:autoload php=0 smp=1"
 # tep cau hinh soi KHONG HET
-echo "[$N] [waf-body] ts=1 $B rid=r14 domain=e.test uri=/up ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_php_config pf=ok pnf=0 pfl=0 parts=1:upload_php_config:0:config_trunc php=0 smp=1"
+echo "[$N] [waf-body] ts=1 $B rid=r14 domain=e.test uri=/up ct=multipart class=navigation scan=ok fntr=0 nf=- fl=- fn=- uprule=upload_user_ini pf=ok pnf=0 pfl=0 parts=1:upload_user_ini:0:config_trunc php=0 smp=1"
 # anh lon co <?= trong byte tep, ten sach -> nhom FP da do 26-09
 echo "[$N] [waf-body] ts=1 $B rid=r15 domain=f.test uri=/media ct=multipart class=interaction scan=ok fntr=0 nf=- fl=- fn=- uprule=- pf=ok pnf=0 pfl=1 parts=1:0:php_tag php=1 smp=1"
 # the PHP o FORM FIELD, khong trong tep
@@ -101,6 +101,15 @@ echo "[$N] [waf] ts=9 rid=r26 id=- domain=k.test ip=6.6.6.6 rule=route_upload ta
 # smp=20 -> phai nhan 20
 echo "[$N] [waf] ts=10 rid=r27 id=- domain=k.test ip=6.6.6.6 rule=route_ct target=URI sev=notice pl=0 matched=/xmlrpc.php score=0.00 action=observe class=api_callback richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
 echo "[$N] [waf] ts=11 rid=r28 id=- domain=k.test ip=6.6.6.6 rule=route_method target=URI sev=notice pl=0 matched=/wp-login.php score=0.00 action=observe class=auth_endpoint richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
+
+# ── Muc 14 (bo sung): route_multipart do RIENG ──
+# Ban truoc coi MOI multipart la `route_upload`; nay `route_upload` doi PARSER
+# chung minh co part tep, va `route_multipart` do rieng phan con lai.
+echo "[$N] [waf] ts=12 rid=r29 id=- domain=k.test ip=6.6.6.6 rule=route_multipart target=URI sev=notice pl=0 matched=/wp-cron.php score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
+
+# ── Muc 15: tep cau hinh soi KHONG HET (duong bypass) ──
+# `matched` = "slot=N <ly do>". smp=5 -> phai nhan 5.
+echo "[$N] [waf] ts=13 rid=r30 id=- domain=l.test ip=5.5.5.5 rule=upload_config_scan_incomplete target=MULTIPART_PART sev=notice pl=0 matched=slot=1_config_trunc score=0.00 action=observe class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=5"
 } > "$R/L/waf.log"
 {
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
@@ -118,7 +127,7 @@ nwant() { if printf '%s\n' "$OUT" | grep -qE "$2"; then
 echo "postdeploy_test: doi chieu voi dap an tinh tay"
 
 # ── Muc 0: cua so, va dong TRUOC moc deploy phai bi loai ───────────────────
-want  "0 so dong"              'dong \[waf\] 10   dong \[waf-body\] 19'
+want  "0 so dong"              'dong \[waf\] 12   dong \[waf-body\] 19'
 want  "0 rid tren >1 dong"     'rid tren >1 dong: 1   request co CA dong luat lan dong than: 1'
 nwant "0 loai dong truoc moc"  'old\.test'
 
@@ -174,7 +183,7 @@ want  "11 hai part khac nhau"  'hai part KHAC nhau .*: 1'
 want  "11 chi ten / chi noi dung" 'chi ten nguy hiem: 1    chi noi dung nguy hiem: 23'
 want  "11 apache handler"      'cung part: upload_apache_config  \+  handler'
 want  "11 php_ext php_tag"     'cung part: upload_php_ext  \+  php_tag'
-want  "11 php_config autoload" 'cung part: upload_php_config  \+  autoload'
+want  "11 php_config autoload" 'cung part: upload_user_ini  \+  autoload'
 want  "11 config_trunc"        'tep cau hinh soi KHONG HET: 1 part'
 
 # ── Muc 6, 7: phien dang nhap va ghep antibot.log ──────────────────────────
@@ -211,13 +220,24 @@ want  "13 final monitor"       'phan quyet THAT cua engine: monitor +20'
 
 # ── Muc 14 (roadmap muc 5): hop dong endpoint ──────────────────────────────
 # Dap an tinh TAY: r26(1) + r27(20) + r28(1) = 22.
-want  "14 tong luot"           'tong: 22 luot'
+want  "14 tong luot"           'tong: 23 luot'
+want  "14 route_multipart"     'route_multipart +1'
 want  "14 route_upload"        'route_upload +1'
 want  "14 route_ct nhan smp"   'route_ct +20'
 want  "14 route_method"        'route_method +1'
 want  "14 theo route cron"     '/wp-cron\.php +1'
 want  "14 theo route xmlrpc"   '/xmlrpc\.php +20'
-want  "14 domain"              'domain: k\.test +22'
+want  "14 domain"              'domain: k\.test +23'
+
+# ── Muc 15: tep cau hinh soi KHONG HET ─────────────────────────────────────
+# Dap an tinh TAY: r30 smp=5 = 5.
+# LY DO phai la `config_trunc` NGUYEN VEN: `scrub` (waf_logger.lua:43) doi khoang
+# trang thanh `_`, nen tren log that `matched` la `slot=1_config_trunc`. Mot phep
+# tach theo `_` roi lay truong 2 se cho `config` — dung mot nua, tuc nhan SAI.
+want  "15 tong luot"           'tong: 5 luot'
+want  "15 ly do nguyen ven"    'ly do: config_trunc +5'
+nwant "15 KHONG cat nham nhan" 'ly do: config +'
+want  "15 domain"              'domain: l\.test +5'
 
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

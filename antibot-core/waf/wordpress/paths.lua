@@ -329,6 +329,16 @@ local function is_wp_root(host, prefix)
     return hit
 end
 
+-- Export cho lớp khác: `waf/routes.lua` (roadmap mục 5) cần đúng cổng nhận CMS
+-- này — "host này đã được chứng minh là WordPress bằng một file THẬT trên đĩa".
+-- Hợp đồng endpoint của WordPress không được áp cho site không phải WordPress:
+-- một site tự viết có quyền dùng `/wp-login.php` cho mục đích riêng.
+--
+-- Không viết lại phép kiểm đó ở `routes.lua`: nó có cache hai tầng (shared dict +
+-- Redis) và nó chỉ được ghi ở log phase trên file thật — nhân đôi là mở đường cho
+-- hai định nghĩa "là WordPress" lệch nhau.
+_M.is_wp_root = is_wp_root
+
 -- ── Khớp luật ────────────────────────────────────────────────────────
 -- Trả về rule_id hoặc nil. Một request khớp nhiều nhất một luật: thứ tự dưới
 -- đây đi từ hẹp tới rộng để luật cụ thể hơn thắng.

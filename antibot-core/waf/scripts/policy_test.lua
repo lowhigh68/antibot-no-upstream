@@ -829,5 +829,159 @@ do
     eq("would_rule_mode thuoc CUNG luat do", d3.would_rule_mode, "shadow")
 end
 
+-- ══ END-TO-END qua init.lua: bon lo do nguoi dung bat 27-09 ════════════════
+--
+-- Bon muc duoi day kiem qua `_run_pre_with_runtime`, tuc dung duong ma production
+-- di. Ly do phai o day chu khong o bo test cua tung module: ca bon lo deu la
+-- "module tinh dung, nhung KHONG AI TIEU THU ket qua" — mot phep kiem o tang
+-- module se XANH trong khi he thong van bypass duoc.
+do
+    local waf = dofile(SRC .. "waf/init.lua")
+
+    -- `is_wp_root` that doc Redis. Bo test khong co Redis, nen thay bang mot ban
+    -- do test dat — va do la MOT PHAN cua phep kiem: hop dong route PHAI di qua
+    -- mot cong nhan CMS, nen cong do phai thay the duoc.
+    local wp_paths = require "antibot.waf.wordpress.paths"
+    local real_is_wp = wp_paths.is_wp_root
+    local function with_wp(flag, fn)
+        wp_paths.is_wp_root = function() return flag end
+        local ok, err = pcall(fn)
+        wp_paths.is_wp_root = real_is_wp
+        if not ok then error(err, 0) end
+    end
+
+    local function run(uri, method, ct, body)
+        local ctx = {}
+        local rt = {
+            var = { host = "a.test", uri = uri, args = nil,
+                    remote_addr = "127.0.0.1", document_root = "/nonexistent",
+                    http_content_type = ct },
+            req = { get_method = function() return method end },
+            log = function() end, exit = function() end, ERR = 4,
+            waf_body_probe = function(c) c.waf_body = body end,
+        }
+        waf._run_pre_with_runtime(ctx, rt)
+        local seen = {}
+        for i = 1, #(ctx.waf_hits or {}) do
+            seen[ctx.waf_hits[i].rule] = ctx.waf_hits[i]
+        end
+        return seen
+    end
+
+    -- ── LOI 1: `config_trunc` phai duoc TIEU THU ────────────────────────
+    --
+    -- `body_core` DA dat `scan_state = "config_trunc"` tu buoc 3, nhung truoc ban
+    -- nay `init.lua` chi doc `content_flags` — nen `content_flags = false` cua mot
+    -- tep cau hinh CHAM TRAN doc thanh "da soi, sach", va payload
+    -- "<512 dong vo hai> + AddType ... .jpg" ne duoc composite.
+    io.write("\ne2e: config_trunc phai sinh fact (loi 1)\n")
+    local MP = "multipart/form-data; boundary=x"
+    local trunc_body = {
+        family = "multipart", proof = "ok", scan = "ok",
+        parts = { { slot = 1, name_flags = "upload_apache_config",
+                    content_flags = false, scan_state = "config_trunc",
+                    bytes = 99 } },
+    }
+    local s = run("/index.php", "POST", MP, trunc_body)
+    eq("config_trunc -> upload_config_scan_incomplete",
+       s.upload_config_scan_incomplete ~= nil, true)
+    -- KHONG bia ra `handler`: chung ta khong biet trong phan bi cat co gi.
+    eq("va KHONG bia ra composite handler",
+       s.upload_apache_handler_content == nil, true)
+
+    -- Huong NGUOC: `scan_state = "ok"` thi im.
+    local ok_body = {
+        family = "multipart", proof = "ok", scan = "ok",
+        parts = { { slot = 1, name_flags = "upload_apache_config",
+                    content_flags = false, scan_state = "ok", bytes = 99 } },
+    }
+    s = run("/index.php", "POST", MP, ok_body)
+    eq("scan_state ok -> khong sinh fact",
+       s.upload_config_scan_incomplete == nil, true)
+
+    -- ── LOI 5: hai composite autoload KHAC nhau ─────────────────────────
+    io.write("e2e: .user.ini va php.ini di hai rule id (loi 5)\n")
+    local function autoload_part(nf)
+        return { family = "multipart", proof = "ok", scan = "ok",
+                 parts = { { slot = 1, name_flags = nf,
+                             content_flags = { autoload = true },
+                             scan_state = "ok", bytes = 30 } } }
+    end
+    s = run("/index.php", "POST", MP, autoload_part("upload_user_ini"))
+    eq(".user.ini -> user_ini_autoload_content",
+       s.upload_user_ini_autoload_content ~= nil, true)
+    eq("va KHONG phai php_ini_autoload_content",
+       s.upload_php_ini_autoload_content == nil, true)
+    s = run("/index.php", "POST", MP, autoload_part("upload_php_ini"))
+    eq("php.ini -> php_ini_autoload_content",
+       s.upload_php_ini_autoload_content ~= nil, true)
+    eq("va KHONG phai user_ini_autoload_content",
+       s.upload_user_ini_autoload_content == nil, true)
+
+    -- ── LOI 3: `route_upload` doi PARSER chung minh co tep ──────────────
+    --
+    -- Truoc ban nay chi can `Content-Type: multipart/form-data` la du. Nen mot form
+    -- multipart CHI CO FIELD, va mot than RONG khai bao multipart, deu bi goi la
+    -- "upload bi cam" — telemetry mang mot ten noi dieu no khong do.
+    io.write("e2e: route_upload doi co PART TEP that (loi 3)\n")
+    with_wp(true, function()
+        -- (a) multipart CO part tep -> `route_upload`.
+        local has_file = { family = "multipart", proof = "ok", scan = "ok",
+                           parts = { { slot = 1, name_flags = false,
+                                       content_flags = false, scan_state = "ok",
+                                       bytes = 9 } } }
+        local r = run("/wp-cron.php", "POST", MP, has_file)
+        eq("(a) co part tep -> route_upload", r.route_upload ~= nil, true)
+        eq("(a) va route_multipart cung do",  r.route_multipart ~= nil, true)
+
+        -- (b) multipart CHI CO FIELD (khong part tep) -> KHONG `route_upload`.
+        local no_file = { family = "multipart", proof = "ok", scan = "ok",
+                          parts = nil }
+        r = run("/wp-cron.php", "POST", MP, no_file)
+        eq("(b) chi co field -> KHONG route_upload", r.route_upload == nil, true)
+        eq("(b) nhung route_multipart VAN do",       r.route_multipart ~= nil, true)
+        -- multipart khong nam trong `ct` cho phep, nen `route_ct` ban — dung.
+        eq("(b) route_ct ban vi ct khong duoc phep", r.route_ct ~= nil, true)
+
+        -- (c) KHONG soi duoc (`parts = nil`, `proof` khac ok): khong duoc ket luan
+        -- "co tep". Day la cho de bia ra ket luan nhat.
+        local unproven = { family = "multipart", proof = "hdr", scan = "ok",
+                           parts = nil }
+        r = run("/wp-cron.php", "POST", MP, unproven)
+        eq("(c) khong chung minh -> KHONG route_upload", r.route_upload == nil, true)
+        eq("(c) route_multipart van do",                 r.route_multipart ~= nil, true)
+
+        -- (d) KHONG co than: mot `GET` mang Content-Type la la KHONG sinh fact.
+        r = run("/wp-cron.php", "GET", "application/json", nil)
+        eq("(d) GET khong than -> khong route_ct", r.route_ct == nil, true)
+        eq("(d) va khong route_multipart",         r.route_multipart == nil, true)
+        -- `GET` nam trong tap method cho phep nen cung khong `route_method`.
+        eq("(d) va khong route_method",            r.route_method == nil, true)
+
+        -- (e) `route_method` la PHA 1: khong can than.
+        r = run("/wp-cron.php", "PUT", nil, nil)
+        eq("(e) PUT -> route_method (khong can than)", r.route_method ~= nil, true)
+
+        -- (f) Tien to: WordPress cai trong thu muc con.
+        r = run("/blog/wp-cron.php", "PUT", nil, nil)
+        eq("(f) /blog/wp-cron.php -> route_method", r.route_method ~= nil, true)
+        -- Sau hai cap thi khong hoc (cung cap do `wp_prefix` cho phep).
+        r = run("/a/b/wp-cron.php", "PUT", nil, nil)
+        eq("(f) sau hai cap -> khong rang buoc", r.route_method == nil, true)
+    end)
+
+    -- ── LOI 4: hop dong la OVERLAY WordPress ────────────────────────────
+    --
+    -- Site khong phai WordPress co quyen dung `/wp-login.php` cho muc dich rieng.
+    io.write("e2e: hop dong CHI ap khi host DA duoc chung minh la WordPress (loi 4)\n")
+    with_wp(false, function()
+        local r = run("/wp-cron.php", "PUT", nil, nil)
+        eq("host khong phai WP -> khong route_method", r.route_method == nil, true)
+        r = run("/wp-login.php", "POST", "application/json",
+                { family = "urlencoded", proof = "ok", scan = "ok" })
+        eq("host khong phai WP -> khong route_ct", r.route_ct == nil, true)
+    end)
+end
+
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

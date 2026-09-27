@@ -73,12 +73,49 @@ check("chu thich roi dong THAT", ht("# ghi chu\nAddType application/x-httpd-php 
 check("noi tiep dong bang gach nguoc",
       ht("AddType " .. string.char(92) .. "\n  application/x-httpd-php .jpg"), "handler")
 
+-- ── LOI 6 (nguoi dung bat 27-09): PHAI PARSE THEO CU PHAP ────────────────
+--
+-- Ban truoc goi `maps_to_executor` voi TOAN BO phan con lai cua directive, nen chu
+-- `php` trong DUOI tep lam dong khop. Da chay module de xac nhan truoc khi sua.
+--
+-- Cu phap Apache: `AddType <mime> <ext...>` — token DAU TIEN la mime/handler, duoi
+-- di SAU. Nen `AddType text/plain .php` lam `.php` thanh VAN BAN THUAN, nguoc han
+-- y nghia bi gan cho no.
+check("AddType text/plain .php (loi 6)",  ht("AddType text/plain .php"),  "-")
+check("AddType text/plain .cgi (loi 6)",  ht("AddType text/plain .cgi"),  "-")
+check("AddType text/html .phtml",         ht("AddType text/html .phtml"), "-")
+check("AddType application/octet-stream .php",
+      ht("AddType application/octet-stream .php"), "-")
+-- Nhung token DAU TIEN la handler thi VAN ban, du duoi vo hai.
+check("AddHandler php-script .txt van ban",
+      ht("AddHandler php-script .txt"), "handler")
+check("AddType x-httpd-php .txt van ban",
+      ht("AddType application/x-httpd-php .txt"), "handler")
+-- Nhay quanh gia tri co khoang trang: khong duoc cat doi gia tri.
+check("nhay kep om ca gia tri",
+      ht('AddHandler "proxy:unix:/tmp/x.sock|fcgi://localhost" .php'), "handler")
+check("nhay don om gia tri vo hai",
+      ht("AddType 'text/plain' .php"), "-")
+
+-- `Options` tach TOKEN, khong tim chuoi tren ca dong.
+check("Options +Includes -ExecCGI (tat)",
+      ht("Options +Includes -ExecCGI +FollowSymLinks"), "-")
+check("Options -ExecCGI roi +ExecCGI (token cuoi thang)",
+      ht("Options -ExecCGI +ExecCGI"), "handler")
+check("Options +ExecCGI roi -ExecCGI (token cuoi thang)",
+      ht("Options +ExecCGI -ExecCGI"), "-")
+check("Options All (gom ExecCGI)",       ht("Options All"), "handler")
+check("Options None",                    ht("Options None"), "-")
+check("Options FollowSymLinks",          ht("Options FollowSymLinks"), "-")
+-- `ExecCGI` khong tien to = BAT.
+check("Options ExecCGI khong dau",       ht("Options ExecCGI"), "handler")
+
 -- ══ 2. `.user.ini` / `php.ini`: CO DUNG CHUNG, tach o name_flags ════════════
 --
 -- Nguoi dung chot 27-09: hai ten dung chung co `autoload`, tach o `name_flags` va o
 -- composite policy. Cung mot directive, cung mot co che — nen mot co.
 io.write("\nupload_content: .user.ini / php.ini — co autoload dung chung\n")
-local function ini(content) return flag_str(uc.scan_part(content, "upload_php_config"), "autoload") end
+local function ini(content) return flag_str(uc.scan_part(content, "upload_user_ini"), "autoload") end
 
 check("auto_prepend_file", ini("auto_prepend_file=/tmp/shell.jpg"), "autoload")
 check("auto_append_file", ini("auto_append_file = /tmp/x.jpg"), "autoload")
@@ -122,16 +159,90 @@ do
     -- Hon MAX_LINES dong: `incomplete` phai true, va do KHONG phai "sach".
     local many = {}
     for i = 1, uc.MAX_LINES + 50 do many[i] = "memory_limit=" .. i .. "M" end
-    local flags, partial = uc.scan_part(table.concat(many, "\n"), "upload_php_config")
+    local flags, partial = uc.scan_part(table.concat(many, "\n"), "upload_user_ini")
     check("hon MAX_LINES -> incomplete", partial, true)
     check("hon MAX_LINES -> khong bia ra co", flag_str(flags, "autoload"), "-")
     -- Directive that o dong DAU van bat duoc du tep bi cat.
     local f2, p2 = uc.scan_part("auto_prepend_file=/tmp/x\n" .. table.concat(many, "\n"),
-                                "upload_php_config")
+                                "upload_user_ini")
     check("cat nhung van bat dong dau", flag_str(f2, "autoload"), "autoload")
     check("va van bao incomplete", p2, true)
+
+    -- ── LOI 2 (nguoi dung bat 27-09): TRAN BYTE, khong chi tran DONG ─────
+    --
+    -- `MAX_LINES` gioi han PARSER, khong gioi han CHI PHI. Truoc ban nay
+    -- `body_core` lam `body:sub(rg[1], rg[2])` tuc sao chep TOAN part, roi
+    -- `config_lines` chay `gsub` tren toan part, roi `s .. "\n"` tao mot ban sao
+    -- NUA — het thay TRUOC khi vong lap dung o dong 512.
+    --
+    -- ── CA NAY PHAI PHAN BIET DUOC BA TRAN, va lan dau toi viet SAI ──────
+    --
+    -- Ba phep gioi han cung tra `incomplete = true`, nen mot ca cham NHIEU tran
+    -- KHONG chung minh duoc tran nao dang chay. Dot bien "bo tran byte" da XANH
+    -- voi ca dau tien cua toi (`string.rep("; chu thich\n", MAX_CONFIG_BYTES)` —
+    -- hon 512 dong, nen `MAX_LINES` bat truoc).
+    --
+    -- Ca DUY NHAT phan biet duoc: duoi MAX_LINES, moi dong duoi MAX_LINE_LEN,
+    -- nhung TONG BYTE vuot tran. 400 dong x ~800 byte = 321 KB.
+    local pad800 = "; " .. string.rep("c", 800)
+    local t800 = {}
+    for i = 1, 400 do t800[i] = pad800 end
+    local only_bytes = "auto_prepend_file=/tmp/x\n" .. table.concat(t800, "\n")
+    check("ca nay PHAI duoi MAX_LINES", 401 < uc.MAX_LINES, true)
+    check("va moi dong PHAI duoi MAX_LINE_LEN", #pad800 < uc.MAX_LINE_LEN, true)
+    check("va tong byte PHAI vuot tran", #only_bytes > uc.MAX_CONFIG_BYTES, true)
+    local obf, obp = uc.scan_part(only_bytes, "upload_user_ini")
+    check("CHI tran byte -> incomplete", obp, true)
+    check("va directive dong dau van bat duoc", flag_str(obf, "autoload"), "autoload")
+
+    -- Duong KHOANG BYTE (`from`/`to`) — duong ma production di. Cat phai xay ra
+    -- TRUOC phep sao chep, nen phai bao `incomplete` y nhu duong chuoi.
+    local pad = string.rep("x", 100)
+    local ranged = pad .. only_bytes
+    local rf, rp = uc.scan_part(ranged, "upload_user_ini", #pad + 1, #ranged)
+    check("khoang byte: CHI tran byte -> incomplete", rp, true)
+    check("khoang byte: bat duoc directive o dau", flag_str(rf, "autoload"), "autoload")
+
+    -- Khoang byte NGAN thi KHONG bao incomplete — tran khong duoc bao oan.
+    local small = pad .. "auto_prepend_file=/tmp/x\n"
+    local sf, sp = uc.scan_part(small, "upload_user_ini", #pad + 1, #small)
+    check("khoang byte ngan: bat duoc", flag_str(sf, "autoload"), "autoload")
+    check("khoang byte ngan: KHONG incomplete", sp, false)
+
+    -- `from`/`to` phai duoc TON TRONG: mot directive NGOAI khoang khong duoc thay.
+    local outside = "auto_prepend_file=/tmp/x\n" .. pad
+    local of = uc.scan_part(outside, "upload_user_ini", 25, #outside)
+    check("directive NGOAI khoang -> khong thay", flag_str(of, "autoload"), "-")
 end
 
+
+-- ══ 4b. `body_core` phai di qua KHOANG BYTE, khong sao chep toan part ════════
+--
+-- Dot bien "doi lai `body:sub(rg[1], rg[2])`" KHONG bi bat boi bat ky phep kiem
+-- KET QUA nao, va do la dung: hai duong cho cung ket qua, chi khac CHI PHI. Mot
+-- bo test so sanh gia tri khong the thay su khac biet ve chi phi.
+--
+-- Nen kiem bang MOT BAT BIEN CU PHAP tren chinh ma: `body_core` PHAI goi
+-- `scan_part` voi bon doi so (`body, name_flags, from, to`), khong phai voi mot
+-- chuoi da `sub`. Do la mot phep kiem ve HINH DANG cua loi goi, va no la thu duy
+-- nhat phan biet duoc hai duong o day.
+--
+-- Cung khuon `contract_test` dung cho `CONTENT_FLAGS` va cho danh sach preload:
+-- mot bat bien ma test gia tri khong voi tới thi ghim bang cach doc ma.
+io.write("\nupload_content: body_core goi scan_part bang KHOANG BYTE\n")
+do
+    local src = io.open(SRC .. "waf/body_core.lua", "rb")
+    local code = src and src:read("*a") or ""
+    if src then src:close() end
+    check("doc duoc body_core.lua", #code > 1000, true)
+    -- Loi goi PHAI mang `rg[1], rg[2]`.
+    check("scan_part duoc goi voi khoang byte",
+          code:find("upload_content.scan_part(", 1, true) ~= nil and
+          code:find("rg.name_flags, rg[1], rg[2]", 1, true) ~= nil, true)
+    -- Va PHAI KHONG con `body:sub(rg[1], rg[2])` lam doi so cua `scan_part`.
+    check("khong con sao chep toan part vao scan_part",
+          code:find("scan_part(%s*body:sub") == nil, true)
+end
 -- ══ 5. BUOC 5 — bang chung CUNG MOT PART, tren THAN MULTIPART THAT ══════════
 --
 -- Day la phan quan trong nhat (nguoi dung 27-09). Cau hoi: `shell.php` RONG o part 1
@@ -192,12 +303,15 @@ check("(f) .htaccess chua AddType application/x-httpd-php .jpg",
       "1:upload_apache_handler_content")
 check("(g) .user.ini chua auto_prepend_file=shell.jpg",
       same_part(mp({ filepart(".user.ini", "auto_prepend_file=shell.jpg") })),
-      "1:upload_php_autoload_content")
--- `php.ini` dung CHUNG co va hom nay cung rule id — tach o `name_flags` (ca hai la
--- `upload_php_config`) se lam sau khi so lieu cho thay `php.ini` chiem bao nhieu.
-check("(g2) php.ini cung co autoload",
+      "1:upload_user_ini_autoload_content")
+-- `php.ini` dung CHUNG co `autoload` nhung di RULE ID KHAC — do la ca sua loi 5:
+-- ban truoc gop hai ten vao `upload_php_config` VA chu thich noi "tach o
+-- name_flags", tuc chu thich sai so voi ma, nen so lieu khong tra loi duoc hit nao
+-- den tu ten nao. `.user.ini` la duong chay ma THAT (PHP doc theo thu muc o
+-- FPM/CGI); `php.ini` thi khong, nen composite cua no la `observe` diem 0.
+check("(g2) php.ini -> rule id KHAC, khong dung chung",
       same_part(mp({ filepart("php.ini", "auto_prepend_file=shell.jpg") })),
-      "1:upload_php_autoload_content")
+      "1:upload_php_ini_autoload_content")
 
 -- ── Dao thu tu part, va them part vo hai ───────────────────────────────────
 io.write("\ncung part: thu tu part va part vo hai\n")
@@ -237,12 +351,12 @@ do
           core.scan(data, MULTI).up_rule, "upload_apache_config")
 
     -- Nguoc lai: `shell.php` SACH + `.user.ini` co autoload.
-    -- `up_rule` = upload_php_ext (rank 6) tu part 1; part 2 la upload_php_config.
+    -- `up_rule` = upload_php_ext (rank 6) tu part 1; part 2 la upload_user_ini.
     -- Lay `up_rule` -> (php_ext, autoload) = NIL.
     local d2 = mp({ filepart("shell.php", "khong co gi"),
                     filepart(".user.ini", "auto_prepend_file=x.jpg") })
     check("up_rule tu part khac -> autoload van bao dung luat",
-          same_part(d2), "2:upload_php_autoload_content")
+          same_part(d2), "2:upload_user_ini_autoload_content")
     check("va up_rule dung la php_ext", core.scan(d2, MULTI).up_rule, "upload_php_ext")
 end
 

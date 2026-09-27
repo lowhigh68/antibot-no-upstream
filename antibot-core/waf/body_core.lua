@@ -1100,13 +1100,16 @@ function _M.scan(body, ct)
             -- tep cau hinh — do la do chinh xac, khong phai toi uu: mot bai viet
             -- chua chu `AddHandler` khong duoc ban.
             --
-            -- `body:sub` sao chep noi dung part NAY. Chi xay ra khi `name_flags` la
-            -- mot trong hai nhan cau hinh, tuc mot phan nghin luu luong — khong phai
-            -- moi upload.
+            -- Di qua KHOANG BYTE, khong qua `body:sub(rg[1], rg[2])`: ban truoc sao
+            -- chep TOAN part o day roi moi vao `scan_part`, nen `MAX_CONFIG_BYTES`
+            -- ben trong khong cuu duoc gi — mot `.htaccess` 50 MiB van bi sao chep
+            -- va quet ba lan truoc khi parser dung o dong 512. Nay `scan_part` tu cat
+            -- theo tran byte TRUOC phep sao chep dau tien.
             if rg.name_flags == "upload_apache_config" or
-               rg.name_flags == "upload_php_config" then
+               rg.name_flags == "upload_user_ini" or
+               rg.name_flags == "upload_php_ini" then
                 local extra, partial = upload_content.scan_part(
-                    body:sub(rg[1], rg[2]), rg.name_flags)
+                    body, rg.name_flags, rg[1], rg[2])
                 if extra then
                     cf = cf or {}
                     for k in pairs(extra) do cf[k] = true end

@@ -569,8 +569,8 @@ check("x.php7 -> legacy",
 -- BA nhan config, khong gop mot. `web.config` tren stack Linux/Apache gan nhu
 -- khong co gia tri thuc thi, nen tron no vao `.htaccess` la lam con so
 -- `.htaccess` phong len bang luu luong scanner vo hai.
-check(".user.ini -> upload_php_config",
-      scan(mp({ part(CD .. 'filename=".user.ini"') })).up_rule, "upload_php_config")
+check(".user.ini -> upload_user_ini",
+      scan(mp({ part(CD .. 'filename=".user.ini"') })).up_rule, "upload_user_ini")
 check("web.config -> upload_foreign_config",
       scan(mp({ part(CD .. 'filename="web.config"') })).up_rule, "upload_foreign_config")
 

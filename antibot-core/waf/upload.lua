@@ -159,8 +159,30 @@ local APACHE_CONFIG = {
     [".htaccess"] = true,
 }
 
-local PHP_CONFIG = {
-    [".user.ini"] = true, ["php.ini"] = true,
+-- ── `.user.ini` va `php.ini` TACH THAT SU, khong chi trong chu thich ─
+--
+-- Ban truoc gop ca hai vao `upload_php_config` VA chu thich noi "tach o
+-- `name_flags` va composite policy" — chu thich SAI so voi ma dang chay: hai ten
+-- vao cung mot `name_flags` nen `SAME_PART` cung tra cung mot rule id, va so lieu
+-- KHONG tra loi duoc bao nhieu hit tu `.user.ini` va bao nhieu tu `php.ini`.
+--
+-- Va do la con so quyet dinh, khong phai chi tiet:
+--   `.user.ini`  PHP doc THEO THU MUC o che do FPM/CGI (`user_ini.filename`), nen
+--                mot tep upload vao webroot co tac dung THAT. Do 27-09 tren fleet:
+--                `HAVE_PHP1_FPM` tren 74/74 domain -> duong nay MO.
+--   `php.ini`    KHONG duoc doc theo thu muc o FPM/CGI. Mot `php.ini` tha vao
+--                webroot gan nhu vo hai — no la dau hieu scanner, khong phai duong
+--                chay ma. Tron hai cai lam con so `.user.ini` phong len bang luu
+--                luong scanner, dung ho loi da tranh cho `web.config`.
+--
+-- Logic PHAT HIEN autoload trong `upload_content.lua` van DUNG CHUNG (cung mot
+-- directive, cung mot co che) — tach o TEN va o policy, khong tach o parser.
+local USER_INI = {
+    [".user.ini"] = true,
+}
+
+local PHP_INI = {
+    ["php.ini"] = true,
 }
 
 local FOREIGN_CONFIG = {
@@ -329,17 +351,25 @@ end
 --   legacy_ext     duoi CHUA thay tren fleet, co the khong chay
 --   foreign_config `web.config` tren Linux gan nhu vo hai — dau hieu scanner
 local UP_RANK = {
-    upload_apache_config  = 7,
-    upload_php_ext        = 6,
-    upload_php_double     = 5,
-    upload_php_config     = 4,
+    upload_apache_config  = 14,
+    upload_php_ext        = 12,
+    upload_php_double     = 10,
+    -- `.user.ini` giu dung VI TRI cua `upload_php_config` cu (duoi `php_double`,
+    -- tren `config_case`): PHP doc no THEO THU MUC o FPM/CGI nen day la duong chay
+    -- ma that. Do 27-09: `HAVE_PHP1_FPM` tren 74/74 domain.
+    upload_user_ini       = 8,
     -- `config_case` tren `legacy_ext`: mot `.HTACCESS` la y dinh RO RANG hon mot
     -- `.phar` (vong sau co the la ai do dat ten file la la), du kha nang chay
     -- thap hon. Thang nay xep theo hau qua NEU chay, va `.htaccess` doi handler
     -- cua moi file trong thu muc.
-    upload_config_case    = 3,
-    upload_php_legacy_ext = 2,
-    upload_foreign_config = 1,
+    upload_config_case    = 6,
+    upload_php_legacy_ext = 4,
+    -- `php.ini` DUOI `legacy_ext`: no KHONG duoc doc theo thu muc o FPM/CGI, nen
+    -- mot `php.ini` tha vao webroot gan nhu vo hai — dau hieu scanner. Giu TREN
+    -- `foreign_config` mot bac vi no con co the co tac dung o cau hinh CGI/module
+    -- khac, con `web.config` tren Linux thi khong bao gio.
+    upload_php_ini        = 3,
+    upload_foreign_config = 2,
 }
 
 function _M.worse_up(a, b)
@@ -377,11 +407,13 @@ local function classify_name(name)
     -- `worse_up` gop theo nhan; them mot truong nua chi de dem telemetry lam
     -- giao dien nang hon gia tri no mang lai.
     if name ~= lower and
-       (APACHE_CONFIG[lower] or PHP_CONFIG[lower] or FOREIGN_CONFIG[lower]) then
+       (APACHE_CONFIG[lower] or USER_INI[lower] or PHP_INI[lower] or
+        FOREIGN_CONFIG[lower]) then
         return "upload_config_case"
     end
     if APACHE_CONFIG[lower]  then return "upload_apache_config"  end
-    if PHP_CONFIG[lower]     then return "upload_php_config"     end
+    if USER_INI[lower]       then return "upload_user_ini"       end
+    if PHP_INI[lower]        then return "upload_php_ini"        end
     if FOREIGN_CONFIG[lower] then return "upload_foreign_config" end
 
     local exts = extensions(name)
@@ -434,7 +466,8 @@ end
 _M.PHP_EXT        = PHP_EXT
 _M.PHP_LEGACY     = PHP_LEGACY
 _M.APACHE_CONFIG  = APACHE_CONFIG
-_M.PHP_CONFIG     = PHP_CONFIG
+_M.USER_INI       = USER_INI
+_M.PHP_INI        = PHP_INI
 _M.FOREIGN_CONFIG = FOREIGN_CONFIG
 _M.basename       = basename
 _M.strip_tail     = strip_tail

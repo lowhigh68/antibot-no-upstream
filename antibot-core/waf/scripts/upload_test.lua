@@ -111,8 +111,8 @@ eq(".htaccess",                   "upload_apache_config", "AddType bien .jpg tha
 -- Khong phai loi logic — loi QUET SOT. Bai hoc cu the: khi doi gia tri tra ve
 -- cua mot ham, phai `grep` TEN DAU VAO tren toan bo bo test, khong chi them ca
 -- moi. Mot assertion cu con song la mot hop dong con song.
-eq(".user.ini",                   "upload_php_config", "PHP doc .user.ini")
-eq("php.ini",                     "upload_php_config", "php.ini")
+eq(".user.ini",                   "upload_user_ini", "PHP doc .user.ini theo thu muc")
+eq("php.ini",                     "upload_php_ini",  "php.ini KHONG doc theo thu muc")
 eq("web.config",                  "upload_foreign_config", "IIS")
 eq("../.htaccess",                "upload_apache_config", "qua traversal")
 eq(".htpasswd",                   "upload_foreign_config", "khong doi handler, chi lo hash")

@@ -61,12 +61,72 @@ local HANDLER_DIRECTIVES = {
     -- co so lieu, khong them "cho chac".
 }
 
--- Gia tri co anh xa sang mot bo thuc thi. `low` la gia tri DA lower.
+-- Gia tri co anh xa sang mot bo thuc thi. `low` la MOT TOKEN da lower — khong
+-- phai ca dong.
+--
+-- ── FP DA XAC MINH, va vi sao phai parse theo CU PHAP ───────────────
+--
+-- Ban truoc goi ham nay voi TOAN BO phan con lai cua directive, nen:
+--     AddType text/plain .php      -> handler = true   (SAI)
+--     AddType text/plain .cgi      -> handler = true   (SAI)
+-- Chu `php` chi nam trong DUOI, con token anh xa la `text/plain` — tuc dong nay
+-- lam `.php` thanh van ban thuan, NGUOC HAN y nghia bi gan cho no. Da chay module
+-- de xac nhan ca hai dong tren tra `true`.
+--
+-- Cu phap Apache cua bon directive nay:
+--     AddType    <mime-or-handler> <ext...>     -> token THU NHAT quyet dinh
+--     AddHandler <handler>         <ext...>     -> token THU NHAT quyet dinh
+--     SetHandler <handler>                      -> token THU NHAT (khong co ext)
+--     ForceType  <mime>                         -> token THU NHAT
+-- Nen ca bon deu chi xet ARGUMENT DAU TIEN. Khong co dang nao trong bon dang nay
+-- dat handler o token thu hai.
 local function maps_to_executor(low)
     return low:find("php", 1, true) ~= nil
         or low:find("cgi", 1, true) ~= nil
         or low:find("proxy:unix:", 1, true) ~= nil
         or low:find("proxy:fcgi:", 1, true) ~= nil
+end
+
+-- Token dau tien cua phan argument, da bo nhay. Apache cho nhay quanh gia tri co
+-- khoang trang (duong socket FPM tren fleet CO nhay:
+-- `AddHandler "proxy:unix:...|fcgi://..." .inc .php`), nen mot phep tach theo
+-- khoang trang tran se cat DOI gia tri do.
+local function first_arg(rest)
+    local q = rest:sub(1, 1)
+    if q == '"' or q == "'" then
+        local close = rest:find(q, 2, true)
+        if close then return rest:sub(2, close - 1) end
+        -- Nhay khong dong: lay het phan con lai. Khong tra `nil` — mot dong hong
+        -- cu phap khong duoc thanh mot duong LOT.
+        return rest:sub(2)
+    end
+    return rest:match("^(%S+)") or rest
+end
+
+-- `Options` tach TOKEN chinh xac, khong tim chuoi tren ca dong.
+--
+-- Ban truoc dung `rest:find("execcgi", 1, true)` roi loai bang
+-- `rest:find("%-execcgi")`. Hai cho sai: `Options +Includes -ExecCGI +FollowSymLinks`
+-- co ca hai mau nen ket qua phu thuoc thu tu, va mot `Options All` (bat MOI thu,
+-- gom ExecCGI) thi KHONG khop mau nao.
+--
+-- Apache: token co the co tien to `+`, `-`, hoac khong. `-X` la TAT. Token cuoi
+-- cung noi ve ExecCGI la token quyet dinh, y nhu Apache xu ly tuan tu.
+local function options_enables_exec(rest)
+    local on = nil
+    for tok in rest:gmatch("%S+") do
+        local sign, name = tok:match("^([+-]?)(.+)$")
+        name = (name or ""):lower()
+        if name == "execcgi" then
+            on = (sign ~= "-")
+        elseif name == "all" and sign ~= "-" then
+            -- `Options All` bat moi option TRU MultiViews — gom ExecCGI.
+            on = true
+        elseif name == "none" then
+            on = false
+        end
+    end
+    return on == true
 end
 
 -- ── 2. Directive cau hinh PHP nap ma (`.user.ini`, `php.ini`) ───────────────
@@ -102,6 +162,23 @@ local AUTOLOAD_DIRECTIVES = {
 -- phan biet da lam o `fn_trunc` va `scan`.
 local MAX_LINES    = 512    -- so dong soi toi da cua MOT tep cau hinh
 local MAX_LINE_LEN = 1024   -- do dai dong toi da
+
+-- ── TRAN BYTE, va vi sao MAX_LINES mot minh KHONG du ────────────────
+--
+-- `MAX_LINES = 512` gioi han PARSER, khong gioi han CHI PHI. Mot `.htaccess`
+-- 50 MiB van bi: `body:sub` sao chep toan part, `gsub` noi tiep dong quet toan
+-- part, roi `s .. "\n"` tao mot ban sao NUA — het thay TRUOC khi vong lap dung o
+-- dong 512. Ba lan 50 MiB trong mot request, va ke gui chon duoc con so do.
+--
+-- Nen cat theo BYTE truoc moi phep sao chep. Con so 64 KiB lay tu dac ta chu
+-- khong tu log: mot `.htaccess` hop le la cau hinh cho MOT thu muc; 512 dong
+-- nhan 1.024 byte la 512 KiB da la tran tren khong tuong, va 64 KiB von da lon
+-- hon moi `.htaccess` that tren fleet (do 27-09: lon nhat 4,1 KiB).
+--
+-- Vuot tran nay KHONG phai "sach" — no tra `incomplete = true` y nhu vuot
+-- MAX_LINES, va `body_core` bien no thanh `scan_state = "config_trunc"`.
+local MAX_CONFIG_BYTES = 65536
+_M.MAX_CONFIG_BYTES = MAX_CONFIG_BYTES
 
 -- `.htaccess` noi tiep dong bang gach nguoc cuoi dong. Khong go thi
 -- `AddType \<newline> application/x-httpd-php .jpg` lot. Noi TRUOC khi tach dong.
@@ -194,12 +271,39 @@ end
 --
 -- `php_tag` KHONG o day: `body_core` dat no theo khoang byte de khong sao chep noi
 -- dung tep. File nay chi xu ly hai nhom can DOC THEO DONG.
-function _M.scan_part(content, name_flags)
+--
+-- ── NHAN KHOANG BYTE, KHONG NHAN CHUOI DA SAO CHEP ──────────────────
+--
+-- `from`/`to` la vi tri trong `body` (1-based, `to` bao gom). Goi voi mot chuoi
+-- (khong `from`/`to`) van chay — bo test goi kieu do — nhung duong PRODUCTION
+-- PHAI di qua khoang byte, vi day la noi duy nhat quyet dinh duoc "sao chep bao
+-- nhieu". Truoc ban nay `body_core` lam `body:sub(rg[1], rg[2])` tuc sao chep TOAN
+-- part roi moi vao day, nen `MAX_CONFIG_BYTES` o duoi khong cuu duoc gi.
+function _M.scan_part(content, name_flags, from, to)
     if type(content) ~= "string" or content == "" then return nil, false end
+
+    -- Cat theo byte NGAY TAI DAY, truoc moi phep sao chep hay quet nao. Ba viec
+    -- nang nhat (`sub`, `gsub` noi tiep dong, `s .. "\n"`) deu dung sau dong nay
+    -- nen ca ba chi con thay toi da `MAX_CONFIG_BYTES`.
+    local over = false
+    if from then
+        to = to or #content
+        if to - from + 1 > MAX_CONFIG_BYTES then
+            to = from + MAX_CONFIG_BYTES - 1
+            over = true
+        end
+        content = content:sub(from, to)
+    elseif #content > MAX_CONFIG_BYTES then
+        content = content:sub(1, MAX_CONFIG_BYTES)
+        over = true
+    end
 
     local kind
     if name_flags == "upload_apache_config" then kind = "apache"
-    elseif name_flags == "upload_php_config" then kind = "ini"
+    elseif name_flags == "upload_user_ini" or name_flags == "upload_php_ini" then
+        -- CUNG parser cho ca hai ten: cung mot directive, cung mot co che. Tach o
+        -- TEN (`name_flags`) va o policy (`SAME_PART`), khong tach o day.
+        kind = "ini"
     else
         -- Ten khong phai tep cau hinh: khong nhom nao ap dung. `upload_config_case`
         -- (`.HTACCESS`) CO Y khong vao day — no la mot nhan rieng cho bien the hoa
@@ -218,16 +322,18 @@ function _M.scan_part(content, name_flags)
                 local d, rest = line:match("^([%a_]+)%s+(.+)$")
                 if d then
                     local dl = d:lower()
-                    if HANDLER_DIRECTIVES[dl] and maps_to_executor(rest:lower()) then
-                        flags = flags or {}
-                        flags.handler = true
-                    elseif dl == "options" and rest:lower():find("execcgi", 1, true) then
-                        -- `Options +ExecCGI` / `Options ExecCGI`. `-ExecCGI` thi KHONG:
-                        -- do la TAT thuc thi, nguoc han y nghia.
-                        if not rest:lower():find("%-execcgi") then
+                    if HANDLER_DIRECTIVES[dl] then
+                        -- CHI argument DAU TIEN, khong phai ca dong: cu phap cua ca
+                        -- bon directive dat handler/mime o token thu nhat, va duoi
+                        -- tep di SAU. Quet ca dong lam `AddType text/plain .php`
+                        -- thanh `handler` — nguoc han y nghia cua chinh dong do.
+                        if maps_to_executor(first_arg(rest):lower()) then
                             flags = flags or {}
                             flags.handler = true
                         end
+                    elseif dl == "options" and options_enables_exec(rest) then
+                        flags = flags or {}
+                        flags.handler = true
                     end
                 end
             else
@@ -247,12 +353,15 @@ function _M.scan_part(content, name_flags)
             end
         end
     end
-    return flags, truncated
+    -- `over` (cat theo byte) hop voi `truncated` (cat theo dong/do dai dong): ca
+    -- hai deu la "CHUA SOI HET", va ca hai phai den duoc `scan_state`.
+    return flags, (truncated or over)
 end
 
 -- Chi de test va de hop dong doi chieu.
 _M.HANDLER_DIRECTIVES  = HANDLER_DIRECTIVES
 _M.AUTOLOAD_DIRECTIVES = AUTOLOAD_DIRECTIVES
 _M.MAX_LINES           = MAX_LINES
+_M.MAX_LINE_LEN        = MAX_LINE_LEN
 
 return _M
