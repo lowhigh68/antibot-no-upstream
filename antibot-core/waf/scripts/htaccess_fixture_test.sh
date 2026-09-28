@@ -67,16 +67,44 @@ while IFS=$'\t' read -r want rule; do
     case "$want" in ''|'#'*) continue ;; esac
     printf '%s\n' "$rule" > "$R/one.htaccess"
     out=$(awk -f "$R/shell.awk" "$R/one.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-    if [ -z "$out" ];      then got=NONE
-    elif [ "$out" = "@all" ]; then got=ALL
-    else                        got=HANDLER; fi
-    # Lua KHONG phan biet HANDLER voi ALL (co `handler` la mot boolean), nen o day
-    # gop ALL vao HANDLER khi doi chung voi Lua; nhung VAN kiem rieng ben shell,
-    # vi gia tri `*` vs danh sach duoi la thu `waf/init.lua` doc khac nhau.
+    case "$out" in
+        "")         got=NONE ;;
+        "@all")     got=ALL ;;
+        "@execcgi") got=EXECCGI ;;
+        *)          got=HANDLER ;;
+    esac
+
+    # ── HINH DANG TOKEN phai HOP LE ─────────────────────────────────
+    #
+    # Phep so ALL/HANDLER/NONE la mot BIT, va mot bit KHONG chung minh tuong
+    # duong (nguoi dung bat 28-09). Ca that da lot: `AddHandler "application/
+    # x-httpd-php extra" .php` cho ra `extra",php` — HAI token, mot cai la rac
+    # mang dau nhay — nhung `got=HANDLER` van khop `want=HANDLER` nen fixture
+    # BAO XANH. Fixture khi do che dung cai sai cua parser.
+    #
+    # Rang buoc nay doc lap voi phep so tren: MOI token phai la `@<chu>` hoac mot
+    # duoi hop le (chu/so/gach). Mot token mang `"`, khoang trang, hay `/` la rac.
+    bad=""
+    for tk in $(printf '%s\n' "$out" | tr "," " "); do
+        case "$tk" in
+            @all|@php|@phpini|@execcgi) ;;
+            *[!a-z0-9_-]*) bad="$bad $tk" ;;
+        esac
+    done
+    want "$rule" "token-hinh-dang" "${bad:-sach}" "sach"
+
     lua_got=$(awk -v r="$rule" -F'\t' '$2 == r { print $1; exit }' "$R/lua.out")
+    # Lua tra mot BOOLEAN `handler`, nen no khong phan biet ALL voi HANDLER duoc.
+    # Ghi ro GIOI HAN nay thay vi de nguoi doc tuong day la phep so token-doi-token:
+    # de so den tan token, Lua phai phat ra chinh bo token do — mot thay doi cua
+    # Lua de vua phep do, khong phai mot phep sua loi. Chua lam.
+    # Lua tra mot BOOLEAN `handler` nen no khong phan biet ALL/EXECCGI/HANDLER.
+    # `Options +ExecCGI`: Lua BAO (handler=true) con shell tra `@execcgi` — hai ben
+    # dong y "co gi dang chu y" nhung KHAC ve do manh. Do la GIOI HAN da biet cua
+    # phep so nay, ghi ro thay vi de nguoi doc tuong day la tuong duong token.
     exp_lua=$([ "$want" = "NONE" ] && echo NONE || echo HANDLER)
-    want "$rule" "lua"   "$lua_got" "$exp_lua"
-    want "$rule" "shell" "$got"     "$want"
+    want "$rule" "lua(bit)" "$lua_got" "$exp_lua"
+    want "$rule" "shell"    "$got"     "$want"
 done < "$FIX"
 
 # ── Noi dong: mot ca RIENG vi no can HAI dong ────────────────────────
@@ -128,6 +156,30 @@ want "SetHandler SAU khi dong container -> @all" "shell" "$out" "@all"
   printf '</IfModule>\n'; } > "$R/ifm.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/ifm.htaccess" 2>/dev/null | sort -u | paste -sd, -)
 want "AddType trong <IfModule> -> VAN bao" "shell" "$out" "php"
+
+# ── PARSER INI: `#`/`;` TRONG DAU NHAY khong phai chu thich ──────────
+#
+# Nguoi dung tai hien 28-09: `auto_prepend_file="none#payload.php"` bi ban truoc
+# cat thanh `auto_prepend_file="none` -> doc ra `none` -> ket luan "vo hieu hoa",
+# tuc BO SOT mot autoload that. Lua (`upload_content.lua:strip`) xu ly dau nhay
+# DUNG, nen day la mot lech giua hai parser theo huong FALSE NEGATIVE.
+#
+# Dot bien "bo xu ly dau nhay" KHONG bi bat truoc khi co nhom nay.
+ini_t() {  # ini_t <mong: co|khong> <dong>
+    printf '%s\n' "$2" > "$R/one.ini"
+    if awk -f "$HERE/inifile_parse.awk" "$R/one.ini" 2>/dev/null; then g=co; else g=khong; fi
+    want "$2" "ini" "$g" "$1"
+}
+ini_t co    'auto_prepend_file="none#payload.php"'
+ini_t co    'auto_prepend_file="none;payload.php"'
+ini_t co    'auto_prepend_file=/tmp/x.php'
+ini_t co    'auto_prepend_file="/tmp/a b.php"'
+ini_t co    'auto_append_file=/tmp/y.php'
+ini_t khong 'auto_prepend_file=none'
+ini_t khong 'auto_prepend_file='
+ini_t khong '; auto_prepend_file=/tmp/x.php'
+ini_t khong '# auto_prepend_file=/tmp/x.php'
+ini_t khong 'memory_limit=128M'
 
 printf '\nhtaccess_fixture: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

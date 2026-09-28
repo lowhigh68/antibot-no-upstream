@@ -375,12 +375,31 @@ local function emit_body_facts(ctx, state)
     end
 end
 
-local function fim_factor(uri, detector_rule, rt)
-    if not detector_rule or detector_rule.action == "block" then return nil end
+-- MOT phep doc `waf:fimnew:` cho moi request, dung chung boi HAI nguoi goi.
+--
+-- `fim_factor` va `fim_new_direct` dung CHINH XAC cung mot khoa
+-- (`waf:fimnew:<docroot><script_path>`) nhung truoc day goi `safe_get` RIENG, nen
+-- mot request PHP khop detector non-block tra gia HAI round-trip cho CUNG mot cau
+-- hoi (nguoi dung bat 28-09). Trong pham vi MOT request gia tri do khong the doi,
+-- nen nho trong `ctx` la du va dung.
+--
+-- Nho ca ket qua RONG (`false`) chu khong chi ket qua co: neu khong, mot khoa khong
+-- ton tai se bi hoi lai lan thu hai — dung cai dang toi uu.
+local function fimnew_value(ctx, uri, rt)
+    if ctx and ctx.waf_fimnew_read ~= nil then return ctx.waf_fimnew_read end
+    local v = nil
     local root = rt.var.document_root
-    if not root or root == "" then return nil end
-    return tonumber(pool.safe_get(
-        "waf:fimnew:" .. root .. wp_paths.script_path(uri)))
+    if root and root ~= "" then
+        v = tonumber(pool.safe_get("waf:fimnew:" .. root .. wp_paths.script_path(uri)))
+    end
+    if ctx then ctx.waf_fimnew_read = (v == nil) and false or v end
+    return v
+end
+
+local function fim_factor(ctx, uri, detector_rule, rt)
+    if not detector_rule or detector_rule.action == "block" then return nil end
+    local v = fimnew_value(ctx, uri, rt)
+    return v or nil
 end
 
 -- ── Muc 8: tep cau hinh vua bi SUA o thu muc cua URI nay ────────────
@@ -406,13 +425,15 @@ end
 -- Chi hoi Redis khi URI la mot tep PHP CHAY DUOC: `waf:fimnew:` chi duoc ghi cho
 -- be mat thuc thi (xem `NAMES` trong `fim.sh`), nen hoi cho `/anh.png` la mot luot
 -- tra chac chan miss. `upload.PHP_EXT` la bang DA DO tren fleet.
-local function fim_new_direct(uri, rt)
+local function fim_new_direct(ctx, uri, rt)
     local root = rt.var.document_root
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
     local ext  = path:match("%.([%w]+)$")
     if not ext or not upload.PHP_EXT[ext:lower()] then return nil end
-    return tonumber(pool.safe_get("waf:fimnew:" .. root .. path))
+    -- Dung CHUNG phep doc voi `fim_factor` — xem `fimnew_value`.
+    local v = fimnew_value(ctx, uri, rt)
+    return v or nil
 end
 
 -- ── HAI LOI CUA BAN TRUOC, nguoi dung bat 27-09 ─────────────────────
@@ -480,19 +501,46 @@ local function fim_config_changed(uri, rt)
     --            nhien co cung pham vi theo thu muc. Giu rieng cho tới khi do duoc
     --            tren DirectAdmin.
     --   <duoi>   duoi cu the tu `AddType`/`AddHandler`
+    -- NHAN TRA VE DI THANG VAO `matched=` cua waf.log, nen moi token phai co nhan
+    -- RIENG. Ban truoc gop `@php` va `@phpini` thanh cung mot `"autoload"`, tuc
+    -- phep tach chi ton tai o Redis chu KHONG o hanh vi lan so lieu — mai doc log
+    -- khong biet hit den tu `.user.ini` hay `php.ini` (nguoi dung bat 28-09). Ma
+    -- do la chinh cau hoi can tra loi, vi hai loai co pham vi khac nhau.
+    --
+    -- Duyet het roi CHON theo do manh, khong `return` ngay: mot thu muc co the co
+    -- ca `@all` lan `@php`, va bao cai manh hon la dung.
+    local hit_all, hit_ext, hit_php, hit_phpini, hit_exec = false, false, false, false, false
     for e in v:gmatch("[^,]+") do
         if e == "@all" then
-            return "handler"                      -- moi duoi
-        elseif e == "@php" or e == "@phpini" then
-            if upload.PHP_EXT[ext] then return "autoload" end
+            hit_all = true                        -- moi duoi, khong rang buoc PHP_EXT
+        elseif e == "@execcgi" then
+            -- `Options +ExecCGI` CHI cap quyen chay CGI; no KHONG noi tep nao la
+            -- CGI. Mot minh no chua lam gi chay duoc, nen bao RIENG va NHE hon —
+            -- gop vao `@all` la bao manh hon su that.
+            hit_exec = true
+        elseif e == "@php" then
+            hit_php = true
+        elseif e == "@phpini" then
+            hit_phpini = true
         elseif e == "*" then
             -- Khoa CU tu ban truoc, con song tới het TTL 7 ngay. Giu nghia cu
             -- (autoload) de khong doi nghia mot khoa da ghi.
-            if upload.PHP_EXT[ext] then return "autoload" end
+            hit_php = true
         elseif e == ext then
-            return "handler"
+            hit_ext = true
         end
     end
+
+    if hit_all then return "handler_all" end
+    if hit_ext then return "handler_ext" end
+    if upload.PHP_EXT[ext] then
+        -- `.user.ini` truoc `php.ini`: pham vi cua no CHAC CHAN hon (co che
+        -- per-directory chuan cua CGI/FastCGI), con `php.ini` di theo chuoi tim cau
+        -- hinh cua SAPI/CWD nen chua chac ap cho thu muc nay.
+        if hit_php    then return "autoload_userini" end
+        if hit_phpini then return "autoload_phpini"  end
+    end
+    if hit_exec then return "execcgi_only" end
     return nil
 end
 
@@ -594,7 +642,7 @@ local function run_pre(ctx, rt)
 
     -- FIM is evidence, not a verdict. The confidence value generated by
     -- fim.sh scales the rule score and can participate in a shadow correlation.
-    local factor = fim_factor(request.uri, detector_rule, rt)
+    local factor = fim_factor(ctx, request.uri, detector_rule, rt)
     if factor and factor > 0 then
         if factor > 1 then factor = 1 end
         local fim_hit = policy.emit(state, "fim_new_executable", {
@@ -615,7 +663,7 @@ local function run_pre(ctx, rt)
     --
     -- Chay khi `factor` o tren la `nil` HOAC khi no co gia tri: hai nhom dem RIENG,
     -- va chenh lech la thu noi cho biet bao nhieu file moi bi goi NGOAI path WP.
-    local direct = fim_new_direct(request.uri, rt)
+    local direct = fim_new_direct(ctx, request.uri, rt)
     if direct then
         policy.emit(state, "fim_new_exec_direct", {
             target  = "URI",

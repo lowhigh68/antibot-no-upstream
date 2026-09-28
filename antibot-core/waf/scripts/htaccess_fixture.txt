@@ -51,13 +51,13 @@ NONE	Header set X-Frame-Options SAMEORIGIN
 NONE	php_value memory_limit 128M
 
 # ── Options / ExecCGI (nguoi dung bat 28-09: fixture noi ALL ma khong co ca) ──
-ALL	Options +ExecCGI
-ALL	Options All
+EXECCGI	Options +ExecCGI
+EXECCGI	Options All
 NONE	Options -ExecCGI
 NONE	Options +FollowSymLinks
 # Xu ly TUAN TU nhu Apache: token cuoi quyet dinh.
 NONE	Options +ExecCGI -ExecCGI
-ALL	Options -ExecCGI +ExecCGI
+EXECCGI	Options -ExecCGI +ExecCGI
 NONE	Options None
 
 # ── Directive co INDENT (trong <IfModule>) ──────────────────────────

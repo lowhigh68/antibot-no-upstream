@@ -2021,8 +2021,21 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi
         fi
+        # DEL phai FAIL-VISIBLE, y nhu nhom SETEX (nguoi dung bat 28-09). Ban truoc
+        # nuot moi loi bang `|| :` va KHONG doc nguoc — nen mot DEL that bai de lai
+        # dau CU, tuc mot duong tinh gia song tới het TTL 7 ngay ma khong ai biet.
+        # Dung ho loi "canh bao dung ma khong ai mo".
         if [ -n "$delcmds" ] && [ $dry -eq 0 ]; then
-            printf '%s\n' "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1 || :
+            ndel=$(printf '%s\n' "$delcmds" | wc -l)
+            printf '%s\n' "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+            # XAC MINH VONG TRON: doc nguoc khoa dau tien vua go. Con gia tri la
+            # DEL khong an.
+            dprobe=$(printf '%s\n' "$delcmds" | head -1 | awk '{print $2}')
+            if [ -z "$mark_err" ] && \
+               [ -n "$("$REDIS_CLI" -n "$REDIS_DB" GET "$dprobe" 2>/dev/null)" ]; then
+                mark_err="KHONG XAC MINH DUOC (go fimchg): da go $ndel key nhung $dprobe VAN con gia tri."
+                mark_err="$mark_err Dau cu se gay duong tinh gia tới het TTL."
+            fi
         fi
     fi
     rm -f "$dirtydirs"
