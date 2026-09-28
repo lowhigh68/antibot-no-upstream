@@ -182,9 +182,19 @@ usage() { echo "dung: $0 {baseline|check|audit|score|wpinv} [--hot] [--dry] [-v]
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
 # loi vong ma khong luat URI nao nhin thay.
+# `*.inc` CO trong day vi `upload.lua:PHP_EXT` coi `inc` la THUC THI DUOC. Truoc
+# ban nay hai ben lech: phia request coi `.inc` la executable, con FIM khong quet
+# no — nen webshell `.inc` moi khong vao manifest, khong co `fimnew`, du luat phia
+# request da coi no la executable that.
+#
+# `php.ini` CO trong day vi nhanh xu ly no o duoi (`.user.ini|php.ini`) truoc ban
+# nay la MA CHET: no chi chay tren tep DA nam trong manifest, ma `php.ini` khong
+# co trong NAMES nen khong bao gio vao manifest. Hoac dua vao, hoac go nhanh —
+# chon dua vao, vi `php.ini` trong thu muc CO duoc PHP doc duoi CGI/FastCGI.
 NAMES=( \( -name '*.php'  -o -name '*.php[0-9]' -o -name '*.phtml' \
         -o -name '*.phar' -o -name '*.pht'      -o -name '*.phps'  \
-        -o -name '.htaccess' -o -name '.user.ini' \) )
+        -o -name '*.inc'                                           \
+        -o -name '.htaccess' -o -name '.user.ini' -o -name 'php.ini' \) )
 
 # `|| :` GIU LAI du da co `2>/dev/null`: hai thu chan hai duong khac nhau.
 # `2>/dev/null` nuot THONG BAO, `|| :` nuot MA THOAT. Voi `set -o pipefail`
@@ -1358,11 +1368,14 @@ marks=$(mktemp) || exit 2
 # Muc 8: tep cau hinh bi SUA di mot khoa RIENG (`waf:fimchg:`), khong tron vao
 # `$marks` — hai nhom tra loi hai cau khac nhau va se co hai ty le FP khac nhau.
 chgs=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+# Tep cau hinh BI XOA. Tach khoi `chgs` vi huong xu ly NGUOC: `chgs` -> SETEX,
+# cai nay -> DEL. Tron chung lai la phai doan huong tu noi dung.
+dels=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$dels" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
 
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
              -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
-             -v clfile="$CLFILE" -v chgfile="$chgs" '
+             -v clfile="$CLFILE" -v chgfile="$chgs" -v delfile="$dels" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
         # lan chay dau tien (chua co prevchg) di thang qua day.
@@ -1721,9 +1734,22 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         #
         # `scan_hot` quet `.htaccess`/`.user.ini` (xem NAMES), nen nhom nay CO du
         # lieu; con `php.ini` thi chi co neu no nam trong pham vi quet.
-        if (chgfile != "" && $1 == "CHG" && \
+        # VONG DOI DAY DU: NEW cung phai vao, khong chi CHG.
+        #
+        # Truoc ban nay dieu kien la `$1 == "CHG"`, nen mot `.user.ini` MOI chua
+        # `auto_prepend_file` khong sinh `fimchg` nao. No di duong `fimnew`, nhung
+        # `waf/init.lua` tra `fimnew` theo TEP DUOC REQUEST — va request la
+        # `/index.php`, khong phai `/.user.ini`. Nen tin hieu CO ma khong ai tieu
+        # thu: dung lo hong ma nhom `fimchg` sinh ra de dong, con nguyen cho tep MOI.
+        if (chgfile != "" && ($1 == "CHG" || $1 == "NEW") && \
             $2 ~ /\/(\.htaccess|\.user\.ini|php\.ini)$/)
             allchg[gkey($2)] = allchg[gkey($2)] $2 "\n"
+        # DEL: tep cau hinh BI XOA phai GO khoa, khong de no song het 7 ngay.
+        # Khong co duong nay thi mot `.htaccess` nguy hiem DA duoc don sach van de
+        # lai telemetry duong tinh gia den mot tuan, va nguoi doc so lieu khong
+        # phan biet duoc "dang co" voi "da tung co".
+        if ($1 == "DEL" && $2 ~ /\/(\.htaccess|\.user\.ini|php\.ini)$/)
+            alldel[gkey($2)] = alldel[gkey($2)] $2 "\n"
     }
     END {
         for (k in n) {
@@ -1769,6 +1795,13 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                 for (i = 1; i < m; i++) printf "1|%s\n", L[i] > chgfile
             }
         }
+        # DEL di RIENG: huong xu ly nguoc (go khoa, khong dat khoa).
+        if (delfile != "") {
+            for (k in alldel) {
+                m = split(alldel[k], L, "\n")
+                for (i = 1; i < m; i++) printf "1|%s\n", L[i] > delfile
+            }
+        }
     }' "$new_scan" "$diff_out" | sort)
 
 # Chi dem cac dong DUOC LIET KE TUNG FILE. Dong tom tat cua mot nhom dong la cap
@@ -1795,7 +1828,7 @@ marked=0; marked_chg=0; mark_err=""
 # `-s "$marks" || -s "$chgs"`: hai tap doc lap nhau. Dieu kien cu chi xet `$marks`,
 # nen mot lan chay CHI co tep cau hinh bi sua se bo qua ca khoi — tuc muc 8 im lang
 # dung o truong hop no ton tai de bat.
-if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ]; }; then
+if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; then
   if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
     # KHONG chet: FIM van phat hien va van bao. Chi la WAF khong duoc bao tin.
     mark_err="thieu '$REDIS_CLI' — phat hien van chay, nhung WAF khong nhan duoc tin hieu."
@@ -1889,16 +1922,46 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ]; }; then
               .htaccess)
                 # Duoi bi anh xa sang mot bo thuc thi. `$2` la argument DAU TIEN
                 # (mime/handler), cac `$i` sau la duoi. Chi nhan khi `$2` anh xa.
+                # CUNG HOP DONG voi `upload_content.lua:HANDLER_DIRECTIVES`. Ban
+                # truoc dung `[Aa][Dd][Dd](Type|Handler|TYPE|HANDLER)`, nen no bo sot:
+                #   · `addtype` / `AddTYPE` / `aDdTyPe` — Apache KHONG phan biet hoa
+                #     thuong ten directive
+                #   · `SetHandler`, `ForceType` — cung quyet dinh handler
+                #   · noi dong bang `\\`
+                # Hai parser lech nhau la mot false negative: Lua bao nguy, FIM im.
+                #
+                # Bo test `htaccess_fixture_test.sh` chay CUNG mot tap fixture qua CA
+                # HAI parser va doi chung dong y — do la thu chan lech tiep, chu khong
+                # phai hai danh sach directive duoc nho cap nhat cung luc.
+                # >>> HTACCESS_AWK_BEGIN (moc cho htaccess_fixture_test.sh)
                 exts=$(awk '
-                    { sub(/#.*/, "") }
-                    /^[ \t]*[Aa][Dd][Dd](Type|Handler|TYPE|HANDLER)[ \t]/ {
-                        if (tolower($2) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) {
-                            for (i = 3; i <= NF; i++) {
-                                e = $i; sub(/^\./, "", e)
-                                if (e != "") print tolower(e)
-                            }
-                        }
+                    # Noi dong: gach nguoc cuoi dong -> ghep voi dong sau.
+                    { line = $0
+                      while (line ~ /\\$/) {
+                          sub(/\\$/, " ", line)
+                          if ((getline nxt) <= 0) break
+                          sub(/^[ \t]+/, "", nxt)
+                          line = line nxt
+                      }
+                      sub(/#.*/, "", line)
+                      nf = split(line, T, /[ \t]+/)
+                      if (nf < 2) next
+                      d = tolower(T[1])
+                      if (d != "addtype" && d != "addhandler" && \
+                          d != "sethandler" && d != "forcetype") next
+                      # Token THU NHAT quyet dinh (y nhu `first_arg` ben Lua): bo
+                      # nhay neu co.
+                      v = T[2]; gsub(/^["''"]|["''"]$/, "", v)
+                      if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
+                      # `SetHandler`/`ForceType` khong mang duoi: chung ap cho CA thu
+                      # muc, nen bao `*` — cung nghia `*` cua `.user.ini` autoload.
+                      if (d == "sethandler" || d == "forcetype") { print "*"; next }
+                      for (i = 3; i <= nf; i++) {
+                          e = T[i]; sub(/^\.?/, "", e)
+                          if (e != "") print tolower(e)
+                      }
                     }' "$p" 2>/dev/null | sort -u | paste -sd, -)
+                # <<< HTACCESS_AWK_END
                 [ -n "$exts" ] && printf '%s|%s\n' "$exts" "$d" >> "$chgdirs"
                 ;;
               .user.ini|php.ini)
@@ -1942,6 +2005,29 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ]; }; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi
+        fi
+    fi
+
+    # ── DEL: tep cau hinh BI XOA -> GO khoa cua thu muc do ───────────
+    #
+    # Khong co duong nay thi mot `.htaccess` nguy hiem DA duoc don sach van de lai
+    # khoa den 7 ngay, va telemetry khong phan biet duoc "dang co" voi "da tung co".
+    #
+    # GO CA KHOA THU MUC, khong go tung tep: khoa la theo THU MUC, va neu trong thu
+    # muc con mot tep cau hinh khac thi lan `check` sau se dat lai khoa tu no. Tuc
+    # huong sai o day la TAM THOI thieu mot khoa, chu khong phai giu mot khoa sai —
+    # dung huong an toan cho FP.
+    if [ -s "$dels" ]; then
+        deldirs=$(mktemp) || exit 2
+        while IFS="|" read -r _b p; do
+            [ -n "$p" ] || continue
+            printf "%s\n" "$(dirname "$p")/" >> "$deldirs"
+        done < "$dels"
+        delcmds=$(sort -u "$deldirs" | awk '
+            { if ($0 ~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) printf "DEL waf:fimchg:%s\n", $0 }')
+        rm -f "$deldirs"
+        if [ -n "$delcmds" ] && [ $dry -eq 0 ]; then
+            printf "%s\n" "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1 || :
         fi
     fi
   fi

@@ -84,4 +84,11 @@ echo
 echo "── fim.sh wpinv (inventory WordPress root) ───────────"
 bash "$HERE/wpinv_test.sh" || rc=1
 
+# HAI parser `.htaccess` (Lua doc part upload, awk doc tep tren dia) tra loi CUNG
+# mot cau hoi bang hai hien thuc. Bo nay chay ca hai tren CUNG tap fixture va doi
+# chung dong y — lech theo huong awk bo sot la FALSE NEGATIVE im lang.
+echo
+echo "── hai parser .htaccess tren cung tap fixture ────────"
+bash "$HERE/htaccess_fixture_test.sh" || rc=1
+
 exit $rc

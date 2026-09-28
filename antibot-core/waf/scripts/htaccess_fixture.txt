@@ -1,0 +1,51 @@
+# Tap fixture DUNG CHUNG cho hai parser `.htaccess`.
+#
+# VI SAO TON TAI: mot ben la Lua (`upload_content.lua`, doc noi dung part upload),
+# mot ben la awk trong `fim.sh` (doc tep tren dia). Hai ben tra loi CUNG mot cau
+# hoi — "dong nay co lam mot duoi thanh thuc thi duoc khong" — bang hai hien thuc.
+# Truoc ban nay chung lech: awk chi nhan `AddType|AddHandler` va phan biet hoa
+# thuong, nen `addtype`, `SetHandler`, `ForceType`, noi dong deu bi bo sot. Lech
+# theo huong do la FALSE NEGATIVE: Lua bao nguy, FIM im lang.
+#
+# Chua hai danh sach directive o hai noi roi mong ai cung nho cap nhat ca hai la
+# cach da that bai. Tap nay la trong tai: bo test chay CA HAI parser tren cung
+# dong va doi chung dong y.
+#
+# DINH DANG:  <ket qua mong doi><TAB><dong .htaccess>
+#   HANDLER   dong nay lam mot duoi thanh thuc thi duoc (co duoi cu the)
+#   ALL       ap cho CA thu muc, khong mang duoi (SetHandler/ForceType/ExecCGI)
+#   NONE      khong lam gi nguy hiem
+#
+# Moi dong duoi day la mot bat bien doc tu tai lieu Apache hoac tu cau hinh THAT
+# tren fleet, khong phai tu tri tuong tuong.
+
+# ── Nhan dang co ban ────────────────────────────────────────────────
+HANDLER	AddType application/x-httpd-php .php
+HANDLER	AddHandler application/x-httpd-php .php
+HANDLER	AddType application/x-httpd-lsphp .jpg
+# Gia tri handler THAT tren fleet (socket php74), CO dau nhay.
+HANDLER	AddHandler "proxy:unix:/run/php-fpm74.sock|fcgi://localhost" .php
+
+# ── Ten directive KHONG phan biet hoa thuong (Apache core) ──────────
+HANDLER	addtype application/x-httpd-php .php
+HANDLER	ADDTYPE application/x-httpd-php .php
+HANDLER	AddTYPE application/x-httpd-php .php
+HANDLER	aDdHaNdLeR application/x-httpd-php .php
+
+# ── SetHandler / ForceType: ap cho CA thu muc, khong mang duoi ──────
+ALL	SetHandler application/x-httpd-php
+ALL	ForceType application/x-httpd-php
+ALL	sethandler application/x-httpd-php
+
+# ── FP da bat va da sua (loi 6 cua nguoi dung, vong review truoc) ───
+# Token THU NHAT quyet dinh. `php` o day chi nam trong DUOI, khong trong handler.
+NONE	AddType text/plain .php
+NONE	AddType text/plain .cgi
+NONE	AddType text/css .css
+NONE	AddType image/jpeg .jpg
+
+# ── Khong phai directive handler ────────────────────────────────────
+NONE	RewriteEngine On
+NONE	# AddType application/x-httpd-php .php
+NONE	Header set X-Frame-Options SAMEORIGIN
+NONE	php_value memory_limit 128M

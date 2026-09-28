@@ -414,6 +414,31 @@ end
 -- cosocket chạy được, nên KHÔNG cần timer. Khác `mark()` (log phase, cosocket bị
 -- CẤM). Đây là lý do một phép ghi ở đây an toàn mà phép ghi trong `mark` thì
 -- không, và lẫn hai thứ đó đã giết `wp_paths.mark()` bốn tháng.
+-- ── LOI REDIS KHAC "KHONG CO KHOA", va truoc ban nay chung GIONG NHAU ──
+--
+-- `pool.safe_get` tra `(val, err)`. Ban truoc so `== "1"` roi BO gia tri thu hai,
+-- nen Redis chet va khoa khong ton tai cho cung mot ket qua am — roi ket qua am
+-- do duoc cache 300 giay. Hai hau qua nguoc nhau, ca hai deu xau:
+--
+--   Redis chet    -> moi cong tra am -> ba luat HARD-BLOCK im lang toan fleet
+--                    trong 300s, va khong bao gi. Day la fail-open.
+--   Khoa that su
+--   khong co      -> dung la am, va cache am la dung.
+--
+-- Nay phan biet: loi thi tra `nil` (KHONG KET LUAN) va KHONG cache. Nguoi goi
+-- doi `nil` thanh "khong bat luat" — giong `false` ve hanh vi chan, nhung KHAC o
+-- cho no khong dong bang mot cau tra loi sai trong 300 giay.
+--
+-- Day la mot dang TRAN, khong phai diem am: "khong co bang chung thi khong bat
+-- luat chan", thay vi "khong co bang chung thi coi nhu am". Giu bat bien 2 trong
+-- so (chi ket luan khi DA CHUNG MINH).
+local function redis_says_yes(key)
+    local v, err = pool.safe_get(key)
+    if v == "1" then return true end
+    if err then return nil end          -- KHONG KET LUAN
+    return false
+end
+
 local function is_wp_root(host, prefix, docroot)
     if not prefix then return false end
 
@@ -426,12 +451,15 @@ local function is_wp_root(host, prefix, docroot)
             local v = shared_cache:get(ckr)
             if v ~= nil then return v == 1 end
         end
-        if pool.safe_get(redis_key_root(rid)) == "1" then
+        local yes = redis_says_yes(redis_key_root(rid))
+        if yes == true then
             if shared_cache then
                 shared_cache:set(ckr, 1, WP_HOST_TTL_SHARED)
             end
             return true
         end
+        -- Redis loi: KHONG hoi khoa cu (cung mot Redis, cung se loi), KHONG cache.
+        if yes == nil then return nil end
         -- CHƯA cache kết quả âm ở đây: còn phải hỏi khoá cũ, và cache âm trước
         -- khi hỏi xong là tự tạo ra 300 giây trả lời sai trong lúc di trú.
     end
@@ -456,7 +484,8 @@ local function is_wp_root(host, prefix, docroot)
     -- Bo cache shdict o day khong lam tang chi phi: khi khoa cu CO, ta nang ngay
     -- sang khoa moi va moi request sau di duong moi; khi khong co, khoa AM theo
     -- thu muc ngan mach. Ca hai huong deu chi tra gia mot lan cho moi thu muc.
-    local hit = pool.safe_get(redis_key(host, prefix)) == "1"
+    local hit = redis_says_yes(redis_key(host, prefix))
+    if hit == nil then return nil end   -- loi: khong ket luan, khong cache
 
     -- Khoá cũ có thật ⇒ nâng sang dạng mới. Một lần cho mỗi thư mục, rồi mọi
     -- request sau đi đường mới.

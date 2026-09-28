@@ -187,6 +187,67 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/")" "yes"
 
 
+
+# ══ 8. VONG DOI NEW -> CHG -> DEL cua tep cau hinh ══════════════════════
+#
+# Truoc ban nay dieu kien la `$1 == "CHG"`, nen:
+#   · `.user.ini` MOI chua `auto_prepend_file` khong sinh `fimchg`. No di duong
+#     `fimnew`, nhung `waf/init.lua` tra `fimnew` theo TEP DUOC REQUEST — request
+#     la `/index.php`, khong phai `/.user.ini`. Tin hieu CO ma khong ai tieu thu.
+#   · `.htaccess` MOI anh xa `.jpg` cung khong sinh `fimchg`, nen `/shell.jpg`
+#     khong hoi khoa nao.
+#   · Tep cau hinh BI XOA de lai khoa den 7 ngay -> telemetry duong tinh gia.
+: > "$RCLI_OUT"
+sleep 1
+rm -f "$WEB/.htaccess" "$WEB/.user.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+
+# `.htaccess` MOI (vua bi xoa o tren, nay tao lai) -> PHAI co fimchg.
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "8 gia tri dung" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | head -1)" "jpg"
+
+# `.user.ini` MOI co autoload -> PHAI co fimchg (gia tri `*`).
+: > "$RCLI_OUT"
+sleep 1
+printf 'auto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "8 .user.ini MOI co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+
+# BI XOA -> phai phat DEL, khong de khoa song het TTL.
+: > "$RCLI_OUT"
+sleep 1
+rm -f "$WEB/.htaccess" "$WEB/.user.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "8 tep cau hinh bi XOA -> DEL khoa" \
+     "$(grep -c "^DEL waf:fimchg:$WEB/\$" "$RCLI_OUT")" "1"
+want "8 va KHONG dat lai SETEX fimchg" "$(keys 'waf:fimchg:')" "0"
+
+# ══ 9. `.inc` — `upload.lua:PHP_EXT` coi la THUC THI DUOC ════════════════
+#
+# Hai ben truoc day lech: phia request coi `.inc` la executable, con `NAMES` cua
+# FIM khong co `*.inc`. Nen webshell `.inc` moi khong vao manifest.
+: > "$RCLI_OUT"
+sleep 1
+printf '<?php eval($_GET[1]);\n' > "$WEB/backdoor.inc"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "9 .inc moi -> fimnew" "$(haskey "waf:fimnew:$WEB/backdoor.inc")" "yes"
+
+# `php.ini` — truoc ban nay nhanh xu ly no la MA CHET (khong co trong NAMES).
+: > "$RCLI_OUT"
+sleep 1
+printf 'memory_limit=64M\n' > "$WEB/php.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "9 php.ini vao manifest (fimnew)" "$(haskey "waf:fimnew:$WEB/php.ini")" "yes"
+: > "$RCLI_OUT"
+sleep 1
+printf 'memory_limit=64M\nauto_prepend_file=/tmp/y.php\n' > "$WEB/php.ini"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "9 php.ini SUA co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
 # ══ 7. TANG NONG GENERIC (khong chi duong dan WordPress) ════════════════
 #
 # VI SAO: truoc ban nay 5/6 nhanh cua `scan_hot` la duong dan WordPress

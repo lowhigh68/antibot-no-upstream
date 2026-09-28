@@ -33,7 +33,14 @@ local REDIS = {}
 local REDIS_FAIL = false
 package.preload["antibot.core.redis_pool"] = function()
     return {
-        safe_get = function(k) return REDIS[k] end,
+        -- `safe_get` PHAI tra duoc `(nil, err)`: `is_wp_root` phan biet "loi
+        -- Redis" voi "khong co khoa", va mot stub khong tra loi duoc thi bo test
+        -- KHONG DIEN DAT DUOC ca do — doi xong `is_wp_root` ma bo test van xanh
+        -- chinh vi cho nay.
+        safe_get = function(k)
+            if REDIS_FAIL then return nil, "gia lap loi" end
+            return REDIS[k]
+        end,
         -- Tra ve false khi REDIS_FAIL — `mark()` PHAI phan biet duoc "da ghi"
         -- voi "tuong la da ghi". Chinh cho do la lo hong 4 thang: safe_set that
         -- bai im lang trong log phase (cosocket bi cam) ma shdict van duoc danh
@@ -488,6 +495,14 @@ local function redis_clear()
     ngx.shared.antibot_cache:flush_all()
 end
 
+-- Cong thuc khoa shdict, sao lai tu `cache_key_root` trong paths.lua (local nen
+-- khong export duoc). GHIM bang ca "doc nguoc mot khoa that" ben duoi: neu
+-- paths.lua doi tien to thi ca do do, khong im lang.
+local function ck_root(docroot)
+    if docroot:sub(-1) == "/" then docroot = docroot:sub(1, -2) end
+    return "wpdir:" .. docroot
+end
+
 local function eq(what, got, want)
     if got ~= want then
         bad("  SAI  %s\n       duoc=%s  mong=%s\n", what, tostring(got), tostring(want))
@@ -583,5 +598,41 @@ eq("mark ghi khoa THU MUC", REDIS["waf:wpdir:" .. DR_ALIAS], "1")
 eq("mark VAN ghi khoa host (di tru)", REDIS["waf:wphost:" .. ALIAS_A], "1")
 eq("needs_mark: alias B bi chot boi khoa THU MUC cua alias A",
    wp.needs_mark("/wp-admin/", ALIAS_B, DR_ALIAS), nil)
+-- ══ LOI REDIS KHAC "KHONG CO KHOA" ════════════════════════════════════
+--
+-- Truoc ban nay ca hai cho cung ket qua am, roi am duoc cache 300 giay. Hai hau
+-- qua nguoc nhau: Redis chet -> ba luat hard-block im lang toan fleet (fail-open);
+-- khoa khong co -> am la dung.
+io.write("loi Redis khac khong-co-khoa - 6 case\n")
+
+redis_clear()
+REDIS["waf:wpdir:" .. DR_WP] = "1"
+REDIS_FAIL = true
+-- `nil` = KHONG KET LUAN. Khac `false`: nguoi goi khong bat luat chan, nhung ta
+-- cung KHONG dong bang mot cau tra loi sai trong 300 giay.
+eq("Redis loi -> nil (khong ket luan), khong phai false",
+   wp.is_wp_root(WP, "", DR_WP), nil)
+-- KHONG duoc cache: het loi thi phai tra loi dung NGAY, khong cho 300s.
+eq("Redis loi -> KHONG cache am",
+   ngx.shared.antibot_cache:get(ck_root(DR_WP)), nil)
+REDIS_FAIL = false
+eq("Redis khoi -> tra loi dung NGAY (khong bi am cu chan)",
+   wp.is_wp_root(WP, "", DR_WP), true)
+
+-- Khoa that su khong co: van phai la `false` va van duoc cache.
+redis_clear()
+eq("khoa khong co -> false (khong phai nil)",
+   wp.is_wp_root("khongco.test", "", DR_PLAIN), false)
+eq("khoa khong co -> CO cache am (day la toi uu dung)",
+   ngx.shared.antibot_cache:get(ck_root(DR_PLAIN)), 0)
+
+-- Loi o duong khoa MOI khong duoc am tham roi xuong khoa CU: cung mot Redis.
+redis_clear()
+REDIS["waf:wphost:" .. WP] = "1"
+REDIS_FAIL = true
+eq("loi: KHONG roi xuong khoa cu (cung mot Redis)",
+   wp.is_wp_root(WP, "", DR_WP), nil)
+REDIS_FAIL = false
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -437,23 +437,32 @@ local function fim_config_changed(uri, rt)
     local root = rt.var.document_root
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
-    local dir  = path:match("^(.*/)") or "/"
+
+    -- LAY `ext` TRUOC KHI HOI REDIS. Ban truoc goi `safe_get` roi moi lay `ext`,
+    -- nen CSS, anh, JS, `/` — moi request khong co duoi — deu tra gia mot Redis
+    -- round-trip. Pool giu lai chi phi TCP setup, khong giu lai lenh Redis lan
+    -- viec dinh thoi cosocket.
+    --
+    -- Va phep hoi do KHONG BAO GIO dung duoc cho chung: ca hai nhanh ben duoi
+    -- (`*` va danh sach duoi) deu doi `ext`, nen `ext == nil` la `return nil` chac
+    -- chan. Tuc day khong phai danh doi do chinh xac lay toc do — no la bo mot
+    -- phep hoi KHONG THE doi ket qua.
+    local ext = path:match("%.([%w]+)$")
+    if not ext then return nil end
+    ext = ext:lower()
+
+    local dir = path:match("^(.*/)") or "/"
     -- MOT `safe_get`, khong ba.
     local v = pool.safe_get("waf:fimchg:" .. root .. dir)
     if not v or v == "" then return nil end
 
-    local ext = path:match("%.([%w]+)$")
-    ext = ext and ext:lower() or nil
-
     -- `*` (autoload) chi co nghia voi mot script PHP.
     if v:find("*", 1, true) then
-        if ext and upload.PHP_EXT[ext] then return "autoload" end
+        if upload.PHP_EXT[ext] then return "autoload" end
     end
     -- Duoi bi `.htaccess` anh xa: KHONG rang buoc `PHP_EXT` — do la ca chinh.
-    if ext then
-        for e in v:gmatch("[^,]+") do
-            if e == ext then return "handler" end
-        end
+    for e in v:gmatch("[^,]+") do
+        if e == ext then return "handler" end
     end
     return nil
 end
@@ -614,6 +623,35 @@ function _M._run_pre_with_runtime(ctx, rt)
     return run_pre(ctx, rt)
 end
 
+-- SENTINEL WordPress: `wp-settings.php` PHAI co tren dia tai goc do.
+--
+-- VI SAO, va day la mot FP dang chay that: `target_exists` chi kiem TEP DUOC
+-- REQUEST co ton tai. Nen mot site TU VIET co mot tep that duoi `/wp-admin/` hay
+-- `/wp-content/` (thu muc trung ten, chuyen binh thuong) se duoc danh dau la
+-- WordPress, roi BA luat HARD-BLOCK bat len o do. FP la uu tien so mot.
+--
+-- `fim.sh wpinv` da dung `wp-settings.php` lam dau nhan tu dau (`WPMARK`). Nen
+-- truoc ban nay HAI duong co HAI dinh nghia "la WordPress": offline doi sentinel,
+-- runtime chi doi "tep nay ton tai". Chinh chu thich tren `_M.is_wp_root` canh
+-- bao ve viec nhan doi dinh nghia — va no da bi nhan doi o day.
+--
+-- KHONG dung `wp-includes/version.php`: dong bo voi `iswp` cua `fim.sh` (xem chu
+-- thich tai do — `scan_hot` khong quet `wp-includes/` nen dung no lam tin hieu
+-- tat cam o phia offline).
+--
+-- Chi phi: MOT `io.open` them, va chi khi `needs_mark` da tra ve tien to — tuc
+-- toi da mot lan moi 300 giay cho moi thu muc. `io.open` chay duoc o log phase
+-- (khong phai cosocket), cung ly do `target_exists` chay duoc o day.
+local function wp_sentinel_exists(rt, prefix)
+    local root = rt.var.document_root
+    if not root or root == "" then return false end
+    if root:sub(-1) == "/" then root = root:sub(1, -2) end
+    local fh = io.open(root .. (prefix or "") .. "/wp-settings.php", "r")
+    if not fh then return false end
+    fh:close()
+    return true
+end
+
 local function target_exists(rt)
     local root = rt.var.document_root
     local uri  = rt.var.uri
@@ -649,7 +687,14 @@ function _M.run_log(ctx)
 
     local exists = target_exists(ngx)
     if uri_hit then ctx.waf_target_exists = exists end
-    if wp ~= nil and exists == true then wp_paths.mark(host, wp, dr) end
+    -- Danh dau doi HAI bang chung, khong mot:
+    --   `exists`     tep WordPress duoc request co that tren dia
+    --   `sentinel`   `wp-settings.php` co that tai goc do
+    -- Thieu dieu kien thu hai thi mot site tu viet co thu muc `/wp-content/`
+    -- duoc danh dau la WordPress, va ba luat hard-block bat len o do.
+    if wp ~= nil and exists == true and wp_sentinel_exists(ngx, wp) then
+        wp_paths.mark(host, wp, dr)
+    end
 end
 
 -- Cau hinh DANG CHAY, cho nguoi doc so lieu.
