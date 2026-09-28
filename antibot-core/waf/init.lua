@@ -676,6 +676,16 @@ local function run_pre(ctx, rt)
     -- Muc 8: tep cau hinh trong CUNG thu muc voi tep thuc thi dang bi goi vua doi.
     -- `matched` mang TEN TEP CAU HINH (`.htaccess`), khong mang duong dan: ba ten do
     -- la hang so trong ma, khong phai chuoi ke gui dat.
+    -- DEM vung mu "than co du lieu ma thieu Content-Type". `body.probe` dat co nay
+    -- TRUOC cong Content-Type cua no; xem khoi chu thich tai do de biet vi sao dem
+    -- truoc khi mo. Chi doc header, khong doc than.
+    if ctx.waf_body_ct_missing then
+        policy.emit(state, "body_ct_missing", {
+            target  = "BODY",
+            matched = "cl=" .. tostring(ctx.waf_body_ct_missing),
+        })
+    end
+
     local cfg_mark = fim_config_changed(request.uri, rt)
     if cfg_mark then
         policy.emit(state, "fim_config_changed", {

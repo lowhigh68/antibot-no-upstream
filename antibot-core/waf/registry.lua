@@ -329,6 +329,28 @@ add("route_multipart", "protocol", "uri", "wordpress", "observe", "enforce",
 add("fim_config_changed", "correlation", "uri", "generic", "observe", "enforce",
     0, 1, 1.00, { "fs.config_changed" })
 
+-- ── VUNG MU DA BIET: than co du lieu ma thieu `Content-Type` ─────────
+--
+-- `body.probe` bo qua HOAN TOAN cac request nay, nen mot raw POST/PUT/PATCH mang
+-- the PHP hay traversal khong duoc doc, va `init.lua` hieu la `has_body=false` nen
+-- hop dong endpoint cung khong thay.
+--
+-- Luat nay KHONG doc than — no chi DEM. Hai bien nginx (`http_content_type`,
+-- `http_content_length`), khong I/O, khong quet. Muc dich duy nhat la tra loi mot
+-- cau hoi ma log hien co KHONG tra loi duoc: bao nhieu request nhu vay THAT SU den?
+--
+-- Vi sao phai dem thay vi mo luon, do tren fleet 28-09:
+--   171-96 : 2.238.511 POST/PUT/PATCH/DELETE nhung chi 9.674 than duoc soi (0,43%)
+--   183-139:    95.493                                       61          (0,06%)
+-- Bo cong `Content-Type` la chan tren 231 lan (171-96) va 1.565 lan (183-139) so
+-- luot quet. Nhung hieu so do gom moi POST thoat som vi ly do KHAC, nen no khong
+-- phai con so can — con so can la chinh cai luat nay se dem.
+--
+-- `matched` mang `cl=<so>` (Content-Length tu HEADER). KHONG mang than, khong mang
+-- query string — dung rang buoc log cua he thong nay.
+add("body_ct_missing", "protocol", "body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "proto.ct_missing" })
+
 -- Ten tep + co noi dung -> luat cung-part. `body_core` bao `name_flags` va
 -- `content_flags` cua CUNG mot part; bang nay la noi DUY NHAT quyet chung thanh mot
 -- phan quyet.

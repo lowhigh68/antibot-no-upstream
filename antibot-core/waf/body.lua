@@ -146,7 +146,42 @@ local function probe(ctx, runner, rt)
     if not INSPECT_METHODS[rt.req.get_method()] then return end
 
     local ct = rt.var.http_content_type
-    if not ct or ct == "" then return end
+
+    -- ── DEM TRUOC, MO SAU. Vung mu da biet, chua mo ───────────────────
+    --
+    -- Than co du lieu ma thieu `Content-Type` bi bo qua HOAN TOAN: raw POST/PUT/
+    -- PATCH co the mang the PHP, wrapper hay traversal ma khong duoc doc, va
+    -- `init.lua` hieu la `has_body=false` nen hop dong endpoint cung khong thay.
+    --
+    -- VI SAO CHUA MO, va day la so DO DUOC tren fleet 28-09:
+    --
+    --              POST/PUT/PATCH/DELETE   than DA soi   ty le
+    --   171-96            2.238.511            9.674     0,43%
+    --   183-139              95.493               61     0,06%
+    --
+    -- Bo cong nay thi chan tren la 2,23 TRIEU luot quet/ngay thay vi 9.674 — gap
+    -- 231 lan tren 171-96 va 1.565 lan tren 183-139. Chi phi quet hien tai la
+    -- 27,1 MB/ngay; nhan 231 la ~6,3 GB/ngay qua `core.scan`. Do la doi BAC DO LON
+    -- cua tang soi than, khong phai "them mot fact o observe".
+    --
+    -- NHUNG hieu so do la CHAN TREN RAT LONG: no gom moi POST thoat som vi ly do
+    -- KHAC (cookie fast-path, whitelist, lop `resource`, ban). Toi KHONG biet bao
+    -- nhieu trong 2,23 trieu that su thieu `Content-Type`, va KHONG the biet tu log
+    -- hien co: `waf.log` ghi SAU cong nay, con log Nginx khong co cot Content-Type.
+    --
+    -- Nen: DEM truoc. Co nay chi doc hai bien nginx — khong I/O, khong doc than,
+    -- khong quet. Sau 24h co ba con so that (so luot, phan bo `Content-Length`,
+    -- endpoint nao) thi quyet dinh mo duong moi co can cu.
+    --
+    -- Khi mo: phan loai `unknown`/octet-stream chu KHONG dung thang family `"-"` —
+    -- xu ly NUL khac nhau giua urlencoded va nhi phan.
+    if not ct or ct == "" then
+        -- `Content-Length` tu HEADER, khong phai tu than. Header co the noi doi,
+        -- nhung o day ta dang dem chu khong quyet dinh gi.
+        local cl = tonumber(rt.var.http_content_length or 0) or 0
+        if cl > 0 then ctx.waf_body_ct_missing = cl end
+        return
+    end
     local family = core.ct_family(ct)
 
     -- `read_body()` nghe thi dat, thuc te khong them gi: `proxy_request_

@@ -395,3 +395,50 @@ END {
     print "   nhom o day la part co ten cau hinh ma noi dung CHUA soi het — tuc"
     print "   nhom muc 11 KHONG the ket luan gi ve)"
 }'
+
+
+echo
+echo "=== 16. VUNG MU: than co du lieu ma thieu Content-Type ==="
+# DEM TRUOC, MO SAU. `body.probe` bo qua hoan toan cac request nay, nen mot raw
+# POST/PUT/PATCH mang the PHP hay traversal khong duoc doc, va `init.lua` hieu la
+# `has_body=false` nen hop dong endpoint cung khong thay.
+#
+# Log CU khong tra loi duoc cau hoi nay: `waf.log` ghi SAU cong Content-Type, con
+# log Nginx khong co cot do. Do GIAN TIEP 28-09 cho chan tren rat lon (171-96:
+# 2.238.511 POST/PUT/PATCH/DELETE ma chi 9.674 than duoc soi = 0,43%; bo cong la gap
+# 231 lan so luot quet), NHUNG hieu so do gom moi POST thoat som vi ly do KHAC —
+# cookie fast-path, whitelist, lop `resource`, ban. Nhom nay dem CHINH XAC.
+#
+# Con so quyet dinh: n nho thi mo duong doc than gan nhu mien phi; n lon thi phai
+# chon method/route truoc khi mo.
+grep -F '[waf]' "$W" | grep -F 'rule=body_ct_missing' | awk "$P"'
+{
+    s = (f["smp"] == "") ? 1 : f["smp"] + 0
+    n += s
+    d[f["domain"]] += s
+    ips[f["ip"]]++
+    # `matched` = `cl=<so>` — Content-Length tu HEADER, khong phai do than.
+    #
+    # `smp` phai nhan vao CA `n` LAN `tot`: mot dong mau dai dien nhieu request, va
+    # neu chi nhan vao `n` thi Content-Length trung binh bi chia sai.
+    v = f["matched"]; sub(/^cl=/, "", v); v = v + 0
+    tot += v * s
+    if (v > mx) mx = v
+}
+END {
+    if (!n) {
+        print "  0 luot — khong request nao co than ma thieu Content-Type."
+        print "  => tren may nay, mo duong doc than la MIEN PHI ve tai."
+        exit
+    }
+    printf "  %d luot, %d domain, %d IP rieng biet\n", n, length(d), length(ips)
+    printf "  Content-Length: lon nhat %d B, trung binh %d B, tong %.2f MB\n", \
+           mx, tot/n, tot/1048576
+    print  "  -- theo domain --"
+    for (k in d) printf "    domain: %-32s %6d\n", k, d[k]
+    print  "  -- CACH DOC --"
+    print  "  n < 1.000/ngay       : mo duong doc than, chi phi khong dang ke"
+    print  "  n lon ma it IP       : gan nhu chac la mot cong cu/bot — xem IP truoc"
+    print  "  lon nhat > 1 MB      : can gioi han byte TRUOC khi mo"
+    print  "  tap trung mot domain : co the la mot app that dung raw POST"
+}'

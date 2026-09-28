@@ -110,6 +110,9 @@ echo "[$N] [waf] ts=12 rid=r29 id=- domain=k.test ip=6.6.6.6 rule=route_multipar
 # ── Muc 15: tep cau hinh soi KHONG HET (duong bypass) ──
 # `matched` = "slot=N <ly do>". smp=5 -> phai nhan 5.
 echo "[$N] [waf] ts=13 rid=r30 id=- domain=l.test ip=5.5.5.5 rule=upload_config_scan_incomplete target=MULTIPART_PART sev=notice pl=0 matched=slot=1_config_trunc score=0.00 action=observe class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=5"
+echo "[$N] [waf] ts=13 rid=r40 id=- domain=m.test ip=6.6.6.6 rule=body_ct_missing target=BODY sev=notice pl=0 matched=cl=100 score=0.00 action=observe class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=1"
+echo "[$N] [waf] ts=13 rid=r41 id=- domain=m.test ip=6.6.6.6 rule=body_ct_missing target=BODY sev=notice pl=0 matched=cl=200 score=0.00 action=observe class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=2"
+echo "[$N] [waf] ts=13 rid=r42 id=- domain=n.test ip=7.7.7.7 rule=body_ct_missing target=BODY sev=notice pl=0 matched=cl=1000 score=0.00 action=observe class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=1"
 } > "$R/L/waf.log"
 {
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
@@ -127,7 +130,7 @@ nwant() { if printf '%s\n' "$OUT" | grep -qE "$2"; then
 echo "postdeploy_test: doi chieu voi dap an tinh tay"
 
 # ── Muc 0: cua so, va dong TRUOC moc deploy phai bi loai ───────────────────
-want  "0 so dong"              'dong \[waf\] 12   dong \[waf-body\] 19'
+want  "0 so dong"              'dong \[waf\] 15   dong \[waf-body\] 19'
 want  "0 rid tren >1 dong"     'rid tren >1 dong: 1   request co CA dong luat lan dong than: 1'
 nwant "0 loai dong truoc moc"  'old\.test'
 
@@ -238,6 +241,20 @@ want  "15 tong luot"           'tong: 5 luot'
 want  "15 ly do nguyen ven"    'ly do: config_trunc +5'
 nwant "15 KHONG cat nham nhan" 'ly do: config +'
 want  "15 domain"              'domain: l\.test +5'
+
+# ── Muc 16: than co du lieu ma thieu Content-Type ──────────────────────────
+# Dap an tinh TAY tu ba dong r40/r41/r42:
+#   n   = smp 1 + 2 + 1            = 4
+#   tot = 100*1 + 200*2 + 1000*1   = 1.500 B
+#   mx  = 1.000 B  ;  tb = 1500/4  = 375 B
+#   domain: m.test 3, n.test 1     ;  IP rieng biet = 2
+#
+# `smp` PHAI duoc nhan vao ca `n` VA `tot`: mot dong mau dai dien nhieu request, va
+# neu chi nhan vao `n` thi Content-Length trung binh bi chia sai.
+want  "16 tong luot"          '4 luot, 2 domain, 2 IP'
+want  "16 tong byte"          'lon nhat 1000 B, trung binh 375 B'
+want  "16 domain m.test"      'm\.test +3'
+want  "16 domain n.test"      'n\.test +1'
 
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

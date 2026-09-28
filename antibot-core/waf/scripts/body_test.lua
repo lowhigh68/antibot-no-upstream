@@ -389,9 +389,12 @@ check("khong co file -> spill_open",
 -- ══ 12. Lop truy cap ngx (body.lua) ═════════════════════════════════
 io.write("\nbody: cong loc va dieu phoi\n")
 
-local function runtime(method, ct, data, file)
+local function runtime(method, ct, data, file, cl)
     return {
-        var = { http_content_type = ct },
+        -- `http_content_length` PHAI dat duoc: `probe` dem vung mu "than co du
+        -- lieu ma thieu Content-Type" bang bien nay, va mot stub khong dat duoc
+        -- no thi bo test KHONG DIEN DAT DUOC ca do.
+        var = { http_content_type = ct, http_content_length = cl },
         req = {
             get_method    = function() return method end,
             read_body     = function() end,
@@ -403,18 +406,64 @@ end
 local function probe(method, ct, data, file, runner)
     local ctx = {}
     body._probe_with_runner(ctx, runner or function() return false, "nothread" end,
-                            runtime(method, ct, data, file))
+                            runtime(method, ct, data, file, cl))
     return ctx.waf_body
+end
+
+-- Nhu `probe` nhung tra ve CA `ctx`, de kiem co dem (`waf_body_ct_missing`).
+local function probe_ctx(method, ct, data, cl)
+    local ctx = {}
+    body._probe_with_runner(ctx, function() return false, "nothread" end,
+                            runtime(method, ct, data, nil, cl))
+    return ctx
 end
 
 -- Cong loc la nua quan trong hon: bo do chay o access phase tren duong di cua
 -- moi request, mot cong loc hong nghia la moi GET deu tra gia.
 check("GET khong soi",  probe("GET",  URLENC, "a=1"), nil)
 check("HEAD khong soi", probe("HEAD", URLENC, "a=1"), nil)
-check("thieu Content-Type", probe("POST", nil, "a=1"), nil)
-check("Content-Type rong",  probe("POST", "",  "a=1"), nil)
+-- ── VUNG MU DA BIET, khong phai "hanh vi dung" ──────────────────────
+--
+-- Hai ca duoi GHIM mot vung mu: than co du lieu ma thieu `Content-Type` thi KHONG
+-- duoc soi. Truoc ban nay chung chi viet `..., nil)` — doc nhu mot khang dinh rang
+-- day la dieu DUNG, va do la kieu "test ghi nhan loi thanh mong doi" da xay ra hai
+-- lan trong du an nay.
+--
+-- Giu nguyen KY VONG (hanh vi chua doi), nhung doi TEN de no tu noi ra la vung mu,
+-- va them phep kiem rang no DA DUOC DEM. Khi mo duong doc than, hai dong nay doi
+-- thanh `~= nil` va nhom dem o duoi van dung.
+check("VUNG MU: thieu Content-Type -> KHONG soi", probe("POST", nil, "a=1"), nil)
+check("VUNG MU: Content-Type rong -> KHONG soi",  probe("POST", "",  "a=1"), nil)
 for _, m in ipairs({ "POST", "PUT", "PATCH", "DELETE" }) do
     check(m .. " co soi", probe(m, URLENC, "a=1") ~= nil, true)
+end
+
+-- ── DEM vung mu, KHONG doc than ─────────────────────────────────────
+--
+-- DEM TRUOC, MO SAU. Do tren fleet 28-09: 171-96 co 2.238.511 POST/PUT/PATCH/DELETE
+-- nhung chi 9.674 than duoc soi (0,43%); 183-139 la 95.493 va 61 (0,06%). Bo cong
+-- `Content-Type` la chan tren 231 lan / 1.565 lan so luot quet. Nhung hieu so do gom
+-- moi POST thoat som vi ly do KHAC, nen con so can la chinh cai co nay dem.
+check("dem: thieu CT + co CL -> dat co",
+      probe_ctx("POST", nil, "a=1", "3").waf_body_ct_missing, 3)
+check("dem: CT rong + co CL -> dat co",
+      probe_ctx("POST", "", "a=1", "3").waf_body_ct_missing, 3)
+-- `Content-Length: 0` KHONG phai vung mu: khong co gi de doc.
+check("dem: CL=0 -> KHONG dat co",
+      probe_ctx("POST", nil, "", "0").waf_body_ct_missing, nil)
+check("dem: khong co CL -> KHONG dat co",
+      probe_ctx("POST", nil, "a=1", nil).waf_body_ct_missing, nil)
+-- Co `Content-Type` thi khong phai vung mu nay, du than co gi.
+check("dem: CO Content-Type -> KHONG dat co",
+      probe_ctx("POST", URLENC, "a=1", "3").waf_body_ct_missing, nil)
+-- Method khong soi thi thoat TRUOC ca phep dem: `GET` co than la bat thuong nhung
+-- no khong phai vung mu cua tang nay.
+check("dem: GET -> KHONG dat co (thoat truoc)",
+      probe_ctx("GET", nil, "a=1", "3").waf_body_ct_missing, nil)
+-- Moi method trong INSPECT_METHODS deu phai dem.
+for _, m in ipairs({ "POST", "PUT", "PATCH", "DELETE" }) do
+    check("dem: " .. m .. " thieu CT -> dat co",
+          probe_ctx(m, nil, "a=1", "3").waf_body_ct_missing, 3)
 end
 
 check("than trong bo nho -> scan=ok", probe("POST", URLENC, "a=1").scan, "ok")
