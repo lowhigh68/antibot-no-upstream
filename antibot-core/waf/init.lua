@@ -438,10 +438,20 @@ local function fim_config_changed(uri, rt)
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
 
-    -- LAY `ext` TRUOC KHI HOI REDIS. Ban truoc goi `safe_get` roi moi lay `ext`,
-    -- nen CSS, anh, JS, `/` — moi request khong co duoi — deu tra gia mot Redis
-    -- round-trip. Pool giu lai chi phi TCP setup, khong giu lai lenh Redis lan
-    -- viec dinh thoi cosocket.
+    -- LAY `ext` TRUOC KHI HOI REDIS.
+    --
+    -- DINH CHINH chu thich cua chinh toi (nguoi dung bat 28-09): ban dau toi viet
+    -- "CSS, anh, JS, `/` — moi request khong co duoi". Cau do TU MAU THUAN:
+    -- `style.css` CO duoi. Phep sua nay chi bo Redis GET cho `/` va URL KHONG CO
+    -- DUOI — nho hon han dieu toi da tuyen bo.
+    --
+    -- Nen chi phi THAT hien nay van la: moi CSS/JS/anh co duoi = mot GET `fimchg`;
+    -- moi PHP/INC = mot GET `fimnew` cong mot GET `fimchg`. Pool giu lai chi phi
+    -- TCP setup, khong giu lai lenh Redis lan viec dinh thoi cosocket.
+    --
+    -- Duong dong THAT la nap cac dau FIM thanh SNAPSHOT vao shared dict theo
+    -- generation, roi tra bang table lookup. Chua lam — no la mot thay doi kien
+    -- truc rieng, va no can mot con so ve so luong dau FIM dang song tren fleet.
     --
     -- Va phep hoi do KHONG BAO GIO dung duoc cho chung: ca hai nhanh ben duoi
     -- (`*` va danh sach duoi) deu doi `ext`, nen `ext == nil` la `return nil` chac
@@ -456,13 +466,32 @@ local function fim_config_changed(uri, rt)
     local v = pool.safe_get("waf:fimchg:" .. root .. dir)
     if not v or v == "" then return nil end
 
-    -- `*` (autoload) chi co nghia voi mot script PHP.
-    if v:find("*", 1, true) then
-        if upload.PHP_EXT[ext] then return "autoload" end
-    end
-    -- Duoi bi `.htaccess` anh xa: KHONG rang buoc `PHP_EXT` — do la ca chinh.
+    -- BA KHONG GIAN TEN, khong con mot dau `*` mang ba nghia (nguoi dung bat 28-09):
+    --
+    --   @all     handler ap CA thu muc (`SetHandler`/`ForceType`/`Options +ExecCGI`)
+    --            -> MOI duoi, KHONG rang buoc `PHP_EXT`. Day la cho ban truoc sai:
+    --            `SetHandler application/x-httpd-php` lam `shell.jpg` CHAY duoc,
+    --            nhung `*` bi hieu la "autoload" nen `jpg` khong khop `PHP_EXT` va
+    --            request `/shell.jpg` khong bao gi.
+    --   @php     autoload tu `.user.ini` -> chi co nghia voi script PHP
+    --   @phpini  autoload tu `php.ini` -> TACH RIENG vi pham vi phu thuoc SAPI:
+    --            `.user.ini` la co che per-directory CHUAN cua CGI/FastCGI, con
+    --            `php.ini` di theo chuoi tim cau hinh cua SAPI/CWD nen KHONG mac
+    --            nhien co cung pham vi theo thu muc. Giu rieng cho tới khi do duoc
+    --            tren DirectAdmin.
+    --   <duoi>   duoi cu the tu `AddType`/`AddHandler`
     for e in v:gmatch("[^,]+") do
-        if e == ext then return "handler" end
+        if e == "@all" then
+            return "handler"                      -- moi duoi
+        elseif e == "@php" or e == "@phpini" then
+            if upload.PHP_EXT[ext] then return "autoload" end
+        elseif e == "*" then
+            -- Khoa CU tu ban truoc, con song tới het TTL 7 ngay. Giu nghia cu
+            -- (autoload) de khong doi nghia mot khoa da ghi.
+            if upload.PHP_EXT[ext] then return "autoload" end
+        elseif e == ext then
+            return "handler"
+        end
     end
     return nil
 end

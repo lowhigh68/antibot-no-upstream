@@ -147,22 +147,38 @@ want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `auto_prepend_file` nap ma cho MOI script PHP trong thu muc, khong doi handler
 # cua duoi nao -> gia tri `*`. Khac han nhom `.htaccess` (danh sach duoi cu the),
 # va `waf/init.lua` giu dieu kien `PHP_EXT` RIENG cho nhom nay.
-want "4 gia tri la * (moi duoi PHP)" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "*"
+# `@php` chu KHONG `*`: ba nghia da duoc tach (nguoi dung bat 28-09). Dau `*` cu bi
+# `init.lua` hieu la "autoload, chi duoi trong PHP_EXT", nen `SetHandler` — ap CA
+# thu muc, moi duoi — bi hieu NHE HON su that.
+#
+# Va gia tri gio la TRANG THAI CA THU MUC, khong phai su kien cua tep vua doi:
+# `.htaccess` tu buoc 2b van con tren dia nen `jpg,png` van co mat. Do la DUNG —
+# khoa mo ta THU MUC, va day la chinh loi da duoc sua.
+want "4 gia tri co @php (het dau * ba nghia)" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)" "jpg,png,@php"
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
 sleep 1
 printf 'memory_limit=256M\nupload_max_filesize=8M\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "4b .user.ini khong autoload -> im" "$(keys 'waf:fimchg:')" "0"
+# KHONG con la "im": khoa mo ta CA THU MUC, va `.htaccess` tu buoc 2b van tren dia
+# nen khoa van phai co `jpg,png`. Dieu phai kiem la KHONG co `@php` — tuc mot
+# `.user.ini` khong autoload thi khong gop tin hieu autoload vao.
+val4b=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)
+want "4b khong autoload -> KHONG co @php" \
+     "$(case "$val4b" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
+want "4b nhung khoa VAN co (.htaccess con tren dia)" \
+     "$(case "$val4b" in *jpg*) echo co ;; *) echo khong ;; esac)" "co"
 # Va gia tri RONG / `none` cung khong duoc bao (hai dong CO THAT trong php.ini
 # hop le de TAT tinh nang).
 : > "$RCLI_OUT"
 sleep 1
 printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "4c autoload rong -> im" "$(keys 'waf:fimchg:')" "0"
+val4c=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)
+want "4c autoload rong/none -> KHONG co @php" \
+     "$(case "$val4c" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
 
 # ══ 5. File THUONG bi sua -> KHONG nhom nao ═════════════════════════════════
 #
@@ -321,5 +337,66 @@ want "7 mu-plugins cua thu muc con (nhanh subdomain)" \
 # Khong khop `NAMES` thi khong vao, du o do sau 1.
 want "7 anh.png khong vao"           "$(hot_has 'anh.png')"                   "no"
 rm -rf "$HOT"
+
+# ══ 10. CHUYEN TRANG THAI: khoa mo ta THU MUC, khong mo ta SU KIEN ══════
+#
+# Nguoi dung bat 28-09, va da TAI HIEN duoc truoc khi sua. Chuoi that:
+#   B1  `.htaccess` anh xa `.jpg`      -> SETEX ... jpg
+#   B2  THEM `.user.ini` co autoload   -> SETEX jpg  ROI  SETEX *   (cai sau XOA
+#                                         cai truoc: mat `.htaccess`)
+#   B3  XOA `.user.ini`                -> SETEX *  ROI  DEL  (cung mot lan chay)
+# Ket qua cuoi: MAT khoa, trong khi `.htaccess` nguy hiem VAN CON tren dia. Va vi
+# `.htaccess` khong doi nua nen no KHONG bao gio xuat hien lai trong diff — khoa
+# mat VO THOI HAN, khong phai tới het TTL.
+#
+# Bo test cu KHONG bat duoc vi no xoa `$RCLI_OUT` giua cac buoc va chi kiem HINH
+# DANG lenh. Nhom nay GIU nguyen output qua ca ba buoc va kiem GIA TRI CUOI.
+S=$(mktemp -d /var/tmp/fimstate.XXXXXX) || exit 2
+SW="$S/home/u1/domains/st.test/public_html"
+mkdir -p "$SW" "$S/state"
+: > "$SW/index.php"
+SOUT="$S/cmds.txt"; : > "$SOUT"
+run_state() {
+    RCLI_OUT="$SOUT" FIM_ROOTS="$S/home/*/domains/*/public_html" FIM_STATE="$S/state" \
+    FIM_LOG="$S/f.log" FIM_CRITLOG="$S/c.log" FIM_REDIS_CLI="$R/bin/rcli" \
+        bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true
+}
+# Gia tri CUOI CUNG cua khoa thu muc: lenh cuoi cung tac dong len no quyet dinh.
+final_val() {
+    awk -v k="waf:fimchg:$SW/" '
+        $1 == "SETEX" && $2 == k { v = $4 }
+        $1 == "DEL"   && $2 == k { v = "(DA XOA)" }
+        END { print (v == "" ? "(khong co)" : v) }' "$SOUT"
+}
+run_state baseline
+
+sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
+run_state check
+want "10 B1 .htaccess -> jpg" "$(final_val)" "jpg"
+
+# THEM `.user.ini`. `.htaccess` KHONG doi, nen ban cu mat dau vet cua no.
+sleep 1; printf 'auto_prepend_file=/tmp/x.php\n' > "$SW/.user.ini"
+run_state check
+want "10 B2 hai tep -> GIU ca hai" "$(final_val)" "jpg,@php"
+
+# XOA `.user.ini`. `.htaccess` nguy hiem VAN CON -> phai SETEX lai, KHONG duoc DEL.
+sleep 1; rm -f "$SW/.user.ini"
+run_state check
+want "10 B3 xoa .user.ini -> quay ve jpg (KHONG xoa khoa)" "$(final_val)" "jpg"
+
+# XOA luon `.htaccess`: gio thu muc thuc su sach -> MOI duoc DEL.
+sleep 1; rm -f "$SW/.htaccess"
+run_state check
+want "10 B4 xoa het -> DA XOA khoa" "$(final_val)" "(DA XOA)"
+
+# Cau hinh doi tu NGUY HIEM thanh AN TOAN ma tep VAN TON TAI: ban cu khong sinh
+# SETEX moi va cung khong DEL, nen khoa nguy hiem cu song tiep het TTL.
+sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
+run_state check
+want "10 B5 dat lai -> jpg" "$(final_val)" "jpg"
+sleep 1; printf 'RewriteEngine On\n' > "$SW/.htaccess"
+run_state check
+want "10 B6 sua thanh AN TOAN -> khoa bi xoa" "$(final_val)" "(DA XOA)"
+rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

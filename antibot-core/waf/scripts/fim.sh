@@ -56,6 +56,12 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 # DAY cung voi cac duong dan khac, khong o cho dung: nguong ton dong mu-plugins
 # ghi vao no TRUOC diem do.
 CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
+# Hai parser cau hinh la TEP RIENG, dung chung voi `htaccess_fixture_test.sh`.
+# Truoc day khoi awk nam trong file nay va bo test phai TRICH ra bang moc comment
+# — mot phep trich la mot cho de lech, va no da hong mot lan (mat dong dau va dau
+# dong cua khoi). Nay ca hai ben `-f` cung tep.
+HTA_AWK="${FIM_HTA_AWK:-$(dirname "$0")/htaccess_parse.awk}"
+INI_AWK="${FIM_INI_AWK:-$(dirname "$0")/inifile_parse.awk}"
 
 # TAO VA DAT QUYEN NGAY O DAY, mot cho duy nhat. Truoc ban nay co BA cho goi
 # `chgrp nginx` + `chmod 0640`, va ca ba deu nam SAU `tee` cua nhanh chung —
@@ -1913,91 +1919,100 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
     # Trich duoi bang chinh cu phap ma `upload_content.lua` dung (argument DAU TIEN
     # anh xa sang PHP/CGI), khong phai tim chuoi tren ca dong — `AddType text/plain
     # .php` KHONG duoc tinh.
-    if [ -s "$chgs" ]; then
-        chgdirs=$(mktemp) || exit 2
+    # ── TINH LAI TRANG THAI THU MUC tu DIA, khong tu tep vua doi ──────
+    #
+    # VI SAO PHAI TINH LAI, va day la mot LOI DA TAI HIEN DUOC:
+    #
+    # Khoa la theo THU MUC nhung du lieu truoc day chi lay tu tep VUA DOI trong
+    # lan quet nay. Chuoi that (da chay, da do):
+    #     B1  `.htaccess` anh xa `.jpg`      -> SETEX ... jpg
+    #     B2  THEM `.user.ini` co autoload   -> SETEX ... jpg   roi SETEX ... *
+    #                                           (cai sau XOA cai truoc)
+    #     B3  XOA `.user.ini`                -> SETEX ... *  roi DEL (cung mot lan)
+    # Ket qua cuoi: MAT khoa, trong khi `.htaccess` nguy hiem VAN CON tren dia. Va
+    # vi `.htaccess` khong doi nua nen no KHONG bao gio xuat hien lai trong diff —
+    # khoa mat VO THOI HAN, khong phai tới het TTL.
+    #
+    # Mot ca nua cung duong: cau hinh doi tu NGUY HIEM thanh AN TOAN ma tep van ton
+    # tai. Parser khong sinh SETEX moi va cung khong DEL, nen khoa nguy hiem cu
+    # song tiep — duong tinh gia.
+    #
+    # NEN: moi NEW/CHG/DEL cua tep cau hinh chi danh dau THU MUC BAN. Sau do doc lai
+    # TOAN BO tep cau hinh HIEN CON trong thu muc do, tinh trang thai cuoi, roi phat
+    # DUNG MOT lenh — SETEX neu con thu nguy hiem, DEL neu khong. Mot lenh cho mot
+    # thu muc, khong phu thuoc thu tu.
+    #
+    # ── BA KHONG GIAN TEN, khong con mot dau `*` mang ba nghia ────────
+    #
+    # Ban truoc dung `*` cho CA `SetHandler`/`ForceType` VA autoload cua
+    # `.user.ini`/`php.ini`. Nhung `waf/init.lua` hieu `*` la "autoload, chi anh
+    # huong duoi trong `PHP_EXT`" — nen `SetHandler application/x-httpd-php` co the
+    # lam `shell.jpg` CHAY duoc ma request `/shell.jpg` khong khop, vi `jpg` khong
+    # thuoc `PHP_EXT`. Ba nghia khac nhau bi gop thanh mot dau.
+    #
+    #   <duoi>   duoi CU THE tu `AddType`/`AddHandler`      -> "jpg,png"
+    #   @all     handler ap CA thu muc (`SetHandler`/`ForceType`), MOI duoi
+    #   @php     autoload tu `.user.ini` — chi co nghia voi script PHP
+    #   @phpini  autoload tu `php.ini` — TACH RIENG vi pham vi phu thuoc SAPI:
+    #            `.user.ini` la co che per-directory CHUAN cua CGI/FastCGI, con
+    #            `php.ini` di theo chuoi tim cau hinh cua SAPI/CWD nen KHONG mac
+    #            nhien co cung pham vi theo thu muc. Gop hai cai truoc khi do thuc
+    #            te tren DirectAdmin la tu tao mot ket luan chua kiem.
+    #
+    # `<FilesMatch>`: `SetHandler` trong container KHONG ap cho ca thu muc. Parser
+    # nay CHUA doc duoc container context, nen `SetHandler` ben trong mot container
+    # KHONG duoc nang thanh `@all` — xem `in_container` ben duoi. Huong sai o day la
+    # bo sot, khong phai bao oan.
+    dirtydirs=$(mktemp) || exit 2
+    for src in "$chgs" "$dels"; do
+        [ -s "$src" ] || continue
         while IFS='|' read -r _b p; do
             [ -n "$p" ] || continue
-            d=$(dirname "$p")/
-            case "$(basename "$p")" in
-              .htaccess)
-                # Duoi bi anh xa sang mot bo thuc thi. `$2` la argument DAU TIEN
-                # (mime/handler), cac `$i` sau la duoi. Chi nhan khi `$2` anh xa.
-                # CUNG HOP DONG voi `upload_content.lua:HANDLER_DIRECTIVES`. Ban
-                # truoc dung `[Aa][Dd][Dd](Type|Handler|TYPE|HANDLER)`, nen no bo sot:
-                #   · `addtype` / `AddTYPE` / `aDdTyPe` — Apache KHONG phan biet hoa
-                #     thuong ten directive
-                #   · `SetHandler`, `ForceType` — cung quyet dinh handler
-                #   · noi dong bang `\\`
-                # Hai parser lech nhau la mot false negative: Lua bao nguy, FIM im.
-                #
-                # Bo test `htaccess_fixture_test.sh` chay CUNG mot tap fixture qua CA
-                # HAI parser va doi chung dong y — do la thu chan lech tiep, chu khong
-                # phai hai danh sach directive duoc nho cap nhat cung luc.
-                # >>> HTACCESS_AWK_BEGIN (moc cho htaccess_fixture_test.sh)
-                exts=$(awk '
-                    # Noi dong: gach nguoc cuoi dong -> ghep voi dong sau.
-                    { line = $0
-                      while (line ~ /\\$/) {
-                          sub(/\\$/, " ", line)
-                          if ((getline nxt) <= 0) break
-                          sub(/^[ \t]+/, "", nxt)
-                          line = line nxt
-                      }
-                      sub(/#.*/, "", line)
-                      nf = split(line, T, /[ \t]+/)
-                      if (nf < 2) next
-                      d = tolower(T[1])
-                      if (d != "addtype" && d != "addhandler" && \
-                          d != "sethandler" && d != "forcetype") next
-                      # Token THU NHAT quyet dinh (y nhu `first_arg` ben Lua): bo
-                      # nhay neu co.
-                      v = T[2]; gsub(/^["''"]|["''"]$/, "", v)
-                      if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
-                      # `SetHandler`/`ForceType` khong mang duoi: chung ap cho CA thu
-                      # muc, nen bao `*` — cung nghia `*` cua `.user.ini` autoload.
-                      if (d == "sethandler" || d == "forcetype") { print "*"; next }
-                      for (i = 3; i <= nf; i++) {
-                          e = T[i]; sub(/^\.?/, "", e)
-                          if (e != "") print tolower(e)
-                      }
-                    }' "$p" 2>/dev/null | sort -u | paste -sd, -)
-                # <<< HTACCESS_AWK_END
-                [ -n "$exts" ] && printf '%s|%s\n' "$exts" "$d" >> "$chgdirs"
-                ;;
-              .user.ini|php.ini)
-                # `auto_prepend_file` nap ma cho MOI script PHP trong thu muc.
-                # `none` la gia tri VO HIEU HOA (da doi chung voi PHP), va dong
-                # `auto_prepend_file=none` co THAT trong nhieu php.ini hop le de TAT
-                # tinh nang do. Loai no y nhu `upload_content.lua` — hai noi phai
-                # cung mot dinh nghia "gia tri co nap ma".
-                if awk '
-                    { sub(/[;#].*/, "") }
-                    tolower($0) ~ /^[ \t]*auto_(pre|ap)pend_file[ \t]*=/ {
-                        v = $0; sub(/^[^=]*=[ \t]*/, "", v)
-                        gsub(/[ \t"\x27]/, "", v)
-                        if (v != "" && tolower(v) != "none") { found = 1 }
-                    }
-                    END { exit(found ? 0 : 1) }' "$p" 2>/dev/null; then
-                    printf '%s|%s\n' '*' "$d" >> "$chgdirs"
+            printf '%s\n' "$(dirname "$p")" >> "$dirtydirs"
+        done < "$src"
+    done
+
+    if [ -s "$dirtydirs" ]; then
+        chgdirs=$(mktemp) || exit 2
+        setcmds=""
+        delcmds=""
+        while IFS= read -r d; do
+            [ -d "$d" ] || { printf 'DEL waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"; continue; }
+            toks=""
+            # `.htaccess`: duoi cu the, hoac `@all` cho SetHandler/ForceType/ExecCGI.
+            if [ -f "$d/.htaccess" ]; then
+                t=$(awk -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+                [ -n "$t" ] && toks="$t"
+            fi
+            # `.user.ini` -> `@php` ; `php.ini` -> `@phpini`. HAI token khac nhau.
+            for cf in .user.ini php.ini; do
+                [ -f "$d/$cf" ] || continue
+                if awk -f "$INI_AWK" "$d/$cf" 2>/dev/null; then
+                    tok="@php"; [ "$cf" = "php.ini" ] && tok="@phpini"
+                    toks="${toks:+$toks,}$tok"
                 fi
-                ;;
-            esac
-        done < "$chgs"
-        # Gop nhieu tep cau hinh trong CUNG thu muc thanh mot khoa.
-        chgmerged=$(mktemp) || exit 2
-        awk -F'|' '{ v[$2] = (v[$2] == "") ? $1 : v[$2] "," $1 }
-                   END { for (k in v) printf "%s|%s\n", v[k], k }' \
-            "$chgdirs" > "$chgmerged"
-        chgcmds=$(gen_cmds "$chgmerged" "waf:fimchg:")
-        rm -f "$chgdirs" "$chgmerged"
-        if [ -n "$chgcmds" ]; then
+            done
+            if [ -n "$toks" ]; then
+                printf '%s|%s/\n' "$toks" "$d" >> "$chgdirs"
+            else
+                printf 'DEL waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
+            fi
+        done < <(sort -u "$dirtydirs")
+
+        chgcmds=$(gen_cmds "$chgdirs" "waf:fimchg:")
+        [ -f "$chgdirs.del" ] && delcmds=$(sort -u "$chgdirs.del")
+        rm -f "$chgdirs" "$chgdirs.del"
+
+        # SETEX truoc, DEL sau la DUNG o day va KHAC han ban truoc: mot thu muc chi
+        # xuat hien o MOT trong hai tap (tinh lai tu dia thi no hoac con thu nguy
+        # hiem, hoac khong), nen khong co thu muc nao bi ghi roi xoa.
+        if [ -n "$chgcmds" ] && [ $dry -eq 0 ]; then
             marked_chg=$(printf '%s\n' "$chgcmds" | wc -l)
             printf '%s\n' "$chgcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
             # XAC MINH VONG TRON cho CA nhom nay, khong dua vao vong o tren: mot
             # lan chay co the CHI co tep cau hinh bi sua (`$cmds` rong), va khi do
             # vong tren khong chay mot phep nao — tuc FIM ghi mot noi, WAF doc mot
-            # noi, khong ai bao loi. Dung ho loi "canh bao dung ma khong ai mo".
-            # Chi bao khi vong tren CHUA bao, de khong ghi de mot loi cu the hon.
+            # noi, khong ai bao loi.
             cprobe=$(printf '%s\n' "$chgcmds" | head -1 | awk '{print $2}')
             cwant=$(printf  '%s\n' "$chgcmds" | head -1 | awk '{print $4}')
             if [ -z "$mark_err" ] && \
@@ -2006,30 +2021,11 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi
         fi
-    fi
-
-    # ── DEL: tep cau hinh BI XOA -> GO khoa cua thu muc do ───────────
-    #
-    # Khong co duong nay thi mot `.htaccess` nguy hiem DA duoc don sach van de lai
-    # khoa den 7 ngay, va telemetry khong phan biet duoc "dang co" voi "da tung co".
-    #
-    # GO CA KHOA THU MUC, khong go tung tep: khoa la theo THU MUC, va neu trong thu
-    # muc con mot tep cau hinh khac thi lan `check` sau se dat lai khoa tu no. Tuc
-    # huong sai o day la TAM THOI thieu mot khoa, chu khong phai giu mot khoa sai —
-    # dung huong an toan cho FP.
-    if [ -s "$dels" ]; then
-        deldirs=$(mktemp) || exit 2
-        while IFS="|" read -r _b p; do
-            [ -n "$p" ] || continue
-            printf "%s\n" "$(dirname "$p")/" >> "$deldirs"
-        done < "$dels"
-        delcmds=$(sort -u "$deldirs" | awk '
-            { if ($0 ~ /^[A-Za-z0-9._~:@!$&()*+,;=%\/-]+$/) printf "DEL waf:fimchg:%s\n", $0 }')
-        rm -f "$deldirs"
         if [ -n "$delcmds" ] && [ $dry -eq 0 ]; then
-            printf "%s\n" "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1 || :
+            printf '%s\n' "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1 || :
         fi
     fi
+    rm -f "$dirtydirs"
   fi
 fi
 

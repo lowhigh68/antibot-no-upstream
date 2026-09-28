@@ -49,3 +49,24 @@ NONE	RewriteEngine On
 NONE	# AddType application/x-httpd-php .php
 NONE	Header set X-Frame-Options SAMEORIGIN
 NONE	php_value memory_limit 128M
+
+# ── Options / ExecCGI (nguoi dung bat 28-09: fixture noi ALL ma khong co ca) ──
+ALL	Options +ExecCGI
+ALL	Options All
+NONE	Options -ExecCGI
+NONE	Options +FollowSymLinks
+# Xu ly TUAN TU nhu Apache: token cuoi quyet dinh.
+NONE	Options +ExecCGI -ExecCGI
+ALL	Options -ExecCGI +ExecCGI
+NONE	Options None
+
+# ── Directive co INDENT (trong <IfModule>) ──────────────────────────
+HANDLER	    AddType application/x-httpd-php .php
+HANDLER		AddHandler application/x-httpd-php .php
+ALL	  SetHandler application/x-httpd-php
+
+# ── Handler duoc quote CO khoang trang ──────────────────────────────
+HANDLER	AddHandler "application/x-httpd-php extra" .php
+
+# ── `#` nam TRONG chuoi quote: khong phai chu thich ─────────────────
+HANDLER	AddHandler "proxy:unix:/run/php#74.sock|fcgi://localhost" .php
