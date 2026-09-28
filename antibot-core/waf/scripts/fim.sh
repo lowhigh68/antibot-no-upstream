@@ -264,8 +264,59 @@ scan_hot() {
         # nong, du chung cung duoc core require. Chung van duoc TANG DAY phu,
         # chi la mot ngay mot lan thay vi 15 phut.
         # Van la glob co dich chu khong phai traversal, nen chi phi gan nhu khong doi.
-        find $ROOTS/*             -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
-        find $ROOTS/*/wp-content  -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        # ── NHANH GENERIC: do sau 3, TRU thu muc thu vien/core ────────────
+        #
+        # VI SAO CAN, va day la cho tang nong KHONG generic: sau nhanh tren deu
+        # la duong dan WordPress (`wp-content`, `mu-plugins`). Chi nhanh dau
+        # (`$ROOTS -maxdepth 1`) la generic. Nen tren mot may code tay, tang nong
+        # chi thay web root do sau 1 — mot webshell tha vao `/includes/`,
+        # `/libraries/`, `/ajax/` cua site tu viet chi duoc TANG DAY DU thay, tuc
+        # mot ngay mot lan thay vi 5 phut.
+        #
+        # Tieu chi chon nhanh KHONG doi: "chay duoc ma khong can mot HTTP request
+        # nao". Do la bat bien GENERIC — `mu-plugins` chi la MOT hien thuc cua no.
+        # Tep duoc `require` luc khoi dong (`config.php`, `init.php`,
+        # `bootstrap.php`, `functions.php`, `db.php`) co dung tinh chat do tren moi
+        # stack, va truoc ban nay chung khong nam trong tang nong tru khi o web
+        # root.
+        #
+        # DO TREN FLEET 28-09, `-maxdepth` neo vao CUNG goc `$ROOTS` nen cac so so
+        # duoc voi nhau (bang day du trong commit):
+        #
+        #   do sau | 171-96 sau prune | giay  | 183-139 sau prune | giay
+        #        1 |              861 | 0,053 |                21 | 0,004
+        #        2 |            1.700 | 0,185 |               311 | 0,008
+        #        3 |            3.899 | 0,327 |               632 | 0,023
+        #        4 |           15.232 | 0,925 |             1.656 | 0,059
+        #
+        # CHON DO SAU 3. Do sau 4 la mot VACH: 3.899 -> 15.232 (3,9 lan) va
+        # 0,327s -> 0,925s, vi `wp-content/plugins/<ten>/<thu-muc-con>` bung ra
+        # hang nghin plugin. Do sau 3 giu tang nong duoi 1 giay tren may nang
+        # nhat, tuc no van la tang 5 phut THAT.
+        #
+        # PRUNE PHAI O TANG `$ROOTS`, khong o tang da mo rong. Ban dau toi prune
+        # tren `$ROOTS/*/*` va no cat duoc 24/32.934 tep: glob da mo rong QUA
+        # `wp-includes` roi, nen ten thu muc `find` nhan la `blocks`/`IXR`/
+        # `SimplePie` chu khong phai `wp-includes`. Dat o day thi ten nhan duoc LA
+        # `wp-includes`, va no cat 88,8% (15.159 -> 1.700 o do sau 2).
+        #
+        # Nhung thu muc bi prune KHONG mat bao ve — TANG DAY DU van phu chung.
+        # Chung bi loai khoi tang NONG vi tang day du da du cho chung: core
+        # WordPress va thu vien Composer/npm doi theo BAN CAP NHAT (hang tram tep
+        # mot luot, `check` gom thanh mot dong), khong theo kieu mot tep la.
+        #
+        # `languages` va `cache` KHONG cung nhom: chung la ten CHUNG, co that tren
+        # site tu viet. Do tren 183-139: prune khong cat gi o do sau <=3 (311=311,
+        # 632=632) nen danh sach nay vo hai o day — nhung `cache` da bi loai khoi
+        # danh sach vi mot thu muc tam co the nhan tep tai len, dung cho can canh.
+        find $ROOTS \
+            \( -type d \( -name wp-includes -o -name wp-admin -o -name vendor \
+               -o -name node_modules -o -name upgrade -o -name upgrade-temp-backup \
+               -o -name languages -o -name .git \) -prune \) -o \
+            \( -maxdepth 3 -type f "${NAMES[@]}" -printf '%p|%s|%T@\n' \) || :
+        # `mu-plugins` cua subdomain GIU RIENG: nhanh generic gioi han do sau
+        # 3, con day KHONG gioi han — WordPress `include` MOI tep o do bat ke
+        # sau bao nhieu cap, nen thu muc con trong `mu-plugins` van chay duoc.
         find $ROOTS/*/wp-content/mu-plugins   "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
     } 2>/dev/null | sort -u
 }

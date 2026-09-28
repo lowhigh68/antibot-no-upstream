@@ -186,5 +186,79 @@ want "6 --dry khong ghi gi" "$(wc -l < "$RCLI_OUT")" "0"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/")" "yes"
 
+
+# ══ 7. TANG NONG GENERIC (khong chi duong dan WordPress) ════════════════
+#
+# VI SAO: truoc ban nay 5/6 nhanh cua `scan_hot` la duong dan WordPress
+# (`wp-content`, `mu-plugins`), chi nhanh dau la generic. Nen tren may code tay
+# tang nong CHI thay web root do sau 1 — webshell tha vao `/includes/`,
+# `/libraries/`, `/ajax/` chi duoc TANG DAY DU thay, tuc mot ngay mot lan.
+#
+# Tieu chi chon nhanh khong doi: "chay duoc ma khong can mot HTTP request nao" —
+# do la bat bien GENERIC, `mu-plugins` chi la MOT hien thuc cua no.
+HOT=$(mktemp -d /var/tmp/fimhot.XXXXXX) || exit 2
+HW="$HOT/home/u1/domains/s.test/public_html"
+mkdir -p "$HW/wp-includes/blocks" "$HW/wp-content/mu-plugins/deep/deeper" "$HW/vendor/pkg" \
+         "$HW/sub1/wp-content/mu-plugins/x" \
+         "$HW/libraries/joomla" "$HW/includes/sub" "$HW/ajax" "$HW/node_modules/m"
+: > "$HW/index.php"                        # d1 generic          CO
+: > "$HW/.htaccess"                        # d1 generic          CO
+: > "$HW/wp-includes/load.php"             # d2 PRUNE            khong
+: > "$HW/wp-includes/blocks/b.php"         # d3 PRUNE            khong
+: > "$HW/vendor/autoload.php"              # d2 PRUNE            khong
+: > "$HW/node_modules/m/x.php"             # d3 PRUNE            khong
+: > "$HW/libraries/lib.php"                # d2 generic          CO
+: > "$HW/libraries/joomla/j.php"           # d3 generic          CO
+: > "$HW/includes/conf.php"                # d2 generic          CO
+: > "$HW/includes/sub/deep.php"            # d3 generic          CO
+: > "$HW/ajax/handler.php"                 # d2 generic          CO
+: > "$HW/wp-content/mu-plugins/mu.php"     # d3                  CO
+: > "$HW/wp-content/mu-plugins/deep/d.php" # d4
+# d5 PHAN BIET hai nhanh: ca d4 o tren KHONG phan biet duoc, vi nhanh generic
+# `-maxdepth 3` tinh tu `$ROOTS` cung voi tới `mu-plugins/deep` — dot bien "go
+# nhanh mu-plugins" da XANH vi the. Tep nay o d5 nen CHI nhanh KHONG GIOI HAN
+# thay duoc.
+: > "$HW/wp-content/mu-plugins/deep/deeper/dd.php"
+# NHANH SUBDOMAIN (`$ROOTS/*/wp-content/mu-plugins`): WordPress trong thu muc
+# con — `da_to_openresty.sh:318` cho subdomain mot webroot dang
+# <public_html>/<sub>. Tep nay o do sau 5 TU `$ROOTS` va duoi `sub1/`, nen
+# nhanh generic (maxdepth 3) va nhanh `$ROOTS/wp-content/mu-plugins` deu
+# KHONG thay — chi nhanh subdomain thay duoc.
+: > "$HW/sub1/wp-content/mu-plugins/x/sub.php"
+: > "$HW/anh.png"                          # khong khop NAMES    khong
+
+HSTATE="$HOT/state"; mkdir -p "$HSTATE"
+FIM_ROOTS="$HOT/home/*/domains/*/public_html" FIM_STATE="$HSTATE" \
+FIM_LOG="$HOT/f.log" FIM_CRITLOG="$HOT/c.log" \
+    bash "$HERE/fim.sh" baseline --hot >/dev/null 2>&1
+
+hot_has() {
+    if grep -q "^$HW/$1|" "$HSTATE/manifest.hot.txt" 2>/dev/null; then echo yes
+    else echo no; fi
+}
+# DAP AN TINH TAY: 9 tep (dem tay tu bang tren, khong lay tu output).
+want "7 tang nong: dung 11 tep" "$(wc -l < "$HSTATE/manifest.hot.txt")" "11"
+# Thu muc GENERIC — day la phan ban nay them vao.
+want "7 generic: libraries/ do sau 2" "$(hot_has 'libraries/lib.php')"      "yes"
+want "7 generic: libraries/ do sau 3" "$(hot_has 'libraries/joomla/j.php')" "yes"
+want "7 generic: includes/ do sau 3"  "$(hot_has 'includes/sub/deep.php')"  "yes"
+want "7 generic: ajax/"               "$(hot_has 'ajax/handler.php')"       "yes"
+# PRUNE — thu vien/core KHONG vao tang nong (tang day du van phu chung).
+want "7 prune: wp-includes do sau 2"  "$(hot_has 'wp-includes/load.php')"      "no"
+want "7 prune: wp-includes do sau 3"  "$(hot_has 'wp-includes/blocks/b.php')"  "no"
+want "7 prune: vendor"                "$(hot_has 'vendor/autoload.php')"       "no"
+want "7 prune: node_modules"          "$(hot_has 'node_modules/m/x.php')"      "no"
+# `mu-plugins` PHAI giu nhanh KHONG GIOI HAN do sau: nhanh generic dung o 3, con
+# WordPress `include` moi tep o do bat ke sau bao nhieu cap.
+want "7 mu-plugins do sau 4 van bat" "$(hot_has 'wp-content/mu-plugins/deep/d.php')" "yes"
+# PHEP KIEM PHAN BIET hai nhanh (xem chu thich o tep d5 tren).
+want "7 mu-plugins do sau 5 (phan biet nhanh)" \
+     "$(hot_has 'wp-content/mu-plugins/deep/deeper/dd.php')" "yes"
+# PHAN BIET nhanh SUBDOMAIN: chi `$ROOTS/*/wp-content/mu-plugins` thay duoc.
+want "7 mu-plugins cua thu muc con (nhanh subdomain)" \
+     "$(hot_has 'sub1/wp-content/mu-plugins/x/sub.php')" "yes"
+# Khong khop `NAMES` thi khong vao, du o do sau 1.
+want "7 anh.png khong vao"           "$(hot_has 'anh.png')"                   "no"
+rm -rf "$HOT"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
