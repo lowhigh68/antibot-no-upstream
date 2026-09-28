@@ -107,6 +107,11 @@ local function request_of(rt)
         host   = rt.var.host or "-",
         uri    = rt.var.uri or "/",
         method = method,
+        -- Thu muc phuc vu request NAY. La khoa nhan dien CMS (xem khoi
+        -- `root_id` trong `wordpress/paths.lua`): Host header do ke gui chon,
+        -- docroot thi khong. Doc cung cho voi ba bien tren vi `rt.var` la mot
+        -- phep tra bien nginx -- khong goi hai lan o hai noi.
+        dr     = rt.var.document_root,
         -- Muc 5 can content-type de kiem hop dong route. Doc o day chu khong o
         -- cho dung de moi tang nhin cung mot `request` — va `rt.var` la mot phep
         -- tra bien nginx, khong nen goi hai lan o hai noi.
@@ -150,11 +155,11 @@ local function record_arg(state, rule_id, target, matched, factor)
     max_field(state.ctx, field, bridged)
 end
 
-local function find_uri_rule(uri, host, resolved)
+local function find_uri_rule(uri, host, resolved, docroot)
     local id = exposed.check(uri)
     if id then return id, exposed.RULES end
     if (resolved.profiles or {}).wordpress ~= false then
-        id = wp_paths.check(uri, host)
+        id = wp_paths.check(uri, host, docroot)
         if id then return id, wp_paths.RULES end
     end
     return nil, nil
@@ -484,12 +489,12 @@ local function run_pre(ctx, rt)
     -- ap cho host DA duoc chung minh la WordPress bang mot file THAT tren dia. Cung
     -- cong ma `wp_root_unknown` dung — khong viet lai phep kiem thu hai.
     local route_bad, route_name = routes.check_pre(
-        request.uri, request.method, wp_paths.is_wp_root, request.host)
+        request.uri, request.method, wp_paths.is_wp_root, request.host, request.dr)
     if route_bad then
         policy.emit(state, route_bad, { target = "URI", matched = route_name })
     end
 
-    local uri_rule, detector_rules = find_uri_rule(request.uri, request.host, resolved)
+    local uri_rule, detector_rules = find_uri_rule(request.uri, request.host, resolved, request.dr)
     local detector_rule = uri_rule and detector_rules[uri_rule] or nil
     if uri_rule and detector_rule then
         local uri_hit = policy.emit(state, uri_rule,
@@ -533,7 +538,8 @@ local function run_pre(ctx, rt)
     local b = ctx.waf_body
     local has_body = b ~= nil and b.scan ~= "empty"
     local post_bad, post_name = routes.check_post(
-        request.uri, request.ct, has_body, b, wp_paths.is_wp_root, request.host)
+        request.uri, request.ct, has_body, b, wp_paths.is_wp_root, request.host,
+        request.dr)
     if post_bad then
         policy.emit(state, post_bad, { target = "URI", matched = post_name })
     end
@@ -542,7 +548,8 @@ local function run_pre(ctx, rt)
     -- multipart KHONG soi duoc. Thieu no thi khong phan biet duoc `route_upload` im
     -- lang vi SACH hay vi KHONG CHUNG MINH DUOC.
     local mp_bad, mp_name = routes.check_multipart(
-        request.uri, request.ct, has_body, wp_paths.is_wp_root, request.host)
+        request.uri, request.ct, has_body, wp_paths.is_wp_root, request.host,
+        request.dr)
     if mp_bad then
         policy.emit(state, mp_bad, { target = "URI", matched = mp_name })
     end
@@ -635,12 +642,14 @@ function _M.run_log(ctx)
     local public = ctx.waf_v2
     local wordpress_enabled = not public or public.wordpress_enabled ~= false
     local host = ngx.var.host
-    local wp = wordpress_enabled and wp_paths.needs_mark(ngx.var.uri, host) or nil
+    local dr   = ngx.var.document_root
+    local wp = wordpress_enabled and
+               wp_paths.needs_mark(ngx.var.uri, host, dr) or nil
     if not uri_hit and wp == nil then return end
 
     local exists = target_exists(ngx)
     if uri_hit then ctx.waf_target_exists = exists end
-    if wp ~= nil and exists == true then wp_paths.mark(host, wp) end
+    if wp ~= nil and exists == true then wp_paths.mark(host, wp, dr) end
 end
 
 -- Cau hinh DANG CHAY, cho nguoi doc so lieu.

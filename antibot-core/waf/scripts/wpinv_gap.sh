@@ -131,14 +131,34 @@ fi
 nmiss=$(printf '%s\n' "$class" | grep -c '^KHONG-CO-HOST' || true)
 echo
 
-echo "── so khoa theo loai (phai khop tong 'khoa SE ghi' cua wpinv --dry) ──"
+# Dem theo LOAI KHOA, gom ca khong gian khoa MOI (`wpdir`, theo THU MUC). TONG
+# ba so nay phai KHOP `khoa SE ghi` cua `wpinv --dry` — day la phep doi chieu
+# chinh cua lenh nay, va no chi dung khi dem DU moi loai khoa ma `wpinv` ghi.
+#
+# `wpdir` IT hon `wphost` la DUNG, khong phai thieu: nhieu alias dung chung mot
+# docroot sinh NHIEU khoa host nhung CHUNG MOT khoa thu muc. Chenh lech giua hai
+# con so chinh la so alias duoc hop nhat — do tren 171-96: 243 host, 79 docroot.
+#
+# `wpdir` phat BEN TRONG vong host, khong o ngoai: mot docroot KHONG co host nao
+# thi `wpinv` bo ca dong (vong ghep `awk` cua no chi chay khi `hmap` co host), nen
+# no KHONG ghi khoa `wpdir` nao ca. Ban dau toi phat `wpdir` truoc vong host va
+# dem ra 11 trong khi `wpinv` ghi 10 — hai ben khong dong y, va `wpinv` la ben
+# dung: mot thu muc khong ai tro tới thi khong co khoa nao, ke ca khoa thu muc.
+echo "── so khoa theo loai (TONG phai khop 'khoa SE ghi' cua wpinv --dry) ──"
 awk -F'\t' '
     NR==FNR { hmap[$1] = hmap[$1] "\n" $2; next }
-    { n=split(hmap[$1],hs,"\n"); for(i=1;i<=n;i++){ h=hs[i]; if(h=="") continue;
-        if ($2=="") printf "wphost\t%s\n", h; else printf "wproot\t%s:%s\n", h, $2 } }
-' "$inv" "$roots" | sort -u | awk '{c[$1]++} END{for(k in c) printf "  %-8s %d\n", k, c[k]}'
+    {
+        n=split(hmap[$1],hs,"\n")
+        seen_dir = 0
+        for (i=1;i<=n;i++) {
+            h=hs[i]; if (h=="") continue
+            if (!seen_dir) { printf "wpdir\t%s%s\n", $1, $2; seen_dir=1 }
+            if ($2=="") printf "wphost\t%s\n", h; else printf "wproot\t%s:%s\n", h, $2
+        }
+    }
+' "$inv" "$roots" | sort -u | awk '{c[$1]++; t++} END{
+    for(k in c) printf "  %-8s %d\n", k, c[k]; printf "  %-8s %d\n", "TONG", t }'
 echo
-
 # Ma thoat doc SO DONG MAT BAO VE, khong doc tong so dong hut: `phu-boi-prefix`
 # la trang thai BINH THUONG cua mot WP trong thu muc con, khong phai su co. Tra
 # 1 cho no la day nguoi van hanh vao cho bo qua ca canh bao that.

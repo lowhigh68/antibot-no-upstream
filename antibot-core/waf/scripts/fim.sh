@@ -447,7 +447,21 @@ if [ "$mode" = "wpinv" ]; then
             for (i = 1; i <= n; i++) {
                 h = hs[i]
                 if (h == "") continue
-                # Khoa PHAI khop `cache_key`/`redis_key` trong paths.lua.
+                # Khoa PHAI khop `redis_key`/`redis_key_root` trong paths.lua.
+                #
+                # HAI khong gian khoa, va do la CO Y trong thoi gian di tru:
+                #   waf:wpdir:<docroot><prefix>   MOI - khoa theo THU MUC
+                #   waf:wphost: / waf:wproot:     CU  - khoa theo HOST
+                #
+                # `is_wp_root` doc khoa MOI truoc, truot thi doc khoa CU. Ghi ca
+                # hai o day nghia la mot worker chua nap ban moi (dang reload)
+                # van doc duoc, va khong co thoi diem nao ca hai deu trong. Het
+                # mot chu ky 30 ngay thi bo hai dong `wphost`/`wproot`.
+                #
+                # Khoa MOI khong dung `h` - do la CHO DICH: bon alias cua
+                # `phuson.vn` sinh BON khoa cu nhung CHUNG MOT khoa moi, vi
+                # chung dung chung DIA. `sort -u` ben duoi gop chung lai.
+                printf "SETEX waf:wpdir:%s%s %d 1\n", $1, $2, ttl
                 if ($2 == "") {
                     printf "SETEX waf:wphost:%s %d 1\n", h, ttl
                 } else {

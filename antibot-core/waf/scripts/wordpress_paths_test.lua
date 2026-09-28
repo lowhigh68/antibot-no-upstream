@@ -471,5 +471,117 @@ local SCRIPT_CASES = {
 }
 run("script_path()", SCRIPT_CASES, wp.script_path)
 
+
+-- ══ KHOA NHAN DIEN THEO THU MUC (docroot), khong theo Host header ══════
+--
+-- VI SAO NHOM NAY TON TAI, va no la lan thu HAI cung mot bai hoc: sau khi doi ca
+-- khong gian khoa cua cong nhan CMS, bo test 1.488 van XANH — va mot dot bien
+-- "cho `root_id` luon tra nil", tuc GO HAN duong khoa moi, CUNG xanh. Moi ca cu
+-- goi `check(uri, host)` khong truyen docroot, nen chung chi kiem duong khoa CU.
+-- Y het ho loi cua cong overlay WP vong truoc: test xanh ngay khi them tinh nang
+-- khong chung minh duoc tinh nang co chay.
+--
+-- `REDIS` la mot local bi preload dong lai, nen phai DON TAI CHO (`k = nil`),
+-- KHONG duoc gan `REDIS = {}` — gan la cat day lien ket va bang gia thanh tro.
+local function redis_clear()
+    for k in pairs(REDIS) do REDIS[k] = nil end
+    ngx.shared.antibot_cache:flush_all()
+end
+
+local function eq(what, got, want)
+    if got ~= want then
+        bad("  SAI  %s\n       duoc=%s  mong=%s\n", what, tostring(got), tostring(want))
+    else
+        pass = pass + 1
+    end
+end
+
+local DR_WP    = "/home/u1/domains/wp.test/public_html"
+local DR_PLAIN = "/home/u9/domains/plain.test/public_html"
+local DR_SUB   = "/home/u2/domains/wpsub.test/public_html"
+-- HAI host DUNG CHUNG mot docroot — chinh ca alias duoc trong so. Do tren 171-96
+-- (27-09): `phuson.vn` co BON domain that dung chung mot docroot, vi
+-- `da_to_openresty.sh:646-649` dat moi pointer vao CUNG mot `server_name` cua
+-- mot khoi `server` co MOT `root`.
+local ALIAS_A  = "phuson.vn"
+local ALIAS_B  = "sunglass.com.vn"
+local DR_ALIAS = "/home/phuson/domains/phuson.vn/public_html"
+
+io.write("khoa theo THU MUC (docroot) - 16 case\n")
+
+-- ── 1. Khoa MOI mo cong, khong can khoa theo host ──────────────────────
+redis_clear()
+REDIS["waf:wpdir:" .. DR_WP] = "1"
+eq("khoa THU MUC mo cong du khong co khoa host nao",
+   wp.check("/wp-content/uploads/shell.php", "bat-ky.test", DR_WP), "wp_upload_exec")
+-- Thu muc KHAC thi khong: khoa la thu muc, khong phai toan may.
+eq("thu muc khac KHONG duoc mo cong",
+   wp.check("/wp-content/uploads/shell.php", "bat-ky.test", DR_PLAIN), nil)
+
+-- ── 2. HOP NHAT ALIAS — loi ich chinh cua viec doi khoa ────────────────
+redis_clear()
+REDIS["waf:wpdir:" .. DR_ALIAS] = "1"
+eq("alias A duoc phu",
+   wp.check("/wp-content/uploads/x.php", ALIAS_A, DR_ALIAS), "wp_upload_exec")
+eq("alias B duoc phu boi CUNG mot khoa (hop nhat)",
+   wp.check("/wp-content/uploads/x.php", ALIAS_B, DR_ALIAS), "wp_upload_exec")
+
+-- ── 3. DI TRU: khoa CU theo host van con hieu luc, va duoc NANG cap ────
+--
+-- Deploy khong duoc tao cua so trong: 79 khoa `waf:wphost:` dang song tren
+-- 28-246 phai tiep tuc mo cong.
+redis_clear()
+REDIS["waf:wphost:" .. WP] = "1"
+eq("DI TRU: khoa cu theo host van mo cong",
+   wp.check("/wp-content/uploads/shell.php", WP, DR_WP), "wp_upload_exec")
+eq("DI TRU: doc khoa cu thi GHI sang khoa thu muc",
+   REDIS["waf:wpdir:" .. DR_WP], "1")
+
+redis_clear()
+REDIS["waf:wproot:" .. WPSUB .. ":/en"] = "1"
+eq("DI TRU: khoa cu CO TIEN TO van mo cong",
+   wp.check("/en/wp-content/uploads/x.php", WPSUB, DR_SUB), "wp_upload_exec")
+eq("DI TRU: nang tien to sang khoa thu muc GHEP",
+   REDIS["waf:wpdir:" .. DR_SUB .. "/en"], "1")
+
+-- ── 4. CHAN TREN khong gian khoa — ly do doi khoa ─────────────────────
+--
+-- Voi khoa theo host, 50 Host la 50 khoa am trong `antibot_cache` (5m, dung CHUNG
+-- voi whitelist/TLS/stats/risk). Voi khoa theo thu muc chung gop lai thanh MOT.
+redis_clear()
+for i = 1, 50 do
+    wp.check("/wp-content/uploads/x.php", "bot" .. i .. ".evil.test", DR_PLAIN)
+end
+local n_dir, n_host = 0, 0
+for _, k in ipairs(ngx.shared.antibot_cache:get_keys(0)) do
+    if k:find("wpdir:", 1, true) == 1 then n_dir = n_dir + 1 end
+    if k:find("evil.test", 1, true) then n_host = n_host + 1 end
+end
+eq("50 Host khac nhau -> DUNG MOT khoa am theo thu muc", n_dir, 1)
+eq("khong khoa nao mang Host header do ke gui chon", n_host, 0)
+
+-- ── 5. `root_id` chuan hoa `/` cuoi ───────────────────────────────────
+redis_clear()
+REDIS["waf:wpdir:" .. DR_WP] = "1"
+eq("docroot co `/` cuoi phai ra CUNG mot khoa",
+   wp.check("/wp-content/uploads/x.php", "h.test", DR_WP .. "/"), "wp_upload_exec")
+
+-- ── 6. Thieu docroot -> suy giam ve khoa cu, KHONG mat cong ────────────
+redis_clear()
+REDIS["waf:wphost:" .. WP] = "1"
+eq("docroot nil: van dung khoa cu (suy giam, khong mat cong)",
+   wp.check("/wp-content/uploads/x.php", WP, nil), "wp_upload_exec")
+redis_clear()
+REDIS["waf:wphost:" .. WP] = "1"
+eq("docroot rong: cung vay",
+   wp.check("/wp-content/uploads/x.php", WP, ""), "wp_upload_exec")
+
+-- ── 7. `mark`/`needs_mark` ghi va chot theo THU MUC ────────────────────
+redis_clear()
+wp.mark(ALIAS_A, "", DR_ALIAS)
+eq("mark ghi khoa THU MUC", REDIS["waf:wpdir:" .. DR_ALIAS], "1")
+eq("mark VAN ghi khoa host (di tru)", REDIS["waf:wphost:" .. ALIAS_A], "1")
+eq("needs_mark: alias B bi chot boi khoa THU MUC cua alias A",
+   wp.needs_mark("/wp-admin/", ALIAS_B, DR_ALIAS), nil)
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

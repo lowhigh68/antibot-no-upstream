@@ -185,8 +185,68 @@ local function wp_prefix(low)
 end
 _M.wp_prefix = wp_prefix
 
--- Khoá: tiền tố rỗng giữ NGUYÊN tên cũ. Cố ý — Redis đang có sẵn khoá
--- `waf:wphost:*` với TTL 30 ngày, đổi tên là vứt hết và bắt học lại từ đầu.
+-- ── KHOÁ NHẬN DIỆN: DOCROOT, KHÔNG PHẢI HOST HEADER ──────────────────
+--
+-- Câu hỏi mà `is_wp_root` trả lời là một câu hỏi về FILESYSTEM: "thư mục đang
+-- phục vụ request này có phải gốc WordPress không". Host header không phải danh
+-- tính của thư mục — nó là thứ kẻ gửi chọn.
+--
+-- VÌ SAO ĐỔI, đo trên fleet 27-09 (đọc từ chính vhost đang chạy, không suy từ
+-- `da_to_openresty.sh`):
+--
+--             docroot   host    tỷ số
+--   171-96       79      243     3,1×
+--   28-246       46       86     1,9×
+--
+-- Khoá theo host thì không gian khoá là tập Host — do kẻ gửi chọn, không có chặn
+-- trên. `is_wp_root` cache cả kết quả ÂM (300s) và KHÔNG đòi bằng chứng đĩa nào,
+-- nên mỗi Host mới đi vào một đường có marker WP là một khoá rác trong
+-- `antibot_cache` (5m, dùng CHUNG với whitelist/TLS/stats/risk). Cổng overlay
+-- thêm ở bản trước làm đường đó chạy trên MỌI request `/wp-content/`,
+-- `/wp-admin/`, `/wp-includes/` — trước đó chỉ `wp_root_unknown` đi qua.
+--
+-- Đường GHI đã được bịt từ `d3bfd04` (chỉ `mark` khi file WP có thật trên đĩa),
+-- nên đây KHÔNG phải lỗ ghi Redis. Nó là đuổi LRU trong dict dùng chung — đúng
+-- "bán kính nổ vượt ra ngoài WAF" mà khối chú thích trên `needs_mark` đã lường
+-- cho đường ghi, nhưng đường ĐỌC không thừa hưởng phép chặn đó.
+--
+-- Khoá theo docroot thì không gian khoá bị chặn trên bởi SỐ THƯ MỤC trên máy
+-- (~79), và nó hợp nhất alias đúng ngữ nghĩa: `da_to_openresty.sh:646-649` dựng
+-- `server_name = domain + www.domain + pointers + www.pointers` cho MỘT khối
+-- `server` có MỘT `root`. Đo được trên 171-96: `phuson.vn` có BỐN domain thật
+-- (`phuson.vn`, `demo.phuson.vn`, `phusonglasstech.com`, `sunglass.com.vn`) dùng
+-- chung một docroot. Chúng dùng chung ĐĨA nên "có WordPress không" là CÙNG một
+-- câu hỏi — học một alias là biết cả nhóm. DirectAdmin đã coi chúng là chung;
+-- đây chỉ là dùng lại danh tính đã có, không phát minh cách hợp nhất.
+--
+-- ĐÃ CÂN NHẮC VÀ LOẠI: `$server_name`. `ngx.var.server_name` trả tên ĐẦU của
+-- khối `server`, không phải tên khớp — đã gây 642 lượt `ckn=false` oan cho khách
+-- trên domain alias. Nó cũng vẫn là danh tính theo tên chứ không theo đĩa, nên
+-- không trả lời đúng câu đang hỏi.
+--
+-- `document_root` KHÔNG phải hằng số trong một request: khối
+-- `location ^~ /.well-known/acme-challenge/` đặt `root /var/www/html`
+-- (`da_to_openresty.sh:206-212`, có trong CẢ HTTP và HTTPS của MỌI domain). Vô
+-- hại ở đây vì đường đó không chứa marker WP nào nên `wp_prefix` trả nil trước
+-- khi tới khoá. Nhưng nghĩa đúng của biến là "thư mục phục vụ request NÀY", chứ
+-- KHÔNG phải "thư mục của host này" — đừng dùng nó làm khoá cho thứ theo host.
+--
+-- Giá trị thật trên fleet luôn là `.../public_html` hoặc `.../public_html/<sub>`,
+-- KHÔNG có `/` cuối (đo 27-09), nên `<docroot><prefix>` ghép đúng: `prefix` mang
+-- `/` đầu, `""` cho gốc. Cùng cách `fim.sh` ghép `root .. path` và `wpinv` ghi
+-- `<docroot>` — ba chỗ đồng ý một cách ghép.
+local function root_id(docroot, prefix)
+    if not docroot or docroot == "" then return nil end
+    -- Bỏ `/` cuối nếu có: một máy cấu hình tay có thể ghi `root /a/b/;` và khi đó
+    -- `/a/b/` với `/a/b` là HAI khoá cho CÙNG một thư mục. Chuẩn hoá một chỗ.
+    if docroot:sub(-1) == "/" then docroot = docroot:sub(1, -2) end
+    return docroot .. prefix
+end
+
+-- Khoá: giữ NGUYÊN tên tiền tố `wphost:`/`wproot:` cho không gian khoá CŨ (theo
+-- host) và dùng tên MỚI cho không gian khoá theo docroot. Hai tên khác nhau là
+-- cố ý — chúng phải cùng sống một chu kỳ 30 ngày để không có cửa sổ trống, xem
+-- `is_wp_root`.
 local function cache_key(host, prefix)
     if prefix == "" then return "wphost:" .. host end
     return "wproot:" .. host .. ":" .. prefix
@@ -197,17 +257,26 @@ local function redis_key(host, prefix)
     return "waf:wproot:" .. host .. ":" .. prefix
 end
 
+-- Không gian khoá MỚI. Một khoá duy nhất cho cả `prefix == ""` và `prefix ~= ""`
+-- vì `root_id` đã gộp tiền tố vào đường dẫn — `/home/u/domains/d/public_html` và
+-- `/home/u/domains/d/public_html/en` là hai thư mục khác nhau, không cần hai
+-- dạng tên khoá để phân biệt.
+local function cache_key_root(rid)  return "wpdir:" .. rid end
+local function redis_key_root(rid)  return "waf:wpdir:" .. rid end
+
 -- Trả về TIỀN TỐ cần đánh dấu (chuỗi, có thể rỗng), hoặc nil.
 -- Trả tiền tố chứ không phải boolean vì người gọi cần chính nó để `mark`.
-function _M.needs_mark(uri, host)
+function _M.needs_mark(uri, host, docroot)
     if not uri or not host or host == "" then return nil end
     local prefix = wp_prefix(uri:lower())
     if not prefix then return nil end
     -- Đã đánh dấu trong 300s gần đây thì thôi. Giá trị 0 (âm, do `is_wp_root`
     -- cache lại) KHÔNG chặn ở đây — nhờ vậy một host mới cài WordPress vẫn tự
     -- được nhận ra thay vì kẹt ở kết quả âm cũ.
-    if shared_cache and shared_cache:get(cache_key(host, prefix)) == 1 then
-        return nil
+    if shared_cache then
+        local rid = root_id(docroot, prefix)
+        if rid and shared_cache:get(cache_key_root(rid)) == 1 then return nil end
+        if shared_cache:get(cache_key(host, prefix)) == 1 then return nil end
     end
     return prefix
 end
@@ -289,19 +358,26 @@ local WP_HOST_TTL_INFLIGHT = 10
 -- tuyên bố "xong rồi" trước khi biết việc có xong không — mỗi lần hỏng là 300
 -- giây không thử lại. Nay Redis trước, và shdict chỉ được ghi khi Redis đã
 -- nhận. Bộ đệm chỉ được phép nhớ một sự thật ĐÃ xảy ra.
-function _M.mark(host, prefix)
+function _M.mark(host, prefix, docroot)
     if not host or host == "" or not prefix then return end
 
     local ck = cache_key(host, prefix)
     local rk = redis_key(host, prefix)
+    local rid = root_id(docroot, prefix)
+    local rkr = rid and redis_key_root(rid) or nil
+    local ckr = rid and cache_key_root(rid) or nil
 
     -- Chốt tạm: nếu không có nó, mỗi asset của một trang lại lên lịch một timer
     -- cho tới khi cái đầu tiên ghi xong. `lua_max_running_timers` mặc định 256.
     if shared_cache then
         shared_cache:set(ck, 1, WP_HOST_TTL_INFLIGHT)
+        if ckr then shared_cache:set(ckr, 1, WP_HOST_TTL_INFLIGHT) end
     end
 
     local ok, err = ngx.timer.at(0, function()
+        if rkr and pool.safe_set(rkr, "1", WP_HOST_TTL_REDIS) and shared_cache then
+            shared_cache:set(ckr, 1, WP_HOST_TTL_SHARED)
+        end
         if pool.safe_set(rk, "1", WP_HOST_TTL_REDIS) and shared_cache then
             shared_cache:set(ck, 1, WP_HOST_TTL_SHARED)
         end
@@ -310,22 +386,92 @@ function _M.mark(host, prefix)
     -- Lên lịch thất bại thì gỡ chốt tạm ngay, đừng để nó chặn 10 giây cho một
     -- việc chắc chắn không xảy ra.
     if not ok then
-        if shared_cache then shared_cache:delete(ck) end
+        if shared_cache then
+            shared_cache:delete(ck)
+            if ckr then shared_cache:delete(ckr) end
+        end
         ngx.log(ngx.ERR, "[waf] khong len lich duoc mark ", rk, ": ", tostring(err))
     end
 end
 
-local function is_wp_root(host, prefix)
-    if not host or host == "" or not prefix then return false end
-    local ck = cache_key(host, prefix)
-    if shared_cache then
-        local v = shared_cache:get(ck)
-        if v ~= nil then return v == 1 end
+-- DI TRÚ HAI KHÔNG GIAN KHOÁ, KHÔNG CÓ CỬA SỔ TRỐNG.
+--
+-- Đổi khoá là đổi không gian khoá, nên mọi khoá đang có trên fleet không đọc được
+-- nữa: 52 khoá `wpinv` vừa ghi trên 28-246, cộng số `mark()` đã học (79 `wphost`
+-- thật trong Redis). Nếu chỉ đọc khoá mới thì ba luật HARD-BLOCK im lặng cho tới
+-- khi học lại — đúng cửa sổ cold-start mà `wpinv` vừa đóng hôm nay.
+--
+-- Nên: đọc khoá MỚI trước; trượt thì đọc khoá CŨ theo host, và nếu khoá cũ có
+-- thì GHI SANG dạng mới. Hai dạng cùng sống một chu kỳ 30 ngày rồi khoá cũ tự
+-- hết hạn. Không có lệnh di trú nào phải chạy tay, và không có thời điểm nào cả
+-- hai đều trống trong khi trước đó một cái có.
+--
+-- `docroot` có thể nil (người gọi không có runtime, hoặc biến rỗng). Khi đó chỉ
+-- còn đường khoá cũ — suy giảm về hành vi bản trước chứ không phải mất cổng.
+--
+-- Ghi sang dạng mới phải qua TIMER: hàm này chạy ở access phase (được), nhưng
+-- `check()` cũng được gọi ở đó và `pool.safe_set` là cosocket — ở access phase
+-- cosocket chạy được, nên KHÔNG cần timer. Khác `mark()` (log phase, cosocket bị
+-- CẤM). Đây là lý do một phép ghi ở đây an toàn mà phép ghi trong `mark` thì
+-- không, và lẫn hai thứ đó đã giết `wp_paths.mark()` bốn tháng.
+local function is_wp_root(host, prefix, docroot)
+    if not prefix then return false end
+
+    local rid = root_id(docroot, prefix)
+
+    -- ── Đường khoá MỚI: theo thư mục ──────────────────────────────────
+    if rid then
+        local ckr = cache_key_root(rid)
+        if shared_cache then
+            local v = shared_cache:get(ckr)
+            if v ~= nil then return v == 1 end
+        end
+        if pool.safe_get(redis_key_root(rid)) == "1" then
+            if shared_cache then
+                shared_cache:set(ckr, 1, WP_HOST_TTL_SHARED)
+            end
+            return true
+        end
+        -- CHƯA cache kết quả âm ở đây: còn phải hỏi khoá cũ, và cache âm trước
+        -- khi hỏi xong là tự tạo ra 300 giây trả lời sai trong lúc di trú.
     end
+
+    -- ── Đường khoá CŨ: theo host. Chỉ trong thời gian di trú ───────────
+    if not host or host == "" then
+        if rid and shared_cache then
+            shared_cache:set(cache_key_root(rid), 0, WP_HOST_TTL_SHARED)
+        end
+        return false
+    end
+
+    -- CHI DOC khong gian khoa cu, KHONG BAO GIO GHI vao no.
+    --
+    -- Ban dau cua toi cache ket qua cu vao `cache_key(host, ...)`, va bo test bat
+    -- ngay: mot khoa `wphost:bot1.evil.test` van xuat hien trong `antibot_cache`.
+    -- Tuc duong toi dang GO BO lai tu ghi them khoa mang ten Host — dung cai thu
+    -- ma ca thay doi nay sinh ra de loai. No bi chan tren o MOT khoa cho moi thu
+    -- muc (vi khoa am theo thu muc ngan mach ngay sau do), nhung "chi ro ri mot
+    -- it" khong phai ly do de ro ri.
+    --
+    -- Bo cache shdict o day khong lam tang chi phi: khi khoa cu CO, ta nang ngay
+    -- sang khoa moi va moi request sau di duong moi; khi khong co, khoa AM theo
+    -- thu muc ngan mach. Ca hai huong deu chi tra gia mot lan cho moi thu muc.
     local hit = pool.safe_get(redis_key(host, prefix)) == "1"
-    if shared_cache then
-        shared_cache:set(ck, hit and 1 or 0, WP_HOST_TTL_SHARED)
+
+    -- Khoá cũ có thật ⇒ nâng sang dạng mới. Một lần cho mỗi thư mục, rồi mọi
+    -- request sau đi đường mới.
+    if hit and rid then
+        pool.safe_set(redis_key_root(rid), "1", WP_HOST_TTL_REDIS)
+        if shared_cache then
+            shared_cache:set(cache_key_root(rid), 1, WP_HOST_TTL_SHARED)
+        end
+    elseif rid and shared_cache then
+        -- Âm ở CẢ HAI không gian: giờ mới được cache âm, và cache theo THƯ MỤC.
+        -- Đây là chỗ khoá rác theo Host biến mất: 243 Host trên 171-96 đi vào 79
+        -- thư mục, nên số khoá âm bị chặn trên bởi 79 bất kể ai gửi Host gì.
+        shared_cache:set(cache_key_root(rid), 0, WP_HOST_TTL_SHARED)
     end
+
     return hit
 end
 
@@ -342,7 +488,7 @@ _M.is_wp_root = is_wp_root
 -- ── Khớp luật ────────────────────────────────────────────────────────
 -- Trả về rule_id hoặc nil. Một request khớp nhiều nhất một luật: thứ tự dưới
 -- đây đi từ hẹp tới rộng để luật cụ thể hơn thắng.
-function _M.check(uri, host)
+function _M.check(uri, host, docroot)
     if not uri or uri == "" then return nil end
     local low = uri:lower()
 
@@ -380,7 +526,7 @@ function _M.check(uri, host)
     -- root tự tách tiền tố của nó (nó đã làm việc đó và đã gọi `is_wp_root`).
     local function wp_gate()
         local prefix = wp_prefix(low)
-        return prefix ~= nil and is_wp_root(host, prefix)
+        return prefix ~= nil and is_wp_root(host, prefix, docroot)
     end
 
     local wc = low:find("/wp-content/", 1, true)
@@ -511,7 +657,7 @@ function _M.check(uri, host)
         file, prefix = seg2, "/" .. seg1
     end
 
-    if not WP_ROOT_OK[file] and is_wp_root(host, prefix) then
+    if not WP_ROOT_OK[file] and is_wp_root(host, prefix, docroot) then
         return "wp_root_unknown"
     end
 

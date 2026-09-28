@@ -147,6 +147,39 @@ want "4 TTL khop WP_HOST_TTL_REDIS" "$ttl" "$WPTTL"
 val=$(awk '$2=="waf:wphost:site1.test" {print $4}' "$RCLI_OUT" | head -1)
 want "4 gia tri la 1" "$val" "1"
 
+
+# ── KHONG GIAN KHOA MOI: `waf:wpdir:<docroot><prefix>` ──────────────
+#
+# `is_wp_root` doc khoa NAY truoc (xem khoi `root_id` trong paths.lua). Thieu no
+# thi inventory chi nuoi khong gian khoa DANG CHET, va sau mot chu ky 30 ngay ba
+# luat hard-block im lang tren toan fleet.
+#
+# Dap an tinh TAY — bon thu muc, va CHU Y `site1` chi MOT khoa du co HAI host:
+#   waf:wpdir:<H>/u1/domains/site1.test/public_html        (site1.test + alias1.test)
+#   waf:wpdir:<H>/u1/domains/site3.test/public_html/blog   (tien to GHEP vao duong dan)
+#   waf:wpdir:<H>/u2/domains/shop.test/public_html
+#   waf:wpdir:<H>/u2/domains/shop.test/public_html/sub1
+want "6 khoa thu muc: site1"  "$(has "waf:wpdir:$H/u1/domains/site1.test/public_html")" "yes"
+want "6 khoa thu muc: shop"   "$(has "waf:wpdir:$H/u2/domains/shop.test/public_html")"  "yes"
+want "6 tien to GHEP vao duong dan (khong dau hai cham)" \
+     "$(has "waf:wpdir:$H/u1/domains/site3.test/public_html/blog")" "yes"
+want "6 subdomain co docroot rieng" \
+     "$(has "waf:wpdir:$H/u2/domains/shop.test/public_html/sub1")" "yes"
+# Chong FP: site2 khong phai WordPress.
+want "6 site2 KHONG co khoa thu muc" \
+     "$(has "waf:wpdir:$H/u1/domains/site2.test/public_html")" "no"
+
+# HOP NHAT ALIAS — day la loi ich chinh cua viec doi khoa, va no phai do duoc:
+# `site1.test` va `alias1.test` sinh HAI khoa host nhung DUNG MOT khoa thu muc.
+want "7 hai host -> MOT khoa thu muc" \
+     "$(grep -c "^SETEX waf:wpdir:$H/u1/domains/site1.test/public_html " "$RCLI_OUT")" "1"
+want "7 nhung VAN hai khoa host (di tru)" \
+     "$(grep -cE '^SETEX waf:wphost:(site1|alias1)\.test ' "$RCLI_OUT")" "2"
+
+# TTL cua khoa moi cung phai khop hang so.
+ttld=$(awk -v k="waf:wpdir:$H/u1/domains/site1.test/public_html" \
+       '$2==k {print $3}' "$RCLI_OUT" | head -1)
+want "7 TTL khoa thu muc khop" "$ttld" "$WPTTL"
 # `--dry` KHONG duoc ghi.
 : > "$RCLI_OUT"
 FIM_HOME="$H" bash "$HERE/fim.sh" wpinv --dry >/dev/null 2>&1 || true

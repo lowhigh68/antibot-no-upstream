@@ -150,16 +150,17 @@ _M.split_route = split_route
 
 -- Hop dong cua mot URI, hoac `nil`.
 --
--- `is_wp_fn`  ham `(host, prefix) -> boolean`: host nay DA duoc chung minh la
+-- `is_wp_fn`  ham `(host, prefix, docroot) -> boolean`: thu muc nay DA duoc
+--             chung minh la
 --             WordPress tai tien to do (bang chung tren dia). Thieu no thi KHONG
 --             hop dong nao ap — day la cong overlay. Truyen ham chu khong boolean
 --             vi tien to chi biet SAU khi tach URI, va `is_wp_root` khoa theo
 --             (host, tien to).
 -- `host`      de truyen cho `is_wp_fn`.
-local function contract_of(uri, is_wp_fn, host)
+local function contract_of(uri, is_wp_fn, host, docroot)
     local prefix, p = split_route(uri)
     if not prefix then return nil end
-    if not is_wp_fn or not is_wp_fn(host, prefix) then return nil end
+    if not is_wp_fn or not is_wp_fn(host, prefix, docroot) then return nil end
     return CONTRACTS[p], p
 end
 _M.contract_of = contract_of
@@ -168,8 +169,8 @@ _M.contract_of = contract_of
 --
 -- Tra `"route_method", <path>` hoac `nil`. Khong doc content-type o day: mot
 -- content-type khong noi duoc gi cho tới khi biet co THAN hay khong.
-function _M.check_pre(uri, method, is_wp_fn, host)
-    local c, p = contract_of(uri, is_wp_fn, host)
+function _M.check_pre(uri, method, is_wp_fn, host, docroot)
+    local c, p = contract_of(uri, is_wp_fn, host, docroot)
     if not c then return nil end
     if c.methods and method and not c.methods[method:upper()] then
         return "route_method", p
@@ -192,8 +193,8 @@ end
 --
 -- `route_upload` uu tien tren `route_ct`: mot multipart CO TEP tren route khong
 -- bao gio nhan tep vi pham ca hai, va bao cai nhe hon la noi nhe hon han su that.
-function _M.check_post(uri, content_type, has_body, body, is_wp_fn, host)
-    local c, p = contract_of(uri, is_wp_fn, host)
+function _M.check_post(uri, content_type, has_body, body, is_wp_fn, host, docroot)
+    local c, p = contract_of(uri, is_wp_fn, host, docroot)
     if not c then return nil end
     if not has_body then return nil end
 
@@ -219,8 +220,8 @@ end
 -- so nay can de biet nhom `route_upload` bo qua bao nhieu (multipart chi co field,
 -- va multipart KHONG soi duoc). Neu khong do thi khong biet `route_upload` im lang
 -- vi sach hay vi khong chung minh duoc.
-function _M.check_multipart(uri, content_type, has_body, is_wp_fn, host)
-    local c, p = contract_of(uri, is_wp_fn, host)
+function _M.check_multipart(uri, content_type, has_body, is_wp_fn, host, docroot)
+    local c, p = contract_of(uri, is_wp_fn, host, docroot)
     if not c or c.upload ~= false then return nil end
     if not has_body then return nil end
     if ct_family(content_type) ~= "multipart" then return nil end
