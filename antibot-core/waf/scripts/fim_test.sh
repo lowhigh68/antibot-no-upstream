@@ -101,7 +101,7 @@ want "2 KHONG co fimnew nao" "$(keys 'waf:fimnew:')" "0"
 want "2 chi 1 key fimchg"    "$(keys 'waf:fimchg:')" "1"
 # GIA TRI la duoi bi anh xa — day la thong tin ma ban truoc khong co.
 want "2 gia tri la duoi bi anh xa" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "jpg"
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "ext:jpg"
 want "2 TTL dung" \
      "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$3}" "$RCLI_OUT")" "604800"
 
@@ -113,10 +113,49 @@ printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' 
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
-want "2b hai duoi duoc anh xa" "$got" "jpg,png"
+want "2b hai duoi duoc anh xa" "$got" "ext:jpg,ext:png"
 case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
                *)     want "2b .txt KHONG duoc tinh" "khong-txt" "khong-txt" ;; esac
 
+
+# ══ 2c. TEN TEP khong duoc thanh CO — va cham khong gian ten ════════════════
+#
+# Nguoi dung tai hien 29-09: `AddHandler application/x-httpd-php .@all` sinh token
+# `@all`, va `init.lua` doc thanh `handler_all` = "handler ap CA thu muc". Mot cai
+# TEN TEP tro thanh mot phan quyet manh hon han su that.
+#
+# Ca nay di het duong THAT: `fim.sh check` -> `htaccess_parse.awk` -> gia tri Redis.
+# Mot phep kiem chi o parser khong du — chinh cho noi gia tri duoc GHEP moi la cho
+# hai khong gian ten gap nhau.
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddHandler application/x-httpd-php .@all\n' > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
+want "2c ten .@all -> ext:@all, KHONG phai @all" "$got" "ext:@all"
+# Bien the: ten trung ca bon co.
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddHandler application/x-httpd-php .@php .@phpini .@execcgi\n' > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "2c ba ten trung co deu co tien to" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" \
+     "ext:@execcgi,ext:@php,ext:@phpini"
+# Huong NGUOC: `SetHandler` van phai ra `@all` THAT (phep sua khong lam mat nghia).
+: > "$RCLI_OUT"
+sleep 1
+printf 'SetHandler application/x-httpd-php\n' > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+want "2c SetHandler van la @all THAT" \
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "@all"
+# TRA lai trang thai cua ca 2b: ca 4 o duoi tinh tu `.htaccess` HIEN CO tren dia
+# (thiet ke "tinh lai tu DIA"), nen mot ca chen vao giua PHAI don trang thai cua no.
+# Thieu buoc nay thi ca 4 doc `@all` cua ca 2c va bao hong o mot cho khong lien quan.
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
+    > "$WEB/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # ══ 3. File PHP MOI -> `fimnew`, KHONG lan sang `fimchg` ════════════════════
 #
 # Huong nguoc lai cua muc 2. Hai nhom phai DOC LAP; tron chung la bien mot lan
@@ -155,7 +194,7 @@ want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `.htaccess` tu buoc 2b van con tren dia nen `jpg,png` van co mat. Do la DUNG —
 # khoa mo ta THU MUC, va day la chinh loi da duoc sua.
 want "4 gia tri co @php (het dau * ba nghia)" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)" "jpg,png,@php"
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)" "ext:jpg,ext:png,@php"
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
@@ -225,7 +264,7 @@ printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
 want "8 gia tri dung" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | head -1)" "jpg"
+     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | head -1)" "ext:jpg"
 
 # `.user.ini` MOI co autoload -> PHAI co fimchg (gia tri `*`).
 : > "$RCLI_OUT"
@@ -372,17 +411,17 @@ run_state baseline
 
 sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
 run_state check
-want "10 B1 .htaccess -> jpg" "$(final_val)" "jpg"
+want "10 B1 .htaccess -> ext:jpg" "$(final_val)" "ext:jpg"
 
 # THEM `.user.ini`. `.htaccess` KHONG doi, nen ban cu mat dau vet cua no.
 sleep 1; printf 'auto_prepend_file=/tmp/x.php\n' > "$SW/.user.ini"
 run_state check
-want "10 B2 hai tep -> GIU ca hai" "$(final_val)" "jpg,@php"
+want "10 B2 hai tep -> GIU ca hai" "$(final_val)" "ext:jpg,@php"
 
 # XOA `.user.ini`. `.htaccess` nguy hiem VAN CON -> phai SETEX lai, KHONG duoc DEL.
 sleep 1; rm -f "$SW/.user.ini"
 run_state check
-want "10 B3 xoa .user.ini -> quay ve jpg (KHONG xoa khoa)" "$(final_val)" "jpg"
+want "10 B3 xoa .user.ini -> quay ve ext:jpg (KHONG xoa khoa)" "$(final_val)" "ext:jpg"
 
 # XOA luon `.htaccess`: gio thu muc thuc su sach -> MOI duoc DEL.
 sleep 1; rm -f "$SW/.htaccess"
@@ -393,7 +432,7 @@ want "10 B4 xoa het -> DA XOA khoa" "$(final_val)" "(DA XOA)"
 # SETEX moi va cung khong DEL, nen khoa nguy hiem cu song tiep het TTL.
 sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
 run_state check
-want "10 B5 dat lai -> jpg" "$(final_val)" "jpg"
+want "10 B5 dat lai -> ext:jpg" "$(final_val)" "ext:jpg"
 sleep 1; printf 'RewriteEngine On\n' > "$SW/.htaccess"
 run_state check
 want "10 B6 sua thanh AN TOAN -> khoa bi xoa" "$(final_val)" "(DA XOA)"

@@ -1021,6 +1021,69 @@ do
     -- Khong co nhom thi KHONG sinh dong: mot request co `Content-Type` binh thuong
     -- khong duoc tra gia cho phep dem nay.
     eq("khong co nhom -> khong sinh dong", run_ct(nil, nil), nil)
+
+    -- ── LOI 7: `fim_config_changed` — hai khong gian ten, hai dang khoa ──
+    --
+    -- Nhanh nay TRUOC DAY khong co mot ca nao: stub `safe_get` cua bo test luon tra
+    -- `nil` nen `fim_config_changed` thoat ngay o dong dau. Do la ly do loi va cham
+    -- khong gian ten song duoc — `AddHandler ... .@all` sinh token `@all` va doc
+    -- thanh `handler_all` (nguoi dung tai hien 29-09).
+    --
+    -- `pool.safe_get` duoc thay TAI CHO de dieu khien gia tri khoa. Thay o `package.
+    -- loaded` chu khong o preload: `init.lua` da require xong tu dau tep nay.
+    io.write("\ne2e: fim_config_changed — khong gian ten + di tru (loi 7)\n")
+    local pool = require "antibot.core.redis_pool"
+    local real_get = pool.safe_get
+    local function with_fimchg(val, uri, fn)
+        pool.safe_get = function(k)
+            if k:find("^waf:fimchg:") then return val end
+            return nil
+        end
+        local ok, err = pcall(fn)
+        pool.safe_get = real_get
+        if not ok then error(err, 0) end
+    end
+    local function mark_for(val, uri)
+        local got
+        with_fimchg(val, uri, function()
+            local ctx = {}
+            local rt = {
+                var = { host = "a.test", uri = uri, args = nil,
+                        remote_addr = "127.0.0.1", document_root = "/nonexistent",
+                        http_content_type = nil },
+                req = { get_method = function() return "GET" end },
+                log = function() end, exit = function() end, ERR = 4,
+                waf_body_probe = function() end,
+            }
+            waf._run_pre_with_runtime(ctx, rt)
+            for i = 1, #(ctx.waf_hits or {}) do
+                if ctx.waf_hits[i].rule == "fim_config_changed" then
+                    got = ctx.waf_hits[i].matched
+                end
+            end
+        end)
+        return got
+    end
+    -- DANG MOI.
+    eq("ext:php + /x.php -> handler_ext",  mark_for("ext:php",  "/x.php"), "handler_ext")
+    eq("ext:jpg + /x.jpg -> handler_ext",  mark_for("ext:jpg",  "/x.jpg"), "handler_ext")
+    -- Duoi KHAC thi KHONG bao: day la ca ma phep so mot BIT cua fixture cu bo qua.
+    eq("ext:jpg + /x.php -> KHONG bao",    mark_for("ext:jpg",  "/x.php"), nil)
+    -- DANG CU (doc-de-di-tru, han chot 06-10-2026).
+    eq("dang CU php + /x.php -> handler_ext", mark_for("php",   "/x.php"), "handler_ext")
+    eq("dang CU jpg + /x.php -> KHONG bao",   mark_for("jpg",   "/x.php"), nil)
+    -- VA CHAM KHONG GIAN TEN: mot TEN TEP `.@all` sinh `ext:@all`, va no KHONG duoc
+    -- doc thanh `handler_all`. Day la phan vi du nguoi dung gui.
+    eq("ext:@all KHONG thanh handler_all", mark_for("ext:@all", "/x.php"), nil)
+    -- Co THAT thi van phai bao: phep sua khong duoc lam `@all` mat nghia.
+    eq("@all THAT -> handler_all",         mark_for("@all",     "/x.php"), "handler_all")
+    eq("@execcgi -> execcgi_only",         mark_for("@execcgi", "/x.php"), "execcgi_only")
+    eq("@php -> autoload_userini",         mark_for("@php",     "/x.php"), "autoload_userini")
+    eq("@phpini -> autoload_phpini",       mark_for("@phpini",  "/x.php"), "autoload_phpini")
+    -- `@php` chi co nghia voi duoi PHP: `/x.jpg` KHONG phai script PHP nen im.
+    eq("@php + /x.jpg -> KHONG bao",       mark_for("@php",     "/x.jpg"), nil)
+    -- Manh hon thang: ca `@all` lan `ext:php` thi bao `@all`.
+    eq("@all + ext:php -> handler_all",    mark_for("@all,ext:php", "/x.php"), "handler_all")
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))

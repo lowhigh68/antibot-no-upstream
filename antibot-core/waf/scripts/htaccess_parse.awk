@@ -126,7 +126,15 @@ function strip_comment(s,   out, i, c, q) {
         if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
         for (i = 3; i <= nf; i++) {
             e = TOK[i]; sub(/^\./, "", e)
-            if (e != "") print tolower(e)
+            # `ext:` chu KHONG duoi tho. Ban truoc in `php`, `jpg` vao CUNG khong
+            # gian ten voi `@all`/`@php`/`@phpini`/`@execcgi`, nen mot tep ten
+            # `.@all` cho token `@all` va `init.lua` doc thanh "handler ap CA thu
+            # muc" (nguoi dung tai hien 29-09). Tien to lam hai khong gian KHONG THE
+            # gap nhau: mot duoi luon la `ext:<gi do>`, mot co luon bat dau `@`.
+            #
+            # Loc ky tu la cach SAI cho viec nay: danh sach ky tu cam phai doan truoc
+            # moi duoi hop le, va Apache khong cam gi ca. Tien to dung voi MOI duoi.
+            if (e != "") print "ext:" tolower(e)
         }
         next
     }

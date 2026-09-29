@@ -67,13 +67,27 @@ while IFS=$'\t' read -r want rule; do
     case "$want" in ''|'#'*) continue ;; esac
     printf '%s\n' "$rule" > "$R/one.htaccess"
     out=$(awk -f "$R/shell.awk" "$R/one.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+    # ── SO TOKEN THAT cho nhanh duoi, khong con mot BIT ─────────────
+    #
+    # Ban truoc: `*) got=HANDLER` — MOI output khong phai `@all`/`@execcgi`/rong deu
+    # thanh `HANDLER`, nen mot parser tra `ext:jpg` thay vi `ext:php` van BAO XANH
+    # (nguoi dung bat 29-09). Nay duoi mong doi duoc SUY RA tu chinh dong fixture
+    # (token cuoi, bo dau `.`) va so DUNG token.
+    #
+    # Khong them cot vao bang fixture: duoi nam san trong dong, va mot cot nua la mot
+    # cho de lech giua cot va dong.
     case "$out" in
         "")         got=NONE ;;
         "@all")     got=ALL ;;
         "@execcgi") got=EXECCGI ;;
         *)          got=HANDLER ;;
     esac
-
+    if [ "$want" = "HANDLER" ]; then
+        # `AddType ... .php .phtml` cho HAI token; lay token cuoi cua DONG lam duoi
+        # mong doi thi chi dung cho ca mot duoi. Ca nhieu duoi co nhom rieng o duoi.
+        e=$(printf '%s\n' "$rule" | awk '{ print $NF }' | sed 's/^\.//' | tr 'A-Z' 'a-z')
+        want "$rule" "token-duoi" "$out" "ext:$e"
+    fi
     # ── HINH DANG TOKEN phai HOP LE ─────────────────────────────────
     #
     # Phep so ALL/HANDLER/NONE la mot BIT, va mot bit KHONG chung minh tuong
@@ -88,6 +102,7 @@ while IFS=$'\t' read -r want rule; do
     for tk in $(printf '%s\n' "$out" | tr "," " "); do
         case "$tk" in
             @all|@php|@phpini|@execcgi) ;;
+            ext:*) case "${tk#ext:}" in *[!a-z0-9_-]*|"") bad="$bad $tk" ;; esac ;;
             *[!a-z0-9_-]*) bad="$bad $tk" ;;
         esac
     done
@@ -114,7 +129,7 @@ done < "$FIX"
 # HAI KY TU `\` va `n`, va khi do phep noi dong CHUA BAO GIO duoc chay.
 { printf 'AddType application/x-httpd-php \\'; printf '\n    .php\n'; } > "$R/cont.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/cont.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-want "noi dong (2 dong)" "shell" "$out" "php"
+want "noi dong (2 dong)" "shell" "$out" "ext:php"
 
 cat > "$R/cont.lua" <<'LUAEOF'
 local uc = dofile(os.getenv("ANTIBOT_SRC") .. "waf/upload_content.lua")
@@ -155,7 +170,7 @@ want "SetHandler SAU khi dong container -> @all" "shell" "$out" "@all"
   printf '    AddType application/x-httpd-php .php\n'
   printf '</IfModule>\n'; } > "$R/ifm.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/ifm.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-want "AddType trong <IfModule> -> VAN bao" "shell" "$out" "php"
+want "AddType trong <IfModule> -> VAN bao" "shell" "$out" "ext:php"
 
 # ── PARSER INI: `#`/`;` TRONG DAU NHAY khong phai chu thich ──────────
 #
@@ -202,7 +217,7 @@ ini_raw() {  # ini_raw <ten> <mong: co|khong> <printf-format>
     want "$1" "ini" "$g" "$2"
 }
 hta_raw "CRLF: Options +ExecCGI"      "@execcgi" 'Options +ExecCGI\r\n'
-hta_raw "CRLF: AddType"               "php"      'AddType application/x-httpd-php .php\r\n'
+hta_raw "CRLF: AddType"               "ext:php"      'AddType application/x-httpd-php .php\r\n'
 hta_raw "CRLF: SetHandler"            "@all"     'SetHandler application/x-httpd-php\r\n'
 ini_raw "CRLF: none = TAT"            "khong"    'auto_prepend_file=none\r\n'
 ini_raw "CRLF: gia tri rong = TAT"    "khong"    'auto_prepend_file=\r\n'
@@ -258,5 +273,26 @@ cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.p
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
 cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
 
+
+# ── KHONG GIAN TEN: mot duoi khong bao gio duoc thanh mot co ─────────
+#
+# Nguoi dung tai hien 29-09: `AddHandler application/x-httpd-php .@all` sinh token
+# `@all`, va `init.lua` doc thanh `handler_all` = "handler ap CA thu muc" — bao MANH
+# HON su that tu mot cai TEN TEP. Tien to `ext:` lam hai khong gian khong the gap
+# nhau.
+#
+# Ba ca duoi dung CHINH cac ten trung ten co: neu mai ai bo tien to, chung do ngay.
+ns() {  # ns <ten> <mong> <printf-format>
+    printf "$3" > "$R/ns.htaccess"
+    want "$1" "ns" "$(awk -f "$HERE/htaccess_parse.awk" "$R/ns.htaccess" | paste -sd, -)" "$2"
+}
+ns "duoi .@all     -> ext:@all"     "ext:@all"     'AddHandler application/x-httpd-php .@all\n'
+ns "duoi .@php     -> ext:@php"     "ext:@php"     'AddHandler application/x-httpd-php .@php\n'
+ns "duoi .@execcgi -> ext:@execcgi" "ext:@execcgi" 'AddHandler application/x-httpd-php .@execcgi\n'
+ns "SetHandler van la @all THAT"    "@all"         'SetHandler application/x-httpd-php\n'
+ns "hai duoi deu co tien to"        "ext:php,ext:phtml" 'AddType application/x-httpd-php .php .phtml\n'
+# HINH DANG: `ext:@all` PHAI bi bao la token rac (`@` khong phai ky tu duoi hop le),
+# nhung no la RAC vo hai — `init.lua` khong co nhanh nao khop `ext:@all` tru khi duoi
+# that cua request la `@all`, ma do khong phai duoi hop le.
 printf '\nhtaccess_fixture: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

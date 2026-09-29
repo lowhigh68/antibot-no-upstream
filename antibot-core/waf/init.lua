@@ -526,7 +526,20 @@ local function fim_config_changed(uri, rt)
             -- Khoa CU tu ban truoc, con song tới het TTL 7 ngay. Giu nghia cu
             -- (autoload) de khong doi nghia mot khoa da ghi.
             hit_php = true
+        elseif e == "ext:" .. ext then
+            -- DANG MOI. Tien to `ext:` tach hai khong gian ten: truoc day mot duoi
+            -- di THO vao cung khong gian voi `@all`/`@php`/`@phpini`/`@execcgi`, nen
+            -- mot tep ten `.@all` cho token `@all` va dong nay doc thanh
+            -- `handler_all` — bao MANH HON su that (nguoi dung tai hien 29-09).
+            hit_ext = true
         elseif e == ext then
+            -- DANG CU, doc-de-di-tru. `fim.sh` da ngung ghi dang nay, nhung khoa cu
+            -- con song het TTL 7 ngay (`FIM_MARK_TTL`), va bo nhanh nay ngay thi
+            -- moi thu muc da danh dau mat phat hien tới khi `fim.sh` chay lai.
+            --
+            -- HAN CHOT 06-10-2026 (7 ngay tu 29-09): bo nhanh nay. Giu lai lau hon
+            -- la giu song chinh cai va cham namespace — mot khoa cu chua `@all` tu
+            -- mot ten tep `.@all` van doc sai o nhanh `@all` o tren.
             hit_ext = true
         end
     end
