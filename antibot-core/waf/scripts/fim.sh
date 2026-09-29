@@ -178,6 +178,58 @@ GROUP_MAX=5
 # `push_marks` doc nguoc mot key vua ghi de tu xac minh.
 REDIS_CLI="${FIM_REDIS_CLI:-redis-cli}"
 REDIS_DB="${FIM_REDIS_DB:-0}"
+
+# ── Redis: LOI khac han VANG MAT ────────────────────────────────────
+#
+# Nguoi dung bat 29-09. Bon cap ghi/doc trong tep nay deu co CUNG ba loi:
+#
+#   1. `printf ... | redis-cli >/dev/null 2>>LOG` roi BO QUA `$?`. `redis-cli` tra
+#      ma thoat khac 0 khi khong ket noi duoc, nhung khong ai doc.
+#   2. `[ -n "$(... GET ...)" ]` coi stdout RONG la "key khong con" — ma Redis mat
+#      ket noi CUNG cho stdout rong. Hai ket luan nguoc nhau tu cung mot dau hieu.
+#   3. Chi kiem `head -1`, tuc key dau tien cua batch. Key thu hai tro di khong ai
+#      kiem.
+#
+# VI SAO KHONG DUNG MA THOAT LAM BANG CHUNG DUY NHAT: toi KHONG DO DUOC hanh vi ma
+# thoat cua `redis-cli` (WSL dev khong co binary do), va doan no la dung cai da bi
+# bat nhieu lan trong du an nay. Thay vao do dung mot BANG CHUNG DOC DUOC:
+#
+#   ghi them mot khoa CANARY trong CUNG batch, roi doc nguoc no.
+#
+# Canary ve dung gia tri => ket noi song VA batch da chay. Canary khong ve => KHONG
+# KET LUAN gi ve cac key khac; bao loi. Phep nay khong can biet ma thoat, va no manh
+# hon `PING` (PING noi "luc nay ket noi duoc", khong noi "batch vua roi da chay").
+#
+# Canary TTL 60s va ten co PID nen khong dam vao du lieu that, khong ton cho.
+REDIS_CANARY="waf:fimcanary:$$"
+
+# `redis_send <lenh-nhieu-dong>` — ghi mot batch, tra 0 neu CHUNG MINH DUOC no chay.
+redis_send() {
+    { printf '%s\n' "$1"; printf 'SETEX %s 60 ok\n' "$REDIS_CANARY"; } \
+        | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+    local rc=$?
+    local got
+    got=$("$REDIS_CLI" -n "$REDIS_DB" GET "$REDIS_CANARY" 2>>"$LOG")
+    "$REDIS_CLI" -n "$REDIS_DB" DEL "$REDIS_CANARY" >/dev/null 2>>"$LOG"
+    [ "$got" = "ok" ] && return 0
+    # Ma thoat vao THONG DIEP chu khong vao quyet dinh: no huu ich khi doc log.
+    REDIS_ERR="canary khong doc nguoc duoc (ma thoat ghi=$rc, doc='$got')"
+    return 1
+}
+
+# `redis_absent <khoa>` — tra 0 khi khoa CHAC CHAN khong con, 1 khi con, 2 khi
+# KHONG KET LUAN DUOC. Ba tra loi, khong hai: day la cho ma `-n "$(GET)"` nhap lam
+# mot.
+redis_absent() {
+    local out
+    out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "$1" 2>>"$LOG")
+    case "$out" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) REDIS_ERR="EXISTS $1 tra '$out' (khong phai 0/1) — khong ket luan duoc"
+           return 2 ;;
+    esac
+}
 MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 
 # `audit` khong nhan co nao: no khong co tier (soi mot tap co dinh — mu-plugins
@@ -542,12 +594,16 @@ if [ "$mode" = "wpinv" ]; then
     if [ -n "$cmds" ]; then
         nkeys=$(printf '%s\n' "$cmds" | wc -l)
         if [ $dry -eq 0 ]; then
-            printf '%s\n' "$cmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>&1
+            # `redis_send` chu khong pipe tran: no ghi kem mot canary roi doc nguoc, nen
+            # mot batch KHONG chay duoc lo ra ngay thay vi doi vong `GET` ben duoi. Cap nay
+            # von da DUNG hon ba cap kia (`GET` so voi `"1"` cu the, khong phai `-n`), nhung
+            # `2>&1` nuot stderr — mot loi Redis khong den duoc log nao.
+            redis_send "$cmds" || true
             # XAC MINH VONG TRON: doc nguoc mot khoa vua ghi. Lech db, sai host,
             # Redis chet -- het thay lo ra o day thay vi de inventory ghi mot noi
             # va WAF doc mot noi, mai mai khong khop ma khong ai bao loi.
             probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
-            if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "1" ]; then
+            if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG")" != "1" ]; then
                 echo "wpinv: KHONG XAC MINH DUOC -- da ghi $nkeys khoa nhung doc nguoc that bai." >&2
                 echo "wpinv: kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua." >&2
                 exit 2
@@ -1877,7 +1933,12 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
 
     if [ -n "$cmds" ]; then
         marked=$(printf '%s\n' "$cmds" | wc -l)
-        printf '%s\n' "$cmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+        if ! redis_send "$cmds"; then
+            # Ghi KHONG chung minh duoc la da chay. Phan biet voi "ghi xong ma doc
+            # nguoc lech" o duoi: hai nguyen nhan khac nhau can hai cau sua khac nhau
+            # (ha tang vs lech db).
+            mark_err="KHONG GHI DUOC: $REDIS_ERR. $marked key co the CHUA duoc ghi."
+        else
         # XAC MINH VONG TRON. Doc nguoc mot key vua ghi. Lech db giua redis-cli
         # va core/config.lua, sai host, Redis chet — het thay deu lo ra o day
         # thay vi de FIM ghi mot noi va WAF doc mot noi, mai mai khong khop ma
@@ -1889,12 +1950,18 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # nen so voi "1" thi KHONG BAO GIO khop, va vong xac minh bao hong o MOI
         # lan chay du Redis hoan toan khoe. Mot canh bao luon sang la mot canh bao
         # day nguoi van hanh bo qua no, dung luc no can duoc tin.
+        #
+        # `head -1` la DU o day, khac han nhom DEL: phep so la GIA TRI-doi-GIA TRI
+        # nen Redis chet (chuoi rong) khong the trung gia tri mong doi. Nhom DEL thi
+        # `-n "$(GET)"` coi chuoi rong la "da xoa" — do moi la cho phai kiem tung
+        # khoa.
         # Dong `SETEX <key> <ttl> <boost>`: $2 = key, $4 = gia tri.
         probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
         want=$(printf  '%s\n' "$cmds" | head -1 | awk '{print $4}')
-        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>/dev/null)" != "$want" ]; then
+        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG")" != "$want" ]; then
             mark_err="KHONG XAC MINH DUOC: da ghi $marked key nhung doc nguoc that bai."
             mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
+        fi
         fi
     fi
 
@@ -2008,7 +2075,9 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # hiem, hoac khong), nen khong co thu muc nao bi ghi roi xoa.
         if [ -n "$chgcmds" ] && [ $dry -eq 0 ]; then
             marked_chg=$(printf '%s\n' "$chgcmds" | wc -l)
-            printf '%s\n' "$chgcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
+            if ! redis_send "$chgcmds"; then
+                [ -z "$mark_err" ] && mark_err="KHONG GHI DUOC (fimchg): $REDIS_ERR. $marked_chg key co the CHUA duoc ghi."
+            else
             # XAC MINH VONG TRON cho CA nhom nay, khong dua vao vong o tren: mot
             # lan chay co the CHI co tep cau hinh bi sua (`$cmds` rong), va khi do
             # vong tren khong chay mot phep nao — tuc FIM ghi mot noi, WAF doc mot
@@ -2016,9 +2085,10 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             cprobe=$(printf '%s\n' "$chgcmds" | head -1 | awk '{print $2}')
             cwant=$(printf  '%s\n' "$chgcmds" | head -1 | awk '{print $4}')
             if [ -z "$mark_err" ] && \
-               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>/dev/null)" != "$cwant" ]; then
+               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>>"$LOG")" != "$cwant" ]; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
+            fi
             fi
         fi
         # DEL phai FAIL-VISIBLE, y nhu nhom SETEX (nguoi dung bat 28-09). Ban truoc
@@ -2027,14 +2097,31 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # Dung ho loi "canh bao dung ma khong ai mo".
         if [ -n "$delcmds" ] && [ $dry -eq 0 ]; then
             ndel=$(printf '%s\n' "$delcmds" | wc -l)
-            printf '%s\n' "$delcmds" | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
-            # XAC MINH VONG TRON: doc nguoc khoa dau tien vua go. Con gia tri la
-            # DEL khong an.
-            dprobe=$(printf '%s\n' "$delcmds" | head -1 | awk '{print $2}')
-            if [ -z "$mark_err" ] && \
-               [ -n "$("$REDIS_CLI" -n "$REDIS_DB" GET "$dprobe" 2>/dev/null)" ]; then
-                mark_err="KHONG XAC MINH DUOC (go fimchg): da go $ndel key nhung $dprobe VAN con gia tri."
-                mark_err="$mark_err Dau cu se gay duong tinh gia tới het TTL."
+            if ! redis_send "$delcmds"; then
+                # Batch KHONG chung minh duoc la da chay -> KHONG duoc ket luan gi ve
+                # cac khoa. Ban truoc doc stdout rong cua `GET` thanh "da go xong".
+                [ -z "$mark_err" ] && mark_err="KHONG GHI DUOC (go fimchg): $REDIS_ERR. $ndel khoa co the VAN CON."
+            else
+                # XAC MINH VONG TRON tren MOI khoa, khong chi `head -1`: batch co the
+                # chay mot phan. `EXISTS` tra 0/1 nen phan biet duoc "khong con" voi
+                # "khong ket luan duoc" — `GET` thi khong (chuoi rong mang hai nghia).
+                left=""; undec=""
+                while read -r _ dk; do
+                    [ -n "$dk" ] || continue
+                    redis_absent "$dk"
+                    case $? in
+                        1) left="${left:+$left }$dk" ;;
+                        2) undec="${undec:+$undec }$dk" ;;
+                    esac
+                done <<EOF
+$delcmds
+EOF
+                if [ -z "$mark_err" ] && [ -n "$left" ]; then
+                    mark_err="KHONG XAC MINH DUOC (go fimchg): da go $ndel khoa nhung VAN CON: $left."
+                    mark_err="$mark_err Dau cu se gay duong tinh gia tới het TTL."
+                elif [ -z "$mark_err" ] && [ -n "$undec" ]; then
+                    mark_err="KHONG KET LUAN DUOC (go fimchg): $undec — $REDIS_ERR"
+                fi
             fi
         fi
     fi
@@ -2138,7 +2225,16 @@ if [ $dry -eq 0 ]; then
     cp "$new_scan" "$MANIFEST"
     awk -F'|' '$1 == "CHG" { print $2 }' "$diff_out" > "$PREVCHG"
 fi
-
+# `mark_err` XET TRUOC `crit`, va thu tu nay la mot quyet dinh: "KHONG GHI DUOC dau
+# cho WAF" nghiem trong hon "co file dang chu y". File dang chu y VAN doc duoc tu bao
+# cao; con Redis chet thi WAF mu, va neu `crit` che mat no thi nguoi van hanh doc
+# `exit 1` thanh "co phat hien" va di xem file — trong khi viec can lam la sua ha
+# tang. Do duoc 29-09: truoc khi dao, ca "Redis chet" cho ma thoat 1 chu khong 2, va
+# mot dot bien BO HAN `exit 2` van qua duoc phep kiem "khac 0".
+#
+# `exit 2` = KHONG DO DUOC (cung nghia da dung cho `mktemp` that bai), khac han
+# `exit 1` = co phat hien dang chu y.
+[ -n "$mark_err" ] && exit 2
 [ "$crit" -gt 0 ] && exit 1
 # Cung ly do nhu nhanh `total -eq 0` o tren: ton dong mu-plugins la su co ke ca
 # khi dot nay khong co file nao dang bao. Khong co dong nay thi mot ban cap nhat

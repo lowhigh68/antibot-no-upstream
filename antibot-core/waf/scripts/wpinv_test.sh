@@ -54,12 +54,21 @@ printf 'sub1\n' > "$DA/u2/domains/shop.test.subdomains"
 mkdir -p "$R/bin"
 cat > "$R/bin/rcli" <<'RCLI'
 #!/bin/bash
+# `DEL` va `EXISTS` PHAI co: `fim.sh` ghi kem mot khoa canary roi doc/go no de
+# CHUNG MINH batch da chay (loi ma thoat bi bo qua, nguoi dung bat 29-09). Thieu hai
+# lenh nay thi ban gia rot vao nhanh `cat >> RCLI_OUT` va canary khong bao gio bi go.
 while [ $# -gt 0 ]; do
     case "$1" in
         -n) shift 2 ;;
-        GET) awk -v k="$2" '$1=="SETEX" && $2==k { print $4; f=1 }
-                            END { if (!f) print "" }' "$RCLI_OUT" | tail -1
+        GET) awk -v k="$2" '$1=="SETEX" && $2==k { v=$4; f=1 }
+                            $1=="DEL"   && $2==k { v=""; f=0 }
+                            END { print (f ? v : "") }' "$RCLI_OUT"
              exit 0 ;;
+        EXISTS) awk -v k="$2" '$1=="SETEX" && $2==k { f=1 }
+                               $1=="DEL"   && $2==k { f=0 }
+                               END { print (f ? 1 : 0) }' "$RCLI_OUT"
+             exit 0 ;;
+        DEL) printf 'DEL %s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
         *) shift ;;
     esac
 done
@@ -87,7 +96,10 @@ want() {
 has() {
     if grep -q "^SETEX $1 " "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
 }
-nkeys() { grep -c '^SETEX ' "$RCLI_OUT" 2>/dev/null || true; }
+# Canary (`waf:fimcanary:`) KHONG phai mot dau cho WAF — no la bang chung "batch da
+# chay" voi TTL 60s. Dem no vao thi moi phep dem lech 1 va phep sua fail-visible se
+# trong nhu mot loi.
+nkeys() { grep '^SETEX ' "$RCLI_OUT" 2>/dev/null | grep -vc 'waf:fimcanary:' || true; }
 
 echo "wpinv_test: inventory WordPress root tu dia"
 

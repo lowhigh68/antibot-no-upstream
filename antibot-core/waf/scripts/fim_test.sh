@@ -32,20 +32,48 @@ export FIM_REDIS_CLI="$R/bin/rcli"
 export FIM_MARK_TTL=604800
 
 # `redis-cli` GIA: doc lenh tu STDIN, ghi ra file de doi chieu. Tra ve dung gia tri
-# cho `GET` de vong XAC MINH VONG TRON cua fim.sh di qua — neu khong, no bao
-# "KHONG XAC MINH DUOC" va che mat cai dang kiem.
+# cho `GET`/`EXISTS` de vong XAC MINH VONG TRON cua fim.sh di qua — neu khong, no
+# bao "KHONG XAC MINH DUOC" va che mat cai dang kiem.
+#
+# BA che do, va do la diem cua ban nay: `RCLI_MODE=down` mo phong MAT KET NOI.
+# Truoc ban nay ban gia luon `exit 0` va luon in mot dong, nen bo test KHONG DIEN DAT
+# DUOC ca "Redis chet" — va do la ly do ba loi fail-silent trong `fim.sh` song duoc
+# (nguoi dung bat 29-09). Cung ho loi voi stub `safe_get` khong tra duoc `(nil, err)`.
+#
+# `down` lam dung cai `redis-cli` that lam: khong in gi ra stdout, bao loi ra stderr,
+# ma thoat khac 0. `fim.sh` PHAI phan biet duoc no voi "key khong ton tai".
 cat > "$R/bin/rcli" <<'RCLI'
 #!/bin/bash
-# `-n <db>` roi hoac `GET <key>` hoac doc lenh tu STDIN.
+# `-n <db>` roi hoac `GET/EXISTS/DEL <key>` hoac doc lenh tu STDIN.
+if [ "${RCLI_MODE:-up}" = "down" ]; then
+    cat >/dev/null 2>&1   # nuot STDIN neu co, y nhu mot binary that
+    echo "Could not connect to Redis at 127.0.0.1:6379: Connection refused" >&2
+    exit 1
+fi
 db=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -n) db="$2"; shift 2 ;;
         GET) key="$2"
-             # Tra gia tri da ghi cho key do, lay tu file lenh.
-             awk -v k="$key" '$1=="SETEX" && $2==k { print $4; found=1 }
-                              END { if (!found) print "" }' "$RCLI_OUT" | tail -1
+             # Tra gia tri da ghi cho key do, lay tu file lenh. `DEL` sau do lam no
+             # mat — nen phai xet CA hai theo THU TU xuat hien.
+             awk -v k="$key" '
+                 $1=="SETEX" && $2==k { v=$4; has=1 }
+                 $1=="DEL"   && $2==k { v="";  has=0 }
+                 END { if (has) print v; else print "" }' "$RCLI_OUT"
              exit 0 ;;
+        EXISTS) key="$2"
+             # `EX_STUCK=1` = khoa KHONG BAO GIO mat, tuc DEL that bai im lang. Do la
+             # ca ma `-n "$(GET)"` cua ban truoc KHONG phan biet duoc voi "da xoa".
+             if [ "${EX_STUCK:-0}" = 1 ]; then echo 1; exit 0; fi
+             # 0/1, y nhu Redis that. Day la lenh phan biet duoc "khong con" voi
+             # "khong ket luan duoc" — `GET` tra chuoi rong cho CA HAI.
+             awk -v k="$key" '
+                 $1=="SETEX" && $2==k { has=1 }
+                 $1=="DEL"   && $2==k { has=0 }
+                 END { print (has ? 1 : 0) }' "$RCLI_OUT"
+             exit 0 ;;
+        DEL) printf 'DEL %s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
         *) shift ;;
     esac
 done
@@ -436,6 +464,115 @@ want "10 B5 dat lai -> ext:jpg" "$(final_val)" "ext:jpg"
 sleep 1; printf 'RewriteEngine On\n' > "$SW/.htaccess"
 run_state check
 want "10 B6 sua thanh AN TOAN -> khoa bi xoa" "$(final_val)" "(DA XOA)"
+
+# ══ 11. REDIS CHET: loi khac han vang mat ═══════════════════════════════════
+#
+# Nguoi dung bat 29-09. Ba loi cung mot ho trong `fim.sh`:
+#   1. ma thoat cua lenh ghi bi bo qua
+#   2. `[ -n "$(GET)" ]` coi stdout rong la "key khong con" — Redis chet cung cho
+#      stdout rong
+#   3. chi kiem `head -1`, key thu hai tro di khong ai kiem
+#
+# Nhom nay KHONG VIET DUOC truoc ban nay: `rcli` gia luon `exit 0`. Do la ly do ba
+# loi tren song duoc trong khi bo test bao xanh — cung ho voi stub `safe_get` khong
+# tra duoc `(nil, err)`.
+#
+# HUONG QUAN TRONG NHAT: Redis chet PHAI bao loi, KHONG duoc im lang thanh cong. Mot
+# `fim.sh` im lang khi Redis chet nghia la WAF khong nhan duoc dau nao ma khong ai
+# biet — dung ho loi "canh bao dung ma khong ai mo".
+: > "$RCLI_OUT"
+sleep 1
+# Noi dung PHAI khac ca truoc: `check` tinh tu diff, va mot `.htaccess` khong doi thi
+# khong co `chgcmds` nao — khi do khong nhanh Redis nao chay va ca nay do vi ly do
+# KHONG lien quan den dieu no kiem. (Toi da mac dung loi do o ban dau.)
+printf 'AddType application/x-httpd-lsphp .gif .bmp\n' > "$WEB/.htaccess"
+out=$(RCLI_MODE=down bash "$HERE/fim.sh" check 2>&1)
+case "$out" in
+    *"KHONG GHI DUOC"*|*"KHONG XAC MINH DUOC"*|*"KHONG KET LUAN DUOC"*)
+        want "11 Redis chet -> BAO LOI" "co-bao" "co-bao" ;;
+    *)  want "11 Redis chet -> BAO LOI" "IM LANG" "co-bao"
+        printf '      output THAT: %s\n' "$(printf '%s' "$out" | head -3 | tr '\n' '|')" ;;
+esac
+# Va ma thoat phai KHAC 0: mot `fim.sh` bao loi vao log roi `exit 0` la "canh bao
+# dung ma khong ai mo" — cron khong bao, giam sat khong thay.
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddType application/x-httpd-lsphp .tif\n' > "$WEB/.htaccess"
+RCLI_MODE=down bash "$HERE/fim.sh" check >/dev/null 2>&1
+rc11=$?
+# Ma thoat phai DUNG BANG 2, khong chi "khac 0": `exit 1` la "co phat hien dang chu
+# y" va `exit 3` la "ton dong mu-plugins" — ca hai nghia KHAC. Phep kiem "khac 0"
+# cua ban dau KHONG phan biet duoc, va mot dot bien bo han `exit 2` van qua duoc no
+# (toi do duoc dieu do). `exit 2` = KHONG DO DUOC, dung nghia da dung cho `mktemp`
+# that bai.
+want "11 Redis chet -> ma thoat DUNG 2" "$rc11" "2"
+# THONG DIEP phai chi dung nguyen nhan. Ban cu chi noi "KHONG XAC MINH DUOC ... Kiem
+# FIM_REDIS_DB co khop _M.redis.db" — dung khi lech db, nhung SAI HUONG khi Redis
+# chet: no day nguoi van hanh di doc config trong khi viec can lam la khoi dong
+# Redis. `redis_send` phan biet duoc hai truong hop do va day la gia tri THAT cua no
+# (no khong them kha nang PHAT HIEN nao o nhanh SETEX — vong `GET` so gia tri da du;
+# do duoc 29-09).
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddType application/x-httpd-lsphp .svg\n' > "$WEB/.htaccess"
+out=$(RCLI_MODE=down bash "$HERE/fim.sh" check 2>&1)
+case "$out" in
+    *"KHONG GHI DUOC"*) want "11 Redis chet -> thong diep 'KHONG GHI DUOC'" "dung" "dung" ;;
+    *"KHONG XAC MINH DUOC"*) want "11 Redis chet -> thong diep 'KHONG GHI DUOC'" "sai-huong-db" "dung" ;;
+    *) want "11 Redis chet -> thong diep 'KHONG GHI DUOC'" "khong-co" "dung" ;;
+esac
+# Huong NGUOC: Redis SONG thi KHONG duoc bao loi. Thieu ca nay thi mot `fim.sh` luon
+# bao loi cung "qua".
+: > "$RCLI_OUT"
+sleep 1
+printf 'AddType application/x-httpd-lsphp .ico\n' > "$WEB/.htaccess"
+out=$(bash "$HERE/fim.sh" check 2>&1)
+case "$out" in
+    *"KHONG GHI DUOC"*|*"KHONG XAC MINH DUOC"*|*"KHONG KET LUAN DUOC"*)
+        want "11 Redis SONG -> KHONG bao loi" "co-bao" "khong-bao" ;;
+    *)  want "11 Redis SONG -> KHONG bao loi" "khong-bao" "khong-bao" ;;
+esac
+
+# ══ 13. DEL THAT BAI phai bao — ca `-n "$(GET)"` khong the phan biet ════════
+#
+# Nguoi dung bat 29-09: `[ -n "$("$REDIS_CLI" ... GET "$dk")" ]` coi stdout RONG la
+# "khoa khong con", ma Redis mat ket noi CUNG cho stdout rong. Hai ket luan NGUOC
+# nhau tu cung mot dau hieu. `EXISTS` tra 0/1 nen phan biet duoc, va nhom nay do CA
+# HAI HUONG.
+#
+# `EX_STUCK=1` lam `EXISTS` luon tra 1: khoa KHONG BAO GIO mat, tuc DEL that bai im
+# lang. Ban truoc KHONG THE cho ket qua khac nhau giua hai huong.
+#
+# MOI buoc dung MOT thu muc RIENG va noi dung KHAC nhau: `check` tinh tu diff, nen
+# hai buoc lien tiep cung noi dung thi buoc sau khong sinh lenh Redis nao va ca do vi
+# ly do KHONG lien quan (toi da mac dung loi do o ban dau — `out` rong hoan toan).
+mkdir -p "$WEB/x13a" "$WEB/x13b"
+# A) DEL chay dung -> KHONG duoc bao. Thieu huong nay thi mot `fim.sh` luon bao loi
+#    cung "qua", va mot canh bao luon sang la canh bao bi bo qua.
+: > "$RCLI_OUT"; sleep 1
+printf 'AddType application/x-httpd-lsphp .gif\n' > "$WEB/x13a/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+sleep 1
+printf 'RewriteEngine On\n' > "$WEB/x13a/.htaccess"
+out=$(bash "$HERE/fim.sh" check 2>&1)
+case "$out" in
+    *"(go fimchg)"*) want "13A DEL chay dung -> KHONG bao" "co-bao" "khong-bao" ;;
+    *)               want "13A DEL chay dung -> KHONG bao" "khong-bao" "khong-bao" ;;
+esac
+# B) DEL that bai -> PHAI bao, va phai neu TEN KHOA con sot (khong chi "that bai"):
+#    mot bao cao khong co ten khoa thi nguoi van hanh khong biet tim o dau.
+: > "$RCLI_OUT"; sleep 1
+printf 'AddType application/x-httpd-lsphp .bmp\n' > "$WEB/x13b/.htaccess"
+bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+sleep 1
+printf 'RewriteEngine On\n' > "$WEB/x13b/.htaccess"
+out=$(EX_STUCK=1 bash "$HERE/fim.sh" check 2>&1)
+case "$out" in
+    *"VAN CON: waf:fimchg:"*)            want "13B DEL that bai -> bao ten khoa" "co-ten" "co-ten" ;;
+    *"KHONG XAC MINH DUOC (go fimchg)"*) want "13B DEL that bai -> bao ten khoa" "bao-ma-khong-ten" "co-ten" ;;
+    *) want "13B DEL that bai -> bao ten khoa" "IM LANG" "co-ten"
+       printf '      [out] %s\n' "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" ;;
+esac
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
