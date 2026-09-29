@@ -54,7 +54,16 @@ function tokenize(s, TOK,   n, i, c, q, cur, inw) {
     return n
 }
 
-function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+# `\r` bi bo CUNG CHO voi space/tab, khong phai mot buoc rieng: mot tep `.htaccess`
+# sua tu Windows (hoac upload tu Windows) dung CRLF, va khi do token cuoi dong mang
+# mot `\r` o duoi — `Options +ExecCGI\r\n` cho token `+execcgi\r` khong khop
+# `+execcgi` nen BO SOT (tai hien duoc 29-09, trong WSL; `awk` cua Git Bash xu ly
+# khac nen phai do o noi ma THAT chay).
+#
+# Bo o `trim` chu khong o `tokenize`: `trim` chay tren CA dong TRUOC khi tach token,
+# nen mot cho sua dong ca duong. Neu bo trong `tokenize` thi phep noi dong
+# (`line ~ /\$/`) van thay `\` cach `\r` va khong ghep duoc.
+function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
 
 # Bo chu thich `#`, NHUNG khong bo `#` nam trong dau nhay: mot gia tri handler co
 # the chua `#` (vi du duong socket). Apache khong co chu thich giua dong cho mot
@@ -130,17 +139,36 @@ function strip_comment(s,   out, i, c, q) {
     }
 
     # `Options`: xu ly TUAN TU nhu Apache. `All` gom ExecCGI; `-ExecCGI` tat.
+    # `Options`: TRANG THAI, khong phai su kien. Apache xu ly tuan tu va dong SAU
+    # ghi de dong TRUOC, nen
+    #     Options +ExecCGI
+    #     Options -ExecCGI
+    # la TAT. Ban truoc dat `on = 0` o DAU MOI DONG roi `print` ngay trong dong do,
+    # nen trang thai khong mang qua dong va `-ExecCGI` khong rut lai duoc cai da in
+    # (nguoi dung bat 29-09).
+    #
+    # Nay giu `execcgi_on` NGOAI vong, va in o `END`. `depth` duoc ghi lai TAI LUC
+    # dong cuoi cung doi trang thai: mot `Options +ExecCGI` trong `<FilesMatch>`
+    # khong ap ca thu muc, nen phai biet no o trong hay ngoai container.
+    #
+    # CHUA LAM va noi ro: `RemoveHandler`/`RemoveType` cung la last-wins cho nhanh
+    # `AddType`/`AddHandler`. Nguoi dung neu `Options` nen toi sua dung pham vi do;
+    # mo rong sang duoi doi mot bo fixture rieng cho thu tu Add/Remove.
     if (d == "options") {
-        on = 0
         for (i = 2; i <= nf; i++) {
             o = tolower(TOK[i])
-            if (o == "all")                              on = 1
-            else if (o == "none")                        on = 0
-            else if (o == "+execcgi" || o == "execcgi")   on = 1
-            else if (o == "-execcgi")                    on = 0
+            if (o == "all")                             { execcgi_on = 1; execcgi_depth = depth }
+            else if (o == "none")                       { execcgi_on = 0; execcgi_depth = depth }
+            else if (o == "+execcgi" || o == "execcgi")  { execcgi_on = 1; execcgi_depth = depth }
+            else if (o == "-execcgi")                   { execcgi_on = 0; execcgi_depth = depth }
         }
-        # `@execcgi` chu KHONG `@all`: xem khoi hop dong o dau tep.
-        if (on && depth == 0) print "@execcgi"
         next
     }
+}
+
+# `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong nao la dong
+# `Options` CUOI CUNG. `execcgi_depth == 0` = dong do nam NGOAI moi container, tuc
+# no ap cho ca thu muc.
+END {
+    if (execcgi_on && execcgi_depth == 0) print "@execcgi"
 }

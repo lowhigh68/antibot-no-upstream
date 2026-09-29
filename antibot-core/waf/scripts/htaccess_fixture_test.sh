@@ -181,5 +181,82 @@ ini_t khong '; auto_prepend_file=/tmp/x.php'
 ini_t khong '# auto_prepend_file=/tmp/x.php'
 ini_t khong 'memory_limit=128M'
 
+# ── CRLF: tep sua tu Windows ─────────────────────────────────────────
+#
+# Nguoi dung tai hien 29-09. HAI HUONG SAI NGUOC NHAU tu cung mot nguyen nhan
+# (`trim` va `gsub` khong bo `\r`):
+#   · `Options +ExecCGI\r\n`        -> token `+execcgi\r` -> BO SOT (false negative)
+#   · `auto_prepend_file=none\r\n`  -> `v = "none\r" != "none"` -> BAT NHAM (FP)
+# Mot loi sinh CA hai loai.
+#
+# `ini_t` va bang fixture deu KHONG dien dat duoc CRLF (`printf '%s\n'` luon LF), nen
+# nhom nay phai co ham rieng — day la ly do ba loi CRLF song duoc trong khi 108 ca
+# bao xanh.
+hta_raw() {  # hta_raw <ten> <mong> <printf-format>
+    printf "$3" > "$R/raw.htaccess"
+    want "$1" "shell" "$(awk -f "$HERE/htaccess_parse.awk" "$R/raw.htaccess")" "$2"
+}
+ini_raw() {  # ini_raw <ten> <mong: co|khong> <printf-format>
+    printf "$3" > "$R/raw.ini"
+    if awk -f "$HERE/inifile_parse.awk" "$R/raw.ini" 2>/dev/null; then g=co; else g=khong; fi
+    want "$1" "ini" "$g" "$2"
+}
+hta_raw "CRLF: Options +ExecCGI"      "@execcgi" 'Options +ExecCGI\r\n'
+hta_raw "CRLF: AddType"               "php"      'AddType application/x-httpd-php .php\r\n'
+hta_raw "CRLF: SetHandler"            "@all"     'SetHandler application/x-httpd-php\r\n'
+ini_raw "CRLF: none = TAT"            "khong"    'auto_prepend_file=none\r\n'
+ini_raw "CRLF: gia tri rong = TAT"    "khong"    'auto_prepend_file=\r\n'
+ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r\n'
+
+# ── LAN CUOI THANG (last-directive-wins) ─────────────────────────────
+#
+# Nguoi dung tai hien 29-09. Apache/Zend doc TUAN TU va dong SAU ghi de dong TRUOC.
+# Ban truoc hop moi lan xuat hien nen khong bao gio rut lai duoc — FP telemetry hom
+# nay, va FP THAT neu luat duoc promote.
+hta_raw "lan cuoi: +ExecCGI roi -ExecCGI" ""         'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_raw "lan cuoi: -ExecCGI roi +ExecCGI" "@execcgi" 'Options -ExecCGI\nOptions +ExecCGI\n'
+hta_raw "lan cuoi: All roi None"          ""         'Options All\nOptions None\n'
+hta_raw "lan cuoi: None roi All"          "@execcgi" 'Options None\nOptions All\n'
+ini_raw "lan cuoi: x.php roi none"        "khong"    'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n'
+ini_raw "lan cuoi: none roi x.php"        "co"       'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n'
+# Huong NGUOC de phep sua khong thanh "luon tra khong": mot dong DUY NHAT co gia tri
+# van phai BAT.
+ini_raw "mot dong co gia tri van BAT"     "co"       'auto_prepend_file=/tmp/x.php\n'
+
+# ── SO CHEO tren input NHIEU DONG ────────────────────────────────────
+#
+# Bang fixture o tren la MOT dong moi ca, va ben Lua doc no bang `io.lines` — nen
+# `last-directive-wins` va noi dong KHONG the dien dat o do. Do la ly do loi
+# last-wins song duoc o CA HAI parser trong khi 108 ca bao xanh: fixture khong co
+# hinh dang de bat no.
+#
+# Nhom nay chay CA HAI ben tren cung mot input nhieu dong. `@execcgi` cua awk va
+# `handler` cua Lua la HAI HINH DANH khac nhau cho cung mot cau tra loi ("dong nay
+# co lam tep thanh chay duoc khong"), nen so o muc CO/KHONG — nhung KHAC voi
+# `exp_lua` cu, day la input ma hai ben deu co the sai CUNG HUONG, nen ca nao cung
+# ghi ro ky vong TUYET DOI chu khong chi "hai ben giong nhau".
+cross() {  # cross <ten> <mong awk> <mong lua: co|khong> <printf-format>
+    printf "$4" > "$R/x.htaccess"
+    want "$1" "awk" "$(awk -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "$2"
+    cat > "$R/x.lua" <<'LX'
+local SRC = os.getenv("ANTIBOT_SRC")
+local uc = dofile(SRC .. "waf/upload_content.lua")
+local fh = io.open(os.getenv("XFILE"), "rb")
+local body = fh:read("*a"); fh:close()
+local f = uc.scan_part(body, os.getenv("XFLAG"))
+io.write((f and (f.handler or f.autoload)) and "co" or "khong")
+LX
+    g=$(ANTIBOT_SRC="$(cd "$HERE/../.." && pwd)/" XFILE="$R/x.htaccess" \
+        XFLAG="${5:-upload_apache_config}" "$RESTY" "$R/x.lua" 2>/dev/null)
+    want "$1" "lua" "${g:-LOI}" "$3"
+}
+cross "cheo: +ExecCGI roi -ExecCGI" ""         khong 'Options +ExecCGI\nOptions -ExecCGI\n'
+cross "cheo: -ExecCGI roi +ExecCGI" "@execcgi" co    'Options -ExecCGI\nOptions +ExecCGI\n'
+cross "cheo: All roi None"          ""         khong 'Options All\nOptions None\n'
+cross "cheo: CRLF +ExecCGI"         "@execcgi" co    'Options +ExecCGI\r\n'
+cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n' upload_user_ini
+cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
+cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
+
 printf '\nhtaccess_fixture: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

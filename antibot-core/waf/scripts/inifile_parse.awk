@@ -37,11 +37,23 @@ function strip_comment(s,   out, i, c, q) {
 
 {
     line = strip_comment($0)
-    if (tolower(line) ~ /^[ \t]*auto_(pre|ap)pend_file[ \t]*=/) {
+    if (tolower(line) ~ /^[ \t\r]*auto_(pre|ap)pend_file[ \t]*=/) {
         v = line
         sub(/^[^=]*=[ \t]*/, "", v)
-        gsub(/[ \t"']/, "", v)
-        if (v != "" && tolower(v) != "none") found = 1
+        # `\r` PHAI o day: mot `.user.ini` sua tu Windows dung CRLF, va khi do
+        # `auto_prepend_file=none\r\n` cho `v = "none\r"` -> `!= "none"` -> KET LUAN
+        # "co nap ma", tuc mot FALSE POSITIVE tren dong TAT tinh nang. Va
+        # `auto_prepend_file=\r\n` (gia tri rong) cho `v = "\r"` -> `!= ""` -> cung
+        # FP. Tai hien duoc 29-09 trong WSL.
+        gsub(/[ \t\r"']/, "", v)
+        # LAN CUOI THANG, khong "mot lan la mai mai": Zend doc tuan tu va directive
+        # SAU ghi de directive TRUOC, nen
+        #     auto_prepend_file=/tmp/x.php
+        #     auto_prepend_file=none
+        # la TAT. Ban truoc dat `found = 1` mot chieu nen khong bao gio rut lai duoc
+        # (nguoi dung bat 29-09). Day la FP telemetry hom nay va se la FP THAT neu
+        # luat duoc promote.
+        found = (v != "" && tolower(v) != "none") ? 1 : 0
     }
 }
 END { exit(found ? 0 : 1) }

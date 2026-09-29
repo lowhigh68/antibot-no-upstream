@@ -339,6 +339,21 @@ function _M.scan_part(content, name_flags, from, to)
 
     local lines, truncated = config_lines(content, kind)
     local flags = nil
+    -- LAN CUOI THANG cho hai directive mang TRANG THAI, khong phai su kien:
+    --
+    --   `Options`            trang thai thu muc — `+ExecCGI` roi `-ExecCGI` la TAT
+    --   `auto_prepend_file`  MOT gia tri — `/tmp/x.php` roi `none` la TAT
+    --
+    -- Apache va Zend deu doc TUAN TU va dong SAU ghi de dong TRUOC. Ban truoc dat
+    -- `flags.handler`/`flags.autoload` MOT CHIEU nen khong bao gio rut lai duoc
+    -- (nguoi dung bat 29-09). Do do la mot FP: `.htaccess` hop le cua khach tat mot
+    -- option o dong sau van bi bao nguy.
+    --
+    -- `AddType`/`AddHandler` KHONG vao day, va do la co y: chung TICH LUY theo duoi
+    -- (`AddType ... .php` roi `AddType ... .phtml` bat CA HAI), khong phai mot trang
+    -- thai duy nhat. Rut lai chung can `RemoveType`/`RemoveHandler` — mot pham vi
+    -- rieng, chua lam, noi ro o day.
+    local opt_exec, autoload_on = nil, nil
     for i = 1, #lines do
         local line = strip(lines[i], kind)
         if line ~= "" then
@@ -356,9 +371,10 @@ function _M.scan_part(content, name_flags, from, to)
                             flags = flags or {}
                             flags.handler = true
                         end
-                    elseif dl == "options" and options_enables_exec(rest) then
-                        flags = flags or {}
-                        flags.handler = true
+                    elseif dl == "options" then
+                        -- `options_enables_exec` da xu ly last-wins TRONG mot dong;
+                        -- bien nay mang trang thai QUA cac dong.
+                        opt_exec = options_enables_exec(rest)
                     end
                 end
             else
@@ -370,14 +386,13 @@ function _M.scan_part(content, name_flags, from, to)
                     -- khong phai mot duong chay ma. Bat no la nhan FP tu chinh cau
                     -- hinh hop le cua khach (dong nay co that trong nhieu php.ini de
                     -- TAT tinh nang do).
-                    if v ~= "" and v:lower() ~= "none" then
-                        flags = flags or {}
-                        flags.autoload = true
-                    end
+                    autoload_on = (v ~= "" and v:lower() ~= "none")
                 end
             end
         end
     end
+    if opt_exec then flags = flags or {}; flags.handler = true end
+    if autoload_on then flags = flags or {}; flags.autoload = true end
     -- `over` (cat theo byte) hop voi `truncated` (cat theo dong/do dai dong): ca
     -- hai deu la "CHUA SOI HET", va ca hai phai den duoc `scan_state`.
     return flags, (truncated or over)
