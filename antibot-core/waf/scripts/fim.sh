@@ -201,6 +201,22 @@ REDIS_DB="${FIM_REDIS_DB:-0}"
 # hon `PING` (PING noi "luc nay ket noi duoc", khong noi "batch vua roi da chay").
 #
 # Canary TTL 60s va ten co PID nen khong dam vao du lieu that, khong ton cho.
+# ── `</dev/null` tren MOI lenh redis DOC du lieu ────────────────────
+#
+# `deploy.sh` buoc [3b] TREO 30-09, va nguyen nhan la day chu khong phai `sleep`:
+# `redis-cli` KHONG co doi so lenh thi doc lenh tu STDIN. Ba lenh `GET`/`EXISTS`/`DEL`
+# o day ke thua STDIN cua `fim.sh`, va `fim.sh` co nhung doan nam TRONG mot pipe —
+# khi do lenh doc cho het pipe ma khong ai dong no.
+#
+# Tim ra bang `ps -ef`: mot tien trinh
+#     rcli -n 0 GET waf:fimnew:/var/tmp/fimtest.6l0OKE/.../.htaccess
+# dung yen, va CO hai phien `fim_test` tu lan chay TRUOC con song — `timeout` cat tien
+# trinh CHA nhung con van treo, nen may lan chay truoc do cua toi "xong" trong khi thuc
+# te de lai rac.
+#
+# Ap cho CA SAU lenh, ke ca nhung lenh hom nay khong nam trong pipe: mot lenh doc
+# redis khong bao gio co ly do doc STDIN, va phu thuoc vao "cho goi hien tai khong o
+# trong pipe" la mot bat bien khong ai kiem duoc khi sua ve sau.
 REDIS_CANARY="waf:fimcanary:$$"
 
 # `redis_send <lenh-nhieu-dong>` — ghi mot batch, tra 0 neu CHUNG MINH DUOC no chay.
@@ -209,8 +225,8 @@ redis_send() {
         | "$REDIS_CLI" -n "$REDIS_DB" >/dev/null 2>>"$LOG"
     local rc=$?
     local got
-    got=$("$REDIS_CLI" -n "$REDIS_DB" GET "$REDIS_CANARY" 2>>"$LOG")
-    "$REDIS_CLI" -n "$REDIS_DB" DEL "$REDIS_CANARY" >/dev/null 2>>"$LOG"
+    got=$("$REDIS_CLI" -n "$REDIS_DB" GET "$REDIS_CANARY" 2>>"$LOG" </dev/null)
+    "$REDIS_CLI" -n "$REDIS_DB" DEL "$REDIS_CANARY" >/dev/null 2>>"$LOG" </dev/null
     [ "$got" = "ok" ] && return 0
     # Ma thoat vao THONG DIEP chu khong vao quyet dinh: no huu ich khi doc log.
     REDIS_ERR="canary khong doc nguoc duoc (ma thoat ghi=$rc, doc='$got')"
@@ -222,7 +238,7 @@ redis_send() {
 # mot.
 redis_absent() {
     local out
-    out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "$1" 2>>"$LOG")
+    out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "$1" 2>>"$LOG" </dev/null)
     case "$out" in
         0) return 0 ;;
         1) return 1 ;;
@@ -603,7 +619,7 @@ if [ "$mode" = "wpinv" ]; then
             # Redis chet -- het thay lo ra o day thay vi de inventory ghi mot noi
             # va WAF doc mot noi, mai mai khong khop ma khong ai bao loi.
             probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
-            if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG")" != "1" ]; then
+            if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG" </dev/null)" != "1" ]; then
                 echo "wpinv: KHONG XAC MINH DUOC -- da ghi $nkeys khoa nhung doc nguoc that bai." >&2
                 echo "wpinv: kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua." >&2
                 exit 2
@@ -1958,7 +1974,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # Dong `SETEX <key> <ttl> <boost>`: $2 = key, $4 = gia tri.
         probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
         want=$(printf  '%s\n' "$cmds" | head -1 | awk '{print $4}')
-        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG")" != "$want" ]; then
+        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG" </dev/null)" != "$want" ]; then
             mark_err="KHONG XAC MINH DUOC: da ghi $marked key nhung doc nguoc that bai."
             mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
         fi
@@ -2085,7 +2101,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             cprobe=$(printf '%s\n' "$chgcmds" | head -1 | awk '{print $2}')
             cwant=$(printf  '%s\n' "$chgcmds" | head -1 | awk '{print $4}')
             if [ -z "$mark_err" ] && \
-               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>>"$LOG")" != "$cwant" ]; then
+               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>>"$LOG" </dev/null)" != "$cwant" ]; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi

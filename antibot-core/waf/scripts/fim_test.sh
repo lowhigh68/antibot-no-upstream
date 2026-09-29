@@ -83,6 +83,24 @@ chmod +x "$R/bin/rcli"
 export RCLI_OUT="$R/redis_cmds.txt"
 : > "$RCLI_OUT"
 
+# ── `sleep 0.02` chu khong `sleep 1` — DO DUOC, khong phong ─────────
+#
+# `deploy.sh` buoc [3b] TREO tren may that 30-09: bo nay vuot 300s va bi `timeout` cat,
+# voi `user 1.7s` — tuc gan nhu khong CPU, toan bo la CHO. 32 lan `sleep 1` cong 32
+# giay, roi moi lan goi `fim.sh` con mot `find` tren he thong tep that.
+#
+# `sleep` o day chi de mtime cua hai lan ghi lien tiep KHAC nhau. Do xem can bao lau:
+#     find -printf '%T@'  ->  1790701796.4720924220   (10 chu so thap phan)
+#     hai lan ghi cach 10ms ->  mtime DA khac
+#     `sleep 0.02` x 20 lan  ->  0/20 lan mtime trung
+# Va `fim.sh` con so CA kich thuoc (`%s`), nen hai lan ghi khac noi dung thi doi ca hai
+# cot.
+#
+# Bo HET `sleep` cung cho 57/57 qua (do duoc), nhung giu 0.02 de phep kiem khong dua
+# vao do phan giai nanosecond cua rieng ext4.
+#
+# Ket qua: 41s -> 7,7s trong WSL (giam 81%). Tren may that day la khac biet giua "treo
+# deploy" va "chay xong".
 pass=0; fail=0
 want() {  # want <ten> <duoc> <mong>
     if [ "$2" = "$3" ]; then pass=$((pass+1))
@@ -110,7 +128,7 @@ want "1 baseline chua ghi key nao" "$(wc -l < "$RCLI_OUT")" "0"
 # Day la ca chinh cua muc 8: KHONG co file moi nao, nen `fimnew` phai im. Truoc
 # ban nay ca lan chay nay khong bao gi sang WAF.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'RewriteEngine On\nAddType application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 
@@ -136,7 +154,7 @@ want "2 TTL dung" \
 # Nhieu duoi, va CHI duoi cua directive ANH XA duoc tinh: `AddType text/plain .txt`
 # khong duoc vao danh sach (do la FP loi 6 da sua o `upload_content.lua`).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
@@ -156,14 +174,14 @@ case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
 # Mot phep kiem chi o parser khong du — chinh cho noi gia tri duoc GHEP moi la cho
 # hai khong gian ten gap nhau.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddHandler application/x-httpd-php .@all\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
 want "2c ten .@all -> ext:@all, KHONG phai @all" "$got" "ext:@all"
 # Bien the: ten trung ca bon co.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddHandler application/x-httpd-php .@php .@phpini .@execcgi\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c ba ten trung co deu co tien to" \
@@ -171,7 +189,7 @@ want "2c ba ten trung co deu co tien to" \
      "ext:@execcgi,ext:@php,ext:@phpini"
 # Huong NGUOC: `SetHandler` van phai ra `@all` THAT (phep sua khong lam mat nghia).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'SetHandler application/x-httpd-php\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c SetHandler van la @all THAT" \
@@ -180,7 +198,7 @@ want "2c SetHandler van la @all THAT" \
 # (thiet ke "tinh lai tu DIA"), nen mot ca chen vao giua PHAI don trang thai cua no.
 # Thieu buoc nay thi ca 4 doc `@all` cua ca 2c va bao hong o mot cho khong lien quan.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
@@ -189,7 +207,7 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # Huong nguoc lai cua muc 2. Hai nhom phai DOC LAP; tron chung la bien mot lan
 # plugin ghi `.htaccess` thanh "co file thuc thi moi".
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf '<?php eval($_GET[1]);\n' > "$WEB/shell.php"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 
@@ -198,7 +216,7 @@ want "3 KHONG co fimchg nao" "$(keys 'waf:fimchg:')" "0"
 
 # ══ 4. `.user.ini` bi sua -> fimchg ═════════════════════════════════════════
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'memory_limit=128M\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # Lan dau xuat hien la NEW, khong phai CHG — nen no di duong `fimnew`. Dung, va
@@ -206,7 +224,7 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "4 .user.ini moi -> fimnew" "$(haskey "waf:fimnew:$WEB/.user.ini")" "yes"
 
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'memory_limit=128M\nauto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "4 .user.ini SUA -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
@@ -226,7 +244,7 @@ want "4 gia tri co @php (het dau * ba nghia)" \
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'memory_limit=256M\nupload_max_filesize=8M\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # KHONG con la "im": khoa mo ta CA THU MUC, va `.htaccess` tu buoc 2b van tren dia
@@ -240,7 +258,7 @@ want "4b nhung khoa VAN co (.htaccess con tren dia)" \
 # Va gia tri RONG / `none` cung khong duoc bao (hai dong CO THAT trong php.ini
 # hop le de TAT tinh nang).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 val4c=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)
@@ -252,14 +270,14 @@ want "4c autoload rong/none -> KHONG co @php" \
 # Chong FP cua ca muc 8: `index.php` bi sua la mot `CHG` binh thuong (cap nhat
 # phan mem), va no KHONG duoc vao `fimchg` — nhom do CHI danh cho tep cau hinh.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'index.php\n// sua\n' > "$WEB/index.php"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "5 index.php sua: khong fimchg" "$(keys 'waf:fimchg:')" "0"
 
 # ══ 6. `--dry` KHONG duoc ghi Redis ═════════════════════════════════════════
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'RewriteEngine On\nAddHandler x-httpd-lsphp .png\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check --dry >/dev/null 2>&1 || true
 want "6 --dry khong ghi gi" "$(wc -l < "$RCLI_OUT")" "0"
@@ -281,13 +299,13 @@ want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/")" "yes"
 #     khong hoi khoa nao.
 #   · Tep cau hinh BI XOA de lai khoa den 7 ngay -> telemetry duong tinh gia.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 rm -f "$WEB/.htaccess" "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 
 # `.htaccess` MOI (vua bi xoa o tren, nay tao lai) -> PHAI co fimchg.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
@@ -296,14 +314,14 @@ want "8 gia tri dung" \
 
 # `.user.ini` MOI co autoload -> PHAI co fimchg (gia tri `*`).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'auto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 .user.ini MOI co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
 
 # BI XOA -> phai phat DEL, khong de khoa song het TTL.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 rm -f "$WEB/.htaccess" "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 tep cau hinh bi XOA -> DEL khoa" \
@@ -315,19 +333,19 @@ want "8 va KHONG dat lai SETEX fimchg" "$(keys 'waf:fimchg:')" "0"
 # Hai ben truoc day lech: phia request coi `.inc` la executable, con `NAMES` cua
 # FIM khong co `*.inc`. Nen webshell `.inc` moi khong vao manifest.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf '<?php eval($_GET[1]);\n' > "$WEB/backdoor.inc"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "9 .inc moi -> fimnew" "$(haskey "waf:fimnew:$WEB/backdoor.inc")" "yes"
 
 # `php.ini` — truoc ban nay nhanh xu ly no la MA CHET (khong co trong NAMES).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'memory_limit=64M\n' > "$WEB/php.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "9 php.ini vao manifest (fimnew)" "$(haskey "waf:fimnew:$WEB/php.ini")" "yes"
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'memory_limit=64M\nauto_prepend_file=/tmp/y.php\n' > "$WEB/php.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "9 php.ini SUA co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
@@ -437,31 +455,31 @@ final_val() {
 }
 run_state baseline
 
-sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
+sleep 0.02; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
 run_state check
 want "10 B1 .htaccess -> ext:jpg" "$(final_val)" "ext:jpg"
 
 # THEM `.user.ini`. `.htaccess` KHONG doi, nen ban cu mat dau vet cua no.
-sleep 1; printf 'auto_prepend_file=/tmp/x.php\n' > "$SW/.user.ini"
+sleep 0.02; printf 'auto_prepend_file=/tmp/x.php\n' > "$SW/.user.ini"
 run_state check
 want "10 B2 hai tep -> GIU ca hai" "$(final_val)" "ext:jpg,@php"
 
 # XOA `.user.ini`. `.htaccess` nguy hiem VAN CON -> phai SETEX lai, KHONG duoc DEL.
-sleep 1; rm -f "$SW/.user.ini"
+sleep 0.02; rm -f "$SW/.user.ini"
 run_state check
 want "10 B3 xoa .user.ini -> quay ve ext:jpg (KHONG xoa khoa)" "$(final_val)" "ext:jpg"
 
 # XOA luon `.htaccess`: gio thu muc thuc su sach -> MOI duoc DEL.
-sleep 1; rm -f "$SW/.htaccess"
+sleep 0.02; rm -f "$SW/.htaccess"
 run_state check
 want "10 B4 xoa het -> DA XOA khoa" "$(final_val)" "(DA XOA)"
 
 # Cau hinh doi tu NGUY HIEM thanh AN TOAN ma tep VAN TON TAI: ban cu khong sinh
 # SETEX moi va cung khong DEL, nen khoa nguy hiem cu song tiep het TTL.
-sleep 1; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
+sleep 0.02; printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$SW/.htaccess"
 run_state check
 want "10 B5 dat lai -> ext:jpg" "$(final_val)" "ext:jpg"
-sleep 1; printf 'RewriteEngine On\n' > "$SW/.htaccess"
+sleep 0.02; printf 'RewriteEngine On\n' > "$SW/.htaccess"
 run_state check
 want "10 B6 sua thanh AN TOAN -> khoa bi xoa" "$(final_val)" "(DA XOA)"
 
@@ -481,7 +499,7 @@ want "10 B6 sua thanh AN TOAN -> khoa bi xoa" "$(final_val)" "(DA XOA)"
 # `fim.sh` im lang khi Redis chet nghia la WAF khong nhan duoc dau nao ma khong ai
 # biet — dung ho loi "canh bao dung ma khong ai mo".
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 # Noi dung PHAI khac ca truoc: `check` tinh tu diff, va mot `.htaccess` khong doi thi
 # khong co `chgcmds` nao — khi do khong nhanh Redis nao chay va ca nay do vi ly do
 # KHONG lien quan den dieu no kiem. (Toi da mac dung loi do o ban dau.)
@@ -496,7 +514,7 @@ esac
 # Va ma thoat phai KHAC 0: mot `fim.sh` bao loi vao log roi `exit 0` la "canh bao
 # dung ma khong ai mo" — cron khong bao, giam sat khong thay.
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddType application/x-httpd-lsphp .tif\n' > "$WEB/.htaccess"
 RCLI_MODE=down bash "$HERE/fim.sh" check >/dev/null 2>&1
 rc11=$?
@@ -513,7 +531,7 @@ want "11 Redis chet -> ma thoat DUNG 2" "$rc11" "2"
 # (no khong them kha nang PHAT HIEN nao o nhanh SETEX — vong `GET` so gia tri da du;
 # do duoc 29-09).
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddType application/x-httpd-lsphp .svg\n' > "$WEB/.htaccess"
 out=$(RCLI_MODE=down bash "$HERE/fim.sh" check 2>&1)
 case "$out" in
@@ -524,7 +542,7 @@ esac
 # Huong NGUOC: Redis SONG thi KHONG duoc bao loi. Thieu ca nay thi mot `fim.sh` luon
 # bao loi cung "qua".
 : > "$RCLI_OUT"
-sleep 1
+sleep 0.02
 printf 'AddType application/x-httpd-lsphp .ico\n' > "$WEB/.htaccess"
 out=$(bash "$HERE/fim.sh" check 2>&1)
 case "$out" in
@@ -549,10 +567,10 @@ esac
 mkdir -p "$WEB/x13a" "$WEB/x13b"
 # A) DEL chay dung -> KHONG duoc bao. Thieu huong nay thi mot `fim.sh` luon bao loi
 #    cung "qua", va mot canh bao luon sang la canh bao bi bo qua.
-: > "$RCLI_OUT"; sleep 1
+: > "$RCLI_OUT"; sleep 0.02
 printf 'AddType application/x-httpd-lsphp .gif\n' > "$WEB/x13a/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-sleep 1
+sleep 0.02
 printf 'RewriteEngine On\n' > "$WEB/x13a/.htaccess"
 out=$(bash "$HERE/fim.sh" check 2>&1)
 case "$out" in
@@ -561,10 +579,10 @@ case "$out" in
 esac
 # B) DEL that bai -> PHAI bao, va phai neu TEN KHOA con sot (khong chi "that bai"):
 #    mot bao cao khong co ten khoa thi nguoi van hanh khong biet tim o dau.
-: > "$RCLI_OUT"; sleep 1
+: > "$RCLI_OUT"; sleep 0.02
 printf 'AddType application/x-httpd-lsphp .bmp\n' > "$WEB/x13b/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-sleep 1
+sleep 0.02
 printf 'RewriteEngine On\n' > "$WEB/x13b/.htaccess"
 out=$(EX_STUCK=1 bash "$HERE/fim.sh" check 2>&1)
 case "$out" in
