@@ -397,33 +397,46 @@ END {
 }'
 
 
+
 echo
-echo "=== 16. VUNG MU: than co du lieu ma thieu Content-Type ==="
+echo "=== 16. VUNG MU: than co du lieu ma thieu Content-Type (BON NHOM) ==="
 # DEM TRUOC, MO SAU. `body.probe` bo qua hoan toan cac request nay, nen mot raw
 # POST/PUT/PATCH mang the PHP hay traversal khong duoc doc, va `init.lua` hieu la
 # `has_body=false` nen hop dong endpoint cung khong thay.
 #
-# Log CU khong tra loi duoc cau hoi nay: `waf.log` ghi SAU cong Content-Type, con
-# log Nginx khong co cot do. Do GIAN TIEP 28-09 cho chan tren rat lon (171-96:
-# 2.238.511 POST/PUT/PATCH/DELETE ma chi 9.674 than duoc soi = 0,43%; bo cong la gap
-# 231 lan so luot quet), NHUNG hieu so do gom moi POST thoat som vi ly do KHAC —
-# cookie fast-path, whitelist, lop `resource`, ban. Nhom nay dem CHINH XAC.
+# BON NHOM chu khong mot con so (nguoi dung bat 29-09). Ban truoc chi dem
+# `Content-Length > 0`, nen con so bao cao la CAN DUOI ma khong noi ra minh la can
+# duoi — ba nhom bi bo deu la than CO THAT:
 #
-# Con so quyet dinh: n nho thi mo duong doc than gan nhu mien phi; n lon thi phai
-# chon method/route truoc khi mo.
+#   cl_positive  Content-Length > 0     — nhom duy nhat ban truoc dem
+#   cl_zero      Content-Length: 0      — khong TE, gan nhu chac la than rong
+#   te_chunked   Transfer-Encoding      — than CO THAT, do dai chua biet truoc khi doc
+#   cl_absent    khong CL, khong TE     — HTTP/2 DATA frame
+#
+# `te_chunked` va `cl_absent` la hai nhom QUAN TRONG NHAT cho quyet dinh mo duong:
+# voi chung khong the gioi han byte bang header, phai gioi han trong luc doc.
+#
+# `Content-Length` CHI co nghia cho `cl_positive`; ba nhom kia khong mang do dai nen
+# KHONG duoc dua vao phep tinh trung binh. Ban truoc lam `v = v + 0` tren ca `matched`
+# nen mot `te_chunked` cong 0 vao tong va keo trung binh xuong — mot phep do sai im
+# lang.
 grep -F '[waf]' "$W" | grep -F 'rule=body_ct_missing' | awk "$P"'
 {
     s = (f["smp"] == "") ? 1 : f["smp"] + 0
     n += s
     d[f["domain"]] += s
     ips[f["ip"]]++
-    # `matched` = `cl=<so>` — Content-Length tu HEADER, khong phai do than.
-    #
-    # `smp` phai nhan vao CA `n` LAN `tot`: mot dong mau dai dien nhieu request, va
-    # neu chi nhan vao `n` thi Content-Length trung binh bi chia sai.
-    v = f["matched"]; sub(/^cl=/, "", v); v = v + 0
-    tot += v * s
-    if (v > mx) mx = v
+    m = f["matched"]
+    if (m ~ /^cl=[0-9]+$/) {
+        g["cl_positive"] += s
+        # `smp` phai nhan vao CA `n` LAN `tot`: mot dong mau dai dien nhieu request.
+        v = m; sub(/^cl=/, "", v); v = v + 0
+        np += s; tot += v * s
+        if (v > mx) mx = v
+    } else {
+        g[m] += s
+        gd[m "|" f["domain"]] += s
+    }
 }
 END {
     if (!n) {
@@ -432,13 +445,29 @@ END {
         exit
     }
     printf "  %d luot, %d domain, %d IP rieng biet\n", n, length(d), length(ips)
-    printf "  Content-Length: lon nhat %d B, trung binh %d B, tong %.2f MB\n", \
-           mx, tot/n, tot/1048576
+    print  "  -- theo NHOM --"
+    order = "cl_positive cl_zero te_chunked cl_absent"
+    nk = split(order, ok_, " ")
+    for (i = 1; i <= nk; i++) if (g[ok_[i]] > 0)
+        printf "    %-12s %6d\n", ok_[i], g[ok_[i]]
+    for (k in g) {
+        seen = 0
+        for (i = 1; i <= nk; i++) if (k == ok_[i]) seen = 1
+        if (!seen) printf "    %-12s %6d  (nhom LA — kiem lai body.lua)\n", k, g[k]
+    }
+    if (np > 0)
+        printf "  cl_positive: Content-Length lon nhat %d B, trung binh %d B, tong %.2f MB\n", \
+               mx, tot/np, tot/1048576
     print  "  -- theo domain --"
     for (k in d) printf "    domain: %-32s %6d\n", k, d[k]
+    if (length(gd) > 0) {
+        print "  -- nhom KHONG mang do dai, theo domain --"
+        for (k in gd) { split(k, p, "|"); printf "    %-12s @ %-28s %6d\n", p[1], p[2], gd[k] }
+    }
     print  "  -- CACH DOC --"
-    print  "  n < 1.000/ngay       : mo duong doc than, chi phi khong dang ke"
-    print  "  n lon ma it IP       : gan nhu chac la mot cong cu/bot — xem IP truoc"
-    print  "  lon nhat > 1 MB      : can gioi han byte TRUOC khi mo"
-    print  "  tap trung mot domain : co the la mot app that dung raw POST"
+    print  "  chi co cl_positive         : gioi han byte bang header la DU"
+    print  "  co te_chunked / cl_absent  : header KHONG noi do dai -> phai gioi han"
+    print  "                               TRONG luc doc, khong truoc khi doc"
+    print  "  n lon ma it IP             : gan nhu chac la mot cong cu/bot — xem IP truoc"
+    print  "  tap trung mot domain       : co the la mot app that dung raw POST"
 }'

@@ -176,9 +176,43 @@ local function probe(ctx, runner, rt)
     -- Khi mo: phan loai `unknown`/octet-stream chu KHONG dung thang family `"-"` —
     -- xu ly NUL khac nhau giua urlencoded va nhi phan.
     if not ct or ct == "" then
-        -- `Content-Length` tu HEADER, khong phai tu than. Header co the noi doi,
-        -- nhung o day ta dang dem chu khong quyet dinh gi.
-        local cl = tonumber(rt.var.http_content_length or 0) or 0
+        -- ── BON NHOM, khong mot con so ──────────────────────────────────
+        --
+        -- Ban truoc chi dem `cl > 0`, nen con so bao cao la CAN DUOI chu khong phai
+        -- tong so than thieu `Content-Type` (nguoi dung bat 29-09). Ba nhom bi bo
+        -- deu im lang y nhau — `tonumber(nil or 0)` va `tonumber("0")` cung cho `0`
+        -- nen "khong khai bao" va "khai bao bang 0" KHONG phan biet duoc:
+        --
+        --   cl_positive  Content-Length > 0        — nhom duy nhat ban truoc dem
+        --   cl_zero      Content-Length: 0         — co the la than THAT neu kem
+        --                `Transfer-Encoding: chunked` (RFC 9112 uu tien TE)
+        --   te_chunked   khong CL, co TE           — than co that, do dai chua biet
+        --   cl_absent    khong CL, khong TE        — HTTP/2 DATA frame, hoac client
+        --                dong ket noi de bao het than
+        --
+        -- Phan loai o day chu khong o cho doc log: mot con so gop lai thi khong ai
+        -- tach nguoc ra duoc, va chinh cai tach nay quyet dinh mo duong doc than the
+        -- nao (chunked phai doc khac `cl` da biet).
+        --
+        -- Van CHI doc header, khong doc than, khong I/O.
+        local clh = rt.var.http_content_length
+        local te  = rt.var.http_transfer_encoding
+        local cl  = tonumber(clh) or 0
+        local grp
+        if cl > 0 then
+            grp = "cl_positive"
+        elseif clh and clh ~= "" then
+            -- Co header va parse ra 0 (hoac rac). `chunked` thi than van co that.
+            grp = (te and te ~= "") and "te_chunked" or "cl_zero"
+        elseif te and te ~= "" then
+            grp = "te_chunked"
+        else
+            grp = "cl_absent"
+        end
+        ctx.waf_body_ct_group = grp
+        -- Giu nguyen ten co cu cho nhom `cl_positive`: `postdeploy.sh` muc 16 doc
+        -- `matched=cl=<so>` va so lieu 29-09 tren fleet dua tren no. Doi nghia mot
+        -- cot dang co so lieu thi khong so sanh duoc truoc/sau.
         if cl > 0 then ctx.waf_body_ct_missing = cl end
         return
     end

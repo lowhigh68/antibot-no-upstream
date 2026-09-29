@@ -900,7 +900,7 @@ do
        s.upload_config_scan_incomplete == nil, true)
 
     -- ── LOI 5: hai composite autoload KHAC nhau ─────────────────────────
-    io.write("e2e: .user.ini va php.ini di hai rule id (loi 5)\n")
+    io.write("e2e: .user.ini va php.ini di hai rule id (loi 6)\n")
     local function autoload_part(nf)
         return { family = "multipart", proof = "ok", scan = "ok",
                  parts = { { slot = 1, name_flags = nf,
@@ -981,6 +981,46 @@ do
                 { family = "urlencoded", proof = "ok", scan = "ok" })
         eq("host khong phai WP -> khong route_ct", r.route_ct == nil, true)
     end)
+
+    -- ── LOI 6: bon nhom vung mu `Content-Type` phai DEU sinh mot dong ───
+    --
+    -- `body.probe` dat `waf_body_ct_group` cho ca bon nhom, nhung `init.lua` truoc
+    -- ban nay dieu kien tren `waf_body_ct_missing` — cai CHI duoc dat cho nhom
+    -- `cl_positive`. Nen chunked, HTTP/2 khong khai bao do dai va `Content-Length: 0`
+    -- KHONG sinh dong nao, va con so bao cao la can duoi ma khong noi ra minh la
+    -- can duoi (nguoi dung bat 29-09).
+    --
+    -- Phep kiem phai o DAY chu khong o `body_test`: `body_test` kiem `body.probe`
+    -- DAT co dung, con cai hong la `init.lua` KHONG TIEU THU co do. Dung ho loi
+    -- "module tinh dung ma khong ai tieu thu" nhu bon loi tren.
+    io.write("\ne2e: bon nhom vung mu Content-Type (loi 6)\n")
+    local function run_ct(grp, cl)
+        local ctx = { waf_body_ct_group = grp, waf_body_ct_missing = cl }
+        local rt = {
+            var = { host = "a.test", uri = "/x.php", args = nil,
+                    remote_addr = "127.0.0.1", document_root = "/nonexistent",
+                    http_content_type = nil },
+            req = { get_method = function() return "POST" end },
+            log = function() end, exit = function() end, ERR = 4,
+            waf_body_probe = function() end,
+        }
+        waf._run_pre_with_runtime(ctx, rt)
+        for i = 1, #(ctx.waf_hits or {}) do
+            if ctx.waf_hits[i].rule == "body_ct_missing" then
+                return ctx.waf_hits[i].matched
+            end
+        end
+        return nil
+    end
+    -- `cl_positive` giu NGUYEN `cl=<so>`: `postdeploy.sh` muc 16 doc dinh dang do va
+    -- so lieu fleet 29-09 dua tren no.
+    eq("nhom cl_positive -> cl=<so>", run_ct("cl_positive", 25), "cl=25")
+    eq("nhom cl_zero sinh dong",      run_ct("cl_zero",    nil), "cl_zero")
+    eq("nhom te_chunked sinh dong",   run_ct("te_chunked", nil), "te_chunked")
+    eq("nhom cl_absent sinh dong",    run_ct("cl_absent",  nil), "cl_absent")
+    -- Khong co nhom thi KHONG sinh dong: mot request co `Content-Type` binh thuong
+    -- khong duoc tra gia cho phep dem nay.
+    eq("khong co nhom -> khong sinh dong", run_ct(nil, nil), nil)
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))

@@ -679,10 +679,21 @@ local function run_pre(ctx, rt)
     -- DEM vung mu "than co du lieu ma thieu Content-Type". `body.probe` dat co nay
     -- TRUOC cong Content-Type cua no; xem khoi chu thich tai do de biet vi sao dem
     -- truoc khi mo. Chi doc header, khong doc than.
-    if ctx.waf_body_ct_missing then
+    --
+    -- DIEU KIEN la `_group`, KHONG phai `_missing`: `_missing` chi duoc dat cho nhom
+    -- `cl_positive`, nen ban truoc BO HET ba nhom con lai (chunked, HTTP/2 khong
+    -- khai bao do dai, `Content-Length: 0`) — tuc con so bao cao la can duoi ma
+    -- khong noi ra minh la can duoi.
+    if ctx.waf_body_ct_group then
+        -- `cl=<so>` giu NGUYEN cho nhom `cl_positive` de so lieu 29-09 con so sanh
+        -- duoc; ba nhom moi mang TEN NHOM. `postdeploy.sh` muc 16 tach bang dau `=`.
+        local m = ctx.waf_body_ct_group
+        if ctx.waf_body_ct_missing then
+            m = "cl=" .. tostring(ctx.waf_body_ct_missing)
+        end
         policy.emit(state, "body_ct_missing", {
             target  = "BODY",
-            matched = "cl=" .. tostring(ctx.waf_body_ct_missing),
+            matched = m,
         })
     end
 
