@@ -1111,6 +1111,54 @@ MANIFEST="$STATE/manifest.$tier.txt"
 # ha; va ke tan cong sua tiep mot file dang on ao thi lan sua thu hai roi xuong
 # STATE — nhung lan thu nhat da bao roi, va dong STATE van nam day du trong $LOG.
 PREVCHG="$STATE/prevchg.$tier.txt"
+# ── SO LAN DOI, co CUA SO THOI GIAN ($CHGCOUNT) ─────────────────────
+#
+# `$PREVCHG` nho DUNG MOT luot, nen bat bien cua no la "doi HAI LAN LIEN TIEP = tep
+# trang thai". Do duoc 30-09 rang bat bien do bo lot mot ho tep hop le lon:
+#
+#   uploads/sucuri/*.php   43 tep / 4 site, plugin `sucuri-scanner` CO cai tren ca 4
+#                          doi 8 lan trong 7 ngay -> moi tep ~1-2 lan/tuan
+#   uploads/**/*.php       181 tep khac: TCPDF font data (charmap, times*, thsarabun*,
+#                          uni2cid_aj16, zapfdingbats) + 90 `index.php`
+#
+# Chung doi NGAT QUANG, nen giua hai lan doi cua CUNG mot tep co nhieu luot `check`
+# khong thay gi — tep roi khoi `$PREVCHG` roi quay lai NHU MOT tep vua doi lan dau.
+# Ket qua: 7/13 canh bao `fim.sh` trong hai thang la Sucuri, tuc FP nay chiem HON NUA
+# duong bao va lam loang canh bao that (`feedback_alert_reaches_nobody`).
+#
+# Danh sach ten la cach SAI: `uploads/` tren dan may nay da co BA ho hop le, va mot
+# danh sach se phai them mai. Lich su doi thi TU LO ra ma khong can biet ten.
+#
+# ── VI SAO PHAI CO CUA SO, khong chi dem ────────────────────────────
+#
+# Chu thich o nhanh "khong co CHG nao" (dong ~1401) neu dung van de: giu tap cu se ha
+# bac nham cho mot tep on ao thang truoc roi im, nay doi lai — dung cai lan doi dang
+# duoc bao nhat. Nen moi dong mang CA so lan LAN moc thoi gian cuoi, va mot tep khong
+# doi trong $CHG_WINDOW_DAYS ngay thi RUNG khoi bo dem.
+#
+# Dinh dang: <so_lan>|<epoch_lan_cuoi>|<duong_dan>
+CHGCOUNT="$STATE/chgcount.$tier.txt"
+# `N` va `M` lay TU SO DO, khong chon bua:
+#   Sucuri ~1-2 lan/tuan  -> cua so 21 ngay giu duoc lich su cua mot tep hop le
+#   webshell doi 1-2 lan roi im -> KHONG dat nguong, giu nguyen 2CRITICAL
+#
+# LECH MOT LUOT, va day la hanh vi DUNG chu khong phai loi: `sev()` doc bo dem do lan
+# chay TRUOC ghi, nen `N=2` co nghia "lan CHG thu BA moi ha bac". Do duoc 30-09 tren
+# mot cay thu muc that:
+#     CHG lan 1: chgn=1 -> CRITICAL
+#     CHG lan 2: chgn=2 -> CRITICAL   (bo dem doc duoc luc nay la 1)
+#     CHG lan 3: chgn=3 -> STATE      (bo dem doc duoc luc nay la 2)
+# Giu nguyen cach nay (khong cong luot hien tai vao) vi no de mot tep doi LAN DAU luon
+# o bac day du — dem ca luot hien tai thi phai lui nguong tuong ung, cung mot thu voi
+# mot con so kho doc hon.
+#
+# `N=2` chu khong 3: hai lan doi NGAT QUANG (co luot im o giua, tuc `$PREVCHG` da rung)
+# la hanh vi cua mot tep trang thai. Mot lan xam nhap khong sinh ra mau do — do duoc:
+# 43 tep Sucuri deu dat, con hai webshell that tren fleet (`wp-cron-vosi.php`,
+# `filefuns.php`) doi 1-4 lan LIEN TIEP nen `$PREVCHG` bat chung, va chung con an 65-75
+# diem nen nhanh `0SCORE` chan truoc ca hai phep ha bac.
+CHG_MIN_N="${FIM_CHG_MIN_N:-2}"
+CHG_WINDOW_DAYS="${FIM_CHG_WINDOW_DAYS:-21}"
 
 # QUYEN FILE. Script nay truoc khong dat umask, nen quyen phu thuoc umask cua
 # root tung may. Do 13-09: bon may ra 0640, rieng cloud183-139 ra 0644 — khac
@@ -1170,6 +1218,10 @@ if [ "$mode" = "baseline" ]; then
     fi
     # Manifest moi thi moi so sanh CHG truoc do het nghia.
     : > "$PREVCHG"
+    # `CHGCOUNT` cung phai xoa o BASELINE: manifest moi thi moi lich su doi truoc do
+    # het nghia. Khac han nhanh "khong co CHG nao" o duoi, noi `CHGCOUNT` PHAI GIU —
+    # xem chu thich o do.
+    : > "$CHGCOUNT"
     echo "baseline: $n file"
     exit 0
 fi
@@ -1402,6 +1454,13 @@ if [ "$total" -eq 0 ]; then
     # cu se ha bac nham cho mot file on ao tu thang truoc roi im, nay doi lai —
     # dung cai lan doi dang duoc bao nhat.
     [ $dry -eq 0 ] && : > "$PREVCHG"
+    # `CHGCOUNT` KHONG xoa o day, va day la diem de sai nhat cua ca thay doi nay:
+    # `PREVCHG` xoa vi bat bien cua no la "hai lan LIEN TIEP" — mot luot khong co CHG
+    # lam chuoi do dut. `CHGCOUNT` la lich su DAI HAN co cua so ngay rieng; xoa no moi
+    # lan im lang se lam no thanh y nhu `PREVCHG` va bo dem vo nghia.
+    #
+    # Ho tep no phai bat (Sucuri 8 lan/7 ngay tren 43 tep) CHINH LA ho co nhieu luot im
+    # giua cac lan doi — neu xoa o day thi no khong bao gio dat nguong.
     # IM LANG khi khong co gi. cron gui mail theo BAT KY dong stdout nao, khong
     # phai theo ma thoat — in "khong co thay doi" moi 15 phut la 96 mail/ngay,
     # va hop thu bi nhan chim thi canh bao that cung chim theo.
@@ -1453,12 +1512,38 @@ trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$dels" "$SZSAME" "$PWFILE"
 
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
              -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
-             -v clfile="$CLFILE" -v chgfile="$chgs" -v delfile="$dels" '
+             -v clfile="$CLFILE" -v chgfile="$chgs" -v delfile="$dels" \
+             -v ccfile="$CHGCOUNT" -v ccmin="$CHG_MIN_N" -v ccnow="$(date +%s)" \
+             -v ccwin="$CHG_WINDOW_DAYS" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
         # lan chay dau tien (chua co prevchg) di thang qua day.
         if (prevfile != "")
             while ((getline _pl < prevfile) > 0) prev[_pl] = 1
+
+        # ── SO LAN DOI trong cua so ($CHGCOUNT) ─────────────────────
+        #
+        # `prev` nho DUNG MOT luot, nen no chi phu "doi HAI LAN LIEN TIEP". Bang nay
+        # phu cai NGAT QUANG: `uploads/sucuri/*.php` doi 8 lan / 7 ngay tren 43 tep,
+        # roi khoi `prev` giua hai lan roi quay lai NHU tep vua doi lan dau (do duoc
+        # 30-09; 7/13 canh bao hai thang la ho tep nay).
+        #
+        # Loc CUA SO NGAY O DAY chu khong tin bo dem: tep bo dem duoc ghi boi lan
+        # chay TRUOC, va neu may dung mot thoi gian dai thi moi dong trong do da qua
+        # han. Doc ma khong loc la ha bac cho mot tep im ca thang roi doi lai — dung
+        # cai lan doi dang duoc bao nhat.
+        if (ccfile != "") {
+            _cut = ccnow - ccwin * 86400
+            while ((getline _cl < ccfile) > 0) {
+                if (_cl == "") continue
+                _p1 = index(_cl, "|"); if (_p1 == 0) continue
+                _p2 = index(substr(_cl, _p1 + 1), "|"); if (_p2 == 0) continue
+                _ts = substr(_cl, _p1 + 1, _p2 - 1) + 0
+                if (_ts < _cut) continue
+                chgn[substr(_cl, _p1 + _p2 + 1)] = substr(_cl, 1, _p1 - 1) + 0
+            }
+            close(ccfile)
+        }
 
         # Ba bang cho cot `sc=`. Cung ly do nhu tren: file rong hay khong ton
         # tai thi `getline` tra <=0 va vong lap khong chay lan nao — `--hot`
@@ -1522,7 +1607,18 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # Ha bac TRUOC moi phep phan vung con lai: file trang thai nam trong
         # wp-includes/ thi van la file trang thai. CHI ap cho CHG — NEW khong
         # bao gio bi ha.
+        #
+        # HAI dieu kien, hai bat bien KHAC nhau:
+        #   `prev`          doi HAI LAN LIEN TIEP (cua so 1 luot) — bat wflogs/, cache
+        #   `chgn >= ccmin` doi >= N lan trong M ngay — bat ho NGAT QUANG: Sucuri
+        #                   datastore, TCPDF font data, `index.php` trong uploads/
+        # Ca hai deu SAU `1MUPLUG`, vi bat bien do khong dung voi mu-plugins (khong ung
+        # dung hop le nao ghi lien tuc vao day — xem chu thich o `pscore`).
+        #
+        # `chgn` KHONG ha bac cho tep chi doi 1-2 lan roi im: mot lan xam nhap khong
+        # dat nguong, nen webshell giu nguyen `2CRITICAL`.
         if (t == "CHG" && (p in prev))       return "5STATE"
+        if (t == "CHG" && (p in chgn) && chgn[p] >= ccmin) return "5STATE"
         if (p ~ /\/wp-content\/uploads\//)    return "2CRITICAL"
         if (p ~ /\/wp-includes\//)            return "2CRITICAL"
         if (p ~ /\/wp-admin\//)               return "2CRITICAL"
@@ -2240,6 +2336,43 @@ fi
 if [ $dry -eq 0 ]; then
     cp "$new_scan" "$MANIFEST"
     awk -F'|' '$1 == "CHG" { print $2 }' "$diff_out" > "$PREVCHG"
+    # CAP NHAT bo dem doi, co cua so. MOT awk pass, khong vong `while` trong pipe
+    # (`while` trong pipe chay o subshell nen bien khong thoat ra — da mac loi do o
+    # `wpinv_gap.sh`).
+    #
+    # Thu tu doc: bo dem CU truoc, roi cac duong dan CHG cua lan nay. Mot duong dan
+    # qua han thi KHONG duoc chep sang bo moi — do la phep RUNG, va no phai chay ca
+    # khi lan nay duong dan do khong doi.
+    cc_new=$(mktemp) || exit 2
+    awk -F'|' -v now="$(date +%s)" -v win="$CHG_WINDOW_DAYS" \
+        -v ccfile="$CHGCOUNT" -v dfile="$diff_out" '
+        BEGIN {
+            cutoff = now - win * 86400
+            # `getline < file` tra -1 khi file khong ton tai — lan chay dau di thang.
+            while ((getline _l < ccfile) > 0) {
+                if (_l == "") continue
+                # Tach lam DUNG ba phan: duong dan co the chua `|`? Khong — `find
+                # -printf` dung `|` lam phan cach nen mot duong dan co `|` da pha
+                # manifest tu truoc. Nhung tach bang `index` van an toan hon `split`.
+                p1 = index(_l, "|"); if (p1 == 0) continue
+                p2 = index(substr(_l, p1 + 1), "|"); if (p2 == 0) continue
+                n  = substr(_l, 1, p1 - 1) + 0
+                ts = substr(_l, p1 + 1, p2 - 1) + 0
+                pp = substr(_l, p1 + p2 + 1)
+                if (ts >= cutoff) { cnt[pp] = n; last[pp] = ts }
+            }
+            close(ccfile)
+            while ((getline _d < dfile) > 0) {
+                if (substr(_d, 1, 4) != "CHG|") continue
+                pp = substr(_d, 5)
+                q = index(pp, "|"); if (q > 0) pp = substr(pp, 1, q - 1)
+                cnt[pp]  = (pp in cnt) ? cnt[pp] + 1 : 1
+                last[pp] = now
+            }
+            close(dfile)
+            for (pp in cnt) printf "%d|%d|%s\n", cnt[pp], last[pp], pp
+        }' </dev/null > "$cc_new"
+    mv -f "$cc_new" "$CHGCOUNT"
 fi
 # `mark_err` XET TRUOC `crit`, va thu tu nay la mot quyet dinh: "KHONG GHI DUOC dau
 # cho WAF" nghiem trong hon "co file dang chu y". File dang chu y VAN doc duoc tu bao

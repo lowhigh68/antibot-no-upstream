@@ -591,6 +591,63 @@ case "$out" in
     *) want "13B DEL that bai -> bao ten khoa" "IM LANG" "co-ten"
        printf '      [out] %s\n' "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" ;;
 esac
+
+# ══ 14. uploads/: tep TRANG THAI NGAT QUANG phai ha bac ══════════════════════
+#
+# Do tren may that 30-09: `uploads/sucuri/*.php` (43 tep / 4 site, plugin
+# `sucuri-scanner` CO cai tren ca 4) doi 8 lan trong 7 ngay va CHIEM 7/13 canh bao
+# `fim.sh` trong hai thang — FP nay lam loang duong bao that. Ngoai no, `uploads/` con
+# 181 tep `.php` hop le khac (TCPDF font data + 90 `index.php`), nen danh sach TEN la
+# cach sai.
+#
+# ── VI SAO PHAI CO LUOT IM GIUA CAC LAN DOI ─────────────────────────
+#
+# `$PREVCHG` da phu "doi HAI LAN LIEN TIEP". Ban DAU cua nhom nay doi tep ba lan lien
+# tiep, va no bao XANH — nhung ba dot bien vao nhanh `chgn` deu KHONG bi bat, vi `prev`
+# quyet dinh truoc va nhanh `chgn` chua bao gio chay. Xanh gia.
+#
+# Mot luot `check` KHONG doi gi giua cac lan doi lam `$PREVCHG` bi xoa (xem nhanh
+# "khong co CHG nao"), tuc dung hinh dang NGAT QUANG cua Sucuri — va do la hinh dang
+# duy nhat mot minh `chgn` tra loi duoc.
+#
+# DOC TU `$FIM_LOG` chu khong stdout: khi tep xuong `STATE` thi `crit=0` va `fim.sh` im
+# lang o stdout (dung thiet ke — cron gui mail theo bat ky dong stdout nao).
+mkdir -p "$WEB/wp-content/uploads/st"
+bac14() { grep -E "CHG .*uploads/st/$1" "$FIM_LOG" 2>/dev/null | tail -1 | awk '{print $1}'; }
+im14()  { bash "$HERE/fim.sh" check >/dev/null 2>&1 || true; }   # luot khong doi gi
+doi14() { sleep 0.02; printf '<?php\n// v%s\nexit(0);\n' "$1" > "$WEB/wp-content/uploads/st/d.php"
+          bash "$HERE/fim.sh" check >/dev/null 2>&1 || true; }
+
+printf '<?php\n// v1\nexit(0);\n' > "$WEB/wp-content/uploads/st/d.php"
+im14                                    # tep MOI, khong phai CHG
+doi14 2; im14                           # CHG 1 -> chgn=1
+want "14 CHG lan 1 (ngat quang) -> VAN CRITICAL" "$(bac14 d.php)" "CRITICAL"
+doi14 3; im14                           # CHG 2 -> chgn=2
+want "14 CHG lan 2 (ngat quang) -> VAN CRITICAL" "$(bac14 d.php)" "CRITICAL"
+doi14 4                                 # CHG 3 -> bo dem doc duoc = 2 >= N
+want "14 CHG lan 3 (ngat quang) -> ha bac STATE" "$(bac14 d.php)" "STATE"
+
+# HUONG NGUOC — quan trong hon ca: mot tep doi DUNG MOT LAN phai GIU `CRITICAL`. Thieu
+# ca nay thi mot phep sua "ha bac het" cung qua duoc, tuc mat toan bo kha nang bat
+# webshell trong uploads/.
+printf '<?php\n// moi\n' > "$WEB/wp-content/uploads/st/once.php"
+im14
+sleep 0.02; printf '<?php\n// doi mot lan\n' > "$WEB/wp-content/uploads/st/once.php"
+im14
+want "14 doi DUNG MOT lan -> VAN CRITICAL" "$(bac14 once.php)" "CRITICAL"
+
+# CUA SO NGAY: bo dem KHONG phai danh sach vinh vien. Lui moc thoi gian 100 ngay ->
+# moi dong phai rung, va tep quay ve CRITICAL.
+CCF="$FIM_STATE/chgcount.full.txt"
+want "14 bo dem co ton tai" "$([ -s "$CCF" ] && echo co || echo khong)" "co"
+if [ -s "$CCF" ]; then
+    OLD=$(( $(date +%s) - 100*86400 ))
+    awk -v old="$OLD" '{ i=index($0,"|"); r=substr($0,i+1); j=index(r,"|")
+                         print substr($0,1,i-1) "|" old "|" substr(r,j+1) }' "$CCF" > "$CCF.t" \
+      && mv "$CCF.t" "$CCF"
+    doi14 9
+    want "14 dong QUA HAN bi rung -> lai CRITICAL" "$(bac14 d.php)" "CRITICAL"
+fi
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
