@@ -109,16 +109,29 @@ while IFS=$'\t' read -r want rule; do
     want "$rule" "token-hinh-dang" "${bad:-sach}" "sach"
 
     lua_got=$(awk -v r="$rule" -F'\t' '$2 == r { print $1; exit }' "$R/lua.out")
-    # Lua tra mot BOOLEAN `handler`, nen no khong phan biet ALL voi HANDLER duoc.
-    # Ghi ro GIOI HAN nay thay vi de nguoi doc tuong day la phep so token-doi-token:
-    # de so den tan token, Lua phai phat ra chinh bo token do — mot thay doi cua
-    # Lua de vua phep do, khong phai mot phep sua loi. Chua lam.
-    # Lua tra mot BOOLEAN `handler` nen no khong phan biet ALL/EXECCGI/HANDLER.
-    # `Options +ExecCGI`: Lua BAO (handler=true) con shell tra `@execcgi` — hai ben
-    # dong y "co gi dang chu y" nhung KHAC ve do manh. Do la GIOI HAN da biet cua
-    # phep so nay, ghi ro thay vi de nguoi doc tuong day la tuong duong token.
+    # ── VI SAO PHEP SO CHEO DUNG O MUC CO/KHONG ─────────────────────
+    #
+    # Nguoi dung neu 29-09 rang phep so nay la mot BIT. Dung, va toi DO lai xem co sua
+    # duoc khong — cau tra loi la KHONG, vi hai ben CO Y khac nhau:
+    #
+    #   awk doc `.htaccess` DA NAM TREN DIA -> cau hoi la "THU MUC nay co nguy hiem
+    #       khong" -> pham vi container QUAN TRONG (`SetHandler` trong `<FilesMatch>`
+    #       KHONG ap ca thu muc)
+    #   Lua doc part DANG UPLOAD -> cau hoi la "TEP nay co lam gi chay duoc khong" ->
+    #       `SetHandler` trong `<FilesMatch>` VAN lam mot tep chay duoc, chi hep hon
+    #
+    # Do duoc: Lua tra `handler=co` cho CA BA — `SetHandler` ngoai container, trong
+    # `<FilesMatch>`, va `AddType` trong `<FilesMatch>`. Bat hai ben khop token-doi-
+    # token se lam MOT BEN SAI, khong phai lam ca hai dung.
+    #
+    # Nen phep so chéo giu o muc "ca hai co/khong thay gi dang chu y", va phep so
+    # TOKEN CHINH XAC nam o ben shell (`token-duoi` o tren) noi no co nghia.
+    #
+    # DIEU DA SUA duoc: `exp_lua` cu khong phan biet "ca hai im" voi "Lua thay ma awk
+    # khong" — huong FALSE NEGATIVE cua chinh awk, tuc dieu bo fixture nay sinh ra de
+    # bat. Nay ca `NONE` duoc doi chung HAI CHIEU.
     exp_lua=$([ "$want" = "NONE" ] && echo NONE || echo HANDLER)
-    want "$rule" "lua(bit)" "$lua_got" "$exp_lua"
+    want "$rule" "lua(co/khong)" "$lua_got" "$exp_lua"
     want "$rule" "shell"    "$got"     "$want"
 done < "$FIX"
 
@@ -272,6 +285,35 @@ cross "cheo: CRLF +ExecCGI"         "@execcgi" co    'Options +ExecCGI\r\n'
 cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n' upload_user_ini
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
 cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
+
+# ── HAI BEN DONG Y: sau dong DO DUOC, khong phai gia dinh ────────────
+#
+# Nhom nay ghi lai mot phep DO 29-09: toi tim cac dong co the lam hai parser lech
+# theo huong FALSE NEGATIVE cua awk (awk im, Lua bao). Ket qua: ca sau dong hai ben
+# DONG Y. Do la mot ket luan, nen no thanh ca test — neu mai mot ban sua lam lech,
+# nhom nay do.
+#
+# `cross` doi hai ky vong TUYET DOI (khong phai "hai ben giong nhau"), vi mot phep so
+# "hai ben dong y" khong phat hien duoc loi CHUNG.
+cross "dong y: SetHandler cgi-script"   "@all"    co 'SetHandler cgi-script\n'
+cross "dong y: AddHandler cgi-script"   "ext:sh"  co 'AddHandler cgi-script .sh\n'
+cross "dong y: Action + AddHandler"     "ext:php" co 'Action php-script /cgi-bin/php\nAddHandler php-script .php\n'
+cross "dong y: AddOutputFilter -> im"   ""        khong 'AddOutputFilter INCLUDES .shtml\n'
+# ── CA HAI CUNG BO SOT (ghi lai, CHUA sua) ──────────────────────────
+#
+# `php_value auto_prepend_file /tmp/x.php` trong `.htaccess` la mot duong nap ma
+# THAT — voi mod_php. Ca HAI parser bo qua no, va khong noi nao trong repo xu ly
+# `php_value`/`php_admin_value` (da grep).
+#
+# CHUA SUA vi mot cau hoi CHUA DO DUOC: fleet nay la DirectAdmin + php-fpm, va
+# `php_value` trong `.htaccess` chi co tac dung voi mod_php — voi CGI/FastCGI Apache
+# TU CHOI directive do (500) chu khong nap ma. Neu dung vay thi day KHONG phai lo
+# hong, va them luat se la FP tren mot dong vo hai.
+#
+# Can do tren may that: `grep -rl "php_value" /home/*/domains/*/public_html/.htaccess`
+# va `apachectl -M | grep php`. Ca duoi GHIM hanh vi HIEN TAI (ca hai im) de phep do
+# sau nay co moc so sanh — no KHONG khang dinh day la hanh vi dung.
+cross "CHUA SUA: php_value bi CA HAI bo sot" "" khong 'php_value auto_prepend_file /tmp/x.php\n'
 
 
 # ── KHONG GIAN TEN: mot duoi khong bao gio duoc thanh mot co ─────────
