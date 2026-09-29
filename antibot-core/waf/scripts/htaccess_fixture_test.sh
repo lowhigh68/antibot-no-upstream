@@ -299,21 +299,25 @@ cross "dong y: SetHandler cgi-script"   "@all"    co 'SetHandler cgi-script\n'
 cross "dong y: AddHandler cgi-script"   "ext:sh"  co 'AddHandler cgi-script .sh\n'
 cross "dong y: Action + AddHandler"     "ext:php" co 'Action php-script /cgi-bin/php\nAddHandler php-script .php\n'
 cross "dong y: AddOutputFilter -> im"   ""        khong 'AddOutputFilter INCLUDES .shtml\n'
-# ── CA HAI CUNG BO SOT (ghi lai, CHUA sua) ──────────────────────────
+# ── `php_value`: DA DO, la duong CHET tren fleet nay ────────────────
 #
-# `php_value auto_prepend_file /tmp/x.php` trong `.htaccess` la mot duong nap ma
-# THAT — voi mod_php. Ca HAI parser bo qua no, va khong noi nao trong repo xu ly
-# `php_value`/`php_admin_value` (da grep).
+# `php_value auto_prepend_file` trong `.htaccess` KHONG nap ma duoc o day, va ca hai
+# parser bo qua no la DUNG chu khong phai mot vung mu.
 #
-# CHUA SUA vi mot cau hoi CHUA DO DUOC: fleet nay la DirectAdmin + php-fpm, va
-# `php_value` trong `.htaccess` chi co tac dung voi mod_php — voi CGI/FastCGI Apache
-# TU CHOI directive do (500) chu khong nap ma. Neu dung vay thi day KHONG phai lo
-# hong, va them luat se la FP tren mot dong vo hai.
+# Do tren may that 29-09:
+#     apachectl -M | grep -iE 'php|proxy_fcgi'   ->  proxy_fcgi_module (static)
+#                                                    KHONG co php_module/php7_module
+#     .htaccess dung php_value auto_prepend/append ->  0 tep tren ca fleet
+#     .htaccess dung php_value bat ky              ->  4 tep
 #
-# Can do tren may that: `grep -rl "php_value" /home/*/domains/*/public_html/.htaccess`
-# va `apachectl -M | grep php`. Ca duoi GHIM hanh vi HIEN TAI (ca hai im) de phep do
-# sau nay co moc so sanh — no KHONG khang dinh day la hanh vi dung.
-cross "CHUA SUA: php_value bi CA HAI bo sot" "" khong 'php_value auto_prepend_file /tmp/x.php\n'
+# `php_value` la directive cua mod_php. Voi FPM qua `proxy_fcgi`, Apache khong nhan
+# no. `auto_prepend_file` chi co tac dung khi dat trong pool config cua php-fpm hoac
+# trong `.user.ini`/`php.ini` — va HAI duong sau DA duoc `fim.sh` theo doi (`@php` va
+# `@phpini`). Nen duong THAT da duoc phu; day la duong chet.
+#
+# Ca duoi GHIM dieu do: neu mai ai them luat `php_value`, no se do, va nguoi do phai
+# doc lai khoi nay truoc khi quyet — mot luat nhu vay la FP tren mot dong vo hai.
+cross "php_value: duong CHET voi FPM, ca hai IM la dung" "" khong 'php_value auto_prepend_file /tmp/x.php\n'
 
 
 # ── KHONG GIAN TEN: mot duoi khong bao gio duoc thanh mot co ─────────
