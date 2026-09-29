@@ -7,6 +7,13 @@
 *.conf      text eol=lf
 *.json      text eol=lf
 *.md        text eol=lf
+# `*.awk` PHAI o day. Hai parser cau hinh (`htaccess_parse.awk`,
+# `inifile_parse.awk`) la tep `.awk`, va truoc dong nay chung KHONG khop mau nao —
+# nen voi `core.autocrlf=true` chung checkout ra CRLF tren Windows. Khac voi shell
+# (vo ngay, thay lien), awk SAI LANG LE: `\r` cuoi dong lam token cuoi mang `\r`, tuc
+# dung loi CRLF vua sua o a570652 quay lai qua duong khac. Phat hien 29-09 tu canh
+# bao `LF will be replaced by CRLF` cua chinh `git add`.
+*.awk       text eol=lf
 # Khong co duoi file nen khong roi vao mau nao o tren; logrotate doc CRLF ra loi
 # "unexpected text" rat kho lan. Cung ly do da ghi o dau file.
 nginx/logrotate/*   text eol=lf
