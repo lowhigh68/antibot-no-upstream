@@ -1313,6 +1313,36 @@ CHGCOUNT="$STATE/chgcount.$tier.txt"
 CHG_MIN_N="${FIM_CHG_MIN_N:-2}"
 CHG_WINDOW_DAYS="${FIM_CHG_WINDOW_DAYS:-21}"
 
+# ── SO TEP MOI THEO THU MUC, cung cua so ($NEWCOUNT) ────────────────
+#
+# `$CHGCOUNT` dem theo DUONG DAN, nen no khong the bat mot ho tep sinh TEN MOI moi
+# lan. Do 01-10 tren 171-96: `temp/caches/` cua mot web ECShop co 16 thu muc con
+# (hex `0`-`f`), moi cai da sinh 311-355 tep qua lich su log; 489 tep song va CA 489
+# deu moi trong 24h (89 trong 1h). Ten dang `article_BD400D31.php` — bam noi dung,
+# khac nhau moi lan — nen bo dem theo duong dan KHONG BAO GIO dat nguong.
+#
+# Ket qua: 5.133 / 5.495 dong `HIGH NEW sc=0` trong fim.log la cache. 93,4% bao dong
+# `NEW` la tieng on cua mot thu muc may sinh tep, va no lam loang canh bao that
+# (`feedback_alert_reaches_nobody`).
+#
+# DEM THEO THU MUC, khong theo tep. Mot thu muc sinh >= N tep moi qua cac luot trong
+# cua so M ngay la thu muc MAY SINH TEP, khong phai cho ke tan cong tha mot tep.
+#
+# BA DIEU KIEN CUNG LUC de ha bac, va ca ba deu can:
+#   1. thu muc dat nguong (lich su)     — mot lan tha tep khong dat
+#   2. `sc=0`                           — khong mot tin hieu noi dung nao khop
+#   3. KHONG o mu-plugins/ hay uploads/ — hai vung khong ung dung hop le nao may sinh
+#                                          tep `.php`; xem `sev()`
+# Thieu dieu kien 2 thi mot webshell tha vao thu muc cache DA dat nguong se chim theo.
+# Do la duong ne ma phep ha bac nay tu tao ra, nen `sc=0` la bat buoc.
+#
+# Dinh dang: <so_tep>|<epoch_lan_cuoi>|<thu_muc>
+NEWCOUNT="$STATE/newcount.$tier.txt"
+# `N=30` lay TU SO DO: thu muc cache thap nhat da sinh 311 tep, con mot lan xam nhap
+# tha 1-5 tep. Khoang giua 5 va 311 rong, nen nguong nam trong khoang trong do —
+# cung ly tinh nhu nguong 40 diem cua `pscore`.
+NEW_MIN_N="${FIM_NEW_MIN_N:-30}"
+
 # QUYEN FILE. Script nay truoc khong dat umask, nen quyen phu thuoc umask cua
 # root tung may. Do 13-09: bon may ra 0640, rieng cloud183-139 ra 0644 — khac
 # nhau do tinh co, khong do thiet ke.
@@ -1375,6 +1405,8 @@ if [ "$mode" = "baseline" ]; then
     # het nghia. Khac han nhanh "khong co CHG nao" o duoi, noi `CHGCOUNT` PHAI GIU —
     # xem chu thich o do.
     : > "$CHGCOUNT"
+    # Cung ly do: manifest moi thi lich su "thu muc nay may sinh tep" het nghia.
+    : > "$NEWCOUNT"
     echo "baseline: $n file"
     exit 0
 fi
@@ -1688,7 +1720,7 @@ trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$dels" "$SZSAME" "$PWFILE"
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
              -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
              -v clfile="$CLFILE" -v chgfile="$chgs" -v delfile="$dels" \
-             -v ccfile="$CHGCOUNT" -v ccmin="$CHG_MIN_N" -v ccnow="$(date +%s)" \
+             -v ncfile="$NEWCOUNT" -v ncmin="$NEW_MIN_N" -v ccfile="$CHGCOUNT" -v ccmin="$CHG_MIN_N" -v ccnow="$(date +%s)" \
              -v ccwin="$CHG_WINDOW_DAYS" '
     BEGIN {
         # `getline < file` tra -1 khi file khong ton tai — KHONG phai loi, nen
@@ -1720,6 +1752,24 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
             close(ccfile)
         }
 
+        # ── SO TEP MOI THEO THU MUC ($NEWCOUNT) ─────────────────────
+        #
+        # Cung phep loc cua so nhu `chgn`, va cung ly do: tep bo dem duoc ghi boi lan
+        # chay TRUOC, nen doc ma khong loc la ha bac cho mot thu muc im ca thang roi
+        # sinh tep lai.
+        if (ncfile != "") {
+            _cut = ccnow - ccwin * 86400
+            while ((getline _nl < ncfile) > 0) {
+                if (_nl == "") continue
+                _q1 = index(_nl, "|"); if (_q1 == 0) continue
+                _q2 = index(substr(_nl, _q1 + 1), "|"); if (_q2 == 0) continue
+                _nts = substr(_nl, _q1 + 1, _q2 - 1) + 0
+                if (_nts < _cut) continue
+                newn[substr(_nl, _q1 + _q2 + 1)] = substr(_nl, 1, _q1 - 1) + 0
+            }
+            close(ncfile)
+        }
+
         # Ba bang cho cot `sc=`. Cung ly do nhu tren: file rong hay khong ton
         # tai thi `getline` tra <=0 va vong lap khong chay lan nao — `--hot`
         # khong sinh $PWFILE/$FRAGFILE nen o tang nong ba bang nay rong, va do
@@ -1740,6 +1790,13 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
               "wp-activate.php wp-comments-post.php xmlrpc.php " \
               "wp-admin.php wordfence-waf.php", _c0, " ")
         for (_i in _c0) core0[_c0[_i]] = 1
+    }
+    # Thu muc chua mot duong dan. `sev()` dem theo THU MUC nen no can ham nay, va
+    # `substr`+`match` re hon `split` — `sev()` chay cho MOI dong cua diff.
+    function dirof(p,   i) {
+        i = length(p)
+        while (i > 1 && substr(p, i, 1) != "/") i--
+        return substr(p, 1, i - 1)
     }
     function sev(p, t) {
         # mu-plugins/ DUNG TRUOC phep ha bac, va day la ca ly do no co bac rieng.
@@ -1794,6 +1851,21 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # dat nguong, nen webshell giu nguyen `2CRITICAL`.
         if (t == "CHG" && (p in prev))       return "5STATE"
         if (t == "CHG" && (p in chgn) && chgn[p] >= ccmin) return "5STATE"
+        # NEW trong mot thu muc MAY SINH TEP. Ba dieu kien cung luc:
+        #
+        #   1. thu muc dat nguong        mot lan tha tep khong dat (`ncmin` = 30, con
+        #                                thu muc cache thap nhat da sinh 311 tep)
+        #   2. `pscore == 0`             khong MOT tin hieu noi dung nao khop. Thieu
+        #                                dieu kien nay thi mot webshell tha vao thu
+        #                                muc cache DA dat nguong se chim theo — dung
+        #                                duong ne ma phep ha bac nay tu tao ra.
+        #   3. khong o uploads/          `uploads/` khong co ung dung hop le nao may
+        #                                sinh `.php`; xem nhanh `2CRITICAL` duoi.
+        #                                `mu-plugins/` da thoat o `1MUPLUG` tren.
+        #
+        # Do 01-10 tren 171-96: 5.133/5.495 dong `HIGH NEW sc=0` la cache, 93,4%.
+        if (t == "NEW" && pscore(p, t) == 0 && p !~ /\/wp-content\/uploads\// \
+            && (dirof(p) in newn) && newn[dirof(p)] >= ncmin) return "5STATE"
         if (p ~ /\/wp-content\/uploads\//)    return "2CRITICAL"
         if (p ~ /\/wp-includes\//)            return "2CRITICAL"
         if (p ~ /\/wp-admin\//)               return "2CRITICAL"
@@ -2555,6 +2627,44 @@ if [ $dry -eq 0 ]; then
             for (pp in cnt) printf "%d|%d|%s\n", cnt[pp], last[pp], pp
         }' </dev/null > "$cc_new"
     mv -f "$cc_new" "$CHGCOUNT"
+
+    # Bo dem TEP MOI THEO THU MUC. Cung khuon `$CHGCOUNT`: doc bo dem cu, loc cua so,
+    # cong luot nay, ghi lai. KHAC o hai cho:
+    #   · khoa la THU MUC, khong phai duong dan tep — do la diem cua bo dem nay
+    #   · dem `NEW|`, khong phai `CHG|`
+    nc_new=$(mktemp) || exit 2
+    awk -v now="$(date +%s)" -v win="$CHG_WINDOW_DAYS" \
+        -v ncfile="$NEWCOUNT" -v dfile="$diff_out" '
+        function dirof(p,   i) {
+            i = length(p)
+            while (i > 1 && substr(p, i, 1) != "/") i--
+            return substr(p, 1, i - 1)
+        }
+        BEGIN {
+            cutoff = now - win * 86400
+            while ((getline _l < ncfile) > 0) {
+                if (_l == "") continue
+                p1 = index(_l, "|"); if (p1 == 0) continue
+                p2 = index(substr(_l, p1 + 1), "|"); if (p2 == 0) continue
+                n  = substr(_l, 1, p1 - 1) + 0
+                ts = substr(_l, p1 + 1, p2 - 1) + 0
+                dd = substr(_l, p1 + p2 + 1)
+                if (ts >= cutoff) { cnt[dd] = n; last[dd] = ts }
+            }
+            close(ncfile)
+            while ((getline _d < dfile) > 0) {
+                if (substr(_d, 1, 4) != "NEW|") continue
+                pp = substr(_d, 5)
+                q = index(pp, "|"); if (q > 0) pp = substr(pp, 1, q - 1)
+                dd = dirof(pp)
+                if (dd == "") continue
+                cnt[dd]  = (dd in cnt) ? cnt[dd] + 1 : 1
+                last[dd] = now
+            }
+            close(dfile)
+            for (dd in cnt) printf "%d|%d|%s\n", cnt[dd], last[dd], dd
+        }' </dev/null > "$nc_new"
+    mv -f "$nc_new" "$NEWCOUNT"
 fi
 # `mark_err` XET TRUOC `crit`, va thu tu nay la mot quyet dinh: "KHONG GHI DUOC dau
 # cho WAF" nghiem trong hon "co file dang chu y". File dang chu y VAN doc duoc tu bao

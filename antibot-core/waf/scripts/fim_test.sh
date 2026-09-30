@@ -778,6 +778,100 @@ r17 baseline --hot
 : > "$S17/rcli.txt"
 r17 check --hot
 want "17 tier nong KHONG quet trang thai" "$(v17 "$W17/")" ""
+
+# ── NHOM 18: THU MUC MAY SINH TEP -> ha bac NEW ───────────────────────
+#
+# `$CHGCOUNT` dem theo DUONG DAN nen no khong the bat mot ho tep sinh TEN MOI moi lan.
+# Do 01-10 tren 171-96: `temp/caches/` cua mot web ECShop co 16 thu muc con, moi cai
+# da sinh 311-355 tep qua lich su log; 489 tep song va CA 489 deu moi trong 24h.
+# Ket qua: 5.133/5.495 dong `HIGH NEW sc=0` la cache — 93,4% bao dong `NEW` la tieng on.
+printf '\n── thu muc may sinh tep -> ha bac NEW (muc 18) ──\n'
+S18="$R/st18"
+W18="$S18/home/u8/domains/s8.test/public_html"
+mkdir -p "$W18/temp/caches/7" "$W18/wp-content/uploads/u" "$S18/state"
+printf '<?php\n' > "$W18/index.php"
+
+r18() { FIM_ROOTS="$S18/home/*/domains/*/public_html" FIM_STATE="$S18/state" \
+        FIM_LOG="$S18/fim.log" FIM_CRITLOG="$S18/crit.log" FIM_NEW_MIN_N=3 \
+        RCLI_OUT="$S18/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
+          bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
+bac18() { grep -E "NEW .*$1" "$S18/fim.log" 2>/dev/null | tail -1 | awk '{print $1}'; }
+
+r18 baseline
+# Ba luot, moi luot mot tep MOI ten KHAC — dung hinh dang cua cache.
+for i in 1 2 3; do
+    sleep 0.02
+    printf '<?php\n// cache %s\n' "$i" > "$W18/temp/caches/7/article_$i.php"
+    r18 check
+done
+# Luot 1-3: thu muc chua dat nguong (bo dem doc tu luot TRUOC, lech mot luot nhu
+# `$CHGCOUNT`) -> VAN phai la HIGH.
+want "18 tep moi luot 1 -> HIGH"  "$(bac18 'article_1\.php')" "HIGH"
+# Luot thu 4: bo dem da ghi 3 tep cho thu muc do -> ha bac.
+sleep 0.02
+printf '<?php\n// cache 4\n' > "$W18/temp/caches/7/article_4.php"
+r18 check
+want "18 thu muc dat nguong -> ha bac STATE" "$(bac18 'article_4\.php')" "STATE"
+
+# DIEU KIEN 2: `sc == 0`, va ca nay phai dung diem TRONG KHOANG 1..39.
+#
+# Mot webshell RO RANG (`md5(md5(md5(` -> `pwhit`, s += 50) thoat o nhanh `0SCORE`
+# TRUOC moi phep ha bac, nen no an toan bat ke dieu kien nay — do duoc 01-10, va do
+# la ly do dot bien "bo dieu kien sc=0" ban dau KHONG bi bat.
+#
+# Khoang THAT su can bao ve la `1..39`: co tin hieu nhung duoi nguong `0SCORE`.
+# `fraghit` (ten ham ghep tu manh chuoi) cho dung `s += 10` — mot truc DA BI BAC lam
+# luat rieng (22/23 tep la thu vien hop le) va chinh vi the no o day: mot minh no vo
+# hai, nhung no PHAI ngan phep ha bac, khong thi thu muc cache thanh cho tha tep an.
+sleep 0.02
+printf "<?php\n\$f = 'ba' . 'se64_decode';\n" > "$W18/temp/caches/7/frag.php"
+r18 check
+got18=$(bac18 'frag\.php')
+want "18 tep sc=10 (1..39) trong thu muc dat nguong -> GIU bac" \
+     "$([ "$got18" = "STATE" ] && echo "bi ha OAN" || echo "giu")" "giu"
+# Va webshell ro rang van phai giu (huong nguoc, de phep sua khong lam mat ca nay).
+sleep 0.02
+printf '<?php eval($_POST[1]); $x = md5(md5(md5("a")));\n' > "$W18/temp/caches/7/shell.php"
+r18 check
+got18b=$(bac18 'shell\.php')
+want "18 webshell ro rang trong thu muc dat nguong -> GIU bac" \
+     "$([ "$got18b" = "STATE" ] && echo "bi ha OAN" || echo "giu")" "giu"
+
+# DIEU KIEN 3: `uploads/` khong bao gio duoc ha, du thu muc dat nguong.
+for i in 1 2 3 4; do
+    sleep 0.02
+    printf '<?php\n// u %s\n' "$i" > "$W18/wp-content/uploads/u/f_$i.php"
+    r18 check
+done
+want "18 uploads/ KHONG bao gio ha bac" "$(bac18 'f_4\.php')" "CRITICAL"
+
+# CUA SO NGAY: lui moc thoi gian -> bo dem rung, thu muc quay ve HIGH.
+NCF="$S18/state/newcount.full.txt"
+want "18 bo dem NEW co ton tai" "$([ -s "$NCF" ] && echo co || echo khong)" "co"
+if [ -s "$NCF" ]; then
+    OLD18=$(( $(date +%s) - 100*86400 ))
+    awk -v old="$OLD18" '{ i=index($0,"|"); r=substr($0,i+1); j=index(r,"|")
+                           print substr($0,1,i-1) "|" old "|" substr(r,j+1) }' "$NCF" > "$NCF.t" \
+      && mv "$NCF.t" "$NCF"
+    sleep 0.02
+    printf '<?php\n// cache 9\n' > "$W18/temp/caches/7/article_9.php"
+    r18 check
+    want "18 dong QUA HAN bi rung -> lai HIGH" "$(bac18 'article_9\.php')" "HIGH"
+fi
+
+# NGUONG MAC DINH phai la 30, khong phai 1 hay 2. Bo test dung `FIM_NEW_MIN_N=3` cho
+# nhanh, nen gia tri mac dinh KHONG duoc thu o dau — mot dot bien doi `30` thanh `1`
+# khong bi bat (do 01-10). Kiem truc tiep gia tri, va kiem no nam TRONG khoang trong
+# da do: thu muc cache thap nhat sinh 311 tep, mot lan xam nhap tha 1-5 tep.
+ndef=$(grep -oE 'FIM_NEW_MIN_N:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
+want "18 nguong mac dinh la 30" "$ndef" "30"
+want "18 nguong nam tren 5 (mot lan tha tep khong dat)" \
+     "$([ "${ndef:-0}" -gt 5 ] && echo dung || echo "qua thap: $ndef")" "dung"
+want "18 nguong nam duoi 311 (thu muc cache thap nhat van dat)" \
+     "$([ "${ndef:-999}" -lt 311 ] && echo dung || echo "qua cao: $ndef")" "dung"
+# Va cua so dung CHUNG voi $CHGCOUNT — khong phai mot hang so rieng de lech ve sau.
+wdef=$(grep -oE 'FIM_CHG_WINDOW_DAYS:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
+want "18 dung chung cua so 21 ngay voi CHGCOUNT" "$wdef" "21"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

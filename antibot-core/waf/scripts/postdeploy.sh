@@ -593,3 +593,59 @@ if [ -f "$A/htaccess_parse.awk" ] && [ -f "$A/inifile_parse.awk" ]; then
     echo "  khoa >  dia          : khoa cu chua het TTL 7 ngay (binh thuong sau khi khach sua)"
     echo "  ca hai == 0          : may nay khong co thu muc nao doi handler — ket qua HOP LE"
 fi
+
+# ══ 19. THU MUC MAY SINH TEP: tieng on NEW da giam chua ════════════════════
+#
+# Do 01-10 tren 171-96: 5.133/5.495 dong `HIGH NEW sc=0` trong fim.log la cache —
+# 93,4% bao dong `NEW` la tieng on cua thu muc may sinh tep, va no lam loang canh bao
+# that. Bo dem theo THU MUC (`newcount.<tier>.txt`) ha bac chung; muc nay doc tien do.
+echo
+echo "── 19. bo dem TEP MOI theo thu muc ─────────────────────────────"
+for tier in hot full; do
+    NC="$FS/newcount.$tier.txt"
+    if [ ! -s "$NC" ]; then
+        echo "  [$tier] chua co bo dem (chua chay lot nao, hoac khong co tep NEW)"
+        continue
+    fi
+    awk -F'|' -v tier="$tier" -v now="$(date +%s)" -v nmin="${FIM_NEW_MIN_N:-30}" '
+        { tot++; n = $1 + 0; ts = $2 + 0
+          if (n >= nmin) reach++
+          if (ts > newest) newest = ts
+          if (oldest == 0 || ts < oldest) oldest = ts
+          arr[++k] = n "|" $3
+        }
+        END {
+            printf "  [%s] %d thu muc dang theo doi, %d da dat nguong (>=%d tep)\n", \
+                   tier, tot, reach, nmin
+            if (newest > 0)
+                printf "        tep moi gan nhat: %d gio truoc; xa nhat: %d ngay truoc\n", \
+                       int((now - newest) / 3600), int((now - oldest) / 86400)
+            print  "  -- top 8 thu muc theo so tep moi --"
+            for (i = 1; i <= k && i <= 8; i++) {
+                best = -1; bi = 0
+                for (j = 1; j <= k; j++) {
+                    if (used[j]) continue
+                    split(arr[j], f, "|")
+                    if (f[1] + 0 > best) { best = f[1] + 0; bi = j }
+                }
+                if (bi == 0) break
+                used[bi] = 1
+                split(arr[bi], f, "|")
+                printf "        %5d tep  %s%s\n", f[1], f[2], (f[1] + 0 >= nmin ? "  [da ha bac]" : "")
+            }
+        }' "$NC"
+done
+echo "  -- DOI CHIEU voi fim.log: tieng on con lai --"
+LOGF="${POSTDEPLOY_FIM_LOG:-/var/log/antibot/fim.log}"
+if [ -f "$LOGF" ]; then
+    nh=$(grep -c 'HIGH *NEW.*sc=0' "$LOGF" 2>/dev/null); nh=${nh:-0}
+    nc=$(grep 'HIGH *NEW.*sc=0' "$LOGF" 2>/dev/null | grep -cE '/temp/|/cache|/caches/|vqcache'); nc=${nc:-0}
+    echo "        tong dong 'HIGH NEW sc=0' trong lich su : $nh"
+    echo "        trong do o thu muc cache                : $nc"
+    echo "        (lich su khong hoi to — con so nay CHI giam voi dong MOI sau ban nay)"
+fi
+echo "  -- CACH DOC --"
+echo "  dat nguong = 0 sau >1 ngay : khong co thu muc may sinh tep tren may nay (hop le)"
+echo "  dat nguong > 0, dong HIGH NEW moi giam : co che dang lam viec"
+echo "  dat nguong > 0 ma HIGH NEW khong giam  : thu muc dat nguong KHAC thu muc dang bao"
+echo "  mot thu muc trong uploads/ dat nguong  : KHONG duoc ha bac (thiet ke) — xem no"
