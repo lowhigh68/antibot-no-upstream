@@ -212,7 +212,16 @@ printf '<?php eval($_GET[1]);\n' > "$WEB/shell.php"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 
 want "3 fimnew co shell.php" "$(haskey "waf:fimnew:$WEB/shell.php")" "yes"
-want "3 KHONG co fimchg nao" "$(keys 'waf:fimchg:')" "0"
+# DOI KY VONG CO Y (30-09), va day la cho de doc nguoc nen noi ro: truoc day ca nay
+# doi `fimchg` = 0, vi gia dinh "khong CHG -> khong khoa". Nguon TRANG THAI bac bo dung
+# gia dinh do: `$WEB/.htaccess` tu muc 2 VAN con tren dia va VAN anh xa `.jpg` sang
+# PHP, nen mot khoa cho thu muc do la DUNG — mot `.htaccess` nguy hiem khong tu het
+# nguy chi vi lot nay khong ai sua no.
+#
+# Dieu ca nay THAT SU phai bao ve van nguyen: hai nhom DOC LAP. `shell.php` moi phai
+# vao `fimnew`, va KHONG duoc lam token cua `fimchg` doi. Nen kiem dung do.
+want "3 fimchg KHONG bi shell.php moi lam doi" \
+     "$(awk -v k="waf:fimchg:$WEB/" '$2==k {print $4}' "$RCLI_OUT" | tail -1)" "ext:jpg,ext:png"
 
 # ══ 4. `.user.ini` bi sua -> fimchg ═════════════════════════════════════════
 : > "$RCLI_OUT"
@@ -667,6 +676,108 @@ fi
 # tu cau hinh Apache chu khong hardcode — vi `AllowOverride` khac nhau theo may.
 #
 # MAC DINH AN TOAN la `1`: khong do duoc thi giu tin hieu nhu cu. Nguoc lai se lam mot
+# may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
+# ── NHOM 17: TRANG THAI, khong chi THAY DOI ───────────────────────────
+
+#
+# Ca ma co che CU KHONG THE bat: mot `.htaccess` doi handler DA co san TU LUC
+# `baseline`. No khong bao gio sinh dong CHG, nen `$chgs` rong, va nhanh `total -eq 0`
+# `exit 0` TRUC TIEP truoc khi den khoi `fimchg` — vo hinh VINH VIEN.
+#
+# DO duoc tren fleet 30-09: 11 tep doi handler, TAT CA trong manifest, `fimchg` = 0
+# khoa, va 620/620 lot fim.log deu `0 key bao WAF`. Co che cu cho mot su kien chua
+# tung xay ra.
+#
+# CAY THU PHAI DU LON DE PHAN BIET. Ban dau toi dung 1 thu muc co token va 1 khong,
+# va BON dot bien (bo gate tier, ghi ca thu muc khong token, bo `.user.ini` khoi
+# `config_dirs`, `DEL` ca nguon trang thai) deu KHONG bi bat — test xanh vi cay qua
+# nho, khong vi ma dung. Nay: 1 thu muc `.htaccess`, 1 `.user.ini`, 1 `php.ini`,
+# va BA thu muc sach — du de mot `DEL` hang loat lo ra.
+printf '\n── trang thai: tep cau hinh co SAN tu baseline (muc 17) ──\n'
+S17="$R/st17"
+W17="$S17/home/u9/domains/s9.test/public_html"
+mkdir -p "$W17/sub" "$W17/ini" "$W17/pini" "$W17/sach1" "$W17/sach2" "$W17/sach3" "$S17/state"
+printf '<?php\n' > "$W17/index.php"
+# BA thu muc co token, BA khong. Tat ca co SAN TRUOC baseline -> khong bao gio CHG.
+printf 'AddHandler application/x-httpd-php .jpg\n'      > "$W17/sub/.htaccess"
+printf 'auto_prepend_file = /tmp/x.php\n'               > "$W17/ini/.user.ini"
+printf 'auto_append_file = /tmp/y.php\n'                > "$W17/pini/php.ini"
+# Thu muc SACH: co tep cau hinh nhung KHONG doi handler -> khong duoc ghi khoa.
+printf '# BEGIN WordPress\nRewriteEngine On\n'          > "$W17/sach1/.htaccess"
+printf 'auto_prepend_file = none\n'                     > "$W17/sach2/.user.ini"
+printf 'memory_limit = 256M\n'                          > "$W17/sach3/php.ini"
+for d in sub ini pini sach1 sach2 sach3; do printf '<?php\n' > "$W17/$d/a.php"; done
+
+r17() {  # r17 <mode...> — chay fim.sh tren cay rieng
+    FIM_ROOTS="$S17/home/*/domains/*/public_html" FIM_STATE="$S17/state" \
+    FIM_LOG="$S17/fim.log" FIM_CRITLOG="$S17/crit.log" \
+    RCLI_OUT="$S17/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
+      bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true
+}
+k17()  { local n; n=$(grep -c "^SETEX waf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+v17()  { awk -v k="waf:fimchg:$1" '$2==k {print $4}' "$S17/rcli.txt" 2>/dev/null | tail -1; }
+nd17() { local n; n=$(grep -c "^DEL waf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+
+r17 baseline
+: > "$S17/rcli.txt"
+# Lot `check` day du: KHONG co gi doi, nhung trang thai phai duoc bao.
+r17 check
+want "17 khong doi gi ma VAN co khoa fimchg" "$([ "$(k17)" -ge 1 ] && echo co || echo khong)" "co"
+# BA nguon token, moi nguon mot nhan RIENG. Bo mot nguon khoi `config_dirs` phai do.
+want "17 .htaccess -> ext:jpg"   "$(v17 "$W17/sub/")"  "ext:jpg"
+want "17 .user.ini -> @php"      "$(v17 "$W17/ini/")"  "@php"
+want "17 php.ini -> @phpini"     "$(v17 "$W17/pini/")" "@phpini"
+# DUNG BA khoa, khong hon: ba thu muc sach khong duoc ghi.
+want "17 dung 3 khoa, khong ghi thu muc sach" "$(k17)" "3"
+want "17 sach1 khong co khoa" "$(v17 "$W17/sach1/")" ""
+want "17 sach2 khong co khoa" "$(v17 "$W17/sach2/")" ""
+want "17 sach3 khong co khoa" "$(v17 "$W17/sach3/")" ""
+# KHONG `DEL` hang loat: nguon TRANG THAI khong sinh `DEL` cho thu muc khong token.
+want "17 KHONG DEL thu muc sach" "$(nd17)" "0"
+
+# HUONG NGUOC: bo tep cau hinh di thi khoa phai HET. Thieu ca nay thi mot ban
+# "luon ghi moi thu muc" cung qua.
+rm -f "$W17/sub/.htaccess"
+: > "$S17/rcli.txt"
+r17 check
+want "17 bo .htaccess -> khong con ghi khoa cho thu muc do" "$(v17 "$W17/sub/")" ""
+want "17 bo mot nguon -> con 2 khoa" "$(k17)" "2"
+
+# Redis chet trong luot KHONG CO THAY DOI NAO: `state_marks` phai bao loi va `check`
+# phai tra 2. Day la mot DUONG RA rieng (`total -eq 0` -> `exit 0`), va truoc khi co
+# doan nay no `exit 0` im lang — cron khong bao, giam sat khong thay. Dung ho loi
+# fail-silent da bat ba lan o tep nay.
+#
+# PHAI `baseline` (tier full) NGAY TRUOC, khong phai `--hot`: mot manifest full cu se
+# sinh THAY DOI, va luot do di vao nhanh CO thay doi chu khong vao `total -eq 0` —
+# ca test se xanh vi `mark_err` duoc dat o duong KHAC. Ba dot bien khong bi bat vi
+# dung ly do nay (do 01-10).
+r17 baseline
+: > "$S17/rcli.txt"
+out17=$(FIM_ROOTS="$S17/home/*/domains/*/public_html" FIM_STATE="$S17/state" \
+        FIM_LOG="$S17/fim.log" FIM_CRITLOG="$S17/crit.log" \
+        RCLI_OUT="$S17/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" RCLI_MODE=down \
+          bash "$HERE/fim.sh" check 2>&1)
+rc17=$?
+# Doi chieu: luot nay PHAI la luot khong co thay doi, khong thi ca nay do cho khac.
+case "$out17" in
+    *"thay doi"*) want "17 luot nay la luot KHONG doi" "co thay doi: $out17" "khong doi" ;;
+    *) want "17 luot nay la luot KHONG doi" "khong doi" "khong doi" ;;
+esac
+case "$out17" in
+    *"KHONG GHI DUOC"*) want "17 Redis chet o luot KHONG doi -> BAO LOI" "dung" "dung" ;;
+    *) want "17 Redis chet o luot KHONG doi -> BAO LOI" "IM LANG: ${out17:-rong}" "dung" ;;
+esac
+want "17 Redis chet o luot KHONG doi -> ma thoat 2" "$rc17" "2"
+
+# Tier NONG khong quet trang thai: no chay moi 5 phut. Dat tep cau hinh o WEB ROOT
+# (tang nong CO quet cho nay) de ca nay phan biet duoc GATE chu khong phan biet
+# "tang nong khong thay tep".
+printf 'AddHandler application/x-httpd-php .gif\n' > "$W17/.htaccess"
+r17 baseline --hot
+: > "$S17/rcli.txt"
+r17 check --hot
+want "17 tier nong KHONG quet trang thai" "$(v17 "$W17/")" ""
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

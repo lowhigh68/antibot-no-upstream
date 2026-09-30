@@ -332,6 +332,92 @@ NAMES=( \( -name '*.php'  -o -name '*.php[0-9]' -o -name '*.phtml' \
 # Cai gia: mot loi that (dia hong, mount bien mat) cung im lang. Bu lai bang
 # chot "quet ra 0 file" o ca hai nhanh baseline va check ben duoi — do moi la
 # thu phan biet duoc "khong co gi" voi "khong nhin thay gi".
+# Moi thu muc co tep cau hinh, lay tu mot anh chup (`$1`). In mot duong dan moi dong.
+#
+# TACH THANH HAM vi phai goi o HAI cho: nhanh `total -eq 0` (dong ~1518) `exit 0`
+# TRUC TIEP, nen mot lan chay khong co thay doi nao KHONG bao gio den duoc khoi
+# `fimchg` o duoi. Va do chinh la truong hop pho bien nhat — tren fleet 620/620 lot
+# fim.log deu `0 key bao WAF`. Dat o mot cho la bo sot nua duong.
+config_dirs() {
+    [ -s "$1" ] || return 0
+    awk -F'|' '
+        { p = $1
+          n = split(p, seg, "/")
+          b = seg[n]
+          if (b == ".htaccess" || b == ".user.ini" || b == "php.ini") {
+              sub(/\/[^\/]+$/, "", p)
+              print p
+          }
+        }
+    ' "$1"
+}
+
+# Tinh token cho MOT thu muc tu dia, in ra hoac rong. Cung logic voi vong trong khoi
+# `fimchg` — mot hien thuc, khong hai.
+# CHI PHI, do duoc 01-10 tren cay 1.075 thu muc cau hinh (dung ty le THAT cua fleet:
+# 11 co token, 1.064 khong): `check` mat 5,9s so voi 0,1s khi cay khong co tep cau
+# hinh nao. Tuc ~5,8s cho 1.075 lan goi `awk` — moi lan mot tien trinh con.
+#
+# GIU NGUYEN, khong gop thanh mot `awk`: tier full chay moi 30 phut va `fim.sh check`
+# tren may that da mat 202s, nen day la ~3%. Gop lai doi hop dong cua CA HAI parser
+# (`htaccess_parse.awk` chay MOT tep moi lan, `inifile_parse.awk` tra ket qua bang MA
+# THOAT) — mot thay doi rui ro hon gia tri 5,8s/30 phut.
+dir_tokens() {
+    local d="$1" toks="" t cf tok
+    [ -d "$d" ] || return 0
+    if [ -f "$d/.htaccess" ]; then
+        t=$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+        [ -n "$t" ] && toks="$t"
+    fi
+    for cf in .user.ini php.ini; do
+        [ -f "$d/$cf" ] || continue
+        if awk -f "$INI_AWK" "$d/$cf" 2>/dev/null; then
+            tok="@php"; [ "$cf" = "php.ini" ] && tok="@phpini"
+            toks="${toks:+$toks,}$tok"
+        fi
+    done
+    printf '%s' "$toks"
+}
+
+# Khai bao SOM, truoc moi noi goi. `state_marks` duoc goi o nhanh `total -eq 0`
+# (~dong 1610) con ba bien nay truoc day chi dat o ~2152, nen voi `set -u` script CHET
+# ngay: `mark_err: unbound variable`, ma thoat 1, khong mot khoa nao duoc ghi. Do duoc
+# truc tiep 01-10 — bo test khong bat vi ca cua no khop thong diep loi mot cach tinh co.
+marked=${marked:-0}; marked_chg=${marked_chg:-0}; mark_err="${mark_err:-}"
+STATE_N=0
+
+# Ghi khoa TRANG THAI cho moi thu muc co token. CHI `SETEX`, khong bao gio `DEL`:
+# ~1.064/1.075 thu muc khong co token, va `DEL` chung la 1.064 lenh cong 1.064 lan
+# `redis_absent` round-trip moi lot, cho nhung khoa chua bao gio ton tai.
+#
+# Dat `$STATE_N`, KHONG in ra stdout: mot `$(state_marks ...)` chay trong SUBSHELL, nen
+# `mark_err` gan ben trong khong bao gio ra duoc ngoai — Redis chet ma khong ai biet,
+# dung ho loi fail-silent da bat ba lan o tep nay. Gan bien thi ca hai gia tri deu ra.
+state_marks() {
+    local snap="$1" skip="${2:-}" cmds="" d toks n=0
+    STATE_N=0
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        # Thu muc vong `dirtydirs` DA xu ly thi bo qua: ghi lai la HAI lenh cho MOT
+        # khoa, va `keys` dem ra 2 thay vi 1.
+        if [ -n "$skip" ] && grep -qxF "$d" "$skip" 2>/dev/null; then continue; fi
+        toks=$(dir_tokens "$d")
+        [ -n "$toks" ] || continue
+        cmds="${cmds}SETEX waf:fimchg:$d/ $MARK_TTL $toks
+"
+        n=$((n + 1))
+    done < <(config_dirs "$snap" | sort -u)
+    [ "$n" -eq 0 ] && return 0
+    if [ $dry -eq 0 ]; then
+        if ! redis_send "$cmds"; then
+            [ -z "$mark_err" ] && mark_err="KHONG GHI DUOC (fimchg trang thai): $REDIS_ERR. $n khoa co the CHUA duoc ghi."
+            return 0
+        fi
+    fi
+    STATE_N=$n
+    return 0
+}
+
 scan_full() {
     { find $ROOTS "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :; } 2>/dev/null | sort
 }
@@ -1542,6 +1628,28 @@ if [ "$total" -eq 0 ]; then
     # (thieu flock, scan ra rong, manifest bat thuong). Ton dong la "DO DUOC, va
     # co su co" — nghia nguoc han. Tron hai cai lai thi mot may HONG va mot may
     # NHIEM WEBSHELL tra ve cung mot ma.
+    # TRANG THAI, ke ca khi KHONG co thay doi nao. Dat TRUOC `exit 0` vi day la duong
+    # ra pho bien nhat, va co che cu chi chay o nhanh CO thay doi — nen mot `.htaccess`
+    # doi handler tu truoc luc `baseline` la vo hinh VINH VIEN (do 30-09: 11 tep tren
+    # fleet, tat ca trong manifest, `waf:fimchg:` = 0 khoa).
+    #
+    # CHI tier `full`: anh chup nong khong quet `.htaccess` ngoai web root nen no khong
+    # tra loi duoc cau hoi nay, va no chay moi 5 phut.
+    if [ "$tier" = "full" ]; then
+        state_marks "$new_scan"; nstate=$STATE_N
+        if [ "${nstate:-0}" -gt 0 ]; then
+            printf '%s\n' "=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] -- khong co thay doi, $nstate khoa TRANG THAI bao WAF ===" >> "$LOG"
+        fi
+        # `mark_err` phai den duoc DUONG RA nay nua. Truoc day nhanh nay `exit 0` ma
+        # khong doc no, nen mot lan Redis chet o duong ra PHO BIEN NHAT ket thuc "thanh
+        # cong": cron khong bao, giam sat khong thay, WAF khong nhan duoc dau nao. Dung
+        # ho loi da bat ba lan o tep nay, va no vua tai sinh o day — do duoc 01-10:
+        # `check` voi Redis chet cho ma thoat 0 va stdout RONG.
+        if [ -n "$mark_err" ]; then
+            echo "fim: $mark_err" >&2
+            exit 2
+        fi
+    fi
     [ "$mu_pending" -eq 1 ] && exit 3
     exit 0
 fi
@@ -2218,29 +2326,23 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         done < "$src"
     done
 
+
     if [ -s "$dirtydirs" ]; then
         chgdirs=$(mktemp) || exit 2
         setcmds=""
         delcmds=""
         while IFS= read -r d; do
+            [ -n "$d" ] || continue
             [ -d "$d" ] || { printf 'DEL waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"; continue; }
-            toks=""
-            # `.htaccess`: duoi cu the, hoac `@all` cho SetHandler/ForceType/ExecCGI.
-            if [ -f "$d/.htaccess" ]; then
-                t=$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-                [ -n "$t" ] && toks="$t"
-            fi
-            # `.user.ini` -> `@php` ; `php.ini` -> `@phpini`. HAI token khac nhau.
-            for cf in .user.ini php.ini; do
-                [ -f "$d/$cf" ] || continue
-                if awk -f "$INI_AWK" "$d/$cf" 2>/dev/null; then
-                    tok="@php"; [ "$cf" = "php.ini" ] && tok="@phpini"
-                    toks="${toks:+$toks,}$tok"
-                fi
-            done
+            toks=$(dir_tokens "$d")
             if [ -n "$toks" ]; then
                 printf '%s|%s/\n' "$toks" "$d" >> "$chgdirs"
             else
+                # Thu muc VUA DOI ma het token -> `DEL`: no co the DA co khoa, va khoa
+                # do nay sai. Khac nguon TRANG THAI (`state_marks`), noi mot thu muc
+                # khong co token la binh thuong va KHONG bao gio `DEL` — ~1.064/1.075
+                # thu muc cau hinh khong co token, `DEL` chung la 1.064 lenh cong
+                # 1.064 lan `redis_absent` round-trip moi lot, cho khoa chua tung co.
                 printf 'DEL waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
             fi
         done < <(sort -u "$dirtydirs")
@@ -2303,6 +2405,19 @@ EOF
                 fi
             fi
         fi
+    fi
+
+    # TRANG THAI: cung `state_marks` ma nhanh `total -eq 0` goi. Chay o CA HAI duong vi
+    # hai duong la HAI lan thoat khac nhau cua cung mot lot quet, va co che cu chi o
+    # mot duong — nen mot lot khong co thay doi nao (pho bien nhat: 620/620 lot fim.log
+    # deu `0 key bao WAF`) khong bao gio bao trang thai.
+    #
+    # LOAI thu muc vong tren DA xu ly: khong loai thi mot thu muc vua doi duoc ghi khoa
+    # HAI LAN, va `keys` dem ra 2 thay vi 1 (bo test bat, 7 ca cu do). `$donedirs` la
+    # danh sach do — `state_marks` bo qua no.
+    if [ "$tier" = "full" ]; then
+        state_marks "$new_scan" "$dirtydirs"
+        marked_chg=$((${marked_chg:-0} + STATE_N))
     fi
     rm -f "$dirtydirs"
   fi

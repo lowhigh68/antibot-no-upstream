@@ -540,3 +540,56 @@ echo "  mot thu muc chiem da so    : do la ho tep trang thai — xem no co plugi
 echo "  nhieu tep 1 lan, khong tang: KHONG phai ho trang thai; neu chung o uploads/ thi"
 echo "                               dang la CRITICAL that va can xem"
 echo "  lan doi xa nhat > 21 ngay  : dong do dang cho bi rung o luot sau (dung thiet ke)"
+
+# ══ 18. KHOA TRANG THAI: WAF co biet dang co gi khong ═══════════════════════
+#
+# Cau hoi muc nay tra loi, va truoc 01-10 KHONG ai tra loi duoc: tren may nay co
+# bao nhieu thu muc MA NGAY BAY GIO dang cho PHP chay tu mot duoi khong phai `.php`,
+# va WAF co nhan duoc dau cho tung cai khong.
+#
+# Co che cu chi bao khi mot tep cau hinh bi SUA, nen 11 tep doi handler tren fleet —
+# lap tu 2014 den 2026, khong tep nao doi trong cua so quet — la vo hinh VINH VIEN.
+# 620/620 lot fim.log deu `0 key bao WAF`.
+echo
+echo "── 18. khoa TRANG THAI cho WAF ───────────────────────────────"
+RCLI="${POSTDEPLOY_REDIS_CLI:-redis-cli}"
+RDB="${POSTDEPLOY_REDIS_DB:-0}"
+if ! command -v "$RCLI" >/dev/null 2>&1; then
+    echo "  thieu '$RCLI' — khong doc duoc khoa"
+else
+    nkey=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
+    echo "  khoa waf:fimchg:* dang song : $nkey"
+    if [ "$nkey" -eq 0 ]; then
+        echo "  -- 0 khoa: hoac may nay khong co thu muc nao doi handler (hop le), hoac"
+        echo "     tier full chua chay lan nao sau ban nay. Kiem bang muc duoi."
+    else
+        echo "  -- nhan tren tung khoa (do MANH giam dan) --"
+        "$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | sort | while read -r k; do
+            [ -n "$k" ] || continue
+            v=$("$RCLI" -n "$RDB" GET "$k" 2>/dev/null)
+            t=$("$RCLI" -n "$RDB" TTL "$k" 2>/dev/null)
+            printf '        %-28s TTL %5ss  %s\n' "$v" "$t" "${k#waf:fimchg:}"
+        done
+    fi
+fi
+# Doi chieu voi DIA: so thu muc that su doi handler. Lech giua hai so la loi duong ra.
+A="${POSTDEPLOY_AWK_DIR:-/usr/local/openresty/nginx/conf/antibot/waf/scripts}"
+if [ -f "$A/htaccess_parse.awk" ] && [ -f "$A/inifile_parse.awk" ]; then
+    ndisk=0
+    while read -r f; do
+        [ -n "$f" ] || continue
+        d=$(dirname "$f")
+        case "$(basename "$f")" in
+            .htaccess) awk -f "$A/htaccess_parse.awk" "$f" 2>/dev/null | grep -q . && ndisk=$((ndisk+1)) ;;
+            *)         awk -f "$A/inifile_parse.awk" "$f" 2>/dev/null && ndisk=$((ndisk+1)) ;;
+        esac
+    done < <(find ${POSTDEPLOY_ROOTS:-/home/*/domains/*/public_html} \
+                  \( -name '.htaccess' -o -name '.user.ini' -o -name 'php.ini' \) \
+                  -type f 2>/dev/null)
+    echo "  tren DIA, so tep doi handler: $ndisk"
+    echo "  -- CACH DOC --"
+    echo "  khoa == dia          : duong ra DUNG, WAF biet dung nhung gi dang co"
+    echo "  khoa <  dia          : tier full chua chay lai, hoac Redis tu choi mot phan"
+    echo "  khoa >  dia          : khoa cu chua het TTL 7 ngay (binh thuong sau khi khach sua)"
+    echo "  ca hai == 0          : may nay khong co thu muc nao doi handler — ket qua HOP LE"
+fi
