@@ -126,7 +126,24 @@ echo "[$N] [waf] ts=13 rid=r45 id=- domain=p.test ip=8.8.8.8 rule=body_ct_missin
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
 } > "$R/L/antibot.log"
 
-OUT=$(A="$R/A" L="$R/L" E="$R/E/error.log" bash "$HERE/postdeploy.sh" 2>&1)
+WEBP=/home/u1/domains/s.test/public_html
+
+# ── Muc 17: bo dem so lan doi ───────────────────────────────────────
+# Dap an tinh BANG TAY tu fixture duoi:
+#   uploads/sucuri/  3 tep, 4+3+2 = 9 lan
+#   uploads/         2 tep, 1+1   = 2 lan
+#   tong 5 duong dan, 3 dat nguong (>=2)
+# `hot` KHONG co tep bo dem -> phai in dong "chua co", khong duoc im.
+mkdir -p "$R/FS"
+NOW=$(date +%s)
+{
+    printf '4|%d|%s/wp-content/uploads/sucuri/sucuri-hookdata.php\n'  "$NOW" "$WEBP"
+    printf '3|%d|%s/wp-content/uploads/sucuri/sucuri-settings.php\n'  "$NOW" "$WEBP"
+    printf '2|%d|%s/wp-content/uploads/sucuri/sucuri-lastlogins.php\n' "$((NOW - 3600))" "$WEBP"
+    printf '1|%d|%s/wp-content/uploads/a.php\n' "$((NOW - 86400 * 5))" "$WEBP"
+    printf '1|%d|%s/wp-content/uploads/b.php\n' "$((NOW - 86400 * 5))" "$WEBP"
+} > "$R/FS/chgcount.full.txt"
+OUT=$(A="$R/A" L="$R/L" E="$R/E/error.log" FS="$R/FS" bash "$HERE/postdeploy.sh" 2>&1)
 pass=0; fail=0
 # `want` doi mot DONG khop mau; `nwant` doi KHONG dong nao khop.
 want()  { if printf '%s\n' "$OUT" | grep -qE "$2"; then pass=$((pass+1));
@@ -275,5 +292,16 @@ want  "16 nhom+domain"        'cl_absent +@ p\.test +3'
 # KHONG con du.
 want  "16 cach doc chunked"   'header KHONG noi do dai'
 
+# ── Muc 17: dap an tinh BANG TAY tu fixture ─────────────────────────
+#   uploads/sucuri/  3 tep, 4+3+2 = 9 lan  -> thu muc dung dau
+#   uploads/         2 tep, 1+1   = 2 lan
+#   tong 5 duong dan, 3 dat nguong (>=2)
+want  "17 tong duong dan"     '5 duong dan dang theo doi, 3 da dat nguong'
+want  "17 thu muc sucuri"     '9 lan / +3 tep .*uploads/sucuri'
+want  "17 thu muc uploads"    '2 lan / +2 tep .*uploads$'
+# `hot` khong co tep bo dem -> PHAI in dong "chua co", khong duoc im lang: mot muc do
+# im lang thi nguoi doc khong phan biet duoc "khong co du lieu" voi "muc bi hong".
+want  "17 hot chua co bo dem" '\[hot\] chua co bo dem'
+want  "17 co CACH DOC"        'mot thu muc chiem da so'
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

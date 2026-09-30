@@ -16,6 +16,9 @@ export LC_ALL=C
 A=${A:-/usr/local/openresty/nginx/conf/antibot}
 L=${L:-/var/log/antibot}
 E=${E:-/usr/local/openresty/nginx/logs/error.log}
+# Thu muc STATE cua `fim.sh` — muc 17 doc bo dem so lan doi tu day. Mac dinh khop
+# `FIM_STATE` trong `fim.sh`; bo test tro no vao mot `mktemp -d`.
+FS=${FS:-/var/lib/antibot/fim}
 
 T=$(sed -n 's/^deployed=//p' "$A/VERSION" 2>/dev/null)
 S=$(sed -n 's/^sha=//p' "$A/VERSION" 2>/dev/null)
@@ -471,3 +474,69 @@ END {
     print  "  n lon ma it IP             : gan nhu chac la mot cong cu/bot — xem IP truoc"
     print  "  tap trung mot domain       : co the la mot app that dung raw POST"
 }'
+
+echo
+echo "=== 17. BO DEM SO LAN DOI (ha bac tep trang thai ngat quang) ==="
+# Muc nay doc `$FS/chgcount.<tier>.txt`, KHONG doc log: bo dem la trang thai tren dia,
+# va cau hoi no tra loi la "co ho tep trang thai nao dang lam loang canh bao".
+#
+# Vi sao can: do 30-09, `uploads/sucuri/*.php` (43 tep / 4 site) doi 8 lan/7 ngay va
+# chiem 7/13 canh bao `fim.sh` trong hai thang. `$PREVCHG` khong bat duoc vi no nho
+# DUNG MOT luot, con ho nay doi NGAT QUANG. Bo dem co cua so 21 ngay giai quyet, nhung
+# no can THOI GIAN tich luy — nen muc nay la cach biet no da den dau.
+#
+# Cot `top` la cot dang doc nhat: no TU LO ra cac ho tep trang thai ma chua ai biet
+# ten, dung muc dich cua co che thay vi mot danh sach ten.
+for tier in full hot; do
+    CC="$FS/chgcount.$tier.txt"
+    [ -f "$CC" ] || { printf '  [%s] chua co bo dem (fim.sh --%s chua chay, hoac chua co CHG nao)\n' "$tier" "$tier"; continue; }
+    n=$(wc -l < "$CC" 2>/dev/null); n=${n:-0}
+    if [ "$n" -eq 0 ]; then
+        printf '  [%s] bo dem RONG — khong duong dan nao doi trong cua so\n' "$tier"
+        continue
+    fi
+    # `awk` mot pass: dem theo bac, va gio cua lan doi gan nhat.
+    awk -F'|' -v tier="$tier" -v now="$(date +%s)" '
+    {
+        n = $1 + 0; ts = $2 + 0
+        tot++
+        if (n >= 2) reach++
+        if (ts > newest) newest = ts
+        if (oldest == 0 || ts < oldest) oldest = ts
+        # Nhom theo THU MUC CHA, khong theo tep: mot ho tep trang thai lo ra o muc thu
+        # muc (43 tep Sucuri nam trong 4 thu muc `uploads/sucuri/`), con liet ke tung
+        # tep thi 43 dong che mat hinh dang.
+        p = $3
+        sub(/\/[^\/]*$/, "", p)
+        d[p] += n
+        dn[p]++
+    }
+    END {
+        printf "  [%s] %d duong dan dang theo doi, %d da dat nguong (>=2 lan)\n", tier, tot, reach
+        if (newest > 0)
+            printf "        lan doi gan nhat: %d gio truoc; xa nhat: %d ngay truoc\n", \
+                   int((now - newest) / 3600), int((now - oldest) / 86400)
+        print  "  -- top 8 THU MUC theo tong so lan doi --"
+        k = 0
+        for (p in d) { arr[++k] = d[p] "|" dn[p] "|" p }
+        # sap giam theo tong so lan: `asort` khong co o awk chuan nen chon tay.
+        for (i = 1; i <= k && i <= 8; i++) {
+            best = 0; bi = 0
+            for (j = 1; j <= k; j++) {
+                if (used[j]) continue
+                split(arr[j], f, "|")
+                if (f[1] + 0 > best) { best = f[1] + 0; bi = j }
+            }
+            if (bi == 0) break
+            used[bi] = 1
+            split(arr[bi], f, "|")
+            printf "        %4d lan / %3d tep  %s\n", f[1], f[2], f[3]
+        }
+    }' "$CC"
+done
+echo "  -- CACH DOC --"
+echo "  dat nguong = 0 sau >1 tuan : ho tep trang thai khong ton tai, hoac fim.sh khong chay"
+echo "  mot thu muc chiem da so    : do la ho tep trang thai — xem no co plugin di kem khong"
+echo "  nhieu tep 1 lan, khong tang: KHONG phai ho trang thai; neu chung o uploads/ thi"
+echo "                               dang la CRITICAL that va can xem"
+echo "  lan doi xa nhat > 21 ngay  : dong do dang cho bi rung o luot sau (dung thiet ke)"
