@@ -376,7 +376,19 @@ function _M.scan_part(content, name_flags, from, to)
     -- doc `depth 0`; con day cau hoi la "noi dung vua upload co mo duong thuc thi nao
     -- khong", nen MOT pham vi con bat la DU — ket luan cuoi la HOAC cac pham vi.
     -- `<IfModule>` KHONG gioi han pham vi theo tep nen KHONG tang `depth`.
-    local opt_exec, autoload_on, depth = nil, nil, 0
+    -- `depth` KHONG dung lam dinh danh pham vi. Hai container DONG CAP cung co
+    -- `depth == 1`, nen cai thu hai ghi de trang thai cai thu nhat:
+    --     <FilesMatch "x"> Options +ExecCGI </FilesMatch>
+    --     <FilesMatch "y"> Options -ExecCGI </FilesMatch>
+    -- cho `handler=false` — BO SOT (nguoi dung bat 01-10; bo test cu chi co MOT
+    -- container moi tang nen khong bat duoc).
+    --
+    -- `scope` la mot ID TANG DAN, cap moi cho tung container MO ra, va `stack` nho
+    -- ID cua pham vi dang mo. Hai container dong cap co hai ID khac nhau nen chung
+    -- khong the ghi de nhau.
+    local opt_exec, autoload_on = nil, nil
+    local scope, nscope, stack = 0, 0, { [0] = 0 }
+    local depth = 0
     for i = 1, #lines do
         local line = strip(lines[i], kind)
         if line ~= "" then
@@ -384,11 +396,18 @@ function _M.scan_part(content, name_flags, from, to)
                 local cl = line:match("^<%s*/%s*(%a+)")
                 local op = not cl and line:match("^<%s*(%a+)") or nil
                 if cl then
-                    if cl:lower() ~= "ifmodule" and depth > 0 then depth = depth - 1 end
+                    if cl:lower() ~= "ifmodule" and depth > 0 then
+                        depth = depth - 1
+                        scope = stack[depth] or 0
+                    end
                 elseif op then
-                    if op:lower() ~= "ifmodule" then depth = depth + 1 end
+                    if op:lower() ~= "ifmodule" then
+                        depth = depth + 1
+                        nscope = nscope + 1
+                        scope = nscope
+                        stack[depth] = scope
+                    end
                 else
-                -- `Directive gia_tri...` — tach tu dau tien.
                 local d, rest = line:match("^([%a_]+)%s+(.+)$")
                 if d then
                     local dl = d:lower()
@@ -405,7 +424,7 @@ function _M.scan_part(content, name_flags, from, to)
                         -- `options_enables_exec` da xu ly last-wins TRONG mot dong;
                         -- bang nay mang trang thai QUA cac dong, RIENG tung pham vi.
                         opt_exec = opt_exec or {}
-                        opt_exec[depth] = options_enables_exec(rest)
+                        opt_exec[scope] = options_enables_exec(rest)
                     end
                 end
                 end

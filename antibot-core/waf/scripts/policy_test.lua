@@ -1087,25 +1087,30 @@ do
     -- ── LOI 8: GRAMMAR duoi phai KHOP giua noi sinh va noi doc ──────
     --
     -- `htaccess_parse.awk` sinh token tu doi so THAT cua `AddHandler`, con day doc
-    -- bang mot phep match. Truoc day hai ben lech theo HAI huong (nguoi dung bat
-    -- 30-09):
+    -- bang mot phep match. Apache (mod_mime) coi MOI DOAN phan cach boi dau cham la
+    -- MOT duoi doc lap: `x.tar.gz.php` co ba duoi `tar`, `gz`, `php`.
     --
-    --   · `AddHandler ... .x-y` sinh `ext:x-y`, nhung `path:match("%.([%w]+)$")` tra
-    --     `nil` cho `/shell.x-y` (`%w` khong gom `-`), nen ham `return nil` TRUOC ca
-    --     Redis GET — dau do KHONG BAO GIO doc duoc.
-    --   · `AddHandler ... .a.b` sinh `ext:a.b`, nhung match mot doan tra `b`, nen
-    --     token khong bao gio khop.
-    --
-    -- Apache (mod_mime) khop duoi theo TUNG DOAN tu phai, nen ben sinh dung va ben doc
-    -- phai thu HET cac hau to.
+    -- HAI ban truoc deu sai, va oracle o day tung ghim ban thu hai (nguoi dung bat
+    -- 30-09 roi 01-10):
+    --   1. `path:match("%.([%w]+)$")` — mot doan, va `%w` khong gom `-`, nen
+    --      `/shell.x-y` tra `nil` va ham `return nil` TRUOC ca Redis GET.
+    --   2. cac HAU TO (`tar.gz.php`, `gz.php`, `php`) — bo sot `gz` va khop OAN
+    --      `gz.php`, mot chuoi ma Apache khong coi la duoi bao gio.
     eq("ext:x-y + /shell.x-y -> handler_ext",   mark_for("ext:x-y",  "/shell.x-y"),  "handler_ext")
-    eq("ext:a.b + /shell.a.b -> handler_ext",   mark_for("ext:a.b",  "/shell.a.b"),  "handler_ext")
+    -- `a.b`: HAI duoi doc lap `a` va `b`, KHONG phai mot duoi `a.b`.
+    eq("ext:a + /shell.a.b -> handler_ext",     mark_for("ext:a",    "/shell.a.b"),  "handler_ext")
+    eq("ext:b + /shell.a.b -> handler_ext",     mark_for("ext:b",    "/shell.a.b"),  "handler_ext")
+    eq("ext:a.b + /shell.a.b -> KHONG bao",     mark_for("ext:a.b",  "/shell.a.b"),  nil)
+    -- `x.tar.gz.php`: BA duoi `tar`, `gz`, `php`. Ban hau to bo sot `gz` — Apache
+    -- KHOP no, va `AddHandler ... .gz` lam tep do chay qua handler cua `.gz`.
     eq("ext:php + /x.tar.gz.php -> handler_ext", mark_for("ext:php", "/x.tar.gz.php"), "handler_ext")
-    eq("ext:gz.php + /x.tar.gz.php -> handler_ext", mark_for("ext:gz.php", "/x.tar.gz.php"), "handler_ext")
-    -- Huong NGUOC: phep mo rong khong duoc thanh "khop moi thu". Mot hau to phai la
-    -- hau to THAT — `tar` khong phai hau to cua `x.tar.gz.php`, `ar.gz.php` cung khong.
-    eq("ext:tar + /x.tar.gz.php -> KHONG bao",  mark_for("ext:tar",  "/x.tar.gz.php"), nil)
-    eq("ext:ar.gz.php + /x.tar.gz.php -> KHONG", mark_for("ext:ar.gz.php", "/x.tar.gz.php"), nil)
+    eq("ext:gz + /x.tar.gz.php -> handler_ext",  mark_for("ext:gz",  "/x.tar.gz.php"), "handler_ext")
+    eq("ext:tar + /x.tar.gz.php -> handler_ext", mark_for("ext:tar", "/x.tar.gz.php"), "handler_ext")
+    -- Huong NGUOC: phep mo rong khong duoc thanh "khop moi thu". Mot CHUOI GHEP nhieu
+    -- doan KHONG phai mot duoi.
+    eq("ext:gz.php + /x.tar.gz.php -> KHONG bao",   mark_for("ext:gz.php",    "/x.tar.gz.php"), nil)
+    eq("ext:tar.gz + /x.tar.gz.php -> KHONG bao",   mark_for("ext:tar.gz",    "/x.tar.gz.php"), nil)
+    eq("ext:ar.gz.php + /x.tar.gz.php -> KHONG",    mark_for("ext:ar.gz.php", "/x.tar.gz.php"), nil)
     eq("ext:x + /shell.x-y -> KHONG bao",       mark_for("ext:x",    "/shell.x-y"),  nil)
     -- `PHP_EXT` van phai doc doan CUOI: `/x.php.jpg` khong phai script PHP.
     eq("@php + /x.php.jpg -> KHONG bao",        mark_for("@php",     "/x.php.jpg"),  nil)

@@ -251,6 +251,25 @@ ini_raw "lan cuoi: none roi x.php"        "co"       'auto_prepend_file=none\nau
 # van phai BAT.
 ini_raw "mot dong co gia tri van BAT"     "co"       'auto_prepend_file=/tmp/x.php\n'
 
+# ── NHOM 21: gia tri INI — TRIM hai dau, KHONG xoa khoang trang giua ──
+#
+# `gsub(/[ \t\r"']/, "", v)` xoa MOI khoang trang, nen `n o n e` thanh `none` va bi coi
+# la TAT — trong khi Zend doc do la duong dan `n o n e` (nap that bai, KHAC nghia voi
+# "tat tinh nang"). Lua giu nguyen nen hai parser LECH nhau theo huong FALSE NEGATIVE
+# (nguoi dung bat 01-10; do duoc: awk rc=1, Lua autoload=true).
+ini_raw "gia tri co khoang trang GIUA -> BAT"   "co"    'auto_prepend_file = /tmp/a b.php\n'
+ini_raw "'n o n e' KHONG phai 'none'"           "co"    'auto_prepend_file = n o n e\n'
+ini_raw "'none' that su -> TAT"                 "khong" 'auto_prepend_file = none\n'
+ini_raw "'  none  ' (trim hai dau) -> TAT"      "khong" 'auto_prepend_file =   none  \n'
+ini_raw "nhay bao quanh bi BO -> TAT"           "khong" 'auto_prepend_file = "none"\n'
+ini_raw "nhay don bao quanh bi BO -> TAT"       "khong" "auto_prepend_file = 'none'\n"
+ini_raw "nhay bao quanh gia tri THAT -> BAT"    "co"    'auto_prepend_file = "/tmp/a.php"\n'
+ini_raw "nhay GIUA gia tri duoc GIU -> BAT"     "co"    'auto_prepend_file = /tmp/a"b.php\n'
+ini_raw "CRLF + none van TAT"                   "khong" 'auto_prepend_file = none\r\n'
+# Va hai parser phai DONG Y tren ca `n o n e` — day la ca da lech.
+cross "cheo: 'n o n e' hai ben deu BAT" "" co 'auto_prepend_file = n o n e\n' upload_user_ini
+cross "cheo: khoang trang giua duong dan" "" co 'auto_prepend_file = /tmp/a b.php\n' upload_user_ini
+
 # ── SO CHEO tren input NHIEU DONG ────────────────────────────────────
 #
 # Bang fixture o tren la MOT dong moi ca, va ben Lua doc no bang `io.lines` — nen
@@ -355,6 +374,24 @@ lua_only "lua pham vi: TAT o ca hai pham vi"     "khong" 'Options -ExecCGI\n<Fil
 lua_only "lua pham vi: khong co Options nao"     "khong" '<FilesMatch "x">\nRequire all granted\n</FilesMatch>\n'
 # `<IfModule>` khong tang depth: trang thai ben trong VAN la pham vi ngoai
 lua_only "lua pham vi: IfModule long, last-wins xuyen qua" "khong" 'Options +ExecCGI\n<IfModule mod_x.c>\nOptions -ExecCGI\n</IfModule>\n'
+
+# ── NHOM 20: HAI container DONG CAP khong duoc xoa nhau ───────────────
+#
+# `depth` KHONG dung lam dinh danh pham vi: hai container dong cap cung co
+# `depth == 1`, nen cai thu hai ghi de trang thai cai thu nhat (nguoi dung bat 01-10;
+# bo test cu chi co MOT container moi tang nen khong bat duoc). Lua nay dung mot
+# `scope` ID tang dan, cap moi cho tung container MO ra.
+lua_only "lua dong cap: x:+ roi y:-" "co" '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n<FilesMatch "y">\nOptions -ExecCGI\n</FilesMatch>\n'
+lua_only "lua dong cap: x:- roi y:+" "co" '<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n<FilesMatch "y">\nOptions +ExecCGI\n</FilesMatch>\n'
+lua_only "lua dong cap: ba container, giua BAT" "co" '<Files "a">\nOptions -ExecCGI\n</Files>\n<Files "b">\nOptions +ExecCGI\n</Files>\n<Files "c">\nOptions -ExecCGI\n</Files>\n'
+# Huong NGUOC: ba container deu TAT thi phai TAT — `scope` khong duoc lam moi pham vi
+# "nho mai" mot lan bat nao khong co.
+lua_only "lua dong cap: ba container deu TAT" "khong" '<Files "a">\nOptions -ExecCGI\n</Files>\n<Files "b">\nOptions -ExecCGI\n</Files>\n<Files "c">\nOptions -ExecCGI\n</Files>\n'
+# Long: pham vi trong TAT khong duoc xoa pham vi ngoai BAT (ca nay da co o nhom 17,
+# giu lai de phep sua `scope` khong lam mat no).
+lua_only "lua long: ngoai BAT, trong TAT" "co" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+# Va last-wins TRONG CUNG mot container van phai chay.
+lua_only "lua cung container: + roi -" "khong" '<FilesMatch "x">\nOptions +ExecCGI\nOptions -ExecCGI\n</FilesMatch>\n'
 
 # ── NHOM 19: `@execcgi` chi co nghia khi AllowOverride CHO ───────────
 #

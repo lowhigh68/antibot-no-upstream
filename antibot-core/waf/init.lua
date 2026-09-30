@@ -454,8 +454,6 @@ end
 -- `*` = "moi duoi PHP": `auto_prepend_file` nap ma cho MOI script PHP trong thu
 -- muc, khong doi handler cua duoi nao. Nen voi `*` van giu dieu kien `PHP_EXT` —
 -- do la GIOI HAN DUNG cho nhom do, khac han nhom `.htaccess`.
--- MOI HAU TO cua ten tep, tu dai den ngan: `x.tar.gz.php` -> `tar.gz.php`,
--- `gz.php`, `php`.
 --
 -- Day la GRAMMAR cua ben SINH (`htaccess_parse.awk`), va truoc day hai ben khong
 -- khop nhau theo HAI huong (nguoi dung bat 30-09):
@@ -466,20 +464,33 @@ end
 --   · `AddHandler ... .a.b` sinh `ext:a.b`, nhung phep match mot doan tra `b`, nen
 --     token khong bao gio khop.
 --
--- Apache khop duoi theo TUNG DOAN tu phai (mod_mime: mot ten tep co NHIEU duoi), nen
--- ben sinh dung va ben doc phai thu HET cac hau to. Loc ky tu la cach SAI cho viec
--- nay — Apache khong cam ky tu nao trong doi so cua `AddHandler`.
+-- Apache (mod_mime) coi MOI DOAN phan cach boi dau cham la MOT duoi doc lap. Loc ky
+-- tu la cach SAI cho viec nay -- Apache khong cam ky tu nao trong doi so cua
+-- `AddHandler`, nen mot danh sach ky tu hop le se phai doan truoc moi duoi.
+-- MOI DOAN sau dau cham la MOT duoi DOC LAP, theo mod_mime: `x.tar.gz.php` co ba duoi
+-- `tar`, `gz`, `php` — KHONG phai `tar.gz.php`/`gz.php`/`php`.
+--
+-- Ban truoc cua ham nay sinh cac HAU TO thay vi cac DOAN, va no sai theo HAI huong
+-- (nguoi dung bat 01-10):
+--   · `AddHandler ... .gz` sinh `ext:gz`, nhung `/x.tar.gz.php` khong co hau to `gz`
+--     -> BO SOT. Apache thi khop, va no lam tep do chay qua handler cua `.gz`.
+--   · `AddHandler ... .gz.php` sinh `ext:gz.php` va hau to `gz.php` KHOP -> bao OAN,
+--     trong khi Apache khong coi `gz.php` la mot duoi bao gio.
+-- Assertion cu trong `policy_test.lua` ghim dung oracle sai do; da sua cung luc.
 local function path_suffixes(path)
     local base = path:match("([^/]+)$")
     if not base then return nil end
-    local out, pos, n = nil, 1, 0
-    while true do
-        local d = base:find("%.", pos)
-        if not d then break end
-        n = n + 1
-        out = out or {}
-        out[n] = base:sub(d + 1):lower()
-        pos = d + 1
+    local out, n, first = nil, 0, true
+    for seg in base:gmatch("[^.]+") do
+        if first then
+            -- Doan DAU la TEN tep, khong phai duoi. `.htaccess` (bat dau bang dau
+            -- cham) co doan dau la `htaccess`, va Apache cung khong coi do la duoi.
+            first = false
+        else
+            n = n + 1
+            out = out or {}
+            out[n] = seg:lower()
+        end
     end
     return out
 end

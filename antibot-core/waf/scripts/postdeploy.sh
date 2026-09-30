@@ -598,7 +598,9 @@ fi
 #
 # Do 01-10 tren 171-96: 5.133/5.495 dong `HIGH NEW sc=0` trong fim.log la cache —
 # 93,4% bao dong `NEW` la tieng on cua thu muc may sinh tep, va no lam loang canh bao
-# that. Bo dem theo THU MUC (`newcount.<tier>.txt`) ha bac chung; muc nay doc tien do.
+# Bo dem theo THU MUC (`newcount.<tier>.txt`) GOM NHOM chung — KHONG ha bac, vi
+# `pscore == 0` khong chung minh tep lanh. Bac giu nguyen, `crit` van dem, mail van
+# gui; chi la nhieu dong thanh mot dong. Muc nay doc tien do.
 echo
 echo "── 19. bo dem TEP MOI theo thu muc ─────────────────────────────"
 for tier in hot full; do
@@ -631,7 +633,7 @@ for tier in hot full; do
                 if (bi == 0) break
                 used[bi] = 1
                 split(arr[bi], f, "|")
-                printf "        %5d tep  %s%s\n", f[1], f[2], (f[1] + 0 >= nmin ? "  [da ha bac]" : "")
+                printf "        %5d tep  %s%s\n", f[1], f[2], (f[1] + 0 >= nmin ? "  [da gom nhom]" : "")
             }
         }' "$NC"
 done
@@ -648,4 +650,4 @@ echo "  -- CACH DOC --"
 echo "  dat nguong = 0 sau >1 ngay : khong co thu muc may sinh tep tren may nay (hop le)"
 echo "  dat nguong > 0, dong HIGH NEW moi giam : co che dang lam viec"
 echo "  dat nguong > 0 ma HIGH NEW khong giam  : thu muc dat nguong KHAC thu muc dang bao"
-echo "  mot thu muc trong uploads/ dat nguong  : KHONG duoc ha bac (thiet ke) — xem no"
+echo "  mot thu muc trong uploads/ dat nguong  : nguong gom KHONG ha o do (thiet ke) — xem no"

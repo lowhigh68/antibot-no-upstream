@@ -1851,21 +1851,20 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # dat nguong, nen webshell giu nguyen `2CRITICAL`.
         if (t == "CHG" && (p in prev))       return "5STATE"
         if (t == "CHG" && (p in chgn) && chgn[p] >= ccmin) return "5STATE"
-        # NEW trong mot thu muc MAY SINH TEP. Ba dieu kien cung luc:
+        # KHONG ha bac cho `NEW`, va day la mot phep sua DAO NGUOC ban 3b93bcf.
         #
-        #   1. thu muc dat nguong        mot lan tha tep khong dat (`ncmin` = 30, con
-        #                                thu muc cache thap nhat da sinh 311 tep)
-        #   2. `pscore == 0`             khong MOT tin hieu noi dung nao khop. Thieu
-        #                                dieu kien nay thi mot webshell tha vao thu
-        #                                muc cache DA dat nguong se chim theo — dung
-        #                                duong ne ma phep ha bac nay tu tao ra.
-        #   3. khong o uploads/          `uploads/` khong co ung dung hop le nao may
-        #                                sinh `.php`; xem nhanh `2CRITICAL` duoi.
-        #                                `mu-plugins/` da thoat o `1MUPLUG` tren.
+        # Ban do ha `NEW` xuong `5STATE` khi thu muc may sinh tep va `pscore == 0`.
+        # `pscore == 0` chi co nghia "khong khop TIN HIEU HIEN CO", KHONG chung minh
+        # tep lanh (nguoi dung bat 01-10): mot PHP toi gian khong chua mau mat khau,
+        # ten dang ngo hay ham ghep chuoi van dat `sc=0`. Neu no duoc ma SAN CO
+        # `include`, khong co request truc tiep nao den no, nen dau Redis vo dung —
+        # va `5STATE` thi `crit` khong dem, khong mail, `exit 0`. Do la DUNG truong
+        # hop ma file-integrity sinh ra de phu.
         #
-        # Do 01-10 tren 171-96: 5.133/5.495 dong `HIGH NEW sc=0` la cache, 93,4%.
-        if (t == "NEW" && pscore(p, t) == 0 && p !~ /\/wp-content\/uploads\// \
-            && (dirof(p) in newn) && newn[dirof(p)] >= ncmin) return "5STATE"
+        # Tieng on van phai giam. Nhung giam bang GOM NHOM (`bulk` o duoi), khong
+        # bang ha bac: mot dot tep vao thu muc may sinh tep thanh MOT dong bao cao,
+        # BAC GIU NGUYEN, `crit` van dem, mail van gui. `newn` nay dung de HA
+        # `GROUP_MAX` cho rieng thu muc do — xem `gmax()`.
         if (p ~ /\/wp-content\/uploads\//)    return "2CRITICAL"
         if (p ~ /\/wp-includes\//)            return "2CRITICAL"
         if (p ~ /\/wp-admin\//)               return "2CRITICAL"
@@ -2093,6 +2092,32 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
     # con (assets/, includes/, languages/…). Gom theo dirname se dem no thanh
     # hang chuc nhom nho, moi nhom duoi nguong, va the la ca goi bi liet ke tung
     # file nhu the tung file den mot minh — dung nguoc voi y do.
+    # Nguong GOM NHOM cho mot `gkey`. Mac dinh `$GROUP_MAX`, nhung HA xuong 2 cho thu
+    # muc da chung minh la MAY SINH TEP (`newn >= ncmin`).
+    #
+    # Vi sao ha nguong chu khong ha bac: `pscore == 0` khong chung minh tep lanh, nen
+    # ha bac la bo mat mot canh bao that (xem chu thich trong `sev()`). Gom nhom thi
+    # GIU bac, GIU `crit`, GIU mail — no chi doi 9 dong `HIGH NEW` thanh MOT dong
+    # `HIGH NEW 9 file trong <thu muc>`. Nguoi doc van thay, hop thu khong bi nhan
+    # chim, va mot webshell tha vao do van nam trong con so va van duoc dem.
+    #
+    # `2` chu khong `1`: mot tep le trong thu muc cache van dang duoc in RIENG, vi mot
+    # tep don doc o day la hinh dang KHAC voi mot dot cache — cache sinh hang chuc tep
+    # moi lot (do 01-10: 89 tep/gio tren 171-96).
+    # `k` la `sev \t loai \t gkey` — BA truong. Ban dau toi lay phan truoc tab DAU
+    # TIEN, tuc lay `sev` chu khong phai duong dan, nen `gmax` luon tra `max` va phep
+    # gom nhom KHONG BAO GIO chay (bo test bat 2 ca).
+    function gmax(k,   a, m) {
+        m = split(k, a, "\t")
+        if (m < 3) return max
+        # `uploads/` va `mu-plugins/` KHONG duoc ha nguong gom. Chu thich o dong gom
+        # da noi ro: mot DOT tep vao vung do la NANG HON mot tep le, khong nhe hon
+        # (chinh hinh dang vu 20-09, 13 tep tren mot site). Gom lai la lam nguoi doc
+        # thay MOT dong thay vi 13 — dung cai no sinh ra de tranh.
+        if (a[3] ~ /\/wp-content\/(uploads|mu-plugins)\//) return max
+        if ((a[3] in newn) && newn[a[3]] >= ncmin) return 2
+        return max
+    }
     function gkey(p) {
         if (match(p, /\/wp-content\/(plugins|themes)\/[^\/]+/))
             return substr(p, 1, RSTART + RLENGTH - 1)
@@ -2175,7 +2200,7 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
     END {
         for (k in n) {
             split(k, f, "\t")
-            bulk = (n[k] > max)
+            bulk = (n[k] > gmax(k))
             if (bulk)
                 # Chu thich cua dong gom KHAC NHAU theo vung, va day khong phai
                 # chuyen cau chu. "nhieu kha nang la cap nhat" dan tren mot dot
@@ -2185,6 +2210,13 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                 # dang vu 20-09 (13 file).
                 {
                     note = "(nhieu kha nang la cap nhat)"
+                    # Thu muc MAY SINH TEP: dong gom o day KHONG phai "cap nhat", va
+                    # chu thich phai khac vi `crit=` loai moi dong chua chuoi do
+                    # (grep -vc "cap nhat"). De nguyen thi dong gom cho crit=0 va
+                    # `exit 0` — dung cai lo ma phep doi tu ha-bac sang gom-nhom sinh
+                    # ra de tranh (bo test bat).
+                    if (gmax(k) < max)
+                        note = "(thu muc may sinh tep -- da gom, VAN DEM)"
                     if (f[1] == "1MUPLUG")
                         note = "(MOT DOT -- o day khong co cap nhat hop le)"
                     printf "%-8s %-3s %4d file trong %s  %s\n", \
@@ -2232,6 +2264,12 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
 # vao mu-plugins KHONG phai "nhieu kha nang la cap nhat" — do la chinh hinh dang
 # cua vu 20-09 (13 file tren mot site). Nguong gom nhom sinh ra de chong nhieu
 # tu cap nhat phan mem, ma o thu muc nay thi khong co cap nhat phan mem nao.
+#
+# THU MUC MAY SINH TEP la ngoai le THU HAI, va dong gom cua no mang chu thich
+# "(thu muc may sinh tep -- da gom, VAN DEM)" chu KHONG chua chuoi "cap nhat" —
+# de `grep -vc` o duoi khong loai no. Do la ca diem cua phep doi tu ha-bac sang
+# gom-nhom (01-10): bac giu nguyen, `crit` van dem, mail van gui, chi la nhieu
+# dong thanh mot dong.
 crit=$(printf '%s\n' "$report" | grep -E '^(CRITICAL|HIGH) ' | grep -vc 'cap nhat')
 muplug=$(printf '%s\n' "$report" | grep -c '^MUPLUG ' || :)
 # `SCORE` la NGOAI LE cung ly do nhu `MUPLUG`, va phai dem RIENG: `crit=` o tren

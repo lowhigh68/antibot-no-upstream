@@ -48,12 +48,19 @@ function strip_comment(s,   out, i, c, q) {
         k = tolower(line); sub(/^[ \t\r]*/, "", k); sub(/[ \t]*=.*/, "", k)
         v = line
         sub(/^[^=]*=[ \t]*/, "", v)
-        # `\r` PHAI o day: mot `.user.ini` sua tu Windows dung CRLF, va khi do
-        # `auto_prepend_file=none\r\n` cho `v = "none\r"` -> `!= "none"` -> KET LUAN
-        # "co nap ma", tuc mot FALSE POSITIVE tren dong TAT tinh nang. Va
-        # `auto_prepend_file=\r\n` (gia tri rong) cho `v = "\r"` -> `!= ""` -> cung
-        # FP. Tai hien duoc 29-09 trong WSL.
-        gsub(/[ \t\r"']/, "", v)
+        # TRIM hai dau roi BO DAU NHAY BAO QUANH — khong `gsub` ca dong.
+        #
+        # `gsub(/[ \t\r"']/, "", v)` xoa MOI khoang trang, nen `n o n e` thanh `none`
+        # va bi coi la TAT, trong khi Zend doc gia tri do la mot duong dan tam
+        # `n o n e` (nap that bai, nhung KHAC nghia voi "tat tinh nang"). Lua giu
+        # nguyen nen hai parser LECH nhau (nguoi dung bat 01-10, do duoc: awk rc=1,
+        # Lua autoload=true).
+        #
+        # `\r` van phai bo o day: `.user.ini` sua tu Windows dung CRLF, va khi do
+        # `auto_prepend_file=none\r\n` cho `v = "none\r"` -> `!= "none"` -> FP tren
+        # dong TAT tinh nang (tai hien 29-09).
+        sub(/^[ \t\r]+/, "", v); sub(/[ \t\r]+$/, "", v)
+        if (v ~ /^".*"$/ || v ~ /^'.*'$/) v = substr(v, 2, length(v) - 2)
         # LAN CUOI THANG trong TUNG khoa: Zend doc tuan tu va directive SAU ghi de
         # directive TRUOC, nen
         #     auto_prepend_file=/tmp/x.php
