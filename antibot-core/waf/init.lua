@@ -454,6 +454,36 @@ end
 -- `*` = "moi duoi PHP": `auto_prepend_file` nap ma cho MOI script PHP trong thu
 -- muc, khong doi handler cua duoi nao. Nen voi `*` van giu dieu kien `PHP_EXT` —
 -- do la GIOI HAN DUNG cho nhom do, khac han nhom `.htaccess`.
+-- MOI HAU TO cua ten tep, tu dai den ngan: `x.tar.gz.php` -> `tar.gz.php`,
+-- `gz.php`, `php`.
+--
+-- Day la GRAMMAR cua ben SINH (`htaccess_parse.awk`), va truoc day hai ben khong
+-- khop nhau theo HAI huong (nguoi dung bat 30-09):
+--
+--   · `AddHandler ... .x-y` sinh `ext:x-y`, nhung `path:match("%.([%w]+)$")` tra
+--     `nil` cho `/shell.x-y` (`%w` khong gom `-`) -> `return nil` TRUOC ca Redis
+--     GET, nen dau do KHONG BAO GIO doc duoc.
+--   · `AddHandler ... .a.b` sinh `ext:a.b`, nhung phep match mot doan tra `b`, nen
+--     token khong bao gio khop.
+--
+-- Apache khop duoi theo TUNG DOAN tu phai (mod_mime: mot ten tep co NHIEU duoi), nen
+-- ben sinh dung va ben doc phai thu HET cac hau to. Loc ky tu la cach SAI cho viec
+-- nay — Apache khong cam ky tu nao trong doi so cua `AddHandler`.
+local function path_suffixes(path)
+    local base = path:match("([^/]+)$")
+    if not base then return nil end
+    local out, pos, n = nil, 1, 0
+    while true do
+        local d = base:find("%.", pos)
+        if not d then break end
+        n = n + 1
+        out = out or {}
+        out[n] = base:sub(d + 1):lower()
+        pos = d + 1
+    end
+    return out
+end
+
 local function fim_config_changed(uri, rt)
     local root = rt.var.document_root
     if not root or root == "" then return nil end
@@ -475,12 +505,14 @@ local function fim_config_changed(uri, rt)
     -- truc rieng, va no can mot con so ve so luong dau FIM dang song tren fleet.
     --
     -- Va phep hoi do KHONG BAO GIO dung duoc cho chung: ca hai nhanh ben duoi
-    -- (`*` va danh sach duoi) deu doi `ext`, nen `ext == nil` la `return nil` chac
-    -- chan. Tuc day khong phai danh doi do chinh xac lay toc do — no la bo mot
-    -- phep hoi KHONG THE doi ket qua.
-    local ext = path:match("%.([%w]+)$")
-    if not ext then return nil end
-    ext = ext:lower()
+    -- (`@all`/`ext:` va `PHP_EXT`) deu doi mot duoi, nen "khong co duoi nao" la
+    -- `return nil` chac chan. Tuc day khong phai danh doi do chinh xac lay toc do —
+    -- no la bo mot phep hoi KHONG THE doi ket qua.
+    local sufs = path_suffixes(path)
+    if not sufs then return nil end
+    -- `ext` = hau to NGAN NHAT (doan cuoi), dung cho `PHP_EXT` — do la cau hoi "tep
+    -- nay co phai script PHP khong", ma PHP/Apache tra loi bang doan cuoi.
+    local ext = sufs[#sufs]
 
     local dir = path:match("^(.*/)") or "/"
     -- MOT `safe_get`, khong ba.
@@ -509,6 +541,10 @@ local function fim_config_changed(uri, rt)
     --
     -- Duyet het roi CHON theo do manh, khong `return` ngay: mot thu muc co the co
     -- ca `@all` lan `@php`, va bao cai manh hon la dung.
+    -- Bang tra, khong phai so tung cai: `v` co the co nhieu token va `sufs` nhieu
+    -- hau to, nen so cheo la O(n*m) tren HOT PATH. Bang cho O(n+m).
+    local sufset = {}
+    for i = 1, #sufs do sufset[sufs[i]] = true end
     local hit_all, hit_ext, hit_php, hit_phpini, hit_exec = false, false, false, false, false
     for e in v:gmatch("[^,]+") do
         if e == "@all" then
@@ -526,13 +562,13 @@ local function fim_config_changed(uri, rt)
             -- Khoa CU tu ban truoc, con song tới het TTL 7 ngay. Giu nghia cu
             -- (autoload) de khong doi nghia mot khoa da ghi.
             hit_php = true
-        elseif e == "ext:" .. ext then
+        elseif e:sub(1, 4) == "ext:" and sufset[e:sub(5)] then
             -- DANG MOI. Tien to `ext:` tach hai khong gian ten: truoc day mot duoi
             -- di THO vao cung khong gian voi `@all`/`@php`/`@phpini`/`@execcgi`, nen
             -- mot tep ten `.@all` cho token `@all` va dong nay doc thanh
             -- `handler_all` — bao MANH HON su that (nguoi dung tai hien 29-09).
             hit_ext = true
-        elseif e == ext then
+        elseif sufset[e] then
             -- DANG CU, doc-de-di-tru. `fim.sh` da ngung ghi dang nay, nhung khoa cu
             -- con song het TTL 7 ngay (`FIM_MARK_TTL`), va bo nhanh nay ngay thi
             -- moi thu muc da danh dau mat phat hien tới khi `fim.sh` chay lai.

@@ -1084,6 +1084,35 @@ do
     eq("@php + /x.jpg -> KHONG bao",       mark_for("@php",     "/x.jpg"), nil)
     -- Manh hon thang: ca `@all` lan `ext:php` thi bao `@all`.
     eq("@all + ext:php -> handler_all",    mark_for("@all,ext:php", "/x.php"), "handler_all")
+    -- ── LOI 8: GRAMMAR duoi phai KHOP giua noi sinh va noi doc ──────
+    --
+    -- `htaccess_parse.awk` sinh token tu doi so THAT cua `AddHandler`, con day doc
+    -- bang mot phep match. Truoc day hai ben lech theo HAI huong (nguoi dung bat
+    -- 30-09):
+    --
+    --   · `AddHandler ... .x-y` sinh `ext:x-y`, nhung `path:match("%.([%w]+)$")` tra
+    --     `nil` cho `/shell.x-y` (`%w` khong gom `-`), nen ham `return nil` TRUOC ca
+    --     Redis GET — dau do KHONG BAO GIO doc duoc.
+    --   · `AddHandler ... .a.b` sinh `ext:a.b`, nhung match mot doan tra `b`, nen
+    --     token khong bao gio khop.
+    --
+    -- Apache (mod_mime) khop duoi theo TUNG DOAN tu phai, nen ben sinh dung va ben doc
+    -- phai thu HET cac hau to.
+    eq("ext:x-y + /shell.x-y -> handler_ext",   mark_for("ext:x-y",  "/shell.x-y"),  "handler_ext")
+    eq("ext:a.b + /shell.a.b -> handler_ext",   mark_for("ext:a.b",  "/shell.a.b"),  "handler_ext")
+    eq("ext:php + /x.tar.gz.php -> handler_ext", mark_for("ext:php", "/x.tar.gz.php"), "handler_ext")
+    eq("ext:gz.php + /x.tar.gz.php -> handler_ext", mark_for("ext:gz.php", "/x.tar.gz.php"), "handler_ext")
+    -- Huong NGUOC: phep mo rong khong duoc thanh "khop moi thu". Mot hau to phai la
+    -- hau to THAT — `tar` khong phai hau to cua `x.tar.gz.php`, `ar.gz.php` cung khong.
+    eq("ext:tar + /x.tar.gz.php -> KHONG bao",  mark_for("ext:tar",  "/x.tar.gz.php"), nil)
+    eq("ext:ar.gz.php + /x.tar.gz.php -> KHONG", mark_for("ext:ar.gz.php", "/x.tar.gz.php"), nil)
+    eq("ext:x + /shell.x-y -> KHONG bao",       mark_for("ext:x",    "/shell.x-y"),  nil)
+    -- `PHP_EXT` van phai doc doan CUOI: `/x.php.jpg` khong phai script PHP.
+    eq("@php + /x.php.jpg -> KHONG bao",        mark_for("@php",     "/x.php.jpg"),  nil)
+    eq("@php + /x.jpg.php -> autoload_userini", mark_for("@php",     "/x.jpg.php"),  "autoload_userini")
+    -- Khong co duoi nao thi thoat som, khong hoi Redis.
+    eq("khong co duoi -> KHONG bao",            mark_for("@all",     "/noext"),      nil)
+    eq("chi co / -> KHONG bao",                 mark_for("@all",     "/"),           nil)
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))

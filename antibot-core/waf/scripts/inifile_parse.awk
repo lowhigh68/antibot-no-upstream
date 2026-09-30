@@ -38,6 +38,14 @@ function strip_comment(s,   out, i, c, q) {
 {
     line = strip_comment($0)
     if (tolower(line) ~ /^[ \t\r]*auto_(pre|ap)pend_file[ \t]*=/) {
+        # HAI directive DOC LAP, hai trang thai rieng. Ban truoc dung MOT bien `found`
+        # cho ca hai, nen
+        #     auto_prepend_file=/tmp/x.php
+        #     auto_append_file=none
+        # cho "khong nap ma" — BO SOT mot autoload dang bat (nguoi dung bat 30-09).
+        # Zend giu mot gia tri RIENG cho tung khoa; last-wins ap trong TUNG khoa,
+        # khong ap cheo. Ket luan cuoi la HOAC cua hai.
+        k = tolower(line); sub(/^[ \t\r]*/, "", k); sub(/[ \t]*=.*/, "", k)
         v = line
         sub(/^[^=]*=[ \t]*/, "", v)
         # `\r` PHAI o day: mot `.user.ini` sua tu Windows dung CRLF, va khi do
@@ -46,14 +54,13 @@ function strip_comment(s,   out, i, c, q) {
         # `auto_prepend_file=\r\n` (gia tri rong) cho `v = "\r"` -> `!= ""` -> cung
         # FP. Tai hien duoc 29-09 trong WSL.
         gsub(/[ \t\r"']/, "", v)
-        # LAN CUOI THANG, khong "mot lan la mai mai": Zend doc tuan tu va directive
-        # SAU ghi de directive TRUOC, nen
+        # LAN CUOI THANG trong TUNG khoa: Zend doc tuan tu va directive SAU ghi de
+        # directive TRUOC, nen
         #     auto_prepend_file=/tmp/x.php
         #     auto_prepend_file=none
         # la TAT. Ban truoc dat `found = 1` mot chieu nen khong bao gio rut lai duoc
-        # (nguoi dung bat 29-09). Day la FP telemetry hom nay va se la FP THAT neu
-        # luat duoc promote.
-        found = (v != "" && tolower(v) != "none") ? 1 : 0
+        # (nguoi dung bat 29-09).
+        on[k] = (v != "" && tolower(v) != "none") ? 1 : 0
     }
 }
-END { exit(found ? 0 : 1) }
+END { exit((on["auto_prepend_file"] || on["auto_append_file"]) ? 0 : 1) }

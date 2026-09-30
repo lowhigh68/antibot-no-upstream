@@ -353,11 +353,41 @@ function _M.scan_part(content, name_flags, from, to)
     -- (`AddType ... .php` roi `AddType ... .phtml` bat CA HAI), khong phai mot trang
     -- thai duy nhat. Rut lai chung can `RemoveType`/`RemoveHandler` — mot pham vi
     -- rieng, chua lam, noi ro o day.
-    local opt_exec, autoload_on = nil, nil
+    -- `autoload_on` la mot BANG theo khoa, khong phai mot bien: `auto_prepend_file` va
+    -- `auto_append_file` la HAI directive DOC LAP, va Zend giu mot gia tri rieng cho
+    -- tung cai. Ban truoc dung MOT bien cho ca hai nen
+    --     auto_prepend_file=/tmp/x.php
+    --     auto_append_file=none
+    -- cho "khong nap ma" — BO SOT mot autoload dang bat (nguoi dung bat 30-09).
+    -- Last-wins ap TRONG tung khoa; ket luan cuoi la HOAC cua cac khoa.
+    -- `opt_exec` la mot BANG THEO PHAM VI, khong phai mot bien.
+    --
+    -- Container `<FilesMatch>`/`<Files>`/`<Location>`/`<Directory>`/`<If>` GIOI HAN
+    -- pham vi, va truoc day Lua khong nhan ra chung chut nao — dong `<FilesMatch "x">`
+    -- khong khop `^([%a_]+)%s+(.+)$` nen bi bo qua IM LANG. Hau qua la mot
+    -- `Options -ExecCGI` ben trong ghi de trang thai o pham vi NGOAI:
+    --     Options +ExecCGI
+    --     <FilesMatch "x">
+    --       Options -ExecCGI
+    --     </FilesMatch>
+    -- cho `handler=false` — BO SOT (nguoi dung bat 30-09).
+    --
+    -- KHAC awk MOT CACH CO Y: awk tra loi "CA THU MUC co chay CGI duoc khong" nen chi
+    -- doc `depth 0`; con day cau hoi la "noi dung vua upload co mo duong thuc thi nao
+    -- khong", nen MOT pham vi con bat la DU — ket luan cuoi la HOAC cac pham vi.
+    -- `<IfModule>` KHONG gioi han pham vi theo tep nen KHONG tang `depth`.
+    local opt_exec, autoload_on, depth = nil, nil, 0
     for i = 1, #lines do
         local line = strip(lines[i], kind)
         if line ~= "" then
             if kind == "apache" then
+                local cl = line:match("^<%s*/%s*(%a+)")
+                local op = not cl and line:match("^<%s*(%a+)") or nil
+                if cl then
+                    if cl:lower() ~= "ifmodule" and depth > 0 then depth = depth - 1 end
+                elseif op then
+                    if op:lower() ~= "ifmodule" then depth = depth + 1 end
+                else
                 -- `Directive gia_tri...` — tach tu dau tien.
                 local d, rest = line:match("^([%a_]+)%s+(.+)$")
                 if d then
@@ -373,9 +403,11 @@ function _M.scan_part(content, name_flags, from, to)
                         end
                     elseif dl == "options" then
                         -- `options_enables_exec` da xu ly last-wins TRONG mot dong;
-                        -- bien nay mang trang thai QUA cac dong.
-                        opt_exec = options_enables_exec(rest)
+                        -- bang nay mang trang thai QUA cac dong, RIENG tung pham vi.
+                        opt_exec = opt_exec or {}
+                        opt_exec[depth] = options_enables_exec(rest)
                     end
+                end
                 end
             else
                 -- `.ini`: `khoa = gia_tri`.
@@ -386,13 +418,23 @@ function _M.scan_part(content, name_flags, from, to)
                     -- khong phai mot duong chay ma. Bat no la nhan FP tu chinh cau
                     -- hinh hop le cua khach (dong nay co that trong nhieu php.ini de
                     -- TAT tinh nang do).
-                    autoload_on = (v ~= "" and v:lower() ~= "none")
+                    autoload_on = autoload_on or {}
+                    autoload_on[k:lower()] = (v ~= "" and v:lower() ~= "none")
                 end
             end
         end
     end
-    if opt_exec then flags = flags or {}; flags.handler = true end
-    if autoload_on then flags = flags or {}; flags.autoload = true end
+    -- HOAC cac pham vi: mot pham vi con bat la du de noi "co duong thuc thi".
+    if opt_exec then
+        for _, on in pairs(opt_exec) do
+            if on then flags = flags or {}; flags.handler = true; break end
+        end
+    end
+    if autoload_on then
+        for _, on in pairs(autoload_on) do
+            if on then flags = flags or {}; flags.autoload = true; break end
+        end
+    end
     -- `over` (cat theo byte) hop voi `truncated` (cat theo dong/do dai dong): ca
     -- hai deu la "CHUA SOI HET", va ca hai phai den duoc `scan_state`.
     return flags, (truncated or over)

@@ -648,6 +648,57 @@ if [ -s "$CCF" ]; then
     doi14 9
     want "14 dong QUA HAN bi rung -> lai CRITICAL" "$(bac14 d.php)" "CRITICAL"
 fi
+
+# ── NHOM 15: `wpinv` phai FAIL khi GHI that bai ───────────────────────
+#
+# `wpinv` truoc day goi `redis_send "$cmds" || true`, roi xac minh bang mot `GET`.
+# Do la mot lo ho THAT (nguoi dung bat 30-09): neu batch nay loi TAM THOI nhung khoa
+# tu lan chay TRUOC con song, `GET` van tra `1` -> wpinv bao "thanh cong" trong khi
+# TTL KHONG duoc gia han. Khoa se het han im lang 30 ngay sau, va `is_wp_root` tat
+# cam ma khong ai biet.
+#
+# Nhom nay dung mot rcli GIA co HAI hanh vi khac nhau cho GHI va cho DOC: ghi that
+# bai, doc tra `1` (nhu mot khoa cu con song). Ban truoc SE XANH o day; ban nay phai
+# do. Do la ca ma `RCLI_MODE=down` KHONG dien dat duoc — `down` lam ca hai that bai.
+printf '\n── wpinv: ghi that bai + khoa cu con song (muc 15) ──\n'
+DA="$R/da"
+mkdir -p "$DA/u1/domains" "$WEB/wp-content"
+printf 'site.test\n' > "$DA/u1/domains.list"
+# `wp-settings.php` la dau nhan WP cua `wpinv` (dong bo voi nhanh `check`).
+printf '<?php\n' > "$WEB/wp-settings.php"
+
+# rcli GIA: GHI (doc lenh tu STDIN) that bai; DOC (`GET` tren dong lenh) tra "1".
+cat > "$R/bin/rcli_stale" <<'RC'
+#!/bin/bash
+for a in "$@"; do
+    if [ "$a" = "GET" ]; then echo 1; exit 0; fi
+done
+cat >/dev/null 2>&1
+echo "Could not connect to Redis" >&2
+exit 1
+RC
+chmod +x "$R/bin/rcli_stale"
+
+out15=$(FIM_REDIS_CLI="$R/bin/rcli_stale" FIM_DA_DATA="$DA" FIM_HOME="$R/home" \
+        bash "$HERE/fim.sh" wpinv 2>&1)
+rc15=$?
+case "$out15" in
+    *"KHONG GHI DUOC"*) want "15 ghi that bai -> BAO 'KHONG GHI DUOC'" "dung" "dung" ;;
+    *"KHONG XAC MINH DUOC"*) want "15 ghi that bai -> BAO 'KHONG GHI DUOC'" "sai-huong-doc" "dung" ;;
+    *) want "15 ghi that bai -> BAO 'KHONG GHI DUOC'" "IM LANG: $out15" "dung" ;;
+esac
+# `exit 2` = KHONG DO DUOC, khac `exit 1` (co phat hien) va `exit 3` (ton dong).
+want "15 ghi that bai -> ma thoat DUNG BANG 2" "$rc15" "2"
+
+# HUONG NGUOC: rcli that su chay duoc thi `wpinv` phai THANH CONG. Thieu ca nay thi
+# mot ban "luon exit 2" cung qua.
+out15b=$(FIM_DA_DATA="$DA" FIM_HOME="$R/home" bash "$HERE/fim.sh" wpinv 2>&1)
+rc15b=$?
+want "15 rcli chay duoc -> ma thoat 0" "$rc15b" "0"
+case "$out15b" in
+    *"khoa da ghi"*) want "15 rcli chay duoc -> co ghi khoa" "co" "co" ;;
+    *) want "15 rcli chay duoc -> co ghi khoa" "khong: $out15b" "co" ;;
+esac
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

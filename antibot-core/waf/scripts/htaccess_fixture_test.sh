@@ -286,6 +286,76 @@ cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.p
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
 cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
 
+# ── NHOM 15: prepend va append la HAI khoa DOC LAP ───────────────────
+#
+# Ban truoc dung MOT bien cho ca hai directive, nen
+#     auto_prepend_file=/tmp/x.php
+#     auto_append_file=none
+# cho "khong nap ma" — BO SOT mot autoload dang bat (nguoi dung bat 30-09). Zend giu
+# mot gia tri RIENG cho tung khoa: last-wins ap TRONG tung khoa, ket luan cuoi la HOAC.
+#
+# Bon ca dau la ma tran 2x2 cua hai khoa, vi mot ban sua chi doi mot khoa se lot.
+ini_raw "doc lap: prepend BAT + append TAT" "co"    'auto_prepend_file=/tmp/x.php\nauto_append_file=none\n'
+ini_raw "doc lap: prepend TAT + append BAT" "co"    'auto_prepend_file=none\nauto_append_file=/tmp/x.php\n'
+ini_raw "doc lap: ca hai BAT"               "co"    'auto_prepend_file=/a.php\nauto_append_file=/b.php\n'
+ini_raw "doc lap: ca hai TAT"               "khong" 'auto_prepend_file=none\nauto_append_file=none\n'
+# last-wins van phai ap TRONG tung khoa — khong duoc bien thanh "mot lan bat la mai bat"
+ini_raw "doc lap: append last-wins TAT"     "khong" 'auto_append_file=/a.php\nauto_append_file=none\n'
+ini_raw "doc lap: prepend TAT, append cung TAT ve sau" "khong" 'auto_append_file=/a.php\nauto_prepend_file=/b.php\nauto_append_file=none\nauto_prepend_file=none\n'
+cross "cheo: prepend BAT + append TAT" ""  co    'auto_prepend_file=/tmp/x.php\nauto_append_file=none\n' upload_user_ini
+cross "cheo: prepend TAT + append BAT" ""  co    'auto_prepend_file=none\nauto_append_file=/tmp/x.php\n' upload_user_ini
+
+# ── NHOM 16: Options theo PHAM VI, khong lan trang thai ──────────────
+#
+# `Options -ExecCGI` trong `<FilesMatch>` chi ap cho tap tep hep do; no KHONG rut lai
+# quyen da cap cho ca thu muc. Ban truoc dung MOT cap (`execcgi_on`, `execcgi_depth`)
+# nen dong trong container ghi de trang thai ngoai -> BO SOT (nguoi dung bat 30-09).
+hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@execcgi" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" ""         'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: CHI trong FilesMatch"            ""         '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: ngoai BAT, trong Directory None" "@execcgi" 'Options +ExecCGI\n<Directory /x>\nOptions None\n</Directory>\n'
+hta_raw "pham vi: IfModule KHONG gioi han"         "@execcgi" '<IfModule mod_x.c>\nOptions +ExecCGI\n</IfModule>\n'
+# Huong nguoc: last-wins CUNG pham vi van phai chay, khong duoc thanh "mot lan bat la mai bat"
+hta_raw "pham vi: cung depth 0 last-wins TAT"      ""         'Options +ExecCGI\nOptions -ExecCGI\n'
+# Long hai cap: TAT o depth 2 khong duoc leo ra depth 0
+hta_raw "pham vi: long hai cap"                    "@execcgi" 'Options +ExecCGI\n<Directory /x>\n<FilesMatch "y">\nOptions -ExecCGI\n</FilesMatch>\n</Directory>\n'
+
+# ── NHOM 17: Lua theo PHAM VI — nhung tra loi CAU HOI KHAC awk ───────
+#
+# `cross` doi hai ben cung ket luan, nen KHONG dung duoc cho nhom nay: voi
+#     Options +ExecCGI
+#     <FilesMatch "x">
+#       Options -ExecCGI
+#     </FilesMatch>
+# awk tra `@execcgi` ("ca thu muc chay CGI duoc") va Lua tra `co` ("co duong thuc
+# thi") — TRUNG. Nhung voi `<FilesMatch>` CHI CO `+ExecCGI` ben trong thi awk tra
+# RONG (khong phai quyen ca thu muc) con Lua phai tra `co` (noi dung nay MO mot duong
+# thuc thi, du hep). Hai ky vong KHAC NHAU tren CUNG input, va do la dung — nen ky
+# vong ghi RIENG tung ben.
+lua_only() {  # lua_only <ten> <mong: co|khong> <printf-format> [flag]
+    printf "$3" > "$R/x.htaccess"
+    cat > "$R/x.lua" <<'LX'
+local SRC = os.getenv("ANTIBOT_SRC")
+local uc = dofile(SRC .. "waf/upload_content.lua")
+local fh = io.open(os.getenv("XFILE"), "rb")
+local body = fh:read("*a"); fh:close()
+local f = uc.scan_part(body, os.getenv("XFLAG"))
+io.write((f and (f.handler or f.autoload)) and "co" or "khong")
+LX
+    g=$(ANTIBOT_SRC="$(cd "$HERE/../.." && pwd)/" XFILE="$R/x.htaccess" \
+        XFLAG="${4:-upload_apache_config}" "$RESTY" "$R/x.lua" 2>/dev/null)
+    want "$1" "lua" "${g:-LOI}" "$2"
+}
+lua_only "lua pham vi: ngoai BAT, trong TAT"   "co"    'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+lua_only "lua pham vi: CHI trong FilesMatch"   "co"    '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+lua_only "lua pham vi: ngoai TAT, trong BAT"   "co"    'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+# Huong nguoc: TAT that su phai la TAT, khong duoc thanh "co container la co nguy"
+lua_only "lua pham vi: cung depth last-wins TAT" "khong" 'Options +ExecCGI\nOptions -ExecCGI\n'
+lua_only "lua pham vi: TAT o ca hai pham vi"     "khong" 'Options -ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+lua_only "lua pham vi: khong co Options nao"     "khong" '<FilesMatch "x">\nRequire all granted\n</FilesMatch>\n'
+# `<IfModule>` khong tang depth: trang thai ben trong VAN la pham vi ngoai
+lua_only "lua pham vi: IfModule long, last-wins xuyen qua" "khong" 'Options +ExecCGI\n<IfModule mod_x.c>\nOptions -ExecCGI\n</IfModule>\n'
+
 # ── HAI BEN DONG Y: sau dong DO DUOC, khong phai gia dinh ────────────
 #
 # Nhom nay ghi lai mot phep DO 29-09: toi tim cac dong co the lam hai parser lech

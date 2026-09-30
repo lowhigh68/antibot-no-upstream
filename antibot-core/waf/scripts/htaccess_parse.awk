@@ -80,6 +80,8 @@ function strip_comment(s,   out, i, c, q) {
     return out
 }
 
+BEGIN { depth = 0; ifdepth = 0 }
+
 {
     line = $0
     # Noi dong: gach nguoc cuoi dong -> ghep voi dong sau.
@@ -146,37 +148,36 @@ function strip_comment(s,   out, i, c, q) {
         next
     }
 
-    # `Options`: xu ly TUAN TU nhu Apache. `All` gom ExecCGI; `-ExecCGI` tat.
-    # `Options`: TRANG THAI, khong phai su kien. Apache xu ly tuan tu va dong SAU
-    # ghi de dong TRUOC, nen
+    # `Options`: TRANG THAI THEO PHAM VI, khong phai mot trang thai duy nhat.
+    #
+    # Apache xu ly tuan tu va dong SAU ghi de dong TRUOC — NHUNG chi trong CUNG mot
+    # pham vi. Mot `Options -ExecCGI` trong `<FilesMatch>` chi ap cho tap tep hep do,
+    # KHONG rut lai quyen da cap cho ca thu muc. Ban truoc dung MOT cap
+    # (`execcgi_on`, `execcgi_depth`), nen
     #     Options +ExecCGI
-    #     Options -ExecCGI
-    # la TAT. Ban truoc dat `on = 0` o DAU MOI DONG roi `print` ngay trong dong do,
-    # nen trang thai khong mang qua dong va `-ExecCGI` khong rut lai duoc cai da in
-    # (nguoi dung bat 29-09).
+    #     <FilesMatch "x">
+    #       Options -ExecCGI
+    #     </FilesMatch>
+    # cho [] — BO SOT mot thu muc that su chay CGI duoc (nguoi dung bat 30-09).
     #
-    # Nay giu `execcgi_on` NGOAI vong, va in o `END`. `depth` duoc ghi lai TAI LUC
-    # dong cuoi cung doi trang thai: mot `Options +ExecCGI` trong `<FilesMatch>`
-    # khong ap ca thu muc, nen phai biet no o trong hay ngoai container.
-    #
-    # CHUA LAM va noi ro: `RemoveHandler`/`RemoveType` cung la last-wins cho nhanh
-    # `AddType`/`AddHandler`. Nguoi dung neu `Options` nen toi sua dung pham vi do;
-    # mo rong sang duoi doi mot bo fixture rieng cho thu tu Add/Remove.
+    # Nay giu mot trang thai cho TUNG `depth`, va chi doc `depth 0` o `END`. Cau hoi
+    # can tra loi la "CA THU MUC co chay CGI duoc khong", nen chi pham vi ngoai cung
+    # tra loi duoc no; cac pham vi trong la tap con, va mot `+ExecCGI` chi trong
+    # `<FilesMatch>` khong phai quyen ca thu muc.
     if (d == "options") {
         for (i = 2; i <= nf; i++) {
             o = tolower(TOK[i])
-            if (o == "all")                             { execcgi_on = 1; execcgi_depth = depth }
-            else if (o == "none")                       { execcgi_on = 0; execcgi_depth = depth }
-            else if (o == "+execcgi" || o == "execcgi")  { execcgi_on = 1; execcgi_depth = depth }
-            else if (o == "-execcgi")                   { execcgi_on = 0; execcgi_depth = depth }
+            if (o == "all")                              opt[depth] = 1
+            else if (o == "none")                        opt[depth] = 0
+            else if (o == "+execcgi" || o == "execcgi")  opt[depth] = 1
+            else if (o == "-execcgi")                    opt[depth] = 0
         }
         next
     }
 }
 
-# `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong nao la dong
-# `Options` CUOI CUNG. `execcgi_depth == 0` = dong do nam NGOAI moi container, tuc
-# no ap cho ca thu muc.
+# `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
+# CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
 END {
-    if (execcgi_on && execcgi_depth == 0) print "@execcgi"
+    if (opt[0]) print "@execcgi"
 }

@@ -614,10 +614,24 @@ if [ "$mode" = "wpinv" ]; then
             # mot batch KHONG chay duoc lo ra ngay thay vi doi vong `GET` ben duoi. Cap nay
             # von da DUNG hon ba cap kia (`GET` so voi `"1"` cu the, khong phai `-n`), nhung
             # `2>&1` nuot stderr — mot loi Redis khong den duoc log nao.
-            redis_send "$cmds" || true
+            # `|| true` la CHO SAI cu, va no vo hieu hoa chinh gia tri cua canary
+            # (nguoi dung bat 30-09): neu batch nay loi TAM THOI nhung khoa tu lan
+            # chay TRUOC con song, phep `GET` ben duoi van tra `1` — nen wpinv bao
+            # "thanh cong" trong khi TTL khong duoc gia han va khoa se het han im lang.
+            # Phep xac minh chi co nghia khi phep GHI cung phai dung.
+            if ! redis_send "$cmds"; then
+                echo "wpinv: KHONG GHI DUOC $nkeys khoa: $REDIS_ERR" >&2
+                echo "wpinv: khoa tu lan chay truoc co the con song, nhung TTL KHONG duoc gia han." >&2
+                exit 2
+            fi
             # XAC MINH VONG TRON: doc nguoc mot khoa vua ghi. Lech db, sai host,
             # Redis chet -- het thay lo ra o day thay vi de inventory ghi mot noi
             # va WAF doc mot noi, mai mai khong khop ma khong ai bao loi.
+            #
+            # GIOI HAN, noi ro: ghi va doc lai bang CUNG `$REDIS_DB` KHONG chung minh
+            # duoc db do khop `_M.redis.db` trong `core/config.lua` — no chi chung minh
+            # redis-cli ghi duoc va doc lai duoc chinh cho no vua ghi. Phep so khop
+            # cau hinh hai ben la viec cua deploy/config check, khong phai cua day.
             probe=$(printf '%s\n' "$cmds" | head -1 | awk '{print $2}')
             if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG" </dev/null)" != "1" ]; then
                 echo "wpinv: KHONG XAC MINH DUOC -- da ghi $nkeys khoa nhung doc nguoc that bai." >&2
