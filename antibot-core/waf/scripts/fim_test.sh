@@ -660,6 +660,54 @@ fi
 # Nhom nay dung mot rcli GIA co HAI hanh vi khac nhau cho GHI va cho DOC: ghi that
 # bai, doc tra `1` (nhu mot khoa cu con song). Ban truoc SE XANH o day; ban nay phai
 # do. Do la ca ma `RCLI_MODE=down` KHONG dien dat duoc — `down` lam ca hai that bai.
+
+# ── NHOM 16: `detect_execcgi_ok` doc AllowOverride THAT ───────────────
+#
+# `ExecCGI` la quyen webserver phai cho, khong phai tinh chat cua tep. Ham nay DO no
+# tu cau hinh Apache chu khong hardcode — vi `AllowOverride` khac nhau theo may.
+#
+# MAC DINH AN TOAN la `1`: khong do duoc thi giu tin hieu nhu cu. Nguoc lai se lam mot
+# may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
+printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
+AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"
+eok() {  # eok <ten> <mong>
+    g=$(FIM_DA_HTTPD="$AO" FIM_APACHE_EXTRA="$AO/extra" \
+        bash -c 'DA_HTTPD="$FIM_DA_HTTPD"; APACHE_EXTRA="$FIM_APACHE_EXTRA"
+                 '"$(sed -n "/^detect_execcgi_ok() {/,/^}/p" "$HERE/fim.sh")"'
+                 detect_execcgi_ok' 2>/dev/null)
+    want "$1" "${g:-LOI}" "$2"
+}
+# Dang THAT cua DirectAdmin: whitelist KHONG co ExecCGI -> 0
+printf 'AllowOverride AuthConfig FileInfo Indexes Limit Options=Indexes,IncludesNOEXEC,MultiViews,SymLinksIfOwnerMatch,FollowSymLinks,None\n' \
+  > "$AO/u1/httpd.conf"
+eok "16 whitelist KHONG co ExecCGI -> 0" "0"
+# Whitelist CO ExecCGI -> 1
+printf 'AllowOverride FileInfo Options=Indexes,ExecCGI,MultiViews\n' > "$AO/u1/httpd.conf"
+eok "16 whitelist CO ExecCGI -> 1" "1"
+# `AllowOverride All` -> 1
+printf 'AllowOverride All\n' > "$AO/u1/httpd.conf"
+eok "16 AllowOverride All -> 1" "1"
+# `Options` tran (khong dau `=`) = cho tat -> 1
+printf 'AllowOverride FileInfo Options\n' > "$AO/u1/httpd.conf"
+eok "16 Options tran -> 1" "1"
+# KHONG co dong nao (khong do duoc) -> 1, MAC DINH AN TOAN
+printf 'ServerName x.test\n' > "$AO/u1/httpd.conf"
+eok "16 khong co AllowOverride -> 1 (mac dinh an toan)" "1"
+# KHONG co tep nao -> 1
+rm -f "$AO/u1/httpd.conf"
+eok "16 khong co tep cau hinh -> 1 (mac dinh an toan)" "1"
+# MOT dong cho, MOT dong khong -> 1 (co cho o dau do la du)
+mkdir -p "$AO/u2"
+printf 'AllowOverride FileInfo Options=Indexes,None\n' > "$AO/u1/httpd.conf"
+printf 'AllowOverride All\n' > "$AO/u2/httpd.conf"
+eok "16 mot dong cho, mot dong khong -> 1" "1"
+# CA HAI khong cho -> 0
+printf 'AllowOverride FileInfo Options=Indexes,None\n' > "$AO/u2/httpd.conf"
+eok "16 ca hai KHONG cho -> 0" "0"
+# `None` khong duoc doc thanh `All` chi vi chua chu... kiem chuoi khong khop nham
+printf 'AllowOverride None\n' > "$AO/u1/httpd.conf"
+printf 'AllowOverride None\n' > "$AO/u2/httpd.conf"
+eok "16 AllowOverride None -> 0" "0"
 printf '\n── wpinv: ghi that bai + khoa cu con song (muc 15) ──\n'
 DA="$R/da"
 mkdir -p "$DA/u1/domains" "$WEB/wp-content"

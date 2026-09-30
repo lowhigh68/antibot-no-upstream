@@ -13,6 +13,33 @@
 #              tep nao la CGI. Con phai co `AddHandler`/`SetHandler` xac dinh dieu
 #              do. HAI buoc RIENG theo tai lieu Apache, nen gop vao `@all` la bao
 #              MANH HON su that (nguoi dung bat 28-09).
+# `@execcgi` chi co nghia khi WEBSERVER cho `.htaccess` dat `ExecCGI`. Do KHONG phai
+# tinh chat cua tep — do la `AllowOverride` cua `<Directory>` phu no, va tren
+# DirectAdmin no la mot WHITELIST:
+#
+#   AllowOverride AuthConfig FileInfo Indexes Limit \
+#     Options=Indexes,IncludesNOEXEC,MultiViews,SymLinksIfOwnerMatch,FollowSymLinks,None
+#
+# `ExecCGI` KHONG co trong danh sach do, nen `Options +ExecCGI` trong `.htaccess` cua
+# khach khong cap duoc gi — con `Options All` thi lam Apache tra 500 (do duoc 30-09:
+# thu muc co `Options All -Indexes` tra `http=500`, goc site 200). Tuc mot dau
+# `@execcgi` tren fleet nay la SO LIEU RAC, va neu luat duoc promote thi la FP.
+#
+# `FileInfo` THI CO, nen `AddHandler`/`SetHandler`/`ForceType` duoc doc binh thuong
+# (do duoc: hai site co `AddHandler` o goc tra 200 va 301, khong 500). Nen `ext:` va
+# `@all` la tin hieu THAT va khong bi anh huong o day.
+#
+# DO chu khong HARDCODE: `AllowOverride` khac nhau theo may va theo `<Directory>`, nen
+# `fim.sh` do no tu cau hinh Apache THAT roi truyen vao. `execcgi_ok` mac dinh la 1
+# (giu nguyen hanh vi cu) — mot bo test hay mot may khong do duoc thi khong mat tin
+# hieu, chi mat phep ha bac.
+#
+#   execcgi_ok=1  ->  `@execcgi`      nhu cu
+#   execcgi_ok=0  ->  `@execcgi:noop` webserver KHONG cho, ghi lai de con dem duoc
+#
+# Ghi `:noop` chu khong im lang: neu mai `AllowOverride` doi thi so dong nay cho biet
+# co bao nhieu thu muc se BAT tin hieu tro lai, va do la con so can de quyet.
+#
 # Khong in gi = khong co gi nguy hiem.
 #
 # BAT BIEN doc tu tai lieu Apache:
@@ -80,7 +107,7 @@ function strip_comment(s,   out, i, c, q) {
     return out
 }
 
-BEGIN { depth = 0; ifdepth = 0 }
+BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
 
 {
     line = $0
@@ -179,5 +206,5 @@ BEGIN { depth = 0; ifdepth = 0 }
 # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
 # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
 END {
-    if (opt[0]) print "@execcgi"
+    if (opt[0]) print (execcgi_ok + 0 == 0) ? "@execcgi:noop" : "@execcgi"
 }

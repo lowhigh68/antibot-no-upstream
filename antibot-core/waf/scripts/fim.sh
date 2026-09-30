@@ -61,6 +61,59 @@ CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
 # — mot phep trich la mot cho de lech, va no da hong mot lan (mat dong dau va dau
 # dong cua khoi). Nay ca hai ben `-f` cung tep.
 HTA_AWK="${FIM_HTA_AWK:-$(dirname "$0")/htaccess_parse.awk}"
+
+# `AllowOverride` CO cho `.htaccess` dat `ExecCGI` khong? DO tu cau hinh Apache THAT,
+# khong hardcode: tren DirectAdmin no la mot whitelist va `ExecCGI` khong nam trong do
+# (do duoc 30-09 tren 73 tep `httpd.conf` per-domain, 149 dong, khong mot dong nao co
+# `ExecCGI`), nhung day la cau hinh cua MOT ha tang — may khac co the khac.
+#
+# BA ket qua, va `1` la mac dinh AN TOAN: khong do duoc thi giu tin hieu nhu cu, chi
+# mat phep ha bac. Nguoc lai (mac dinh 0) se lam mot may khong co Apache o duong quen
+# IM LANG toan bo tin hieu ExecCGI.
+#
+#   1  cho phep, hoac KHONG DO DUOC  -> `@execcgi` nhu cu
+#   0  chac chan KHONG cho           -> `@execcgi:noop`
+#
+# Quy tac doc: mot dong `AllowOverride` co `Options=<danh sach>` thi danh sach do la
+# whitelist — `ExecCGI` phai co TRONG no. `AllowOverride All` hoac `Options` tran
+# (khong dau `=`) thi cho tat. Chi ket luan `0` khi TIM THAY it nhat mot dong va
+# KHONG dong nao cho ExecCGI.
+DA_HTTPD="${FIM_DA_HTTPD:-/usr/local/directadmin/data/users}"
+APACHE_EXTRA="${FIM_APACHE_EXTRA:-/etc/httpd/conf/extra}"
+
+# In ra `1` hoac `0` tren stdout. KHONG dung ma thoat: `0`/`1` cua shell nguoc nghia
+# voi `0`/`1` cua bien awk, va mot cho de doc nguoc la mot cho de sai im lang.
+#
+# SO KHOP THEO TOKEN, khong phai chuoi con. Ban dau toi viet `case $line in *All*)` va
+# no khop chinh chu `All` TRONG ten directive `AllowOverride` — nen ham LUON tra `1`,
+# tin hieu rac van sinh ra y nhu cu, im lang. Bo test bat (3 ca); `bash -n` thi khong.
+# `Limit` va `FollowSymLinks` cung chua `All`/`ll`, nen moi phep so chuoi con o day deu
+# sai. Tach token roi so BANG la cach duy nhat dung.
+detect_execcgi_ok() {
+    local f n=0 yes=0 line tok
+    for f in "$DA_HTTPD"/*/httpd.conf "$APACHE_EXTRA"/httpd-userdir.conf; do
+        [ -f "$f" ] || continue
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            n=$((n + 1))
+            # Bo ten directive, chi giu danh sach doi so.
+            line=${line#*[Aa]llow[Oo]verride}
+            for tok in $line; do
+                case "$tok" in
+                    All)        yes=1 ;;       # `All` = cho tat
+                    Options)    yes=1 ;;       # `Options` tran (khong `=`) = cho tat
+                    Options=*)  case ",${tok#Options=}," in *,ExecCGI,*) yes=1 ;; esac ;;
+                esac
+            done
+        done <<EOT
+$(grep -hiE '^[[:space:]]*AllowOverride' "$f" 2>/dev/null)
+EOT
+    done
+    # KHONG do duoc (`n == 0`) -> `1`, giu tin hieu nhu cu. Chi `0` khi da doc duoc
+    # it nhat mot dong VA khong dong nao cho ExecCGI.
+    if [ "$n" -eq 0 ] || [ "$yes" -eq 1 ]; then echo 1; else echo 0; fi
+}
+EXECCGI_OK="${FIM_EXECCGI_OK:-$(detect_execcgi_ok)}"
 INI_AWK="${FIM_INI_AWK:-$(dirname "$0")/inifile_parse.awk}"
 
 # TAO VA DAT QUYEN NGAY O DAY, mot cho duy nhat. Truoc ban nay co BA cho goi
@@ -242,7 +295,7 @@ redis_absent() {
     case "$out" in
         0) return 0 ;;
         1) return 1 ;;
-        *) REDIS_ERR="EXISTS $1 tra '$out' (khong phai 0/1) — khong ket luan duoc"
+        *) REDIS_ERR="EXISTS $1 tra '$out' (khong phai 0/1) -- khong ket luan duoc"
            return 2 ;;
     esac
 }
@@ -1241,7 +1294,7 @@ if [ "$mode" = "baseline" ]; then
 fi
 
 [ "$mode" = "check" ] || usage
-[ -s "$MANIFEST" ] || { echo "chua co manifest — chay '$0 baseline' truoc" >&2; exit 2; }
+[ -s "$MANIFEST" ] || { echo "chua co manifest -- chay '$0 baseline' truoc" >&2; exit 2; }
 
 new_scan=$(mktemp) || exit 2
 diff_out=$(mktemp) || exit 2
@@ -1953,7 +2006,7 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                 {
                     note = "(nhieu kha nang la cap nhat)"
                     if (f[1] == "1MUPLUG")
-                        note = "(MOT DOT — o day khong co cap nhat hop le)"
+                        note = "(MOT DOT -- o day khong co cap nhat hop le)"
                     printf "%-8s %-3s %4d file trong %s  %s\n", \
                            lbl(f[1]), f[2], n[k], f[3], note
                 }
@@ -2019,7 +2072,7 @@ marked=0; marked_chg=0; mark_err=""
 if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; then
   if ! command -v "$REDIS_CLI" >/dev/null 2>&1; then
     # KHONG chet: FIM van phat hien va van bao. Chi la WAF khong duoc bao tin.
-    mark_err="thieu '$REDIS_CLI' — phat hien van chay, nhung WAF khong nhan duoc tin hieu."
+    mark_err="thieu '$REDIS_CLI' -- phat hien van chay, nhung WAF khong nhan duoc tin hieu."
   else
     # KHOA LA CHINH DUONG DAN FILE, khong phai <host>:<uri>.
     #
@@ -2174,7 +2227,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             toks=""
             # `.htaccess`: duoi cu the, hoac `@all` cho SetHandler/ForceType/ExecCGI.
             if [ -f "$d/.htaccess" ]; then
-                t=$(awk -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+                t=$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
                 [ -n "$t" ] && toks="$t"
             fi
             # `.user.ini` -> `@php` ; `php.ini` -> `@phpini`. HAI token khac nhau.
@@ -2246,7 +2299,7 @@ EOF
                     mark_err="KHONG XAC MINH DUOC (go fimchg): da go $ndel khoa nhung VAN CON: $left."
                     mark_err="$mark_err Dau cu se gay duong tinh gia tới het TTL."
                 elif [ -z "$mark_err" ] && [ -n "$undec" ]; then
-                    mark_err="KHONG KET LUAN DUOC (go fimchg): $undec — $REDIS_ERR"
+                    mark_err="KHONG KET LUAN DUOC (go fimchg): $undec -- $REDIS_ERR"
                 fi
             fi
         fi
@@ -2260,7 +2313,7 @@ fi
 # se doc thanh "FIM thay 1 file MOI", tuc mot ket luan sai ve ban chat.
 chgnote=""
 [ "$marked_chg" -gt 0 ] && chgnote=", $marked_chg cau hinh doi"
-header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] — $total thay doi, $crit dang chu y, $marked key bao WAF$chgnote ==="
+header="=== FIM $(date '+%Y-%m-%d %H:%M') [$tier] -- $total thay doi, $crit dang chu y, $marked key bao WAF$chgnote ==="
 [ -n "$mark_err" ] && header="$header
 !! $mark_err"
 

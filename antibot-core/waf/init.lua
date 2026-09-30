@@ -546,9 +546,20 @@ local function fim_config_changed(uri, rt)
     local sufset = {}
     for i = 1, #sufs do sufset[sufs[i]] = true end
     local hit_all, hit_ext, hit_php, hit_phpini, hit_exec = false, false, false, false, false
+    local hit_exec_noop = false
     for e in v:gmatch("[^,]+") do
         if e == "@all" then
             hit_all = true                        -- moi duoi, khong rang buoc PHP_EXT
+        elseif e == "@execcgi:noop" then
+            -- `AllowOverride` cua webserver KHONG cho `.htaccess` dat `ExecCGI`, nen
+            -- dong `Options +ExecCGI` khong cap duoc gi (tren DirectAdmin `Options=`
+            -- la whitelist va `ExecCGI` khong nam trong do; `Options All` con lam
+            -- Apache tra 500 — do duoc 30-09). `fim.sh` DO dieu nay tu cau hinh
+            -- Apache that roi phat nhan nay thay cho `@execcgi`.
+            --
+            -- Ghi nhan chu khong bao: dem duoc bao nhieu thu muc SE bat tin hieu neu
+            -- `AllowOverride` doi, ma khong sinh so lieu rac hom nay.
+            hit_exec_noop = true
         elseif e == "@execcgi" then
             -- `Options +ExecCGI` CHI cap quyen chay CGI; no KHONG noi tep nao la
             -- CGI. Mot minh no chua lam gi chay duoc, nen bao RIENG va NHE hon —
@@ -590,6 +601,8 @@ local function fim_config_changed(uri, rt)
         if hit_phpini then return "autoload_phpini"  end
     end
     if hit_exec then return "execcgi_only" end
+    -- SAU nhanh `hit_exec`: mot thu muc co CA hai thi cai SONG quyet dinh.
+    if hit_exec_noop then return "execcgi_noop" end
     return nil
 end
 

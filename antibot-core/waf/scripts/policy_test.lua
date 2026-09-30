@@ -1113,6 +1113,20 @@ do
     -- Khong co duoi nao thi thoat som, khong hoi Redis.
     eq("khong co duoi -> KHONG bao",            mark_for("@all",     "/noext"),      nil)
     eq("chi co / -> KHONG bao",                 mark_for("@all",     "/"),           nil)
+    -- ── LOI 9: `@execcgi:noop` — tin hieu CHET tren ha tang nay ─────
+    --
+    -- `ExecCGI` la quyen ma WEBSERVER phai cho. `fim.sh` DO `AllowOverride` tu cau
+    -- hinh Apache that roi phat `@execcgi:noop` thay cho `@execcgi` khi khong duoc
+    -- phep. Nhan RIENG chu khong im lang: dem duoc bao nhieu thu muc SE bat tin hieu
+    -- neu `AllowOverride` doi, ma khong sinh so lieu rac hom nay.
+    eq("@execcgi:noop -> execcgi_noop",    mark_for("@execcgi:noop", "/x.php"), "execcgi_noop")
+    -- CA hai -> cai SONG quyet dinh.
+    eq("@execcgi + noop -> execcgi_only",  mark_for("@execcgi,@execcgi:noop", "/x.php"), "execcgi_only")
+    -- `ext:` manh hon ca hai, va KHONG bi noop lam mo.
+    eq("ext:php + noop -> handler_ext",    mark_for("ext:php,@execcgi:noop", "/x.php"), "handler_ext")
+    eq("@all + noop -> handler_all",       mark_for("@all,@execcgi:noop", "/x.php"), "handler_all")
+    -- Huong NGUOC: `@execcgi` THAT khong duoc bien thanh noop.
+    eq("@execcgi THAT -> execcgi_only",    mark_for("@execcgi", "/x.php"), "execcgi_only")
 end
 
 io.write(string.format("\npolicy V2: %d qua, %d hong\n", pass, fail))

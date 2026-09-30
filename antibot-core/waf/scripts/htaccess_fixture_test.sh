@@ -356,6 +356,41 @@ lua_only "lua pham vi: khong co Options nao"     "khong" '<FilesMatch "x">\nRequ
 # `<IfModule>` khong tang depth: trang thai ben trong VAN la pham vi ngoai
 lua_only "lua pham vi: IfModule long, last-wins xuyen qua" "khong" 'Options +ExecCGI\n<IfModule mod_x.c>\nOptions -ExecCGI\n</IfModule>\n'
 
+# ── NHOM 19: `@execcgi` chi co nghia khi AllowOverride CHO ───────────
+#
+# `ExecCGI` trong `.htaccess` la mot quyen ma WEBSERVER phai cho, khong phai mot tinh
+# chat cua tep. Tren DirectAdmin `AllowOverride` la whitelist:
+#   Options=Indexes,IncludesNOEXEC,MultiViews,SymLinksIfOwnerMatch,FollowSymLinks,None
+# `ExecCGI` KHONG co trong do (do 30-09: 149 dong tren 73 tep httpd.conf), va
+# `Options All` con lam Apache tra 500 — do duoc bang request THAT: thu muc co
+# `Options All -Indexes` tra http=500 trong khi goc site tra 200.
+#
+# `execcgi_ok=1` la MAC DINH AN TOAN: khong do duoc thi giu tin hieu nhu cu.
+hta_ok() {  # hta_ok <ten> <execcgi_ok> <mong> <printf-format>
+    printf "$4" > "$R/x.htaccess"
+    want "$1" "awk" "$(awk -v execcgi_ok="$2" -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "$3"
+}
+hta_ok "execcgi_ok=1 -> @execcgi nhu cu"      1 "@execcgi"      'Options +ExecCGI\n'
+hta_ok "execcgi_ok=0 -> @execcgi:noop"        0 "@execcgi:noop" 'Options +ExecCGI\n'
+hta_ok "execcgi_ok=1 + All -> @execcgi"       1 "@execcgi"      'Options All -Indexes\n'
+hta_ok "execcgi_ok=0 + All -> noop"           0 "@execcgi:noop" 'Options All -Indexes\n'
+# `ext:` KHONG bi anh huong: `AddHandler` thuoc `FileInfo`, va `FileInfo` CO trong
+# whitelist (do duoc: hai site co AddHandler o goc tra 200 va 301, khong 500).
+hta_ok "execcgi_ok=0 KHONG anh huong ext:"    0 "ext:php"       'AddHandler application/x-httpd-php .php\n'
+hta_ok "execcgi_ok=0 KHONG anh huong @all"    0 "@all"          'SetHandler application/x-httpd-php\n'
+# TAT van la TAT o ca hai che do: co sua khong duoc thanh "luon in mot cai gi".
+hta_ok "execcgi_ok=0 + TAT -> rong"           0 ""              'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_ok "execcgi_ok=1 + TAT -> rong"           1 ""              'Options +ExecCGI\nOptions -ExecCGI\n'
+# KHONG truyen bien -> phai la 1 (mac dinh an toan), khong phai rong hay noop.
+printf 'Options +ExecCGI\n' > "$R/x.htaccess"
+want "execcgi_ok KHONG truyen -> mac dinh @execcgi" "awk" \
+     "$(awk -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "@execcgi"
+# Dang THAT tren fleet: cgi-bin co ca AddHandler lan ExecCGI. `ext:` giu, `@execcgi`
+# thanh noop — hai tin hieu doc lap, khong keo nhau.
+hta_ok "cgi-bin THAT, execcgi_ok=0" 0 "ext:cgi
+ext:pl
+@execcgi:noop" 'Options -Indexes +ExecCGI\nAddHandler cgi-script .cgi .pl\n'
+
 # ── HAI BEN DONG Y: sau dong DO DUOC, khong phai gia dinh ────────────
 #
 # Nhom nay ghi lai mot phep DO 29-09: toi tim cac dong co the lam hai parser lech
