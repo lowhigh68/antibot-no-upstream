@@ -44,20 +44,25 @@ export FIM_MARK_TTL=604800
 # ma thoat khac 0. `fim.sh` PHAI phan biet duoc no voi "key khong ton tai".
 cat > "$R/bin/rcli" <<'RCLI'
 #!/bin/bash
-# `-n <db>` roi hoac `GET/EXISTS/DEL <key>` hoac doc lenh tu STDIN.
+# `-n <db>` roi hoac `GET/EXISTS/DEL <key>`, hoac `--pipe` doc RESP tu STDIN.
+#
+# `$RCLI_OUT` dung TAB lam ranh gioi truong: `<lenh>\t<key>\t<ttl>\t<value>`. Ban truoc
+# dung KHOANG TRANG va `awk '$2==k'`, nen mot key co khoang trang KHONG tra cuu lai
+# duoc — stub mang dung gioi han ma `fim.sh` vua bo di, va se bao "qua" cho mot ca
+# that ra hong.
 if [ "${RCLI_MODE:-up}" = "down" ]; then
     cat >/dev/null 2>&1   # nuot STDIN neu co, y nhu mot binary that
     echo "Could not connect to Redis at 127.0.0.1:6379: Connection refused" >&2
     exit 1
 fi
 db=""
+pipe=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -n) db="$2"; shift 2 ;;
+        --pipe) pipe=1; shift ;;
         GET) key="$2"
-             # Tra gia tri da ghi cho key do, lay tu file lenh. `DEL` sau do lam no
-             # mat — nen phai xet CA hai theo THU TU xuat hien.
-             awk -v k="$key" '
+             awk -F'\t' -v k="$key" '
                  $1=="SETEX" && $2==k { v=$4; has=1 }
                  $1=="DEL"   && $2==k { v="";  has=0 }
                  END { if (has) print v; else print "" }' "$RCLI_OUT"
@@ -66,18 +71,68 @@ while [ $# -gt 0 ]; do
              # `EX_STUCK=1` = khoa KHONG BAO GIO mat, tuc DEL that bai im lang. Do la
              # ca ma `-n "$(GET)"` cua ban truoc KHONG phan biet duoc voi "da xoa".
              if [ "${EX_STUCK:-0}" = 1 ]; then echo 1; exit 0; fi
-             # 0/1, y nhu Redis that. Day la lenh phan biet duoc "khong con" voi
-             # "khong ket luan duoc" — `GET` tra chuoi rong cho CA HAI.
-             awk -v k="$key" '
+             awk -F'\t' -v k="$key" '
                  $1=="SETEX" && $2==k { has=1 }
                  $1=="DEL"   && $2==k { has=0 }
                  END { print (has ? 1 : 0) }' "$RCLI_OUT"
              exit 0 ;;
-        DEL) printf 'DEL %s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
+        DEL) printf 'DEL\t%s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
         *) shift ;;
     esac
 done
-cat >> "$RCLI_OUT"
+
+# ── GIAI MA RESP ────────────────────────────────────────────────────
+# `*<n>\r\n` roi n lan `$<len>\r\n<arg>\r\n`. Doc bang DO DAI chu khong bang dong:
+# mot doi so CO THE chua `\n`, va cat theo dong se lam lech moi thu sau no. Day la
+# chinh tinh chat ma RESP dem lai, nen stub phai ton trong no hoac bo test se xanh
+# cho mot hien thuc hong.
+n_cmd=0
+n_err=0
+while IFS= read -r hdr; do
+    hdr=${hdr%$'\r'}
+    [ -n "$hdr" ] || continue
+    case "$hdr" in
+        \**) nargs=${hdr#\*} ;;
+        *) n_err=$((n_err + 1)); continue ;;
+    esac
+    args=()
+    i=0
+    while [ "$i" -lt "$nargs" ]; do
+        IFS= read -r lh || break
+        lh=${lh%$'\r'}
+        case "$lh" in
+            \$*) alen=${lh#\$} ;;
+            *) n_err=$((n_err + 1)); break ;;
+        esac
+        # `-N <len>` doc DUNG len byte; roi bo `\r\n` con lai.
+        arg=""
+        if [ "$alen" -gt 0 ]; then IFS= read -r -N "$alen" arg; fi
+        IFS= read -r _crlf
+        args+=("$arg")
+        i=$((i + 1))
+    done
+    [ "${#args[@]}" -eq "$nargs" ] || { n_err=$((n_err + 1)); continue; }
+    n_cmd=$((n_cmd + 1))
+    case "${args[0]}" in
+        SETEX)
+            if [ "${#args[@]}" -ne 4 ]; then n_err=$((n_err + 1)); continue; fi
+            printf 'SETEX\t%s\t%s\t%s\n' "${args[1]}" "${args[2]}" "${args[3]}" >> "$RCLI_OUT" ;;
+        DEL)
+            printf 'DEL\t%s\n' "${args[1]}" >> "$RCLI_OUT" ;;
+        *) n_err=$((n_err + 1)) ;;
+    esac
+done
+
+# `RCLI_ERRN=<k>` = Redis TU CHOI k lenh du ket noi song. Day la ca ma canary mot
+# minh KHONG bat duoc, va la ly do `redis_send_resp` doc `errors:`.
+if [ -n "${RCLI_ERRN:-}" ]; then n_err=$((n_err + RCLI_ERRN)); fi
+
+if [ "$pipe" = 1 ]; then
+    echo "All data transferred. Waiting for the last reply..."
+    echo "Last reply received from server."
+    echo "errors: $n_err, replies: $n_cmd"
+fi
+exit 0
 RCLI
 chmod +x "$R/bin/rcli"
 export RCLI_OUT="$R/redis_cmds.txt"
@@ -106,10 +161,18 @@ want() {  # want <ten> <duoc> <mong>
     if [ "$2" = "$3" ]; then pass=$((pass+1))
     else fail=$((fail+1)); printf 'HONG  %s\n      duoc=%s  mong=%s\n' "$1" "$2" "$3"; fi
 }
-keys() { grep -c "^SETEX $1" "$RCLI_OUT" 2>/dev/null || true; }
+# `$RCLI_OUT` dung TAB: `SETEX\t<key>\t<ttl>\t<value>`. Ba ham nay la DUY NHAT noi
+# biet dinh dang do — truoc day moi ca tu viet mot `awk "\$2==..."` rieng, va khi
+# stub doi sang tab thi phai sua hang chuc cho.
+keys() { grep -cP "^SETEX\t\Q$1\E" "$RCLI_OUT" 2>/dev/null || true; }
 haskey() {
-    if grep -q "^SETEX $1 " "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
+    if grep -qP "^SETEX\t\Q$1\E\t" "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
 }
+# `kval <key>` = gia tri cua LAN GHI CUOI; `kttl <key>` = TTL.
+kval() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$RCLI_OUT"; }
+kttl() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$3} END{print v}' "$RCLI_OUT"; }
+# Lan ghi DAU, cho cac ca xet thu tu.
+kval1() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $4; exit}' "$RCLI_OUT"; }
 
 echo "fim_test: tep cau hinh bi SUA -> waf:fimchg:"
 
@@ -158,9 +221,9 @@ want "2 khoa theo thu muc, khong bung no theo tep" \
      "$([ "$(keys 'waf:fimchg:')" -le 3 ] && echo "trong tam" || echo "qua nhieu: $(keys 'waf:fimchg:')")" "trong tam"
 # GIA TRI la duoi bi anh xa — day la thong tin ma ban truoc khong co.
 want "2 gia tri la duoi bi anh xa" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "ext:jpg"
+     "$(kval "waf:fimchg:$WEB/")" "ext:jpg"
 want "2 TTL dung" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$3}" "$RCLI_OUT")" "604800"
+     "$(kttl "waf:fimchg:$WEB/")" "604800"
 
 # Nhieu duoi, va CHI duoi cua directive ANH XA duoc tinh: `AddType text/plain .txt`
 # khong duoc vao danh sach (do la FP loi 6 da sua o `upload_content.lua`).
@@ -169,7 +232,7 @@ sleep 0.02
 printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
+got=$(kval "waf:fimchg:$WEB/")
 want "2b hai duoi duoc anh xa" "$got" "ext:jpg,ext:png"
 case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
                *)     want "2b .txt KHONG duoc tinh" "khong-txt" "khong-txt" ;; esac
@@ -188,7 +251,7 @@ case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
 sleep 0.02
 printf 'AddHandler application/x-httpd-php .@all\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-got=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")
+got=$(kval "waf:fimchg:$WEB/")
 want "2c ten .@all -> ext:@all, KHONG phai @all" "$got" "ext:@all"
 # Bien the: ten trung ca bon co.
 : > "$RCLI_OUT"
@@ -196,7 +259,7 @@ sleep 0.02
 printf 'AddHandler application/x-httpd-php .@php .@phpini .@execcgi\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c ba ten trung co deu co tien to" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" \
+     "$(kval "waf:fimchg:$WEB/")" \
      "ext:@execcgi,ext:@php,ext:@phpini"
 # Huong NGUOC: `SetHandler` van phai ra `@all` THAT (phep sua khong lam mat nghia).
 : > "$RCLI_OUT"
@@ -204,7 +267,7 @@ sleep 0.02
 printf 'SetHandler application/x-httpd-php\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c SetHandler van la @all THAT" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "@all"
+     "$(kval "waf:fimchg:$WEB/")" "@all"
 # TRA lai trang thai cua ca 2b: ca 4 o duoi tinh tu `.htaccess` HIEN CO tren dia
 # (thiet ke "tinh lai tu DIA"), nen mot ca chen vao giua PHAI don trang thai cua no.
 # Thieu buoc nay thi ca 4 doc `@all` cua ca 2c va bao hong o mot cho khong lien quan.
@@ -232,7 +295,7 @@ want "3 fimnew co shell.php" "$(haskey "waf:fimnew:$WEB/shell.php")" "yes"
 # Dieu ca nay THAT SU phai bao ve van nguyen: hai nhom DOC LAP. `shell.php` moi phai
 # vao `fimnew`, va KHONG duoc lam token cua `fimchg` doi. Nen kiem dung do.
 want "3 fimchg KHONG bi shell.php moi lam doi" \
-     "$(awk -v k="waf:fimchg:$WEB/" '$2==k {print $4}' "$RCLI_OUT" | tail -1)" "ext:jpg,ext:png"
+     "$(kval "waf:fimchg:$WEB/")" "ext:jpg,ext:png"
 
 # ══ 4. `.user.ini` bi sua -> fimchg ═════════════════════════════════════════
 : > "$RCLI_OUT"
@@ -260,7 +323,7 @@ want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `.htaccess` tu buoc 2b van con tren dia nen `jpg,png` van co mat. Do la DUNG —
 # khoa mo ta THU MUC, va day la chinh loi da duoc sua.
 want "4 gia tri co @php (het dau * ba nghia)" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)" "ext:jpg,ext:png,@php"
+     "$(kval "waf:fimchg:$WEB/")" "ext:jpg,ext:png,@php"
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
@@ -270,7 +333,7 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # KHONG con la "im": khoa mo ta CA THU MUC, va `.htaccess` tu buoc 2b van tren dia
 # nen khoa van phai co `jpg,png`. Dieu phai kiem la KHONG co `@php` — tuc mot
 # `.user.ini` khong autoload thi khong gop tin hieu autoload vao.
-val4b=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)
+val4b=$(kval "waf:fimchg:$WEB/")
 want "4b khong autoload -> KHONG co @php" \
      "$(case "$val4b" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
 want "4b nhung khoa VAN co (.htaccess con tren dia)" \
@@ -281,7 +344,7 @@ want "4b nhung khoa VAN co (.htaccess con tren dia)" \
 sleep 0.02
 printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-val4c=$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | tail -1)
+val4c=$(kval "waf:fimchg:$WEB/")
 want "4c autoload rong/none -> KHONG co @php" \
      "$(case "$val4c" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
 
@@ -330,7 +393,7 @@ printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
 want "8 gia tri dung" \
-     "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT" | head -1)" "ext:jpg"
+     "$(kval1 "waf:fimchg:$WEB/")" "ext:jpg"
 
 # `.user.ini` MOI co autoload -> PHAI co fimchg (gia tri `*`).
 : > "$RCLI_OUT"
@@ -345,7 +408,7 @@ sleep 0.02
 rm -f "$WEB/.htaccess" "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 tep cau hinh bi XOA -> DEL khoa" \
-     "$(grep -c "^DEL waf:fimchg:$WEB/\$" "$RCLI_OUT")" "1"
+     "$(grep -cP "^DEL\twaf:fimchg:\Q$WEB/\E$" "$RCLI_OUT")" "1"
 want "8 va KHONG dat lai SETEX fimchg" "$(keys 'waf:fimchg:')" "0"
 
 # ══ 9. `.inc` — `upload.lua:PHP_EXT` coi la THUC THI DUOC ════════════════
@@ -725,9 +788,10 @@ r17() {  # r17 <mode...> — chay fim.sh tren cay rieng
     RCLI_OUT="$S17/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
       bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true
 }
-k17()  { local n; n=$(grep -c "^SETEX waf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
-v17()  { awk -v k="waf:fimchg:$1" '$2==k {print $4}' "$S17/rcli.txt" 2>/dev/null | tail -1; }
-nd17() { local n; n=$(grep -c "^DEL waf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+# TAB, y nhu cac ham o tren.
+k17()  { local n; n=$(grep -cP "^SETEX\twaf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+v17()  { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S17/rcli.txt" 2>/dev/null; }
+nd17() { local n; n=$(grep -cP "^DEL\twaf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
 
 r17 baseline
 : > "$S17/rcli.txt"
@@ -908,9 +972,10 @@ r22() { FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
         FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" \
         RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
-v22() { awk -v k="waf:fimchg:$1" '$2==k {print $4}' "$S22/rcli.txt" 2>/dev/null | tail -1; }
-k22() { local n; n=$(grep -c "^SETEX waf:fimchg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
-d22() { grep -c "^DEL waf:fimchg:$1" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
+# TAB, y nhu `kval`/`keys` o tren — stub ghi `SETEX\t<key>\t<ttl>\t<value>`.
+v22() { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S22/rcli.txt" 2>/dev/null; }
+k22() { local n; n=$(grep -cP "^SETEX\twaf:fimchg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+d22() { grep -cP "^DEL\twaf:fimchg:\Q$1\E$" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
 
 r22 baseline
 : > "$S22/rcli.txt"
@@ -985,6 +1050,69 @@ FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
 sk_sau=$(cat "$S22/state/statekeys.full.txt" 2>/dev/null)
 want "22 Redis chet luc DEL -> generation KHONG chuyen" \
      "$([ "$sk_truoc" = "$sk_sau" ] && echo "giu" || echo "da chuyen OAN")" "giu"
+
+# ══ 23. RESP + dem reply loi ════════════════════════════════════════
+#
+# BA bat bien, va chung la ly do `redis_send_resp` ton tai:
+#
+#   1. DUONG DAN CO KHOANG TRANG van danh dau duoc. Ban inline protocol dua khoa qua
+#      STDIN noi khoang trang la RANH GIOI DOI SO, nen `SETEX waf:fimchg:/a b/ 604800
+#      ext:php` thanh 5 doi so -> Redis tu choi. `gen_cmds` cu chon duong LOC, tuc BO
+#      KHONG DANH DAU thu muc do (chi hien o stderr) — mot thu muc co that khong duoc
+#      bao ve. Do tren 171-96 01-10: 0 thu muc cau hinh co khoang trang HOM NAY, nhung
+#      khach tao duoc ten nhu vay bat ky luc nao.
+#
+#   2. MOT LENH BI TU CHOI phai lam `state_marks` bao loi. Canary o CUOI batch chi
+#      chung minh KET NOI song va batch DA CHAY — no KHONG chung minh TUNG lenh thanh
+#      cong. Day la ca ma dot bien BA (bo phep doc `errors:`) di qua duoc khi nhom nay
+#      chua ton tai.
+#
+#   3. Generation KHONG duoc chuyen khi co lenh bi tu choi — khong thi `statekeys` noi
+#      "da ghi" cho mot khoa khong ton tai, va lot sau khong con biet de thu lai.
+printf '\n── RESP: khoang trang + reply loi (muc 23) ──\n'
+S23="$R/s23"; mkdir -p "$S23/state"
+W23="$S23/home/u1/domains/sp.test/public_html"
+mkdir -p "$W23/co khoang trang"
+r23() { FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
+        FIM_LOG="$S23/fim.log" FIM_CRITLOG="$S23/crit.log" \
+        RCLI_OUT="$S23/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
+          bash "$HERE/fim.sh" "$@" >/dev/null 2>&1; }
+v23() { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S23/rcli.txt" 2>/dev/null; }
+
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W23/co khoang trang/.htaccess"
+r23 baseline
+: > "$S23/rcli.txt"; r23 check
+# Bat bien 1: duong dan co khoang trang DUOC danh dau, khong bi bo.
+want "23 thu muc co KHOANG TRANG van co khoa" \
+     "$(v23 "$W23/co khoang trang/")" "ext:jpg"
+# Khoa phai den NGUYEN VEN, khong bi cat o khoang trang.
+want "23 khoa khong bi cat o khoang trang" \
+     "$(grep -cP "^SETEX\twaf:fimchg:\Q$W23/co khoang trang/\E\t" "$S23/rcli.txt")" "1"
+
+# Bat bien 2: Redis TU CHOI mot lenh (canary VAN song) -> phai bao loi.
+printf 'AddHandler application/x-httpd-php .png\n' > "$W23/co khoang trang/.htaccess"
+: > "$S23/rcli.txt"
+out23=$(FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
+        FIM_LOG="$S23/fim.log" FIM_CRITLOG="$S23/crit.log" \
+        RCLI_OUT="$S23/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" RCLI_ERRN=1 \
+          bash "$HERE/fim.sh" check 2>&1); rc23=$?
+want "23 mot lenh bi TU CHOI -> fim bao loi (khong im lang)" \
+     "$(printf '%s' "$out23" | grep -ciE 'TU CHOI|KHONG GHI DUOC|KHONG GO DUOC' | tr -d '\n')" "1"
+want "23 va ma thoat KHONG phai 0" \
+     "$([ "$rc23" -ne 0 ] && echo khac0 || echo 0)" "khac0"
+
+# Bat bien 3: generation KHONG chuyen khi co lenh bi tu choi.
+: > "$S23/rcli.txt"; r23 check || true          # lot sach -> generation hop le
+sk23_truoc=$(cat "$S23/state/statekeys.full.txt" 2>/dev/null)
+printf 'AddHandler application/x-httpd-php .gif\n' > "$W23/co khoang trang/.htaccess"
+: > "$S23/rcli.txt"
+FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
+  FIM_LOG="$S23/fim.log" FIM_CRITLOG="$S23/crit.log" \
+  RCLI_OUT="$S23/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" RCLI_ERRN=1 \
+    bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+sk23_sau=$(cat "$S23/state/statekeys.full.txt" 2>/dev/null)
+want "23 lenh bi tu choi -> generation KHONG chuyen" \
+     "$([ "$sk23_truoc" = "$sk23_sau" ] && echo giu || echo "da chuyen OAN")" "giu"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

@@ -54,25 +54,95 @@ printf 'sub1\n' > "$DA/u2/domains/shop.test.subdomains"
 mkdir -p "$R/bin"
 cat > "$R/bin/rcli" <<'RCLI'
 #!/bin/bash
-# `DEL` va `EXISTS` PHAI co: `fim.sh` ghi kem mot khoa canary roi doc/go no de
-# CHUNG MINH batch da chay (loi ma thoat bi bo qua, nguoi dung bat 29-09). Thieu hai
-# lenh nay thi ban gia rot vao nhanh `cat >> RCLI_OUT` va canary khong bao gio bi go.
+# `-n <db>` roi hoac `GET/EXISTS/DEL <key>`, hoac `--pipe` doc RESP tu STDIN.
+#
+# `$RCLI_OUT` dung TAB lam ranh gioi truong: `<lenh>\t<key>\t<ttl>\t<value>`. Ban truoc
+# dung KHOANG TRANG va `awk '$2==k'`, nen mot key co khoang trang KHONG tra cuu lai
+# duoc — stub mang dung gioi han ma `fim.sh` vua bo di, va se bao "qua" cho mot ca
+# that ra hong.
+if [ "${RCLI_MODE:-up}" = "down" ]; then
+    cat >/dev/null 2>&1   # nuot STDIN neu co, y nhu mot binary that
+    echo "Could not connect to Redis at 127.0.0.1:6379: Connection refused" >&2
+    exit 1
+fi
+db=""
+pipe=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        -n) shift 2 ;;
-        GET) awk -v k="$2" '$1=="SETEX" && $2==k { v=$4; f=1 }
-                            $1=="DEL"   && $2==k { v=""; f=0 }
-                            END { print (f ? v : "") }' "$RCLI_OUT"
+        -n) db="$2"; shift 2 ;;
+        --pipe) pipe=1; shift ;;
+        GET) key="$2"
+             awk -F'\t' -v k="$key" '
+                 $1=="SETEX" && $2==k { v=$4; has=1 }
+                 $1=="DEL"   && $2==k { v="";  has=0 }
+                 END { if (has) print v; else print "" }' "$RCLI_OUT"
              exit 0 ;;
-        EXISTS) awk -v k="$2" '$1=="SETEX" && $2==k { f=1 }
-                               $1=="DEL"   && $2==k { f=0 }
-                               END { print (f ? 1 : 0) }' "$RCLI_OUT"
+        EXISTS) key="$2"
+             # `EX_STUCK=1` = khoa KHONG BAO GIO mat, tuc DEL that bai im lang. Do la
+             # ca ma `-n "$(GET)"` cua ban truoc KHONG phan biet duoc voi "da xoa".
+             if [ "${EX_STUCK:-0}" = 1 ]; then echo 1; exit 0; fi
+             awk -F'\t' -v k="$key" '
+                 $1=="SETEX" && $2==k { has=1 }
+                 $1=="DEL"   && $2==k { has=0 }
+                 END { print (has ? 1 : 0) }' "$RCLI_OUT"
              exit 0 ;;
-        DEL) printf 'DEL %s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
+        DEL) printf 'DEL\t%s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
         *) shift ;;
     esac
 done
-cat >> "$RCLI_OUT"
+
+# ── GIAI MA RESP ────────────────────────────────────────────────────
+# `*<n>\r\n` roi n lan `$<len>\r\n<arg>\r\n`. Doc bang DO DAI chu khong bang dong:
+# mot doi so CO THE chua `\n`, va cat theo dong se lam lech moi thu sau no. Day la
+# chinh tinh chat ma RESP dem lai, nen stub phai ton trong no hoac bo test se xanh
+# cho mot hien thuc hong.
+n_cmd=0
+n_err=0
+while IFS= read -r hdr; do
+    hdr=${hdr%$'\r'}
+    [ -n "$hdr" ] || continue
+    case "$hdr" in
+        \**) nargs=${hdr#\*} ;;
+        *) n_err=$((n_err + 1)); continue ;;
+    esac
+    args=()
+    i=0
+    while [ "$i" -lt "$nargs" ]; do
+        IFS= read -r lh || break
+        lh=${lh%$'\r'}
+        case "$lh" in
+            \$*) alen=${lh#\$} ;;
+            *) n_err=$((n_err + 1)); break ;;
+        esac
+        # `-N <len>` doc DUNG len byte; roi bo `\r\n` con lai.
+        arg=""
+        if [ "$alen" -gt 0 ]; then IFS= read -r -N "$alen" arg; fi
+        IFS= read -r _crlf
+        args+=("$arg")
+        i=$((i + 1))
+    done
+    [ "${#args[@]}" -eq "$nargs" ] || { n_err=$((n_err + 1)); continue; }
+    n_cmd=$((n_cmd + 1))
+    case "${args[0]}" in
+        SETEX)
+            if [ "${#args[@]}" -ne 4 ]; then n_err=$((n_err + 1)); continue; fi
+            printf 'SETEX\t%s\t%s\t%s\n' "${args[1]}" "${args[2]}" "${args[3]}" >> "$RCLI_OUT" ;;
+        DEL)
+            printf 'DEL\t%s\n' "${args[1]}" >> "$RCLI_OUT" ;;
+        *) n_err=$((n_err + 1)) ;;
+    esac
+done
+
+# `RCLI_ERRN=<k>` = Redis TU CHOI k lenh du ket noi song. Day la ca ma canary mot
+# minh KHONG bat duoc, va la ly do `redis_send_resp` doc `errors:`.
+if [ -n "${RCLI_ERRN:-}" ]; then n_err=$((n_err + RCLI_ERRN)); fi
+
+if [ "$pipe" = 1 ]; then
+    echo "All data transferred. Waiting for the last reply..."
+    echo "Last reply received from server."
+    echo "errors: $n_err, replies: $n_cmd"
+fi
+exit 0
 RCLI
 chmod +x "$R/bin/rcli"
 export RCLI_OUT="$R/cmds.txt"; : > "$RCLI_OUT"
@@ -93,13 +163,18 @@ want() {
     if [ "$2" = "$3" ]; then pass=$((pass+1))
     else fail=$((fail+1)); printf 'HONG  %s\n      duoc=%s  mong=%s\n' "$1" "$2" "$3"; fi
 }
+# `$RCLI_OUT` dung TAB: `SETEX\t<key>\t<ttl>\t<value>`. Giong `fim_test`: CHI cac ham
+# nay biet dinh dang, de stub doi mot lan thi test khong phai sua hang chuc cho.
 has() {
-    if grep -q "^SETEX $1 " "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
+    if grep -qP "^SETEX\t\Q$1\E\t" "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
 }
+kcount() { grep -cP "^SETEX\t\Q$1\E\t" "$RCLI_OUT" 2>/dev/null || true; }
+kttl() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $3; exit}' "$RCLI_OUT"; }
+kval() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $4; exit}' "$RCLI_OUT"; }
 # Canary (`waf:fimcanary:`) KHONG phai mot dau cho WAF — no la bang chung "batch da
 # chay" voi TTL 60s. Dem no vao thi moi phep dem lech 1 va phep sua fail-visible se
 # trong nhu mot loi.
-nkeys() { grep '^SETEX ' "$RCLI_OUT" 2>/dev/null | grep -vc 'waf:fimcanary:' || true; }
+nkeys() { awk -F'\t' '$1=="SETEX" && $2 !~ /^waf:fimcanary:/ {n++} END{print n+0}' "$RCLI_OUT"; }
 
 echo "wpinv_test: inventory WordPress root tu dia"
 
@@ -152,11 +227,11 @@ want "3 site3 goc KHONG co khoa" "$(has 'waf:wphost:site3.test')" "no"
 WPTTL=$(grep -oE 'WP_HOST_TTL_REDIS  = [0-9]+' "$HERE/../wordpress/paths.lua" \
         | grep -oE '[0-9]+' | head -1)
 want "4 doc duoc WP_HOST_TTL_REDIS" "$([ -n "$WPTTL" ] && echo yes || echo no)" "yes"
-ttl=$(awk '$2=="waf:wphost:site1.test" {print $3}' "$RCLI_OUT" | head -1)
+ttl=$(kttl "waf:wphost:site1.test")
 want "4 TTL khop WP_HOST_TTL_REDIS" "$ttl" "$WPTTL"
 
 # Gia tri phai la "1": `is_wp_root` so `== "1"`.
-val=$(awk '$2=="waf:wphost:site1.test" {print $4}' "$RCLI_OUT" | head -1)
+val=$(kval "waf:wphost:site1.test")
 want "4 gia tri la 1" "$val" "1"
 
 
@@ -184,13 +259,12 @@ want "6 site2 KHONG co khoa thu muc" \
 # HOP NHAT ALIAS — day la loi ich chinh cua viec doi khoa, va no phai do duoc:
 # `site1.test` va `alias1.test` sinh HAI khoa host nhung DUNG MOT khoa thu muc.
 want "7 hai host -> MOT khoa thu muc" \
-     "$(grep -c "^SETEX waf:wpdir:$H/u1/domains/site1.test/public_html " "$RCLI_OUT")" "1"
+     "$(kcount "waf:wpdir:$H/u1/domains/site1.test/public_html")" "1"
 want "7 nhung VAN hai khoa host (di tru)" \
-     "$(grep -cE '^SETEX waf:wphost:(site1|alias1)\.test ' "$RCLI_OUT")" "2"
+     "$(awk -F'\t' '$1=="SETEX" && $2 ~ /^waf:wphost:(site1|alias1)\.test$/ {n++} END{print n+0}' "$RCLI_OUT")" "2"
 
 # TTL cua khoa moi cung phai khop hang so.
-ttld=$(awk -v k="waf:wpdir:$H/u1/domains/site1.test/public_html" \
-       '$2==k {print $3}' "$RCLI_OUT" | head -1)
+ttld=$(kttl "waf:wpdir:$H/u1/domains/site1.test/public_html")
 want "7 TTL khoa thu muc khop" "$ttld" "$WPTTL"
 # `--dry` KHONG duoc ghi.
 : > "$RCLI_OUT"
