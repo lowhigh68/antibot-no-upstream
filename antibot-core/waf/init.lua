@@ -515,15 +515,22 @@ local function fim_config_changed(uri, rt)
     -- generation, roi tra bang table lookup. Chua lam — no la mot thay doi kien
     -- truc rieng, va no can mot con so ve so luong dau FIM dang song tren fleet.
     --
-    -- Va phep hoi do KHONG BAO GIO dung duoc cho chung: ca hai nhanh ben duoi
-    -- (`@all`/`ext:` va `PHP_EXT`) deu doi mot duoi, nen "khong co duoi nao" la
-    -- `return nil` chac chan. Tuc day khong phai danh doi do chinh xac lay toc do —
-    -- no la bo mot phep hoi KHONG THE doi ket qua.
+    -- `sufs == nil` (URL khong co duoi: `/shell`, `/`) KHONG duoc `return` o day.
+    --
+    -- `@all` sinh tu `SetHandler`/`ForceType`, va hai directive do ap cho MOI tep
+    -- trong thu muc — KE CA tep khong co duoi. `SetHandler application/x-httpd-php`
+    -- lam `/shell` (khong duoi) chay qua PHP, nhung ban truoc thoat truoc ca Redis GET
+    -- nen dau do KHONG BAO GIO doc duoc (nguoi dung bat 01-10; oracle cu trong
+    -- `policy_test.lua` ghim chinh cai sai do: `@all + /noext -> nil`).
+    --
+    -- Nen chi phi Redis tang: truoc day `/` va URL khong duoi duoc bo qua. Do la
+    -- danh doi DUNG — bo mot FN that de doi mot GET tren tap URL nho (so request
+    -- khong co duoi nho hon han so co duoi).
     local sufs = path_suffixes(path)
-    if not sufs then return nil end
-    -- `ext` = hau to NGAN NHAT (doan cuoi), dung cho `PHP_EXT` — do la cau hoi "tep
-    -- nay co phai script PHP khong", ma PHP/Apache tra loi bang doan cuoi.
-    local ext = sufs[#sufs]
+    -- `ext` = doan CUOI, dung cho `PHP_EXT` — cau hoi "tep nay co phai script PHP
+    -- khong", ma PHP/Apache tra loi bang doan cuoi. `nil` khi khong co duoi, va cac
+    -- nhanh doi `PHP_EXT` ben duoi tu loai minh.
+    local ext = sufs and sufs[#sufs] or nil
 
     local dir = path:match("^(.*/)") or "/"
     -- MOT `safe_get`, khong ba.
@@ -555,7 +562,7 @@ local function fim_config_changed(uri, rt)
     -- Bang tra, khong phai so tung cai: `v` co the co nhieu token va `sufs` nhieu
     -- hau to, nen so cheo la O(n*m) tren HOT PATH. Bang cho O(n+m).
     local sufset = {}
-    for i = 1, #sufs do sufset[sufs[i]] = true end
+    if sufs then for i = 1, #sufs do sufset[sufs[i]] = true end end
     local hit_all, hit_ext, hit_php, hit_phpini, hit_exec = false, false, false, false, false
     local hit_exec_noop = false
     for e in v:gmatch("[^,]+") do
@@ -604,7 +611,7 @@ local function fim_config_changed(uri, rt)
 
     if hit_all then return "handler_all" end
     if hit_ext then return "handler_ext" end
-    if upload.PHP_EXT[ext] then
+    if ext and upload.PHP_EXT[ext] then
         -- `.user.ini` truoc `php.ini`: pham vi cua no CHAC CHAN hon (co che
         -- per-directory chuan cua CGI/FastCGI), con `php.ini` di theo chuoi tim cau
         -- hinh cua SAPI/CWD nen chua chac ap cho thu muc nay.

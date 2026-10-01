@@ -232,6 +232,25 @@ ini_raw() {  # ini_raw <ten> <mong: co|khong> <printf-format>
 hta_raw "CRLF: Options +ExecCGI"      "@execcgi" 'Options +ExecCGI\r\n'
 hta_raw "CRLF: AddType"               "ext:php"      'AddType application/x-httpd-php .php\r\n'
 hta_raw "CRLF: SetHandler"            "@all"     'SetHandler application/x-httpd-php\r\n'
+
+# ── NHOM 23: RemoveHandler / RemoveType -> token `rm:` ────────────────
+#
+# `Add*` TICH LUY theo duoi; `Remove*` RUT LAI mot duoi cu the. O thu muc CON, mot
+# `Remove*` huy mapping KE THUA tu cha (mod_mime) — nen parser phai phat `rm:<duoi>`
+# chu khong chi "khong in gi": ben doc can biet "duoi nay DA BI TAT o day" khac
+# "khong co gi o day". Do la ly do khong the OR moi ancestor.
+hta_raw "rm: chi RemoveHandler"           "rm:jpg"  'RemoveHandler .jpg\n'
+hta_raw "rm: chi RemoveType"              "rm:php"  'RemoveType .php\n'
+hta_raw "rm: Add roi Remove cung duoi"    "rm:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: Remove roi Add -> BAT lai"   "ext:jpg" 'RemoveHandler .jpg\nAddHandler application/x-httpd-php .jpg\n'
+hta_raw "rm: Remove duoi KHAC khong anh huong" "ext:jpg
+rm:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
+# `Remove*` KHONG loc theo handler: doi so cua no la danh sach DUOI tu token thu HAI,
+# va no rut lai bat ke handler cu la gi.
+hta_raw "rm: RemoveHandler nhieu duoi"    "rm:cgi
+rm:pl" 'RemoveHandler .cgi .pl\n'
+# Huong NGUOC: `Add*` khong-PHP van bi bo qua, va `Remove*` khong duoc lam no xuat hien.
+hta_raw "rm: AddType text/plain roi Remove" "rm:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
 ini_raw "CRLF: none = TAT"            "khong"    'auto_prepend_file=none\r\n'
 ini_raw "CRLF: gia tri rong = TAT"    "khong"    'auto_prepend_file=\r\n'
 ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r\n'
@@ -266,9 +285,6 @@ ini_raw "nhay don bao quanh bi BO -> TAT"       "khong" "auto_prepend_file = 'no
 ini_raw "nhay bao quanh gia tri THAT -> BAT"    "co"    'auto_prepend_file = "/tmp/a.php"\n'
 ini_raw "nhay GIUA gia tri duoc GIU -> BAT"     "co"    'auto_prepend_file = /tmp/a"b.php\n'
 ini_raw "CRLF + none van TAT"                   "khong" 'auto_prepend_file = none\r\n'
-# Va hai parser phai DONG Y tren ca `n o n e` — day la ca da lech.
-cross "cheo: 'n o n e' hai ben deu BAT" "" co 'auto_prepend_file = n o n e\n' upload_user_ini
-cross "cheo: khoang trang giua duong dan" "" co 'auto_prepend_file = /tmp/a b.php\n' upload_user_ini
 
 # ── SO CHEO tren input NHIEU DONG ────────────────────────────────────
 #
@@ -304,6 +320,12 @@ cross "cheo: CRLF +ExecCGI"         "@execcgi" co    'Options +ExecCGI\r\n'
 cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n' upload_user_ini
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
 cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
+# Hai parser phai DONG Y tren `n o n e` va tren khoang trang GIUA duong dan — day la
+# hai ca da LECH (awk rc=1 / Lua autoload=true). Dat o DAY chu khong o nhom 21: `cross`
+# duoc dinh nghia ben duoi, va goi no TRUOC dinh nghia thi shell bao "command not
+# found" roi di tiep — hai ca KHONG CHAY ma suite van xanh (nguoi dung bat 01-10).
+cross "cheo: 'n o n e' hai ben deu BAT" "" co 'auto_prepend_file = n o n e\n' upload_user_ini
+cross "cheo: khoang trang giua duong dan" "" co 'auto_prepend_file = /tmp/a b.php\n' upload_user_ini
 
 # ── NHOM 15: prepend va append la HAI khoa DOC LAP ───────────────────
 #

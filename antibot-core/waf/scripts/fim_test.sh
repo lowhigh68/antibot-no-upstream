@@ -144,7 +144,18 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2 fimchg theo THU MUC" "$(haskey "waf:fimchg:$WEB/")" "yes"
 want "2 KHONG con khoa theo TEP" "$(haskey "waf:fimchg:$WEB/.htaccess")" "no"
 want "2 KHONG co fimnew nao" "$(keys 'waf:fimnew:')" "0"
-want "2 chi 1 key fimchg"    "$(keys 'waf:fimchg:')" "1"
+# DOI KY VONG CO Y (01-10): truoc day ca nay doi DUNG MOT khoa, vi `fimchg` chi ghi
+# cho thu muc CO tep cau hinh. KE THUA doi dieu do — `.htaccess` o webroot ap cho CA
+# thu muc con, nen moi thu muc con co tep PHP cung phai co khoa. Day la phep sua mot
+# FALSE NEGATIVE truc tiep: `/public_html/.htaccess` bat `.jpg` thi
+# `/public_html/uploads/a.jpg` CHAY qua PHP, ma ban truoc khong co khoa nao o
+# `uploads/`.
+#
+# Dieu ca nay THAT SU phai bao ve la "khoa theo THU MUC, khong theo TEP" — da kiem o
+# hai ca tren. Nen o day chi kiem khoa khong BUNG NO: so khoa phai bang so thu muc co
+# tep PHP duoi webroot, khong phai so TEP.
+want "2 khoa theo thu muc, khong bung no theo tep" \
+     "$([ "$(keys 'waf:fimchg:')" -le 3 ] && echo "trong tam" || echo "qua nhieu: $(keys 'waf:fimchg:')")" "trong tam"
 # GIA TRI la duoi bi anh xa — day la thong tin ma ban truoc khong co.
 want "2 gia tri la duoi bi anh xa" \
      "$(awk "\$2==\"waf:fimchg:$WEB/\" {print \$4}" "$RCLI_OUT")" "ext:jpg"
@@ -862,7 +873,6 @@ nup=$(grep -cE "NEW +[0-9]+ file trong .*uploads/u" "$S18/fim.log" 2>/dev/null);
 want "18 uploads/ KHONG bi gom thanh mot dong (du dat nguong)" "$nup" "0"
 want "18 uploads/ in tung tep" \
      "$(grep -cE "NEW .*uploads/u/f_[0-9]+\.php" "$S18/fim.log" 2>/dev/null | tr -d '\n')" "5"
-     "$(grep -cE "NEW .*uploads/u/f_[0-9]+\.php" "$S18/fim.log" 2>/dev/null | tr -d '\n')" "5"
 
 # NGUONG MAC DINH phai la 30. Bo test dung `FIM_NEW_MIN_N=3` cho nhanh, nen gia tri
 # mac dinh KHONG duoc thu o dau — mot dot bien doi `30` thanh `1` khong bi bat.
@@ -874,6 +884,82 @@ want "18 nguong nam duoi 311 (thu muc cache thap nhat van dat)" \
      "$([ "${ndef:-999}" -lt 311 ] && echo dung || echo "qua cao: $ndef")" "dung"
 wdef=$(grep -oE 'FIM_CHG_WINDOW_DAYS:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
 want "18 dung chung cua so 21 ngay voi CHGCOUNT" "$wdef" "21"
+
+# ── NHOM 22: KE THUA `.htaccess` tu thu muc CHA ───────────────────────
+#
+# `.htaccess` ap cho thu muc hien tai VA MOI thu muc con. Ban truoc chi doc
+# `.htaccess` cua DUNG thu muc do, nen:
+#     /public_html/.htaccess       AddHandler ... .jpg
+#     /public_html/uploads/a.jpg   request
+# Apache CHAY tep do qua PHP, con WAF hoi khoa `/public_html/uploads/` va khong thay
+# gi — FALSE NEGATIVE truc tiep (nguoi dung bat 01-10).
+#
+# VA KHONG phai OR moi ancestor: `RemoveHandler` o thu muc CON huy mapping ke thua tu
+# CHA. Nhom nay kiem CA HAI chieu.
+printf '\n── ke thua .htaccess tu cha (muc 22) ──\n'
+S22="$R/st22"
+W22="$S22/home/u7/domains/s7.test/public_html"
+mkdir -p "$W22/con/chau" "$W22/tat" "$S22/state"
+printf '<?php\n' > "$W22/index.php"
+# WEBROOT bat `.jpg`; thu muc con KHONG co `.htaccess` nao.
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
+printf '<?php\n' > "$W22/con/a.php"
+printf '<?php\n' > "$W22/con/chau/a.php"
+# Thu muc `tat/` RUT LAI `.jpg` bang RemoveHandler.
+printf 'RemoveHandler .jpg\n' > "$W22/tat/.htaccess"
+printf '<?php\n' > "$W22/tat/a.php"
+
+r22() { FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
+        FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" \
+        RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
+          bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
+v22() { awk -v k="waf:fimchg:$1" '$2==k {print $4}' "$S22/rcli.txt" 2>/dev/null | tail -1; }
+
+r22 baseline
+: > "$S22/rcli.txt"
+r22 check
+want "22 webroot co khoa"                 "$(v22 "$W22/")"          "ext:jpg"
+want "22 thu muc CON ke thua tu cha"      "$(v22 "$W22/con/")"      "ext:jpg"
+want "22 thu muc CHAU ke thua hai tang"   "$(v22 "$W22/con/chau/")" "ext:jpg"
+# RemoveHandler o con HUY mapping ke thua — day la cho "OR moi ancestor" se SAI.
+want "22 RemoveHandler o con HUY ke thua"  "$(v22 "$W22/tat/")"      ""
+
+# Huong NGUOC: webroot KHONG bat gi thi con cung khong duoc co khoa.
+rm -f "$W22/.htaccess"
+: > "$S22/rcli.txt"
+r22 check
+want "22 bo .htaccess webroot -> con het khoa" "$(v22 "$W22/con/")" ""
+# Va `.htaccess` o CON bat thi CHAU ke thua, con CHA thi khong.
+printf 'AddHandler application/x-httpd-php .gif\n' > "$W22/con/.htaccess"
+: > "$S22/rcli.txt"
+r22 check
+want "22 con bat -> chau ke thua"   "$(v22 "$W22/con/chau/")" "ext:gif"
+want "22 con bat -> CHA khong co"   "$(v22 "$W22/")"          ""
+
+# TRAN pha ke thua: BAO RA chu khong im lang cat. Mot gioi han im lang la mot vung mu
+# moi — va do 01-10 cho thay pha nay la 52s khi webroot co token (12s khi khong), tren
+# cay 2.000 thu muc PHP. Hai site tren fleet DA o tinh huong do.
+mkdir -p "$W22/nhieu"
+for i in $(seq 1 6); do mkdir -p "$W22/nhieu/d$i"; printf '<?php\n' > "$W22/nhieu/d$i/a.php"; done
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
+r22 baseline
+out22=$(FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
+        FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" FIM_INHERIT_MAX=2 \
+        RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
+          bash "$HERE/fim.sh" check 2>&1 >/dev/null)
+case "$out22" in
+    *"vuot tran"*) want "22 vuot tran -> BAO RA" "dung" "dung" ;;
+    *) want "22 vuot tran -> BAO RA" "IM LANG: ${out22:-rong}" "dung" ;;
+esac
+case "$out22" in
+    *"KHONG duoc danh dau"*) want "22 bao RO bao nhieu thu muc bi bo" "dung" "dung" ;;
+    *) want "22 bao RO bao nhieu thu muc bi bo" "khong noi so" "dung" ;;
+esac
+# Va tran mac dinh phai du lon de KHONG cat o cay thuong.
+idef=$(grep -oE 'FIM_INHERIT_MAX:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
+want "22 tran mac dinh la 5000" "$idef" "5000"
+want "22 tran tren 2000 (cay WordPress thuong duoi muc nay)" \
+     "$([ "${idef:-0}" -gt 2000 ] && echo dung || echo "qua thap: $idef")" "dung"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

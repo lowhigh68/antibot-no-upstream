@@ -22,6 +22,42 @@ fi
 # neu bo dau hong ma van `exec` bo sau thi ma thoat cua bo dau BIEN MAT va cong
 # [3b] cua deploy.sh se cho qua mot ban hong.
 rc=0
+# Bo test shell: chay qua `sh_suite` chu khong goi thang.
+#
+# VI SAO: ba bo nay chi dung `set -u` va ket luan bang bien `fail`, nen mot LOI SHELL
+# ngoai `want()` khong lam suite do. Do duoc 01-10: mot dong bi lap trong `fim_test.sh`
+# khien shell thu chay mot lenh ten `5`, va hai `cross` trong `htaccess_fixture_test.sh`
+# duoc goi TRUOC khi ham duoc dinh nghia — `command not found`, hai ca KHONG CHAY, suite
+# van bao xanh va `run.sh` van tra 0. "Assertion da chay deu qua" KHAC "toan bo test
+# thuc thi sach".
+#
+# `sh_suite` doc stderr va coi cac dang loi shell la THAT BAI, ke ca khi suite tra 0.
+# Khong dung `set -e` trong cac suite: chung CO Y de mot so lenh that bai (vi du
+# `fim.sh check` tra 1 khi co phat hien), nen `set -e` se lam chung chet giua duong.
+sh_suite() {
+    local name="$1"; shift
+    local err erc
+    err=$(mktemp) || return 2
+    # KHONG dung `2> >(tee ...)`: voi process substitution thi `$?` lay tu tien trinh
+    # cua `tee`, nen ma thoat THAT cua suite bien mat va cong nay luon thay 0 (do duoc
+    # 01-10 — dot bien chen mot ham khong ton tai KHONG bi bat). Ghi stderr vao tep roi
+    # IN LAI; thu tu dong doi mot chut nhung ma thoat dung.
+    bash "$@" 2>"$err"
+    erc=$?
+    cat "$err" >&2
+    # Cac dang loi shell. `command not found` va `unbound variable` la hai cai da THAT
+    # SU xay ra 01-10; ba cai con lai cung ho (lenh khong chay duoc / cu phap).
+    if grep -qE 'command not found|unbound variable|syntax error|cannot execute' "$err"; then
+        echo "  !! $name: CO LOI SHELL -- suite KHONG thuc thi sach:" >&2
+        grep -nE 'command not found|unbound variable|syntax error|cannot execute' "$err" \
+          | head -5 | sed 's/^/     /' >&2
+        rm -f "$err"
+        return 1
+    fi
+    rm -f "$err"
+    return $erc
+}
+
 
 # `policy_test` chay DAU TIEN: registry/policy/telemetry la nen cua moi phan con
 # lai, va mot registry lech detector thi bon bo test sau se bao loi kho doc thay
@@ -69,26 +105,26 @@ echo "── routes (muc 5: hop dong endpoint) ───────────
 # o cho thieu chung thi bo nay do va do la dung: `postdeploy.sh` cung se sai o do.
 echo
 echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
-bash "$HERE/postdeploy_test.sh" || rc=1
+sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
 
 # `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc muc 8 no khong co phep kiem nao.
 # Bo nay chay `baseline` + `check` that tren mot cay thu muc `mktemp -d` voi
 # `redis-cli` GIA — khong cham /home, khong cham Redis, khong cham /var/lib.
 echo
 echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"
-bash "$HERE/fim_test.sh" || rc=1
+sh_suite fim_test "$HERE/fim_test.sh" || rc=1
 
 # `wpinv` ghi CHINH cac khoa ma `is_wp_root` doc, va ba luat HARD-BLOCK duoc gate
 # bang chung. Lech mot ky tu la inventory ghi mot noi, WAF doc mot noi.
 echo
 echo "── fim.sh wpinv (inventory WordPress root) ───────────"
-bash "$HERE/wpinv_test.sh" || rc=1
+sh_suite wpinv_test "$HERE/wpinv_test.sh" || rc=1
 
 # HAI parser `.htaccess` (Lua doc part upload, awk doc tep tren dia) tra loi CUNG
 # mot cau hoi bang hai hien thuc. Bo nay chay ca hai tren CUNG tap fixture va doi
 # chung dong y — lech theo huong awk bo sot la FALSE NEGATIVE im lang.
 echo
 echo "── hai parser .htaccess tren cung tap fixture ────────"
-bash "$HERE/htaccess_fixture_test.sh" || rc=1
+sh_suite htaccess_fixture_test "$HERE/htaccess_fixture_test.sh" || rc=1
 
 exit $rc

@@ -1116,8 +1116,31 @@ do
     eq("@php + /x.php.jpg -> KHONG bao",        mark_for("@php",     "/x.php.jpg"),  nil)
     eq("@php + /x.jpg.php -> autoload_userini", mark_for("@php",     "/x.jpg.php"),  "autoload_userini")
     -- Khong co duoi nao thi thoat som, khong hoi Redis.
-    eq("khong co duoi -> KHONG bao",            mark_for("@all",     "/noext"),      nil)
-    eq("chi co / -> KHONG bao",                 mark_for("@all",     "/"),           nil)
+    -- ── KHONG CO DUOI: `@all` VAN phai bao ───────────────────────────
+    --
+    -- `SetHandler`/`ForceType` ap cho MOI tep trong thu muc, KE CA tep khong co duoi.
+    -- `SetHandler application/x-httpd-php` lam `/shell` chay qua PHP. Ban truoc thoat
+    -- truoc ca Redis GET nen dau do khong bao gio doc duoc, va HAI assertion o day
+    -- ghim dung cai sai do (`@all + /noext -> nil`) — nguoi dung bat 01-10.
+    eq("@all + /noext -> handler_all",          mark_for("@all",     "/noext"),      "handler_all")
+    eq("@all + / -> handler_all",               mark_for("@all",     "/"),           "handler_all")
+    -- `@execcgi` cung ap theo THU MUC nen cung co nghia voi tep khong duoi.
+    eq("@execcgi + /noext -> execcgi_only",     mark_for("@execcgi", "/noext"),      "execcgi_only")
+    -- Huong NGUOC: cac nhan doi MOT DUOI CU THE thi KHONG duoc bao khi khong co duoi.
+    eq("ext:php + /noext -> KHONG bao",         mark_for("ext:php",  "/noext"),      nil)
+    eq("@php + /noext -> KHONG bao",            mark_for("@php",     "/noext"),      nil)
+    eq("@phpini + /noext -> KHONG bao",         mark_for("@phpini",  "/noext"),      nil)
+    -- ── `rm:` KHONG duoc doc thanh mot duoi ──────────────────────────
+    --
+    -- `fim.sh` da TINH trang thai hieu luc truoc khi ghi khoa, nen gia tri Redis chi
+    -- chua `ext:` cho duoi DANG BAT. Nhung parser cung phat `rm:<duoi>` (de
+    -- `dir_tokens_inherited` biet duoi nao bi TAT), va neu mot dang khoa cu hoac mot
+    -- duong ghi khac dua `rm:` vao gia tri thi day KHONG duoc hieu la "co handler".
+    eq("rm:php + /x.php -> KHONG bao",          mark_for("rm:php",   "/x.php"),      nil)
+    eq("rm:jpg + /x.jpg -> KHONG bao",          mark_for("rm:jpg",   "/x.jpg"),      nil)
+    -- Va `rm:` di kem `ext:` cua duoi KHAC thi `ext:` do VAN bao.
+    eq("ext:php,rm:jpg + /x.php -> handler_ext", mark_for("ext:php,rm:jpg", "/x.php"), "handler_ext")
+    eq("ext:php,rm:jpg + /x.jpg -> KHONG bao",   mark_for("ext:php,rm:jpg", "/x.jpg"), nil)
     -- ── LOI 9: `@execcgi:noop` — tin hieu CHET tren ha tang nay ─────
     --
     -- `ExecCGI` la quyen ma WEBSERVER phai cho. `fim.sh` DO `AllowOverride` tu cau

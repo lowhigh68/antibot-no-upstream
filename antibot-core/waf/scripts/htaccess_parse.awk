@@ -151,6 +151,12 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
     # `tokenize` da BO dau nhay, nen khong con `gsub` tay va khong con token rac.
     v = TOK[2]
 
+    # `AddType`/`AddHandler` TICH LUY theo duoi, va `RemoveType`/`RemoveHandler` RUT
+    # LAI mot duoi cu the. Apache xu ly tuan tu trong CUNG mot tep, va o thu muc CON
+    # mot `Remove*` huy mapping KE THUA tu cha (tai lieu mod_mime).
+    #
+    # Nen khong in ngay: GHI TRANG THAI theo duoi roi in o `END`. Ban truoc in ngay
+    # tai dong, nen `AddHandler ... .jpg` roi `RemoveHandler .jpg` van cho `ext:jpg`.
     if (d == "addtype" || d == "addhandler") {
         if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
         for (i = 3; i <= nf; i++) {
@@ -163,7 +169,18 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
             #
             # Loc ky tu la cach SAI cho viec nay: danh sach ky tu cam phai doan truoc
             # moi duoi hop le, va Apache khong cam gi ca. Tien to dung voi MOI duoi.
-            if (e != "") print "ext:" tolower(e)
+            if (e != "") extst[tolower(e)] = 1
+        }
+        next
+    }
+
+    # `RemoveHandler`/`RemoveType`: KHONG loc theo `v` nhu `Add*`. Doi so cua chung la
+    # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau), va chung rut lai
+    # bat ke handler cu la gi.
+    if (d == "removehandler" || d == "removetype") {
+        for (i = 2; i <= nf; i++) {
+            e = TOK[i]; sub(/^\./, "", e)
+            if (e != "") extst[tolower(e)] = 0
         }
         next
     }
@@ -206,5 +223,14 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
 # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
 # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
 END {
+    # Duoi: in TRANG THAI CUOI, va `rm:` cho duoi bi RUT LAI. `rm:` can thiet vi
+    # `RemoveHandler` o thu muc CON huy mapping ke thua tu CHA — ben doc phai biet
+    # "duoi nay da bi tat o day" chu khong chi "khong co gi o day".
+    for (e in extst) {
+        if (extst[e]) print "ext:" e
+        else          print "rm:" e
+    }
+    # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
+    # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
     if (opt[0]) print (execcgi_ok + 0 == 0) ? "@execcgi:noop" : "@execcgi"
 }
