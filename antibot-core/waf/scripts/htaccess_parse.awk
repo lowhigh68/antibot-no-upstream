@@ -107,7 +107,13 @@ function strip_comment(s,   out, i, c, q) {
     return out
 }
 
-BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
+# BA trang thai cho moi truc "ca thu muc": -1 CHUA NOI GI, 0 TAT tuong minh, 1 BAT.
+# `-1` khong phai gia tri mac dinh cua awk (awk cho "" / 0), nen phai dat tuong minh —
+# va do la ly do `@execcgi` tung KHONG BAO GIO in: `opt[depth]` voi `depth` chua khoi
+# tao ghi vao `opt[""]` trong khi `END` doc `opt[0]`, va awk danh chi muc bang CHUOI
+# nen `"" != "0"`.
+BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
+        if (execcgi_ok == "") execcgi_ok = 1 }
 
 {
     line = $0
@@ -207,10 +213,24 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
         next
     }
 
-    if (d == "sethandler" || d == "forcetype") {
-        if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
-        # Trong container thi KHONG ap ca thu muc -> bo sot CO Y.
-        if (depth == 0) print "@all"
+    # `SetHandler` / `ForceType`: HAI TRUC RIENG, va moi truc co BA trang thai.
+    #
+    # Ban truoc `next` ngay khi gia tri lanh:
+    #     if (tolower(v) !~ /php|cgi|.../) next
+    # nen `SetHandler none` o con IM LANG HOAN TOAN — no khong rut lai `@all` ma cha
+    # da dat, du `none` la cu phap chinh thuc de HUY handler (nguoi dung bat 01-10).
+    # Cung the voi `ForceType text/plain` sau mot `ForceType application/x-httpd-php`.
+    #
+    # BA trang thai, khong hai: "khong co phat bieu" KHAC "phat bieu TAT". Mot thu muc
+    # khong noi gi thi thua huong cha; mot thu muc noi `none` thi RUT LAI cua cha. Ban
+    # truoc nhap hai thu do lam mot (khong in gi) nen mat chieu rut.
+    #   sh = -1 chua noi gi | 0 TAT tuong minh | 1 BAT
+    if (d == "sethandler") {
+        if (depth == 0) sh = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
+        next
+    }
+    if (d == "forcetype") {
+        if (depth == 0) ft = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
         next
     }
 
@@ -263,7 +283,26 @@ END {
         if (on)           print "ext:" e
         else if (e in neg) print "rm:" e
     }
+    # ── BA TRUC "CA THU MUC", moi truc BA trang thai ─────────────────
+    #
+    # `@all` / `@execcgi` truoc day CHI co chieu BAT. Hai ca bi bo sot (nguoi dung bat
+    # 01-10):
+    #   · con `SetHandler none`   -> khong rut lai `@all` cua cha
+    #   · con `Options -ExecCGI`  -> khong rut lai `@execcgi` cua cha
+    # Nen moi truc phat MOT trong BA ket qua: khong gi (chua noi) | `@x` (bat) |
+    # `-@x` (TAT tuong minh). Ben doc merge tu goc xuong va `-@x` ghi de `@x` cua cha,
+    # y nhu `rm:<e>` ghi de `ext:<e>`.
+    #
+    # `-1` la "chua noi gi" nen KHONG phat token — thu muc do thua huong cha. Phan
+    # biet no voi `0` la ca van de: `if (opt[0])` cua ban truoc coi `-1` la true (awk
+    # danh gia moi so khac 0 la true) nen in `@execcgi` cho mot tep RONG. Loi do do
+    # chinh thay doi nay sinh ra va bo test bat ngay.
+    if (sh == 1)      print "@all"
+    else if (sh == 0) print "-@all"
+    if (ft == 1)      print "@all"
+    else if (ft == 0) print "-@all"
     # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
     # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
-    if (opt[0]) print (execcgi_ok + 0 == 0) ? "@execcgi:noop" : "@execcgi"
+    if (opt[0] == 1)      print (execcgi_ok + 0 == 0) ? "@execcgi:noop" : "@execcgi"
+    else if (opt[0] == 0) print "-@execcgi"
 }

@@ -1185,6 +1185,25 @@ want "24 va ma thoat = 2 (khong do duoc)" "$rc24b" "2"
 # Generation KHONG duoc chuyen: lot sau phai con biet de thu lai.
 want "24 generation KHONG chuyen khi thieu khoa" \
      "$(wc -l < "$S24/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "3"
+
+# NHANH DIRTY cung phai dem. Hai duong THOAT khac nhau cua cung mot lot quet, va
+# `9296010` chi khep duong `state_marks` — do duoc trong cung buoi: ba `.htaccess`
+# VUA DOI di qua nhanh dirty, va o do phep xac minh con la `head -1`, nen mat khoa
+# thu 2 trong 3 VAN LOT (`rc=1`, khong ai bao loi).
+: > "$S24/rcli.txt"
+for dd in a b c; do printf 'AddHandler application/x-httpd-php .png\n' > "$W24/$dd/.htaccess"; done
+o24c=$(r24 bash "$HERE/fim.sh" check 2>&1); rc24c=$?
+want "24 dirty doi chung: 3 khoa, khong loi xac minh" \
+     "$(printf '%s' "$o24c" | grep -c 'KHONG XAC MINH')" "0"
+want "24 dirty doi chung: 3 khoa duoc ghi" \
+     "$(grep -cP '^SETEX\twaf:fimchg:' "$S24/rcli.txt")" "3"
+
+: > "$S24/rcli.txt"
+for dd in a b c; do printf 'AddHandler application/x-httpd-php .gif\n' > "$W24/$dd/.htaccess"; done
+o24d=$(RCLI_SKIP=2 r24 bash "$HERE/fim.sh" check 2>&1); rc24d=$?
+want "24 dirty: mat khoa thu 2 -> PHAI bao loi" \
+     "$(printf '%s' "$o24d" | grep -c 'KHONG XAC MINH DUOC (fimchg)')" "1"
+want "24 dirty: ma thoat = 2" "$rc24d" "2"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

@@ -590,6 +590,18 @@ local function fim_config_changed(uri, rt)
                     st = st or {}; st[e:sub(5)] = true
                 elseif e:sub(1, 3) == "rm:" then
                     st = st or {}; st[e:sub(4)] = false
+                elseif e:sub(1, 2) == "-@" then
+                    -- PHU DINH TUONG MINH mot truc "ca thu muc": `-@all` tu
+                    -- `SetHandler none` / `ForceType text/plain`, `-@execcgi` tu
+                    -- `Options -ExecCGI`. Ghi de co cua cha y nhu `rm:<e>` ghi de
+                    -- `ext:<e>` — va do la chieu con THIEU truoc 02-10: hai truc nay
+                    -- CHI co chieu BAT, nen mot thu muc con tat tuong minh khong rut
+                    -- lai duoc gi (nguoi dung bat 01-10).
+                    --
+                    -- `false` chu khong `nil`: `nil` la "khong co phat bieu" va se de
+                    -- mot tang XA hon ghi vao sau do. Ba trang thai, khong hai.
+                    flag = flag or {}
+                    flag[e:sub(2)] = false
                 elseif e:sub(1, 1) == "@" then
                     flag = flag or {}
                     -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
@@ -612,7 +624,11 @@ local function fim_config_changed(uri, rt)
     -- Dung lai `v` cho phan con lai: ghep thanh mot chuoi token hieu luc.
     local parts, np = nil, 0
     if st then for e, on in pairs(st) do if on then np = np + 1; parts = parts or {}; parts[np] = "ext:" .. e end end end
-    if flag then for f in pairs(flag) do np = np + 1; parts = parts or {}; parts[np] = f end end
+    -- `pairs` tra KHOA, nen phai loc theo GIA TRI: `flag["@all"] = false` (tu `-@all`)
+    -- la PHU DINH, va ghep khoa do vao `parts` se bien no thanh `"@all"` — doc thanh
+    -- BAT, nguoc han y nghia. Ban dau toi viet `for f in pairs(flag)` o day va do la
+    -- mot loi im lang: khong bao gi, chi tra ket qua trai nguoc.
+    if flag then for f, on in pairs(flag) do if on then np = np + 1; parts = parts or {}; parts[np] = f end end end
     if not parts then return nil end
     local v = table.concat(parts, ",")
 

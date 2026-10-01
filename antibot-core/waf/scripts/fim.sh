@@ -387,14 +387,58 @@ redis_send_resp() {
 # bi BO KHONG DANH DAU, va chi hien o stderr vao `$LOG` — tuc FIM im lang khong
 # bao ve mot thu muc co that. RESP dong goi theo DO DAI BYTE nen khong con ky tu
 # nao mang nghia cu phap, va khong phai bo duong dan nao.
+
+# `count_live <tep-khoa> <so-mong-doi>` — DEM lai khoa THUC SU ton tai sau khi ghi.
+# Tra 0 khi khop, 1 khi khong (va dat `REDIS_ERR`).
+#
+# VI SAO CAN, ngoai canary / `errors:` / `replies`: co mot ca di qua CA BA cua —
+# lenh DEN DUOC server, duoc dem vao `replies`, nhung KHONG duoc thuc thi va server
+# KHONG bao loi. Khi do canary (lenh CUOI) van song, `errors: 0`, `replies` khop
+# `want+1`, ma mot khoa VAN MAT. Do duoc bang stub (`RCLI_SKIP=2`, 3 khoa): 2/3 khoa
+# duoc ghi, `rc=0`, KHONG AI BAO LOI.
+#
+# `head -1` khong du, va day la cho toi tung gop sai hai ca: o nhom `fimnew:` phep so
+# la GIA TRI-doi-GIA TRI tren MOT khoa, de bat "lech db / Redis chet" — mot ca ap cho
+# CA batch. Con ca nay la MAT MOT KHOA GIUA batch, nen phai DEM.
+#
+# MOT lenh `EXISTS` nhieu doi so (Redis 3.0+ tra TONG so khoa ton tai), tuc mot
+# round-trip cho ca tap. Doi so di qua RESP nen khoa co khoang trang khong bi tach —
+# `$(cat ...)` thi bi, va do dung la lo `24d1442` vua bo di.
+count_live() {
+    local kf="$1" want="$2" vf nlive
+    [ -s "$kf" ] || return 0
+    vf=$(mktemp) || { REDIS_ERR="khong tao duoc tep tam de xac minh"; return 1; }
+    {
+        printf '*%d\r\n' $((want + 1))
+        printf '$6\r\nEXISTS\r\n'
+        while IFS= read -r k; do
+            [ -n "$k" ] || continue
+            printf '$%d\r\n%s\r\n' "${#k}" "$k"
+        done < "$kf"
+    } > "$vf"
+    nlive=$("$REDIS_CLI" -n "$REDIS_DB" < "$vf" 2>>"$LOG" | tr -dc '0-9')
+    rm -f "$vf"
+    if [ -z "$nlive" ]; then
+        REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"
+        return 1
+    fi
+    if [ "$nlive" -ne "$want" ]; then
+        REDIS_ERR="chi $nlive/$want khoa thuc su ton tai sau khi ghi"
+        return 1
+    fi
+    return 0
+}
 gen_resp() {
-    awk -v ttl="${5:-$MARK_TTL}" -v pfx="$2" -v probe="$4" '
+    # Tham so 6 = tep KHOA THUAN (mot khoa mot dong), cho `count_live`. Khong co thi
+    # bo qua — `wpinv` chua dung phep dem.
+    awk -v ttl="${5:-$MARK_TTL}" -v pfx="$2" -v probe="$4" -v keyf="${6:-}" '
         {
             i = index($0, "|");  if (i == 0) { bad++; next }
             b = substr($0, 1, i - 1)
             p = substr($0, i + 1)
             k = pfx p
             if (++n == 1) { print k > probe; print b > probe }
+            if (keyf != "") print k > keyf
             printf "*4\r\n$5\r\nSETEX\r\n$%d\r\n%s\r\n$%d\r\n%d\r\n$%d\r\n%s\r\n", \
                    length(k), k, length(ttl), ttl, length(b), b
         }
@@ -599,45 +643,11 @@ EOT
             rm -f "$want" "$setf" "$delf" "$sentf"
             return 0
         fi
-        # XAC MINH DOC NGUOC tren MOI khoa, khong `head -1`.
-        #
-        # `state_marks` truoc day KHONG xac minh gi ca — khac hai noi goi kia. Do la
-        # mot lo that: 12 khoa trang thai duoc ghi ma khong ai doc nguoc, nen mot lenh
-        # "den duoc server, vao `replies`, nhung KHONG thuc thi va KHONG bao loi" di
-        # qua het ba cua: canary song, `errors: 0`, va `replies` khop `want+1`.
-        # Do duoc bang stub (`RCLI_SKIP=2`, 3 khoa): 2/3 khoa duoc ghi, KHONG AI BAO LOI.
-        #
-        # `head -1` khong du o day, khac nhom `fimnew:`: cho do phep so la GIA TRI-doi-
-        # GIA TRI tren mot khoa de bat "lech db / Redis chet", mot ca ap cho CA batch.
-        # Ca nay la MAT MOT KHOA GIUA batch, nen phai DEM.
-        #
-        # MOT lenh `EXISTS` nhieu doi so cho ca tap, khong phai $n round-trip.
-        # Doi so di qua RESP nen khoa co khoang trang khong bi tach.
-        if [ "$n" -gt 0 ]; then
-            local vf nlive
-            vf=$(mktemp) || vf=""
-            if [ -n "$vf" ]; then
-                {
-                    printf '*%d\r\n' $((n + 1))
-                    printf '$6\r\nEXISTS\r\n'
-                    while IFS= read -r k; do
-                        [ -n "$k" ] || continue
-                        printf '$%d\r\n%s\r\n' "${#k}" "$k"
-                    done < "$sentf"
-                } > "$vf"
-                nlive=$("$REDIS_CLI" -n "$REDIS_DB" < "$vf" 2>>"$LOG" | tr -dc '0-9')
-                rm -f "$vf"
-                if [ -z "$nlive" ]; then
-                    [ -z "$mark_err" ] && mark_err="KHONG XAC MINH DUOC (fimchg trang thai): EXISTS khong tra so. $n khoa KHONG kiem duoc."
-                    rm -f "$want" "$setf" "$delf" "$sentf"
-                    return 0
-                fi
-                if [ "$nlive" -ne "$n" ]; then
-                    [ -z "$mark_err" ] && mark_err="KHONG XAC MINH DUOC (fimchg trang thai): chi $nlive/$n khoa thuc su ton tai sau khi ghi."
-                    rm -f "$want" "$setf" "$delf" "$sentf"
-                    return 0
-                fi
-            fi
+        # XAC MINH DOC NGUOC tren MOI khoa — xem `count_live`.
+        if ! count_live "$sentf" "$n"; then
+            [ -z "$mark_err" ] && mark_err="KHONG XAC MINH DUOC (fimchg trang thai): $REDIS_ERR."
+            rm -f "$want" "$setf" "$delf" "$sentf"
+            return 0
         fi
         if [ "$nd" -gt 0 ] && ! redis_send_resp "$delf" "$nd"; then
             [ -z "$mark_err" ] && mark_err="KHONG GO DUOC (fimchg trang thai): $REDIS_ERR. $nd khoa cu co the VAN CON."
@@ -2699,7 +2709,8 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
 
         chgrespf=$(mktemp) || exit 2
         chgprobef=$(mktemp) || exit 2
-        marked_chg=$(gen_resp "$chgdirs" "waf:fimchg:" "$chgrespf" "$chgprobef")
+        chgkeyf=$(mktemp) || exit 2
+        marked_chg=$(gen_resp "$chgdirs" "waf:fimchg:" "$chgrespf" "$chgprobef" "" "$chgkeyf")
         [ -f "$chgdirs.del" ] && delkeys=$(sort -u "$chgdirs.del")
         rm -f "$chgdirs" "$chgdirs.del"
 
@@ -2714,6 +2725,18 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             # lan chay co the CHI co tep cau hinh bi sua (tap `fimnew:` rong), va khi
             # do vong tren khong chay mot phep nao — tuc FIM ghi mot noi, WAF doc mot
             # noi, khong ai bao loi.
+            #
+            # HAI phep, khong mot:
+            #   · `count_live` DEM lai ca tap -> bat MAT MOT KHOA GIUA batch. Ban truoc
+            #     chi `head -1`, nen mat khoa thu 2 trong 3 VAN LOT (do duoc 01-10 trong
+            #     cung buoi sua `state_marks`).
+            #   · `GET` khoa dau so GIA TRI-doi-GIA TRI -> bat "lech db / Redis chet",
+            #     mot ca `EXISTS` khong thay (khoa TON TAI nhung o db khac thi `EXISTS`
+            #     o db nay tra 0; con khoa ton tai voi gia tri SAI thi `EXISTS` tra 1).
+            # Hai ca khac nhau can hai phep khac nhau.
+            if [ -z "$mark_err" ] && ! count_live "$chgkeyf" "$marked_chg"; then
+                mark_err="KHONG XAC MINH DUOC (fimchg): $REDIS_ERR."
+            fi
             cprobe=$(sed -n 1p "$chgprobef")
             cwant=$(sed -n 2p "$chgprobef")
             if [ -z "$mark_err" ] && \
@@ -2723,7 +2746,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             fi
             fi
         fi
-        rm -f "$chgrespf" "$chgprobef"
+        rm -f "$chgrespf" "$chgprobef" "$chgkeyf"
         # DEL phai FAIL-VISIBLE, y nhu nhom SETEX (nguoi dung bat 28-09). Ban truoc
         # nuot moi loi bang `|| :` va KHONG doc nguoc — nen mot DEL that bai de lai
         # dau CU, tuc mot duong tinh gia song tới het TTL 7 ngay ma khong ai biet.

@@ -76,11 +76,16 @@ while IFS=$'\t' read -r want rule; do
     #
     # Khong them cot vao bang fixture: duoi nam san trong dong, va mot cot nua la mot
     # cho de lech giua cot va dong.
+    # `OFFEXEC`/`OFFALL` = PHAT BIEU TAT, khac han `NONE` = khong noi gi. BA trang
+    # thai, va fixture phai phan biet duoc chung — gop lai la pin dung cai nhap hai
+    # thu do lam mot, tuc chinh lo da bo sot `SetHandler none` / `Options -ExecCGI`.
     case "$out" in
-        "")         got=NONE ;;
-        "@all")     got=ALL ;;
-        "@execcgi") got=EXECCGI ;;
-        *)          got=HANDLER ;;
+        "")          got=NONE ;;
+        "@all")      got=ALL ;;
+        "@execcgi")  got=EXECCGI ;;
+        "-@all")     got=OFFALL ;;
+        "-@execcgi") got=OFFEXEC ;;
+        *)           got=HANDLER ;;
     esac
     if [ "$want" = "HANDLER" ]; then
         # `AddType ... .php .phtml` cho HAI token; lay token cuoi cua DONG lam duoi
@@ -101,7 +106,7 @@ while IFS=$'\t' read -r want rule; do
     bad=""
     for tk in $(printf '%s\n' "$out" | tr "," " "); do
         case "$tk" in
-            @all|@php|@phpini|@execcgi) ;;
+            @all|@php|@phpini|@execcgi|-@all|-@execcgi) ;;
             ext:*) case "${tk#ext:}" in *[!a-z0-9_-]*|"") bad="$bad $tk" ;; esac ;;
             *[!a-z0-9_-]*) bad="$bad $tk" ;;
         esac
@@ -130,7 +135,13 @@ while IFS=$'\t' read -r want rule; do
     # DIEU DA SUA duoc: `exp_lua` cu khong phan biet "ca hai im" voi "Lua thay ma awk
     # khong" — huong FALSE NEGATIVE cua chinh awk, tuc dieu bo fixture nay sinh ra de
     # bat. Nay ca `NONE` duoc doi chung HAI CHIEU.
-    exp_lua=$([ "$want" = "NONE" ] && echo NONE || echo HANDLER)
+    # `OFFEXEC`/`OFFALL` o ben awk la "thu muc nay TAT tuong minh". Lua doc part dang
+    # UPLOAD nen no khong thay gi dang chu y -> `NONE`. Gop chung vao nhanh `HANDLER`
+    # se doi Lua bao `handler=co` cho mot dong TAT — nguoc han.
+    case "$want" in
+        NONE|OFFEXEC|OFFALL) exp_lua=NONE ;;
+        *)                   exp_lua=HANDLER ;;
+    esac
     want "$rule" "lua(co/khong)" "$lua_got" "$exp_lua"
     want "$rule" "shell"    "$got"     "$want"
 done < "$FIX"
@@ -280,9 +291,9 @@ ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r
 # Nguoi dung tai hien 29-09. Apache/Zend doc TUAN TU va dong SAU ghi de dong TRUOC.
 # Ban truoc hop moi lan xuat hien nen khong bao gio rut lai duoc — FP telemetry hom
 # nay, va FP THAT neu luat duoc promote.
-hta_raw "lan cuoi: +ExecCGI roi -ExecCGI" ""         'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_raw "lan cuoi: +ExecCGI roi -ExecCGI" "-@execcgi" 'Options +ExecCGI\nOptions -ExecCGI\n'
 hta_raw "lan cuoi: -ExecCGI roi +ExecCGI" "@execcgi" 'Options -ExecCGI\nOptions +ExecCGI\n'
-hta_raw "lan cuoi: All roi None"          ""         'Options All\nOptions None\n'
+hta_raw "lan cuoi: All roi None"          "-@execcgi" 'Options All\nOptions None\n'
 hta_raw "lan cuoi: None roi All"          "@execcgi" 'Options None\nOptions All\n'
 ini_raw "lan cuoi: x.php roi none"        "khong"    'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n'
 ini_raw "lan cuoi: none roi x.php"        "co"       'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n'
@@ -333,9 +344,9 @@ LX
         XFLAG="${5:-upload_apache_config}" "$RESTY" "$R/x.lua" 2>/dev/null)
     want "$1" "lua" "${g:-LOI}" "$3"
 }
-cross "cheo: +ExecCGI roi -ExecCGI" ""         khong 'Options +ExecCGI\nOptions -ExecCGI\n'
+cross "cheo: +ExecCGI roi -ExecCGI" "-@execcgi" khong 'Options +ExecCGI\nOptions -ExecCGI\n'
 cross "cheo: -ExecCGI roi +ExecCGI" "@execcgi" co    'Options -ExecCGI\nOptions +ExecCGI\n'
-cross "cheo: All roi None"          ""         khong 'Options All\nOptions None\n'
+cross "cheo: All roi None"          "-@execcgi" khong 'Options All\nOptions None\n'
 cross "cheo: CRLF +ExecCGI"         "@execcgi" co    'Options +ExecCGI\r\n'
 cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n' upload_user_ini
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
@@ -372,12 +383,12 @@ cross "cheo: prepend TAT + append BAT" ""  co    'auto_prepend_file=none\nauto_a
 # quyen da cap cho ca thu muc. Ban truoc dung MOT cap (`execcgi_on`, `execcgi_depth`)
 # nen dong trong container ghi de trang thai ngoai -> BO SOT (nguoi dung bat 30-09).
 hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@execcgi" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
-hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" ""         'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" "-@execcgi" 'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
 hta_raw "pham vi: CHI trong FilesMatch"            ""         '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
 hta_raw "pham vi: ngoai BAT, trong Directory None" "@execcgi" 'Options +ExecCGI\n<Directory /x>\nOptions None\n</Directory>\n'
 hta_raw "pham vi: IfModule KHONG gioi han"         "@execcgi" '<IfModule mod_x.c>\nOptions +ExecCGI\n</IfModule>\n'
 # Huong nguoc: last-wins CUNG pham vi van phai chay, khong duoc thanh "mot lan bat la mai bat"
-hta_raw "pham vi: cung depth 0 last-wins TAT"      ""         'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_raw "pham vi: cung depth 0 last-wins TAT"      "-@execcgi" 'Options +ExecCGI\nOptions -ExecCGI\n'
 # Long hai cap: TAT o depth 2 khong duoc leo ra depth 0
 hta_raw "pham vi: long hai cap"                    "@execcgi" 'Options +ExecCGI\n<Directory /x>\n<FilesMatch "y">\nOptions -ExecCGI\n</FilesMatch>\n</Directory>\n'
 
@@ -458,8 +469,8 @@ hta_ok "execcgi_ok=0 + All -> noop"           0 "@execcgi:noop" 'Options All -In
 hta_ok "execcgi_ok=0 KHONG anh huong ext:"    0 "ext:php"       'AddHandler application/x-httpd-php .php\n'
 hta_ok "execcgi_ok=0 KHONG anh huong @all"    0 "@all"          'SetHandler application/x-httpd-php\n'
 # TAT van la TAT o ca hai che do: co sua khong duoc thanh "luon in mot cai gi".
-hta_ok "execcgi_ok=0 + TAT -> rong"           0 ""              'Options +ExecCGI\nOptions -ExecCGI\n'
-hta_ok "execcgi_ok=1 + TAT -> rong"           1 ""              'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_ok "execcgi_ok=0 + TAT -> TAT tuong minh"  0 "-@execcgi"     'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_ok "execcgi_ok=1 + TAT -> TAT tuong minh"  1 "-@execcgi"     'Options +ExecCGI\nOptions -ExecCGI\n'
 # KHONG truyen bien -> phai la 1 (mac dinh an toan), khong phai rong hay noop.
 printf 'Options +ExecCGI\n' > "$R/x.htaccess"
 want "execcgi_ok KHONG truyen -> mac dinh @execcgi" "awk" \

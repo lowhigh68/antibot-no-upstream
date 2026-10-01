@@ -1160,6 +1160,33 @@ do
     eq("ke thua: `rm:png` khong tat `ext:jpg`",
        chain_for({ "rm:png", "ext:jpg" }, "/uploads/a.jpg"), "handler_ext")
     -- `@phpini` KHONG ke thua: pham vi `php.ini` theo SAPI/CWD, khong theo thu muc.
+    -- ── BON TRUC: moi truc co CHIEU TAT ─────────────────────────────
+    --
+    -- Truoc 02-10 chi `ext:` co chieu tat (`rm:`); `@all` va `@execcgi` CHI co chieu
+    -- bat, nen mot thu muc con tat tuong minh khong rut lai duoc gi (nguoi dung bat
+    -- 01-10). `SetHandler none` la cu phap chinh thuc cua Apache de HUY handler, va
+    -- `ForceType text/plain` / `Options -ExecCGI` cung vay.
+    --
+    -- Parser phat `-@all` / `-@execcgi`, va chung ghi de co cua cha y nhu `rm:<e>`
+    -- ghi de `ext:<e>`.
+    eq("truc: `-@all` o con HUY `@all` cua cha",
+       chain_for({ "-@all", "@all" }, "/uploads/a.jpg"), nil)
+    eq("truc: `-@all` o cha, con BAT lai",
+       chain_for({ "@all", "-@all" }, "/uploads/a.jpg"), "handler_all")
+    -- `-@all` KHONG duoc tat `ext:` — hai truc khac nhau. Mot `SetHandler none` huy
+    -- handler ca-thu-muc, nhung mot `AddHandler ... .jpg` o cung cho VAN con.
+    eq("truc: `-@all` KHONG tat `ext:jpg`",
+       chain_for({ "-@all", "ext:jpg" }, "/uploads/a.jpg"), "handler_ext")
+    -- `-@execcgi` tuong tu cho truc ExecCGI.
+    eq("truc: `-@execcgi` o con HUY `@execcgi` cua cha",
+       chain_for({ "-@execcgi", "@execcgi" }, "/uploads/a.cgi"), nil)
+    -- Va KHONG tat `@all`: `Options -ExecCGI` chi rut quyen chay CGI, no khong go
+    -- `SetHandler application/x-httpd-php`.
+    eq("truc: `-@execcgi` KHONG tat `@all`",
+       chain_for({ "-@execcgi", "@all" }, "/uploads/a.jpg"), "handler_all")
+    -- Tat o CHINH thu muc cua request cung phai co hieu luc (khong chi khi ke thua).
+    eq("truc: `-@all` mot minh -> khong bao gi",
+       chain_for({ "-@all" }, "/uploads/a.jpg"), nil)
     eq("ke thua: `@phpini` o CHA KHONG ke thua",
        chain_for({ false, "@phpini" }, "/uploads/a.php"), nil)
     eq("ke thua: `@phpini` o CHINH thu muc thi co",

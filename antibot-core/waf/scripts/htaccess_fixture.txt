@@ -36,6 +36,10 @@ HANDLER	aDdHaNdLeR application/x-httpd-php .php
 ALL	SetHandler application/x-httpd-php
 ALL	ForceType application/x-httpd-php
 ALL	sethandler application/x-httpd-php
+OFFALL	SetHandler none
+OFFALL	SetHandler None
+OFFALL	ForceType text/plain
+OFFALL	sethandler none
 
 # ── FP da bat va da sua (loi 6 cua nguoi dung, vong review truoc) ───
 # Token THU NHAT quyet dinh. `php` o day chi nam trong DUOI, khong trong handler.
@@ -53,12 +57,12 @@ NONE	php_value memory_limit 128M
 # ── Options / ExecCGI (nguoi dung bat 28-09: fixture noi ALL ma khong co ca) ──
 EXECCGI	Options +ExecCGI
 EXECCGI	Options All
-NONE	Options -ExecCGI
+OFFEXEC	Options -ExecCGI
 NONE	Options +FollowSymLinks
 # Xu ly TUAN TU nhu Apache: token cuoi quyet dinh.
-NONE	Options +ExecCGI -ExecCGI
+OFFEXEC	Options +ExecCGI -ExecCGI
 EXECCGI	Options -ExecCGI +ExecCGI
-NONE	Options None
+OFFEXEC	Options None
 
 # ── Directive co INDENT (trong <IfModule>) ──────────────────────────
 HANDLER	    AddType application/x-httpd-php .php
