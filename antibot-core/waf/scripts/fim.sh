@@ -347,30 +347,22 @@ redis_send_resp() {
         REDIS_ERR="$errs/$want lenh bi Redis TU CHOI (canary van song) -- '$out'"
         return 1
     fi
-    # `replies` — phep dem DOC LAP voi `errors`, bat ca BATCH BI CAT NGAN: lenh khong
-    # den duoc server (ket noi dut giua duong, `cat` loi, tep RESP bi truncate).
+    # KHONG co phep so `replies` o day, va day la ket luan DO DUOC chu khong phai
+    # thieu sot.
     #
-    # Do tren 171-96 (01-10), `redis-cli 8.6.2`, 3 lenh voi lenh giua co TTL khong
-    # phai so:
-    #     errors: 1, replies: 3     ok1="v1"  ok2="v3"  bad=(nil)
-    # tuc `replies` dem CA lenh bi tu choi. Nen `replies` = so lenh DEN DUOC server.
+    # Toi tung them `[ "$reps" -ne $((want + 1)) ]` de bat "batch bi CAT NGAN". Ca do
+    # co THAT — do tren Redis 6.0.16 that (02-10): tep RESP 135 byte / 3 lenh, cat o
+    # 2/3 cho `errors: 0, replies: 2, rc=0` va chi 2/3 khoa duoc ghi, tuc `--pipe`
+    # KHONG co dau hieu loi nao.
     #
-    # GIOI HAN, noi ro vi toi da gop sai hai ca khi viet lan dau: phep nay KHONG bat
-    # duoc ca "lenh den duoc server, duoc dem vao replies, nhung khong thuc thi va
-    # khong bao loi". Do duoc bang stub (`RCLI_SKIP=2`, 3 khoa): `replies: 4` khop
-    # `want+1`, nen phep so QUA trong khi chi 2/3 khoa duoc ghi. Ca do thuoc vong
-    # XAC MINH DOC NGUOC o cac noi goi, khong thuoc day.
-    # CHUA CO TEST, noi ro: stub `rcli` doc het stdin nen khong gia lap duoc "dut giua
-    # duong" ma khong dong thoi mat canary (canary la lenh CUOI). Dot bien CC (bo phep
-    # so nay) KHONG bi bat. Giu lai vi no re va bat mot ca that — tep RESP bi truncate
-    # vi dia day, `cat` loi — va `redis-cli 8.6.2` tren 171-96 da xac nhan `replies` la
-    # phep dem dang tin. Khi WSL co Redis that thi dong duoc bang cach cat tep RESP.
-    local reps
-    reps=$(printf '%s\n' "$out" | sed -n 's/.*replies: \([0-9]\+\).*/\1/p' | tail -1)
-    if [ -n "$reps" ] && [ "$reps" -ne $((want + 1)) ]; then
-        REDIS_ERR="chi $reps reply cho $((want + 1)) lenh (gui $want + canary) -- batch bi CAT NGAN? '$out'"
-        return 1
-    fi
+    # NHUNG canary la lenh CUOI cua batch, nen BAT KY phep cat nao cung cat luon
+    # canary -> `canary khong doc nguoc duoc` bat TRUOC. Do duoc bang stub
+    # (`RCLI_TRUNC=2`): thong diep la `KHONG GHI DUOC ... errors: 0, replies: 1`, den
+    # tu nhanh canary. Va dot bien bo phep so `replies` KHONG bi bat boi mot ca nao.
+    #
+    # Mot phep kiem khong bao ve ca nao ma canary chua bao ve thi la mot dong code
+    # khong ai biet no o day de lam gi — dung loai ma lan sau co nguoi (ke ca toi) se
+    # "sua" sai huong. Bo di, va giu lai PHEP DO trong chu thich nay.
     return 0
 }
 # Sinh lenh SETEX dang RESP cho MOT tap danh dau. Mot ham chu khong hai khoi awk:
@@ -405,25 +397,47 @@ redis_send_resp() {
 # round-trip cho ca tap. Doi so di qua RESP nen khoa co khoang trang khong bi tach —
 # `$(cat ...)` thi bi, va do dung la lo `24d1442` vua bo di.
 count_live() {
-    local kf="$1" want="$2" vf nlive
+    local kf="$1" want="$2" total=0 out
     [ -s "$kf" ] || return 0
-    vf=$(mktemp) || { REDIS_ERR="khong tao duoc tep tam de xac minh"; return 1; }
-    {
-        printf '*%d\r\n' $((want + 1))
-        printf '$6\r\nEXISTS\r\n'
-        while IFS= read -r k; do
-            [ -n "$k" ] || continue
-            printf '$%d\r\n%s\r\n' "${#k}" "$k"
-        done < "$kf"
-    } > "$vf"
-    nlive=$("$REDIS_CLI" -n "$REDIS_DB" < "$vf" 2>>"$LOG" | tr -dc '0-9')
-    rm -f "$vf"
-    if [ -z "$nlive" ]; then
-        REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"
-        return 1
+    # DOI SO QUA DONG LENH, khong qua STDIN dang RESP.
+    #
+    # Ban dau toi gui RESP vao stdin cua `redis-cli` KHONG kem `--pipe`, va do la mot
+    # loi chi production moi thay: `redis-cli` o che do THUONG doc stdin theo kieu
+    # INLINE, nen `*4` thanh TEN LENH. Do tren Redis THAT (6.0.16) sau khi WSL co
+    # redis-cli:
+    #     ERR unknown command `*4`, with args beginning with:
+    # Stub `rcli` thi giai ma RESP o MOI che do nen bo test XANH — stub noi doi.
+    #
+    # `--pipe` hieu RESP nhung CHI in `errors:`/`replies:`, khong in gia tri reply,
+    # nen khong doc duoc so tu `EXISTS`. Do duoc: `errors: 0, replies: 1`.
+    #
+    # Doi so qua dong lenh thi `redis-cli` tu dong goi, va MOT PHAN TU MANG giu nguyen
+    # khoang trang — do duoc: `EXISTS k1 'a b/' k2` tra `2`.
+    #
+    # CHIA LO 100 khoa: 12 khoa duong dan dai ~100 byte la 1,2 KB, duoi `ARG_MAX` rat
+    # nhieu, nhung phu thuoc vao "tap luon nho" la mot bat bien khong ai kiem duoc khi
+    # sua ve sau. `EXISTS` nhieu doi so tra TONG (Redis 3.0+) nen cong don cac lo lai
+    # la dung.
+    local -a batch=()
+    local k n=0
+    while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        batch+=("$k")
+        n=$((n + 1))
+        if [ "$n" -ge 100 ]; then
+            out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "${batch[@]}" 2>>"$LOG" </dev/null | tr -dc '0-9')
+            [ -n "$out" ] || { REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"; return 1; }
+            total=$((total + out))
+            batch=(); n=0
+        fi
+    done < "$kf"
+    if [ "$n" -gt 0 ]; then
+        out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "${batch[@]}" 2>>"$LOG" </dev/null | tr -dc '0-9')
+        [ -n "$out" ] || { REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"; return 1; }
+        total=$((total + out))
     fi
-    if [ "$nlive" -ne "$want" ]; then
-        REDIS_ERR="chi $nlive/$want khoa thuc su ton tai sau khi ghi"
+    if [ "$total" -ne "$want" ]; then
+        REDIS_ERR="chi $total/$want khoa thuc su ton tai sau khi ghi"
         return 1
     fi
     return 0

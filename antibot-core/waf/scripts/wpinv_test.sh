@@ -77,19 +77,48 @@ while [ $# -gt 0 ]; do
                  $1=="DEL"   && $2==k { v="";  has=0 }
                  END { if (has) print v; else print "" }' "$RCLI_OUT"
              exit 0 ;;
-        EXISTS) key="$2"
-             # `EX_STUCK=1` = khoa KHONG BAO GIO mat, tuc DEL that bai im lang. Do la
-             # ca ma `-n "$(GET)"` cua ban truoc KHONG phan biet duoc voi "da xoa".
-             if [ "${EX_STUCK:-0}" = 1 ]; then echo 1; exit 0; fi
-             awk -F'\t' -v k="$key" '
-                 $1=="SETEX" && $2==k { has=1 }
-                 $1=="DEL"   && $2==k { has=0 }
-                 END { print (has ? 1 : 0) }' "$RCLI_OUT"
+        EXISTS)
+             # `EXISTS` nhan NHIEU doi so va tra TONG so khoa ton tai (Redis 3.0+).
+             # `count_live` dua ca lo qua DONG LENH — mot phan tu mang giu nguyen
+             # khoang trang. Do tren Redis that: `EXISTS k1 'a b/' k2` tra `2`.
+             shift
+             nex=0
+             for kk in "$@"; do
+                 if [ "${EX_STUCK:-0}" = 1 ]; then
+                     nex=$((nex + 1)); continue
+                 fi
+                 h=$(awk -F'\t' -v k="$kk" '
+                     $1=="SETEX" && $2==k { has=1 }
+                     $1=="DEL"   && $2==k { has=0 }
+                     END { print (has ? 1 : 0) }' "$RCLI_OUT")
+                 nex=$((nex + h))
+             done
+             echo "$nex"
              exit 0 ;;
         DEL) printf 'DEL\t%s\n' "$2" >> "$RCLI_OUT"; echo 1; exit 0 ;;
         *) shift ;;
     esac
 done
+
+# ── RESP CHI duoc giai ma khi co `--pipe` ───────────────────────────
+#
+# `redis-cli` THAT o che do THUONG doc stdin theo kieu INLINE, nen mot tep RESP cho
+# `ERR unknown command '*4'`. Do tren Redis 6.0.16 that (02-10). Ban truoc cua stub
+# nay giai ma RESP o MOI che do, nen `count_live` gui RESP qua stdin khong kem
+# `--pipe` van CHAY TRONG TEST va chi hong tren production — stub NOI DOI.
+#
+# Mo phong dung: khong `--pipe` thi bao loi y nhu Redis that.
+if [ "$pipe" != 1 ]; then
+    nerr=0
+    while IFS= read -r l; do
+        l=${l%$'\r'}
+        [ -n "$l" ] || continue
+        echo "ERR unknown command \`${l%% *}\`, with args beginning with: " >&2
+        nerr=$((nerr + 1))
+    done
+    [ "$nerr" -gt 0 ] && exit 1
+    exit 0
+fi
 
 # ── GIAI MA RESP ────────────────────────────────────────────────────
 # `*<n>\r\n` roi n lan `$<len>\r\n<arg>\r\n`. Doc bang DO DAI chu khong bang dong:
@@ -134,6 +163,22 @@ while IFS= read -r hdr; do
     #
     # `replies` van dem lenh nay, giong Redis that: do tren 171-96 (01-10) voi
     # `redis-cli 8.6.2`, mot lenh bi TU CHOI van vao `replies` (`errors: 1, replies: 3`).
+    # `RCLI_TRUNC=<k>` = chi THUC THI k lenh dau roi DUNG, va bao `replies: k` — dung nhu
+    # `--pipe` khi tep RESP bi CAT GIUA LENH. Do tren Redis THAT (6.0.16, 02-10):
+    #     tep 135 byte / 3 lenh, cat o 2/3  ->  errors: 0, replies: 2, rc=0, 2/3 khoa
+    #     cat ngay sau lenh 1               ->  errors: 0, replies: 1,        1/3 khoa
+    # Tuc `--pipe` tra rc=0 va `errors: 0` — KHONG dau hieu loi nao — ma mot phan batch
+    # MAT. Chi phep so `replies` voi `want+1` bat duoc, va day la ca dot bien CC nham vao.
+    #
+    # Khac `RCLI_SKIP`: `SKIP` la "lenh den duoc server, VAO replies, nhung khong thuc
+    # thi" (replies KHOP, `count_live` bat); `TRUNC` la "lenh KHONG den duoc server"
+    # (replies LECH). Hai ca khac nhau, hai phep kiem khac nhau.
+    if [ -n "${RCLI_TRUNC:-}" ] && [ "$n_cmd" -ge "$RCLI_TRUNC" ]; then
+        # `n_cmd` DA tang cho lenh thu k truoc khi vao day, nen lui lai: tep bi cat
+        # GIUA lenh k thi lenh do khong den duoc server, va `replies` = k-1.
+        n_cmd=$((n_cmd - 1))
+        break
+    fi
     if [ -n "${RCLI_SKIP:-}" ] && [ "$n_cmd" = "$RCLI_SKIP" ]; then
         continue
     fi
@@ -143,26 +188,6 @@ while IFS= read -r hdr; do
             printf 'SETEX\t%s\t%s\t%s\n' "${args[1]}" "${args[2]}" "${args[3]}" >> "$RCLI_OUT" ;;
         DEL)
             printf 'DEL\t%s\n' "${args[1]}" >> "$RCLI_OUT" ;;
-        EXISTS)
-            # `EXISTS` NHIEU doi so tra MOT so = tong so khoa ton tai (Redis 3.0+).
-            # `state_marks` dung no de dem lai CA tap vua ghi trong mot round-trip,
-            # nen stub phai mo phong dung hanh vi cong don do.
-            nex=0
-            j=1
-            while [ "$j" -lt "${#args[@]}" ]; do
-                kk="${args[$j]}"
-                if [ "${EX_STUCK:-0}" = 1 ]; then
-                    nex=$((nex + 1))
-                else
-                    h=$(awk -F'\t' -v k="$kk" '
-                        $1=="SETEX" && $2==k { has=1 }
-                        $1=="DEL"   && $2==k { has=0 }
-                        END { print (has ? 1 : 0) }' "$RCLI_OUT")
-                    nex=$((nex + h))
-                fi
-                j=$((j + 1))
-            done
-            echo "(integer) $nex" ;;
         *) n_err=$((n_err + 1)) ;;
     esac
 done
