@@ -951,6 +951,40 @@ printf '# BEGIN WordPress\nRewriteEngine On\n' > "$W22/.htaccess"
 want "22 .htaccess CON nhung het token -> khoa bi go" \
      "$([ "$(d22 "$W22/")" -ge 1 ] && echo co || echo khong)" "co"
 want "22 va KHONG ghi khoa moi" "$(v22 "$W22/")" ""
+
+# BEN GHI chi ghi TRANG THAI CUC BO, KHONG merge to tien. Merge o CA HAI ben la trung
+# lap, va do duoc 01-10 tren 171-96: `statekeys.full.txt` ra 526 dong thay vi 11 — moi
+# thu muc cau hinh nam duoi mot webroot co `AddHandler` deu thua huong token roi duoc
+# ghi khoa, va `check` van 1m25 thay vi ve 49s.
+mkdir -p "$W22/duoi"
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
+printf '# BEGIN WordPress\nRewriteEngine On\n' > "$W22/duoi/.htaccess"
+printf '<?php\n' > "$W22/duoi/a.php"
+r22 baseline
+: > "$S22/rcli.txt"; r22 check
+want "22 webroot co khoa (cuc bo)"        "$(v22 "$W22/")"      "ext:jpg"
+want "22 thu muc duoi: .htaccess LANH -> KHONG khoa (khong merge)" "$(v22 "$W22/duoi/")" ""
+want "22 DUNG mot khoa cho ca cay"        "$(k22)"              "1"
+# Va `statekeys` phai co DUNG mot dong — day la cho 526-vs-11 lo ra.
+want "22 statekeys co DUNG mot dong" \
+     "$(wc -l < "$S22/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "1"
+
+# THU TU: chuyen generation CHI SAU khi ca hai batch xong. Neu chuyen TRUOC roi `DEL`
+# that bai, ban ghi noi "da xoa" trong khi khoa VAN SONG — va lot sau khong con biet
+# de thu lai. Kiem bang cach lam Redis chet DUNG luc co khoa can xoa.
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
+r22 baseline
+: > "$S22/rcli.txt"; r22 check
+sk_truoc=$(cat "$S22/state/statekeys.full.txt" 2>/dev/null)
+rm -f "$W22/.htaccess"
+# Redis CHET: `DEL` khong chay duoc.
+FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
+  FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" \
+  RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" RCLI_MODE=down \
+    bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
+sk_sau=$(cat "$S22/state/statekeys.full.txt" 2>/dev/null)
+want "22 Redis chet luc DEL -> generation KHONG chuyen" \
+     "$([ "$sk_truoc" = "$sk_sau" ] && echo "giu" || echo "da chuyen OAN")" "giu"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

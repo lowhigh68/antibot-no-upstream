@@ -355,88 +355,7 @@ config_dirs() {
 
 # Tinh token cho MOT thu muc tu dia, in ra hoac rong. Cung logic voi vong trong khoi
 # `fimchg` — mot hien thuc, khong hai.
-# WEBROOT chua mot duong dan: cat tai `/public_html`. CUNG phep cat ma `init.lua` dung
-# (`rt.var.document_root`), nen hai ben tinh ra cung mot goc — lech la khoa ghi mot
-# noi va doc mot noi.
-webroot_of() {
-    local p="$1"
-    case "$p" in
-        */public_html/*) printf '%s' "${p%%/public_html/*}/public_html" ;;
-        */public_html)   printf '%s' "$p" ;;
-        *)               printf '%s' "$p" ;;   # khong nhan ra: coi chinh no la goc
-    esac
-}
 
-# Token HIEU LUC cho mot thu muc, da MERGE ca chuoi `.htaccess` tu WEBROOT xuong.
-#
-# `.htaccess` ap cho thu muc hien tai VA MOI thu muc con (tai lieu Apache). Ban truoc
-# chi doc `.htaccess` cua DUNG thu muc do, nen:
-#     /public_html/.htaccess          AddHandler ... .jpg
-#     /public_html/uploads/a.jpg      request
-# Apache CHAY tep do qua PHP, con WAF hoi khoa `/public_html/uploads/` va khong thay
-# gi — FALSE NEGATIVE truc tiep (nguoi dung bat 01-10).
-#
-# KHONG phai OR moi ancestor: `RemoveHandler`/`RemoveType` o thu muc CON huy mapping
-# ke thua tu CHA. Nen phai tinh TRANG THAI HIEU LUC: di tu goc xuong, moi tang
-# `ext:<e>` BAT va `rm:<e>` TAT, tang sau ghi de tang truoc — dung thu tu Apache doc.
-#
-# `@all`/`@execcgi` cung ke thua (`SetHandler` ap ca thu muc con), nhung chung KHONG
-# co dang `rm:` — Apache khong co directive nao rut lai `SetHandler` ngoai mot
-# `SetHandler None`, va parser chua doc dang do. Noi ro: pham vi chua lam.
-#
-# `.user.ini` KHAC: PHP doc no theo chuoi thu muc TU goc den tep, nen no CUNG ke thua
-# — va `@php` cung duoc merge nhu `@all`. `php.ini` thi khong (xem `@phpini`).
-dir_tokens_inherited() {
-    local d="$1" root="$2"
-    [ -d "$d" ] || return 0
-    # Chuoi thu muc tu `root` den `d`, goc TRUOC.
-    local chain="" cur="$d"
-    while [ -n "$cur" ] && [ "${#cur}" -ge "${#root}" ]; do
-        chain="$cur
-$chain"
-        [ "$cur" = "$root" ] && break
-        cur=$(dirname "$cur")
-    done
-    # `awk` mot lan cho CA chuoi: tung tep mot lan goi la 1.075 tien trinh con o
-    # `state_marks`, va o day con nhan voi do sau.
-    local on="" seg
-    while IFS= read -r seg; do
-        [ -n "$seg" ] || continue
-        [ -f "$seg/.htaccess" ] || continue
-        on="$on
-$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$seg/.htaccess" 2>/dev/null)"
-    done <<EOT
-$chain
-EOT
-    # Trang thai hieu luc: `ext:` bat, `rm:` tat, dong SAU ghi de dong truoc.
-    local toks
-    toks=$(printf '%s\n' "$on" | awk '
-        /^ext:/  { st[substr($0, 5)] = 1; next }
-        /^rm:/   { st[substr($0, 4)] = 0; next }
-        /^@/     { flag[$0] = 1; next }
-        END {
-            n = 0
-            for (e in st) if (st[e]) { out[++n] = "ext:" e }
-            for (f in flag) out[++n] = f
-            # `sort -u` ben ngoai lo thu tu; o day chi can khong trung.
-            for (i = 1; i <= n; i++) printf "%s\n", out[i]
-        }' | sort -u | paste -sd, -)
-    # `.user.ini` ke thua theo chuoi thu muc; `php.ini` KHONG (pham vi theo SAPI/CWD).
-    local cf tok seg2
-    while IFS= read -r seg2; do
-        [ -n "$seg2" ] || continue
-        [ -f "$seg2/.user.ini" ] || continue
-        if awk -f "$INI_AWK" "$seg2/.user.ini" 2>/dev/null; then
-            case ",$toks," in *,@php,*) ;; *) toks="${toks:+$toks,}@php" ;; esac
-        fi
-    done <<EOT
-$chain
-EOT
-    if [ -f "$d/php.ini" ] && awk -f "$INI_AWK" "$d/php.ini" 2>/dev/null; then
-        case ",$toks," in *,@phpini,*) ;; *) toks="${toks:+$toks,}@phpini" ;; esac
-    fi
-    printf '%s' "$toks"
-}
 
 # CHI PHI, do duoc 01-10 tren cay 1.075 thu muc cau hinh (dung ty le THAT cua fleet:
 # 11 co token, 1.064 khong): `check` mat 5,9s so voi 0,1s khi cay khong co tep cau
@@ -494,7 +413,12 @@ state_marks() {
     config_dirs "$snap" | sort -u > "$cfg"
     while IFS= read -r d; do
         [ -n "$d" ] || continue
-        toks=$(dir_tokens_inherited "$d" "$(webroot_of "$d")")
+        # TRANG THAI CUC BO, khong merge to tien. `init.lua` tra chuoi to tien bang mot
+        # `MGET` va merge o DO — merge o CA HAI ben la trung lap, va do duoc 01-10 tren
+        # 171-96: `statekeys.full.txt` ra 526 dong thay vi 11, vi moi thu muc cau hinh
+        # nam duoi mot webroot co `AddHandler` deu thua huong token roi duoc ghi khoa.
+        # `check` cung van 1m25 thay vi ve 49s.
+        toks=$(dir_tokens "$d")
         [ -n "$toks" ] || continue
         # Tap MONG MUON cua generation nay, ghi TRUOC phep `skip`: mot thu muc vua doi
         # (`$dirtydirs` xu ly no) VAN thuoc tap mong muon, nen no khong duoc tinh la
