@@ -123,12 +123,46 @@ while IFS= read -r hdr; do
     done
     [ "${#args[@]}" -eq "$nargs" ] || { n_err=$((n_err + 1)); continue; }
     n_cmd=$((n_cmd + 1))
+    # `RCLI_SKIP=<k>` = lenh thu k den duoc server, duoc DEM vao `replies`, nhung
+    # KHONG duoc thuc thi va server KHONG bao loi. Do la ca `errors: 0` ma van MAT
+    # mot khoa.
+    #
+    # KHONG giam `n_cmd`: do la diem toi lam sai o ban dau. Giam `n_cmd` lam canary
+    # (lenh CUOI) truot xuong dung vi tri k o lan sau, nen chinh canary bi bo — va
+    # canary bat duoc, tuc ca do do SAI thu can do. Do duoc: `rc=2`,
+    # `doc=''`, `replies: 0`.
+    #
+    # `replies` van dem lenh nay, giong Redis that: do tren 171-96 (01-10) voi
+    # `redis-cli 8.6.2`, mot lenh bi TU CHOI van vao `replies` (`errors: 1, replies: 3`).
+    if [ -n "${RCLI_SKIP:-}" ] && [ "$n_cmd" = "$RCLI_SKIP" ]; then
+        continue
+    fi
     case "${args[0]}" in
         SETEX)
             if [ "${#args[@]}" -ne 4 ]; then n_err=$((n_err + 1)); continue; fi
             printf 'SETEX\t%s\t%s\t%s\n' "${args[1]}" "${args[2]}" "${args[3]}" >> "$RCLI_OUT" ;;
         DEL)
             printf 'DEL\t%s\n' "${args[1]}" >> "$RCLI_OUT" ;;
+        EXISTS)
+            # `EXISTS` NHIEU doi so tra MOT so = tong so khoa ton tai (Redis 3.0+).
+            # `state_marks` dung no de dem lai CA tap vua ghi trong mot round-trip,
+            # nen stub phai mo phong dung hanh vi cong don do.
+            nex=0
+            j=1
+            while [ "$j" -lt "${#args[@]}" ]; do
+                kk="${args[$j]}"
+                if [ "${EX_STUCK:-0}" = 1 ]; then
+                    nex=$((nex + 1))
+                else
+                    h=$(awk -F'\t' -v k="$kk" '
+                        $1=="SETEX" && $2==k { has=1 }
+                        $1=="DEL"   && $2==k { has=0 }
+                        END { print (has ? 1 : 0) }' "$RCLI_OUT")
+                    nex=$((nex + h))
+                fi
+                j=$((j + 1))
+            done
+            echo "(integer) $nex" ;;
         *) n_err=$((n_err + 1)) ;;
     esac
 done

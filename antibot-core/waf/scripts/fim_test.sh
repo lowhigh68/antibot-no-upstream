@@ -113,12 +113,46 @@ while IFS= read -r hdr; do
     done
     [ "${#args[@]}" -eq "$nargs" ] || { n_err=$((n_err + 1)); continue; }
     n_cmd=$((n_cmd + 1))
+    # `RCLI_SKIP=<k>` = lenh thu k den duoc server, duoc DEM vao `replies`, nhung
+    # KHONG duoc thuc thi va server KHONG bao loi. Do la ca `errors: 0` ma van MAT
+    # mot khoa.
+    #
+    # KHONG giam `n_cmd`: do la diem toi lam sai o ban dau. Giam `n_cmd` lam canary
+    # (lenh CUOI) truot xuong dung vi tri k o lan sau, nen chinh canary bi bo — va
+    # canary bat duoc, tuc ca do do SAI thu can do. Do duoc: `rc=2`,
+    # `doc=''`, `replies: 0`.
+    #
+    # `replies` van dem lenh nay, giong Redis that: do tren 171-96 (01-10) voi
+    # `redis-cli 8.6.2`, mot lenh bi TU CHOI van vao `replies` (`errors: 1, replies: 3`).
+    if [ -n "${RCLI_SKIP:-}" ] && [ "$n_cmd" = "$RCLI_SKIP" ]; then
+        continue
+    fi
     case "${args[0]}" in
         SETEX)
             if [ "${#args[@]}" -ne 4 ]; then n_err=$((n_err + 1)); continue; fi
             printf 'SETEX\t%s\t%s\t%s\n' "${args[1]}" "${args[2]}" "${args[3]}" >> "$RCLI_OUT" ;;
         DEL)
             printf 'DEL\t%s\n' "${args[1]}" >> "$RCLI_OUT" ;;
+        EXISTS)
+            # `EXISTS` NHIEU doi so tra MOT so = tong so khoa ton tai (Redis 3.0+).
+            # `state_marks` dung no de dem lai CA tap vua ghi trong mot round-trip,
+            # nen stub phai mo phong dung hanh vi cong don do.
+            nex=0
+            j=1
+            while [ "$j" -lt "${#args[@]}" ]; do
+                kk="${args[$j]}"
+                if [ "${EX_STUCK:-0}" = 1 ]; then
+                    nex=$((nex + 1))
+                else
+                    h=$(awk -F'\t' -v k="$kk" '
+                        $1=="SETEX" && $2==k { has=1 }
+                        $1=="DEL"   && $2==k { has=0 }
+                        END { print (has ? 1 : 0) }' "$RCLI_OUT")
+                    nex=$((nex + h))
+                fi
+                j=$((j + 1))
+            done
+            echo "(integer) $nex" ;;
         *) n_err=$((n_err + 1)) ;;
     esac
 done
@@ -1113,6 +1147,44 @@ FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
 sk23_sau=$(cat "$S23/state/statekeys.full.txt" 2>/dev/null)
 want "23 lenh bi tu choi -> generation KHONG chuyen" \
      "$([ "$sk23_truoc" = "$sk23_sau" ] && echo giu || echo "da chuyen OAN")" "giu"
+
+# ══ 24. MAT MOT KHOA GIUA batch — ba cua deu khong bat duoc ══════════
+#
+# Ca: mot lenh DEN DUOC server, duoc dem vao `replies`, nhung KHONG duoc thuc thi va
+# server KHONG bao loi. Ba phep kiem hien co deu di qua:
+#   · canary la lenh CUOI -> van song
+#   · `errors: 0`
+#   · `replies` = want+1 (Redis dem CA lenh bi tu choi; do tren 171-96 01-10:
+#     `errors: 1, replies: 3` cho 3 lenh voi 1 lenh bi tu choi)
+# Nen phai DEM lai tap vua ghi. `head -1` khong du: khoa bi mat la khoa thu 2.
+#
+# `RCLI_SKIP=<k>` mo phong dung ca do.
+printf '\n── mat khoa giua batch (muc 24) ──\n'
+S24="$R/s24"; mkdir -p "$S24/state"
+W24="$S24/home/u1/domains/mk.test/public_html"
+mkdir -p "$W24/a" "$W24/b" "$W24/c"
+for dd in a b c; do printf 'AddHandler application/x-httpd-php .jpg\n' > "$W24/$dd/.htaccess"; done
+r24() { FIM_ROOTS="$S24/home/*/domains/*/public_html" FIM_STATE="$S24/state" \
+        FIM_LOG="$S24/fim.log" FIM_CRITLOG="$S24/crit.log" \
+        RCLI_OUT="$S24/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" "$@"; }
+r24 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+
+# Doi chung: khong doi gi -> di qua `state_marks`, ba khoa trang thai, KHONG loi.
+: > "$S24/rcli.txt"
+o24=$(r24 bash "$HERE/fim.sh" check 2>&1); rc24=$?
+want "24 doi chung: 3 khoa trang thai, khong loi" \
+     "$(grep -cP '^SETEX\twaf:fimchg:' "$S24/rcli.txt")" "3"
+want "24 doi chung: ma thoat 0" "$rc24" "0"
+
+# Ca that: mat khoa thu 2.
+: > "$S24/rcli.txt"
+o24b=$(RCLI_SKIP=2 r24 bash "$HERE/fim.sh" check 2>&1); rc24b=$?
+want "24 chi 2/3 khoa duoc ghi -> PHAI bao loi" \
+     "$(printf '%s' "$o24b" | grep -c 'KHONG XAC MINH DUOC (fimchg trang thai)')" "1"
+want "24 va ma thoat = 2 (khong do duoc)" "$rc24b" "2"
+# Generation KHONG duoc chuyen: lot sau phai con biet de thu lai.
+want "24 generation KHONG chuyen khi thieu khoa" \
+     "$(wc -l < "$S24/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "3"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"
