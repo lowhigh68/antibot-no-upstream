@@ -533,9 +533,88 @@ local function fim_config_changed(uri, rt)
     local ext = sufs and sufs[#sufs] or nil
 
     local dir = path:match("^(.*/)") or "/"
-    -- MOT `safe_get`, khong ba.
-    local v = pool.safe_get("waf:fimchg:" .. root .. dir)
-    if not v or v == "" then return nil end
+
+    -- ── TRA CHUOI TO TIEN, khong vat chat hoa ────────────────────────
+    --
+    -- `.htaccess` ap cho thu muc hien tai VA MOI thu muc con, nen mot `AddHandler` o
+    -- webroot phai bat `uploads/a.jpg`. Ban truoc giai quyet bang cach cho `fim.sh`
+    -- GHI mot khoa cho TUNG thu muc con. Do la thiet ke SAI, va so lieu tu 171-96
+    -- (01-10) chung minh truc tiep:
+    --
+    --   · 737/737 khoa cua `butkythuatso.com` co gia tri Y HET NHAU
+    --     (`ext:php,ext:php7,ext:phtml`) — mot hang so theo cay bi nhan ban 737 lan.
+    --   · `fim.sh check` 49s -> 5 phut 23, va VAN cat mat 3.174 thu muc o tran.
+    --   · 5.490 khoa, trong khi so thu muc CO tep cau hinh la 11.
+    --   · Va no KHONG the phu `uploads/a.jpg` du co tran bao nhieu: manifest chi liet
+    --     ke cac duoi PHP, nen mot thu muc chi chua `.jpg` khong bao gio vao danh sach
+    --     (nguoi dung bat 01-10 — mau thuan ngay voi muc tieu cua co che).
+    --
+    -- Nay `fim.sh` ghi DUNG 11 khoa (thu muc CO tep cau hinh), con day tra NGUOC LEN.
+    -- MOT `MGET` cho ca chuoi, khong phai mot GET moi tang: do sau that la 0-7 tang
+    -- (do tren fleet), nen 8 GET la khong chap nhan duoc tren hot path, con mot `MGET`
+    -- 8 khoa la mot round-trip y nhu truoc.
+    local keys, nk = nil, 0
+    do
+        local seg = dir
+        while seg and seg ~= "" do
+            nk = nk + 1
+            keys = keys or {}
+            keys[nk] = "waf:fimchg:" .. root .. seg
+            if seg == "/" then break end
+            -- Bo mot tang: `/a/b/` -> `/a/`
+            seg = seg:sub(1, #seg - 1):match("^(.*/)")
+            -- TRAN do sau. `/a/b/c/d/e/f/g/` la 7 tang va do la ca sau nhat do duoc;
+            -- 12 cho du cho cay sau bat thuong ma khong de mot URI dai tuy y sinh ra
+            -- mot `MGET` dai tuy y.
+            if nk >= 12 then break end
+        end
+    end
+    if not keys then return nil end
+
+    -- `MGET` tra mang theo DUNG thu tu khoa: `keys[1]` la thu muc CUA REQUEST, cac
+    -- phan tu sau la to tien cang xa. Merge phai di tu GOC XUONG (Apache doc tu goc),
+    -- nen duyet NGUOC mang.
+    local vals = pool.safe_mget(keys, nk)
+    if type(vals) ~= "table" then return nil end
+
+    -- Trang thai hieu luc, merge tu goc xuong. `ext:<e>` BAT mot duoi, `rm:<e>` TAT
+    -- no; tang GAN hon ghi de tang xa hon. Day la cho "OR moi ancestor" se SAI:
+    -- `RemoveType .jpg` trong `uploads/wpforms/.htaccess` (co THAT tren fleet, dung
+    -- mot tep) phai huy mapping ke thua tu cha.
+    local st, flag = nil, nil
+    for i = nk, 1, -1 do
+        local v = vals[i]
+        if v and v ~= ngx.null and v ~= "" then
+            for e in v:gmatch("[^,]+") do
+                if e:sub(1, 4) == "ext:" then
+                    st = st or {}; st[e:sub(5)] = true
+                elseif e:sub(1, 3) == "rm:" then
+                    st = st or {}; st[e:sub(4)] = false
+                elseif e:sub(1, 1) == "@" then
+                    flag = flag or {}
+                    -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
+                    -- cau hinh cua SAPI/CWD, khong mac nhien theo thu muc. Chi nhan khi
+                    -- no o CHINH thu muc cua request.
+                    if e ~= "@phpini" or i == 1 then flag[e] = true end
+                elseif e == "*" then
+                    -- Khoa CU tu ban truoc ban 28-09, con song tới het TTL 7 ngay.
+                    flag = flag or {}; flag["@php"] = true
+                else
+                    -- DANG CU: duoi THO khong co tien to `ext:`. `fim.sh` da ngung ghi
+                    -- dang nay, nhung khoa cu con song het TTL 7 ngay. HAN CHOT
+                    -- 06-10-2026: bo nhanh nay.
+                    st = st or {}; st[e] = true
+                end
+            end
+        end
+    end
+    if not st and not flag then return nil end
+    -- Dung lai `v` cho phan con lai: ghep thanh mot chuoi token hieu luc.
+    local parts, np = nil, 0
+    if st then for e, on in pairs(st) do if on then np = np + 1; parts = parts or {}; parts[np] = "ext:" .. e end end end
+    if flag then for f in pairs(flag) do np = np + 1; parts = parts or {}; parts[np] = f end end
+    if not parts then return nil end
+    local v = table.concat(parts, ",")
 
     -- BA KHONG GIAN TEN, khong con mot dau `*` mang ba nghia (nguoi dung bat 28-09):
     --

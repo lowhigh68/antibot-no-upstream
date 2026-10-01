@@ -352,40 +352,6 @@ config_dirs() {
     ' "$1"
 }
 
-# Thu muc CON cua cac thu muc co token, theo KE THUA.
-#
-# `config_dirs` chi liet ke thu muc CO tep cau hinh, nhung `.htaccess` ap cho CA thu
-# muc con — nen mot `AddHandler` o webroot phai sinh khoa cho moi thu muc con co tep
-# PHP. Khong mo rong thi `con/` va `con/chau/` khong bao gio co khoa (bo test bat).
-#
-# CHI thu muc co tep `.php`/`.inc`: mot thu muc chi chua anh khong can khoa nao — khoa
-# chi duoc doc khi co request den mot script. Va CHI khi to tien co token: neu khong
-# ancestor nao bat gi thi khong co gi de ke thua, nen khong mo rong.
-#
-# Day la cho DE NO RA: tren fleet `manifest.full.txt` co 317.494 tep, va mo sang MOI
-# thu muc la hang chuc nghin lan goi `awk`. Nen loc bang `anc` — tap thu muc TO TIEN
-# co token, thuong rat nho (do 01-10: 11 thu muc tren toan fleet).
-inherit_dirs() {
-    local snap="$1" cfgdirs="$2"
-    [ -s "$snap" ] || return 0
-    [ -s "$cfgdirs" ] || return 0
-    awk -F'|' -v cfg="$cfgdirs" '
-        BEGIN { while ((getline l < cfg) > 0) if (l != "") anc[l] = 1 }
-        {
-            p = $1
-            if (p !~ /\.(php|inc|phtml|php[0-9])$/) next
-            sub(/\/[^\/]+$/, "", p)
-            if (p in seen) next
-            seen[p] = 1
-            # Co to tien nao mang token khong? Di nguoc len.
-            q = p
-            while (q != "" && q != "/") {
-                if (q in anc) { print p; break }
-                sub(/\/[^\/]+$/, "", q)
-            }
-        }
-    ' "$snap"
-}
 
 # Tinh token cho MOT thu muc tu dia, in ra hoac rong. Cung logic voi vong trong khoi
 # `fimchg` — mot hien thuc, khong hai.
@@ -503,6 +469,7 @@ dir_tokens() {
 # truc tiep 01-10 — bo test khong bat vi ca cua no khop thong diep loi mot cach tinh co.
 marked=${marked:-0}; marked_chg=${marked_chg:-0}; mark_err="${mark_err:-}"
 STATE_N=0
+STATE_DEL=0
 
 # Ghi khoa TRANG THAI cho moi thu muc co token. CHI `SETEX`, khong bao gio `DEL`:
 # ~1.064/1.075 thu muc khong co token, va `DEL` chung la 1.064 lenh cong 1.064 lan
@@ -521,55 +488,71 @@ STATE_N=0
 state_marks() {
     local snap="$1" skip="${2:-}" cmds="" d toks n=0
     STATE_N=0
-    local cfg hits
+    local cfg want
     cfg=$(mktemp) || return 0
-    hits=$(mktemp) || { rm -f "$cfg"; return 0; }
+    want=$(mktemp) || { rm -f "$cfg"; return 0; }
     config_dirs "$snap" | sort -u > "$cfg"
-    # PHA 1: thu muc co tep cau hinh.
     while IFS= read -r d; do
         [ -n "$d" ] || continue
         toks=$(dir_tokens_inherited "$d" "$(webroot_of "$d")")
         [ -n "$toks" ] || continue
-        printf '%s\n' "$d" >> "$hits"
+        # Tap MONG MUON cua generation nay, ghi TRUOC phep `skip`: mot thu muc vua doi
+        # (`$dirtydirs` xu ly no) VAN thuoc tap mong muon, nen no khong duoc tinh la
+        # "khoa cu can xoa".
+        printf 'waf:fimchg:%s/\n' "$d" >> "$want"
         if [ -n "$skip" ] && grep -qxF "$d" "$skip" 2>/dev/null; then continue; fi
         cmds="${cmds}SETEX waf:fimchg:$d/ $MARK_TTL $toks
 "
         n=$((n + 1))
     done < "$cfg"
-    # PHA 2: thu muc CON ke thua. `$hits` la tap to tien CO token — neu rong thi khong
-    # co gi de ke thua va pha nay khong chay lan nao.
-    if [ -s "$hits" ]; then
-        local inh ninh=0
-        inh=$(mktemp) || { rm -f "$cfg" "$hits"; return 0; }
-        inherit_dirs "$snap" "$hits" | sort -u > "$inh"
-        ninh=$(wc -l < "$inh")
-        if [ "$ninh" -gt "$INHERIT_MAX" ]; then
-            # BAO RA, khong im lang cat: mot gioi han im lang la mot vung mu moi.
-            echo "fim: pha ke thua co $ninh thu muc, vuot tran FIM_INHERIT_MAX=$INHERIT_MAX." >&2
-            echo "fim: CAT o tran — $(( ninh - INHERIT_MAX )) thu muc KHONG duoc danh dau." >&2
-            head -n "$INHERIT_MAX" "$inh" > "$inh.cut" && mv -f "$inh.cut" "$inh"
-        fi
-        while IFS= read -r d; do
-            [ -n "$d" ] || continue
-            grep -qxF "$d" "$cfg" 2>/dev/null && continue   # pha 1 da xu ly
-            toks=$(dir_tokens_inherited "$d" "$(webroot_of "$d")")
-            [ -n "$toks" ] || continue
-            if [ -n "$skip" ] && grep -qxF "$d" "$skip" 2>/dev/null; then continue; fi
-            cmds="${cmds}SETEX waf:fimchg:$d/ $MARK_TTL $toks
+    rm -f "$cfg"
+
+    # ── RECONCILE: xoa khoa cua generation TRUOC ma gio khong con ─────
+    #
+    # `state_marks` truoc day CHI sinh `SETEX`, nen chuoi loi nay song duoc (nguoi dung
+    # bat 01-10):
+    #   1. webroot co `AddHandler ... .jpg`  -> FIM ghi khoa
+    #   2. khach BO dong do
+    #   3. lot quet moi tinh ra rong va chi `continue`
+    #   4. khoa cu VAN SONG het TTL 7 ngay -> telemetry duong tinh GIA mot tuan
+    #
+    # So tap mong muon voi tap da ghi lan truoc (`$STATE/statekeys.<tier>.txt`), roi
+    # `DEL` phan chenh. CHUYEN generation CHI SAU khi batch xong — khong thi mot lan
+    # Redis chet lam ban ghi noi "da xoa" trong khi khoa van song.
+    local prevk="$STATE/statekeys.$tier.txt" delc="" nd=0
+    if [ -s "$prevk" ]; then
+        local gone
+        gone=$(sort -u "$prevk" | comm -23 - <(sort -u "$want") 2>/dev/null) || gone=""
+        if [ -n "$gone" ]; then
+            while IFS= read -r k; do
+                [ -n "$k" ] || continue
+                delc="${delc}DEL $k
 "
-            n=$((n + 1))
-        done < "$inh"
-        rm -f "$inh"
+                nd=$((nd + 1))
+            done <<EOT
+$gone
+EOT
+        fi
     fi
-    rm -f "$cfg" "$hits"
-    [ "$n" -eq 0 ] && return 0
+
+    if [ "$n" -eq 0 ] && [ "$nd" -eq 0 ]; then rm -f "$want"; return 0; fi
     if [ $dry -eq 0 ]; then
-        if ! redis_send "$cmds"; then
+        if [ -n "$cmds" ] && ! redis_send "$cmds"; then
             [ -z "$mark_err" ] && mark_err="KHONG GHI DUOC (fimchg trang thai): $REDIS_ERR. $n khoa co the CHUA duoc ghi."
+            rm -f "$want"
             return 0
         fi
+        if [ -n "$delc" ] && ! redis_send "$delc"; then
+            [ -z "$mark_err" ] && mark_err="KHONG GO DUOC (fimchg trang thai): $REDIS_ERR. $nd khoa cu co the VAN CON."
+            rm -f "$want"
+            return 0
+        fi
+        # Chuyen generation SAU khi ca hai batch xong.
+        sort -u "$want" > "$prevk" 2>/dev/null || :
     fi
+    rm -f "$want"
     STATE_N=$n
+    STATE_DEL=$nd
     return 0
 }
 
@@ -1497,19 +1480,6 @@ NEWCOUNT="$STATE/newcount.$tier.txt"
 # tha 1-5 tep. Khoang giua 5 va 311 rong, nen nguong nam trong khoang trong do —
 # cung ly tinh nhu nguong 40 diem cua `pscore`.
 NEW_MIN_N="${FIM_NEW_MIN_N:-30}"
-# TRAN cho pha ke thua. Do 01-10 tren cay 1.075 thu muc cau hinh + 2.000 thu muc PHP:
-# `check` mat 12s khi webroot KHONG co token, nhung 52s khi CO — luc do pha 2 tinh lai
-# chuoi cho MOI thu muc con. Va tren fleet HAI site da co `AddHandler` o goc
-# `public_html`, nen do la tinh huong THAT chu khong phai gia dinh.
-#
-# `fim.sh check` tren 171-96 hien 49s; mot pha 2 khong tran co the lam no thanh vai
-# phut, va tier full chay moi 30 phut. Tran nay cat o `FIM_INHERIT_MAX` thu muc va BAO
-# RA — khong im lang bo bot, vi mot gioi han im lang la mot vung mu moi.
-#
-# 5.000 lay tu so do: 2.000 thu muc PHP mat ~40s o pha 2, nen 5.000 la ~100s — chap
-# nhan duoc o nhip 30 phut, va lon hon han so thu muc con THAT cua mot site WordPress
-# (plugins/themes gop lai thuong duoi 2.000).
-INHERIT_MAX="${FIM_INHERIT_MAX:-5000}"
 
 # QUYEN FILE. Script nay truoc khong dat umask, nen quyen phu thuoc umask cua
 # root tung may. Do 13-09: bon may ra 0640, rieng cloud183-139 ra 0644 — khac

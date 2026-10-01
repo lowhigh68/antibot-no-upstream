@@ -885,81 +885,72 @@ want "18 nguong nam duoi 311 (thu muc cache thap nhat van dat)" \
 wdef=$(grep -oE 'FIM_CHG_WINDOW_DAYS:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
 want "18 dung chung cua so 21 ngay voi CHGCOUNT" "$wdef" "21"
 
-# ── NHOM 22: KE THUA `.htaccess` tu thu muc CHA ───────────────────────
+# ── NHOM 22: khoa TRANG THAI — mot khoa moi thu muc CO tep cau hinh ───
 #
-# `.htaccess` ap cho thu muc hien tai VA MOI thu muc con. Ban truoc chi doc
-# `.htaccess` cua DUNG thu muc do, nen:
-#     /public_html/.htaccess       AddHandler ... .jpg
-#     /public_html/uploads/a.jpg   request
-# Apache CHAY tep do qua PHP, con WAF hoi khoa `/public_html/uploads/` va khong thay
-# gi — FALSE NEGATIVE truc tiep (nguoi dung bat 01-10).
+# KE THUA KHONG o day nua. Ban 6e0a607 vat chat hoa khoa cho tung thu muc con, va so
+# lieu tu 171-96 (01-10) bac bo no: 737/737 khoa cua mot site co gia tri Y HET NHAU,
+# `check` 49s -> 5 phut 23, 5.490 khoa cho 11 thu muc cau hinh, va no VAN khong phu
+# duoc `uploads/a.jpg` (manifest chi liet ke duoi PHP). Nay ke thua lam o BEN DOC —
+# `init.lua` tra chuoi to tien bang mot `MGET`, va nhom do o `policy_test.lua`.
 #
-# VA KHONG phai OR moi ancestor: `RemoveHandler` o thu muc CON huy mapping ke thua tu
-# CHA. Nhom nay kiem CA HAI chieu.
-printf '\n── ke thua .htaccess tu cha (muc 22) ──\n'
+# Nhom nay kiem phan con lai cua `fim.sh`: DUNG mot khoa cho moi thu muc co tep cau
+# hinh, va RECONCILE — khoa cua generation truoc phai bi `DEL` khi khong con.
+printf '\n── khoa trang thai + reconcile (muc 22) ──\n'
 S22="$R/st22"
 W22="$S22/home/u7/domains/s7.test/public_html"
-mkdir -p "$W22/con/chau" "$W22/tat" "$S22/state"
+mkdir -p "$W22/con/chau" "$S22/state"
 printf '<?php\n' > "$W22/index.php"
-# WEBROOT bat `.jpg`; thu muc con KHONG co `.htaccess` nao.
 printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
 printf '<?php\n' > "$W22/con/a.php"
 printf '<?php\n' > "$W22/con/chau/a.php"
-# Thu muc `tat/` RUT LAI `.jpg` bang RemoveHandler.
-printf 'RemoveHandler .jpg\n' > "$W22/tat/.htaccess"
-printf '<?php\n' > "$W22/tat/a.php"
 
 r22() { FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
         FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" \
         RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
 v22() { awk -v k="waf:fimchg:$1" '$2==k {print $4}' "$S22/rcli.txt" 2>/dev/null | tail -1; }
+k22() { local n; n=$(grep -c "^SETEX waf:fimchg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+d22() { grep -c "^DEL waf:fimchg:$1" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
 
 r22 baseline
 : > "$S22/rcli.txt"
 r22 check
-want "22 webroot co khoa"                 "$(v22 "$W22/")"          "ext:jpg"
-want "22 thu muc CON ke thua tu cha"      "$(v22 "$W22/con/")"      "ext:jpg"
-want "22 thu muc CHAU ke thua hai tang"   "$(v22 "$W22/con/chau/")" "ext:jpg"
-# RemoveHandler o con HUY mapping ke thua — day la cho "OR moi ancestor" se SAI.
-want "22 RemoveHandler o con HUY ke thua"  "$(v22 "$W22/tat/")"      ""
+want "22 webroot co khoa"                "$(v22 "$W22/")"     "ext:jpg"
+want "22 DUNG mot khoa, khong vat chat hoa thu muc con" "$(k22)" "1"
+want "22 thu muc con KHONG co khoa rieng" "$(v22 "$W22/con/")" ""
 
-# Huong NGUOC: webroot KHONG bat gi thi con cung khong duoc co khoa.
+# RECONCILE: bo `.htaccess` thi khoa cu phai bi `DEL`, khong de song het TTL 7 ngay.
+# Ban truoc chi sinh `SETEX` nen khoa cu song mot tuan -> telemetry duong tinh GIA.
 rm -f "$W22/.htaccess"
 : > "$S22/rcli.txt"
 r22 check
-want "22 bo .htaccess webroot -> con het khoa" "$(v22 "$W22/con/")" ""
-# Va `.htaccess` o CON bat thi CHAU ke thua, con CHA thi khong.
-printf 'AddHandler application/x-httpd-php .gif\n' > "$W22/con/.htaccess"
+want "22 bo .htaccess -> khong ghi khoa moi" "$(v22 "$W22/")" ""
+# `DEL` co the den tu HAI duong khi tep cau hinh bi XOA: nhanh `$dels` cu (no thay
+# `.htaccess` mat) va reconcile moi (khoa khong con trong tap mong muon). Trung lap
+# vo hai — `DEL` mot khoa hai lan cho cung ket qua — nen kiem ">= 1" chu khong "== 1".
+#
+# Ca THAT SU chi reconcile bat duoc la khi `.htaccess` VAN CON nhung khong con doi
+# handler: nhanh `$dels` khong thay gi, con reconcile thi thay. Kiem ngay duoi.
+want "22 bo .htaccess -> DEL khoa CU" \
+     "$([ "$(d22 "$W22/")" -ge 1 ] && echo co || echo khong)" "co"
 : > "$S22/rcli.txt"
 r22 check
-want "22 con bat -> chau ke thua"   "$(v22 "$W22/con/chau/")" "ext:gif"
-want "22 con bat -> CHA khong co"   "$(v22 "$W22/")"          ""
+want "22 lot sau KHONG DEL lai" "$(d22 "$W22/")" "0"
 
-# TRAN pha ke thua: BAO RA chu khong im lang cat. Mot gioi han im lang la mot vung mu
-# moi — va do 01-10 cho thay pha nay la 52s khi webroot co token (12s khi khong), tren
-# cay 2.000 thu muc PHP. Hai site tren fleet DA o tinh huong do.
-mkdir -p "$W22/nhieu"
-for i in $(seq 1 6); do mkdir -p "$W22/nhieu/d$i"; printf '<?php\n' > "$W22/nhieu/d$i/a.php"; done
+# CA RIENG CUA RECONCILE: `.htaccess` VAN CON tren dia nhung khong con doi handler.
+# Nhanh `$dels` khong thay gi (tep khong bi xoa), nhanh `$chgs` thay CHG nhung
+# `dir_tokens` tra rong nen no `DEL` — va day la cho hai duong co the lech. Kiem rang
+# khoa KHONG con, bang duong nao cung duoc.
 printf 'AddHandler application/x-httpd-php .jpg\n' > "$W22/.htaccess"
 r22 baseline
-out22=$(FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
-        FIM_LOG="$S22/fim.log" FIM_CRITLOG="$S22/crit.log" FIM_INHERIT_MAX=2 \
-        RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
-          bash "$HERE/fim.sh" check 2>&1 >/dev/null)
-case "$out22" in
-    *"vuot tran"*) want "22 vuot tran -> BAO RA" "dung" "dung" ;;
-    *) want "22 vuot tran -> BAO RA" "IM LANG: ${out22:-rong}" "dung" ;;
-esac
-case "$out22" in
-    *"KHONG duoc danh dau"*) want "22 bao RO bao nhieu thu muc bi bo" "dung" "dung" ;;
-    *) want "22 bao RO bao nhieu thu muc bi bo" "khong noi so" "dung" ;;
-esac
-# Va tran mac dinh phai du lon de KHONG cat o cay thuong.
-idef=$(grep -oE 'FIM_INHERIT_MAX:-[0-9]+' "$HERE/fim.sh" | head -1 | sed 's/.*-//')
-want "22 tran mac dinh la 5000" "$idef" "5000"
-want "22 tran tren 2000 (cay WordPress thuong duoi muc nay)" \
-     "$([ "${idef:-0}" -gt 2000 ] && echo dung || echo "qua thap: $idef")" "dung"
+: > "$S22/rcli.txt"; r22 check
+want "22 dat lai .htaccess -> co khoa" "$(v22 "$W22/")" "ext:jpg"
+sleep 0.02
+printf '# BEGIN WordPress\nRewriteEngine On\n' > "$W22/.htaccess"
+: > "$S22/rcli.txt"; r22 check
+want "22 .htaccess CON nhung het token -> khoa bi go" \
+     "$([ "$(d22 "$W22/")" -ge 1 ] && echo co || echo khong)" "co"
+want "22 va KHONG ghi khoa moi" "$(v22 "$W22/")" ""
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"

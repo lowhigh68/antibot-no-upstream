@@ -57,6 +57,25 @@ function _M.pipeline(fn)
     return results
 end
 
+-- MGET: mot round-trip cho NHIEU khoa.
+--
+-- Can cho phep tra CHUOI TO TIEN cua mot thu muc (`.htaccess` ap cho ca thu muc con),
+-- va do sau that la 0-7 tang — 8 `safe_get` la 8 round-trip tren hot path, con mot
+-- `MGET` la mot. Tra ve mang cung THU TU khoa; phan tu khong ton tai la `ngx.null`.
+--
+-- `safe_*` chu khong `pipeline`: bo test stub `pool` theo tung ham `safe_*`, va mot
+-- ham moi phai stub duoc — khong thi nhanh nay chay that trong test va no do voi
+-- "attempt to call field 'pipeline'" (da xay ra 01-10).
+function _M.safe_mget(keys, n)
+    if not keys or n == nil or n < 1 then return nil end
+    local red, err = _M.get()
+    if not red then return nil, err end
+    local res, merr = red:mget(unpack(keys, 1, n))
+    _M.put(red)
+    if not res then return nil, merr end
+    return res
+end
+
 function _M.safe_get(key)
     local red, err = _M.get()
     if not red then return nil, err end

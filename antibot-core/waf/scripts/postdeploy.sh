@@ -588,10 +588,12 @@ if [ -f "$A/htaccess_parse.awk" ] && [ -f "$A/inifile_parse.awk" ]; then
                   -type f 2>/dev/null)
     echo "  tren DIA, so tep doi handler: $ndisk"
     echo "  -- CACH DOC --"
-    echo "  khoa == dia          : duong ra DUNG, WAF biet dung nhung gi dang co"
+    echo "  khoa == dia          : duong ra DUNG. Mot khoa cho MOI thu muc co tep cau"
+    echo "                         hinh — ke thua lam o BEN DOC (init.lua tra chuoi to"
+    echo "                         tien bang mot MGET), nen KHONG co khoa cho thu muc con"
     echo "  khoa <  dia          : tier full chua chay lai, hoac Redis tu choi mot phan"
-    echo "  khoa >  dia          : khoa cu chua het TTL 7 ngay (binh thuong sau khi khach sua)"
-    echo "  ca hai == 0          : may nay khong co thu muc nao doi handler — ket qua HOP LE"
+    echo "  khoa >  dia          : khoa cu chua bi reconcile — kiem statekeys.<tier>.txt"
+    echo "  ca hai == 0          : may nay khong co thu muc nao doi handler — HOP LE"
 fi
 
 # ══ 19. THU MUC MAY SINH TEP: tieng on NEW da giam chua ════════════════════

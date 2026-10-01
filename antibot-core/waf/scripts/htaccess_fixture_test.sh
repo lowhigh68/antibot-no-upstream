@@ -251,6 +251,26 @@ hta_raw "rm: RemoveHandler nhieu duoi"    "rm:cgi
 rm:pl" 'RemoveHandler .cgi .pl\n'
 # Huong NGUOC: `Add*` khong-PHP van bi bo qua, va `Remove*` khong duoc lam no xuat hien.
 hta_raw "rm: AddType text/plain roi Remove" "rm:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
+
+# ── NHOM 24: HAI TRUC doc lap — handler vs media type ─────────────────
+#
+# `AddHandler`/`RemoveHandler` dat HANDLER, `AddType`/`RemoveType` dat MEDIA TYPE.
+# mod_mime phan biet ro hai truc; gop chung vao mot bit sinh HAI loi NGUOC NHAU
+# (nguoi dung bat 01-10):
+#   FN: cha `AddHandler ... .jpg` + con `RemoveType .jpg` -> Apache VAN chay `.jpg`
+#       nhung parser cu xoa ca `ext:jpg`.
+#   FP: cha `AddHandler ... .jpg` + con `AddHandler default-handler .jpg` -> Apache
+#       ghi de bang handler LANH, nhung parser cu bo qua dong khong chua `php|cgi`.
+hta_raw "truc: RemoveType KHONG xoa handler" "ext:jpg" 'AddHandler application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: RemoveHandler KHONG xoa type" "ext:jpg" 'AddType application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "truc: cung truc handler -> TAT"     "rm:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "truc: cung truc type -> TAT"        "rm:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: ghi de bang handler LANH -> TAT" "rm:jpg" 'AddHandler application/x-httpd-php .jpg\nAddHandler default-handler .jpg\n'
+hta_raw "truc: type lanh KHONG tat handler nguy" "ext:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
+# Huong NGUOC — quan trong nhat: mot `AddType` LANH don thuan KHONG phu dinh gi. In
+# `rm:css` o day lam ben doc hieu "duoi nay bi TAT", mot cau sai (bo test bat 8 ca).
+hta_raw "truc: AddType lanh KHONG sinh rm:"  ""        'AddType text/css .css\n'
+hta_raw "truc: AddType lanh cho .jpg van im" ""        'AddType image/jpeg .jpg\n'
 ini_raw "CRLF: none = TAT"            "khong"    'auto_prepend_file=none\r\n'
 ini_raw "CRLF: gia tri rong = TAT"    "khong"    'auto_prepend_file=\r\n'
 ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r\n'

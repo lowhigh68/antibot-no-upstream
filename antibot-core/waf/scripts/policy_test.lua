@@ -35,7 +35,13 @@ package.preload["antibot.waf.body_worker"] = function()
     return dofile(SRC .. "waf/body_worker.lua")
 end
 package.preload["antibot.core.redis_pool"] = function()
-    return { safe_get = function() return nil end }
+    -- `safe_mget` phai co TRONG stub: `fim_config_changed` tra chuoi to tien bang mot
+    -- `MGET`, va mot ham thieu o day lam nhanh do CHET trong test voi "attempt to call
+    -- field 'safe_mget'" chu khong phai tra `nil` nhu y do (da xay ra 01-10).
+    return {
+        safe_get  = function() return nil end,
+        safe_mget = function() return nil end,
+    }
 end
 
 -- `require` chu khong `dofile`: `init.lua` cung require nhung module nay, va hai
@@ -1033,14 +1039,36 @@ do
     -- loaded` chu khong o preload: `init.lua` da require xong tu dau tep nay.
     io.write("\ne2e: fim_config_changed — khong gian ten + di tru (loi 7)\n")
     local pool = require "antibot.core.redis_pool"
-    local real_get = pool.safe_get
+    local real_get, real_mget = pool.safe_get, pool.safe_mget
+    -- `with_fimchg` dat gia tri cho khoa cua THU MUC CUA REQUEST (phan tu DAU cua
+    -- chuoi to tien), cac to tien tra `ngx.null`. Du de kiem phep doc token; ke thua
+    -- co nhom rieng (`with_chain`).
     local function with_fimchg(val, uri, fn)
         pool.safe_get = function(k)
             if k:find("^waf:fimchg:") then return val end
             return nil
         end
+        pool.safe_mget = function(keys, n)
+            local out = {}
+            for i = 1, n do
+                out[i] = (i == 1 and keys[i]:find("^waf:fimchg:")) and val or ngx.null
+            end
+            return out
+        end
         local ok, err = pcall(fn)
-        pool.safe_get = real_get
+        pool.safe_get, pool.safe_mget = real_get, real_mget
+        if not ok then error(err, 0) end
+    end
+    -- KE THUA: `chain` la mang gia tri theo THU TU KHOA — `chain[1]` la thu muc cua
+    -- request, phan tu sau la to tien cang xa. `false` nghia la khong co khoa.
+    local function with_chain(chain, fn)
+        pool.safe_mget = function(keys, n)
+            local out = {}
+            for i = 1, n do out[i] = chain[i] or ngx.null end
+            return out
+        end
+        local ok, err = pcall(fn)
+        pool.safe_mget = real_mget
         if not ok then error(err, 0) end
     end
     local function mark_for(val, uri)
@@ -1084,6 +1112,67 @@ do
     eq("@php + /x.jpg -> KHONG bao",       mark_for("@php",     "/x.jpg"), nil)
     -- Manh hon thang: ca `@all` lan `ext:php` thi bao `@all`.
     eq("@all + ext:php -> handler_all",    mark_for("@all,ext:php", "/x.php"), "handler_all")
+    -- ── LOI 10: KE THUA `.htaccess` tu to tien ───────────────────────
+    --
+    -- `.htaccess` ap cho thu muc hien tai VA MOI thu muc con, nen mot `AddHandler` o
+    -- webroot phai bat `/uploads/a.jpg`. Lam o BEN DOC bang mot `MGET` cho ca chuoi
+    -- to tien — KHONG phai cho `fim.sh` ghi mot khoa cho tung thu muc con (ban do bi
+    -- bac bo bang so lieu: 737/737 khoa cung gia tri, `check` 49s -> 5 phut 23, va no
+    -- VAN khong phu duoc `uploads/a.jpg` vi manifest chi liet ke duoi PHP).
+    --
+    -- `chain[1]` = thu muc CUA REQUEST, phan tu sau la to tien cang xa.
+    local function chain_for(chain, uri)
+        local got
+        with_chain(chain, function()
+            local ctx = {}
+            local rt = {
+                var = { host = "a.test", uri = uri, args = nil,
+                        remote_addr = "127.0.0.1", document_root = "/nonexistent",
+                        http_content_type = nil },
+                req = { get_method = function() return "GET" end },
+                log = function() end, exit = function() end, ERR = 4,
+                waf_body_probe = function() end,
+            }
+            waf._run_pre_with_runtime(ctx, rt)
+            for i = 1, #(ctx.waf_hits or {}) do
+                if ctx.waf_hits[i].rule == "fim_config_changed" then
+                    got = ctx.waf_hits[i].matched
+                end
+            end
+        end)
+        return got
+    end
+    -- To tien bat, thu muc cua request KHONG co khoa -> VAN phai bao.
+    eq("ke thua: cha bat ext:jpg -> con bao",
+       chain_for({ false, "ext:jpg" }, "/uploads/a.jpg"), "handler_ext")
+    eq("ke thua: ong bat, hai tang tren -> van bao",
+       chain_for({ false, false, "ext:jpg" }, "/a/b/x.jpg"), "handler_ext")
+    eq("ke thua: `@all` tu cha ap moi duoi",
+       chain_for({ false, "@all" }, "/uploads/a.jpg"), "handler_all")
+    -- `rm:` o CON huy mapping ke thua tu CHA. Day la cho "OR moi ancestor" se SAI, va
+    -- no co THAT tren fleet: `uploads/wpforms/.htaccess` dung `RemoveType`/`RemoveHandler`.
+    eq("ke thua: `rm:jpg` o con HUY mapping cua cha",
+       chain_for({ "rm:jpg", "ext:jpg" }, "/uploads/a.jpg"), nil)
+    -- Nguoc lai: `rm:` o CHA roi `ext:` o CON thi CON thang (gan hon).
+    eq("ke thua: con BAT lai cai cha da tat",
+       chain_for({ "ext:jpg", "rm:jpg" }, "/uploads/a.jpg"), "handler_ext")
+    -- `rm:` duoi KHAC khong anh huong.
+    eq("ke thua: `rm:png` khong tat `ext:jpg`",
+       chain_for({ "rm:png", "ext:jpg" }, "/uploads/a.jpg"), "handler_ext")
+    -- `@phpini` KHONG ke thua: pham vi `php.ini` theo SAPI/CWD, khong theo thu muc.
+    eq("ke thua: `@phpini` o CHA KHONG ke thua",
+       chain_for({ false, "@phpini" }, "/uploads/a.php"), nil)
+    eq("ke thua: `@phpini` o CHINH thu muc thi co",
+       chain_for({ "@phpini" }, "/uploads/a.php"), "autoload_phpini")
+    -- `@php` (`.user.ini`) THI ke thua: PHP doc theo chuoi thu muc tu goc den tep.
+    eq("ke thua: `@php` tu cha CO ke thua",
+       chain_for({ false, "@php" }, "/uploads/a.php"), "autoload_userini")
+    -- Khong to tien nao co gi -> im.
+    eq("ke thua: khong to tien nao co token", chain_for({ false, false, false }, "/a/b/x.jpg"), nil)
+    -- Tep KHONG CO DUOI van duoc phu boi `@all` tu to tien.
+    eq("ke thua: `@all` tu cha + tep khong duoi",
+       chain_for({ false, "@all" }, "/uploads/shell"), "handler_all")
+
     -- ── LOI 8: GRAMMAR duoi phai KHOP giua noi sinh va noi doc ──────
     --
     -- `htaccess_parse.awk` sinh token tu doi so THAT cua `AddHandler`, con day doc

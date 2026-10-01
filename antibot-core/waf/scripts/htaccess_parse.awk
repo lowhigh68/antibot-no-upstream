@@ -151,37 +151,59 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
     # `tokenize` da BO dau nhay, nen khong con `gsub` tay va khong con token rac.
     v = TOK[2]
 
-    # `AddType`/`AddHandler` TICH LUY theo duoi, va `RemoveType`/`RemoveHandler` RUT
-    # LAI mot duoi cu the. Apache xu ly tuan tu trong CUNG mot tep, va o thu muc CON
-    # mot `Remove*` huy mapping KE THUA tu cha (tai lieu mod_mime).
+    # HAI TRUC DOC LAP: `AddHandler`/`RemoveHandler` dat HANDLER, `AddType`/`RemoveType`
+    # dat MEDIA TYPE. Apache (mod_mime) phan biet ro hai truc nay, va gop chung vao mot
+    # bit sinh ra hai loi NGUOC NHAU (nguoi dung bat 01-10):
     #
-    # Nen khong in ngay: GHI TRANG THAI theo duoi roi in o `END`. Ban truoc in ngay
-    # tai dong, nen `AddHandler ... .jpg` roi `RemoveHandler .jpg` van cho `ext:jpg`.
-    if (d == "addtype" || d == "addhandler") {
-        if (tolower(v) !~ /php|cgi|proxy:unix:|proxy:fcgi:/) next
+    #   FALSE NEGATIVE:  cha `AddHandler ... .jpg` + con `RemoveType .jpg`
+    #                    -> `RemoveType` KHONG xoa handler, Apache VAN chay `.jpg`,
+    #                       nhung parser cu xoa ca `ext:jpg`.
+    #   FALSE POSITIVE:  cha `AddHandler ... .jpg` + con `AddHandler default-handler .jpg`
+    #                    -> Apache ghi de bang handler LANH, nhung parser cu bo qua dong
+    #                       khong chua `php|cgi` nen van giu `ext:jpg`.
+    #
+    # Nen giu TRANG THAI THEO TRUC: `h` cho handler, `t` cho type. Ben doc (hoac
+    # `dir_tokens_inherited`) merge tung truc roi mon quy ve `ext:`/`rm:`.
+    #
+    # `AddHandler <bat ky> .jpg` o con GHI DE handler cua cha — ke ca handler lanh. Nen
+    # dong khong chua `php|cgi` KHONG duoc bo qua: no dat `h[e] = 0`.
+    if (d == "addhandler") {
+        dang = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
         for (i = 3; i <= nf; i++) {
             e = TOK[i]; sub(/^\./, "", e)
-            # `ext:` chu KHONG duoi tho. Ban truoc in `php`, `jpg` vao CUNG khong
-            # gian ten voi `@all`/`@php`/`@phpini`/`@execcgi`, nen mot tep ten
-            # `.@all` cho token `@all` va `init.lua` doc thanh "handler ap CA thu
-            # muc" (nguoi dung tai hien 29-09). Tien to lam hai khong gian KHONG THE
-            # gap nhau: mot duoi luon la `ext:<gi do>`, mot co luon bat dau `@`.
-            #
-            # Loc ky tu la cach SAI cho viec nay: danh sach ky tu cam phai doan truoc
-            # moi duoi hop le, va Apache khong cam gi ca. Tien to dung voi MOI duoi.
-            if (e != "") extst[tolower(e)] = 1
+            # `dang == 0` KHONG tu dong la phu dinh: `AddType text/css .css` chi khai
+            # bao mot type lanh cho mot duoi lanh — no khong "tat" gi (bo test bat 8 ca
+            # khi toi dat `neg` o day). `neg` chi danh cho `Remove*`, va cho mot `Add*`
+            # tro handler LANH vao duoi ma chinh TEP NAY da bat o dong truoc — tuc mot
+            # phep GHI DE trong cung pham vi.
+            if (e != "") {
+                ee = tolower(e)
+                if (dang == 0 && (ee in h) && h[ee]) neg[ee] = 1
+                h[ee] = dang
+            }
         }
         next
     }
-
-    # `RemoveHandler`/`RemoveType`: KHONG loc theo `v` nhu `Add*`. Doi so cua chung la
-    # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau), va chung rut lai
-    # bat ke handler cu la gi.
-    if (d == "removehandler" || d == "removetype") {
-        for (i = 2; i <= nf; i++) {
+    if (d == "addtype") {
+        dang = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
+        for (i = 3; i <= nf; i++) {
             e = TOK[i]; sub(/^\./, "", e)
-            if (e != "") extst[tolower(e)] = 0
+            if (e != "") {
+                ee = tolower(e)
+                if (dang == 0 && (ee in t) && t[ee]) neg[ee] = 1
+                t[ee] = dang
+            }
         }
+        next
+    }
+    # `RemoveHandler` chi xoa truc HANDLER; `RemoveType` chi xoa truc TYPE. Doi so la
+    # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau).
+    if (d == "removehandler") {
+        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { h[tolower(e)] = 0; neg[tolower(e)] = 1 } }
+        next
+    }
+    if (d == "removetype") {
+        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { t[tolower(e)] = 0; neg[tolower(e)] = 1 } }
         next
     }
 
@@ -223,12 +245,23 @@ BEGIN { depth = 0; ifdepth = 0; if (execcgi_ok == "") execcgi_ok = 1 }
 # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
 # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
 END {
-    # Duoi: in TRANG THAI CUOI, va `rm:` cho duoi bi RUT LAI. `rm:` can thiet vi
-    # `RemoveHandler` o thu muc CON huy mapping ke thua tu CHA — ben doc phai biet
-    # "duoi nay da bi tat o day" chu khong chi "khong co gi o day".
-    for (e in extst) {
-        if (extst[e]) print "ext:" e
-        else          print "rm:" e
+    # Quy HAI TRUC ve mot tap token. Mot duoi la THUC THI DUOC khi truc HANDLER bat,
+    # HOAC truc TYPE bat (`AddType application/x-httpd-php .jpg` cung lam Apache chay
+    # no qua PHP khi khong co handler nao khac).
+    #
+    # `rm:<e>` CHI in khi co mot dong PHU DINH TUONG MINH cho duoi do — nghia la
+    # `Remove*`, hoac mot `Add*` tro tai mot handler/type LANH (`AddHandler
+    # default-handler .jpg` ghi de handler PHP cua cha).
+    #
+    # KHONG in `rm:` cho mot `AddType text/css .css` don thuan: dong do khong phu dinh
+    # gi ca, va in `rm:css` lam ben doc hieu la "duoi nay bi TAT o day" — mot cau sai
+    # (bo test bat 8 ca). Phan biet bang `neg[]`: chi dat khi THAT SU co phu dinh.
+    for (e in h) seen[e] = 1
+    for (e in t) seen[e] = 1
+    for (e in seen) {
+        on = ((e in h) && h[e]) || ((e in t) && t[e])
+        if (on)           print "ext:" e
+        else if (e in neg) print "rm:" e
     }
     # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
     # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
