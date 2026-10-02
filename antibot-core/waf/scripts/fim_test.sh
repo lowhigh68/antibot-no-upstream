@@ -1322,6 +1322,160 @@ want "26 generation KHONG chuyen" \
      "$(wc -l < "$S26/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "3"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
 
+
+# ══ 29. CHA-CON THAT: hai tep .htaccess o hai tang ══════════════════
+#
+# Nhom 24 cua `htaccess_fixture_test.sh` dat HAI directive trong CUNG MOT TEP du chu
+# thich mo ta cha-con. Nen no kiem "last-wins trong mot tep", KHONG kiem phep merge
+# cha-con (review bat 02-10). Phep merge do nam o `init.lua`, va duong day du la:
+#     hai `.htaccess` tren dia -> `fim.sh` ghi HAI khoa -> `init.lua` MGET + merge
+#
+# Nhom nay chay DUNG duong do: cay that, `fim.sh check` that, gia tri khoa lay tu
+# stub Redis, roi nap vao `init.lua` qua `resty`. KHONG stub `safe_mget` bang chuoi
+# go tay — chuoi phai la thu `fim.sh` THAT SU ghi ra.
+printf '\n── cha-con THAT: hai tep hai tang (muc 29) ──\n'
+RESTY_BIN="${RESTY:-/usr/local/openresty/bin/resty}"
+if [ ! -x "$RESTY_BIN" ]; then
+    echo "  BO QUA: khong co resty tai $RESTY_BIN (can de goi init.lua)."
+    echo "          Dat RESTY=/duong/dan, hoac chay qua run.sh."
+else
+SRC29="$(cd "$HERE/../.." && pwd)/"
+
+cat > "$R/cc.lua" <<'LUAEOF'
+local SRC = os.getenv("ANTIBOT_SRC")
+for _, name in ipairs({ "registry", "policy", "config", "telemetry",
+                        "exposed", "args", "upload", "body", "routes" }) do
+    package.preload["antibot.waf." .. name] = function()
+        return dofile(SRC .. "waf/" .. name .. ".lua")
+    end
+end
+for _, name in ipairs({ "wordpress.paths", "upload_content", "upload_magic",
+                        "body_core", "body_worker" }) do
+    package.preload["antibot.waf." .. name] = function()
+        return dofile(SRC .. "waf/" .. name:gsub("%.", "/") .. ".lua")
+    end
+end
+package.preload["antibot.core.redis_pool"] = function()
+    return { safe_get = function() return nil end, safe_mget = function() return nil end }
+end
+local pool = require("antibot.core.redis_pool")
+local waf  = dofile(SRC .. "waf/init.lua")
+
+-- `CHAIN` = gia tri khoa tu CON len CHA, phan cach TAB. Phan tu rong = khong co khoa.
+local chain = {}
+for f in (os.getenv("CHAIN") or ""):gmatch("([^\t]*)") do
+    chain[#chain + 1] = f
+end
+pool.safe_mget = function(keys, n)
+    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU. Nhom nay chi
+    -- dung tien to moi; nua sau tra `ngx.null`.
+    local out, half = {}, n / 2
+    for i = 1, n do
+        local v = (i <= half) and chain[i] or nil
+        out[i] = (v and v ~= "") and v or ngx.null
+    end
+    return out
+end
+local ctx = {}
+local rt = {
+    var = { host = "a.test", uri = os.getenv("URI"), args = nil,
+            remote_addr = "127.0.0.1", document_root = "/nonexistent",
+            http_content_type = nil },
+    req = { get_method = function() return "GET" end },
+    log = function() end, exit = function() end, ERR = 4,
+    waf_body_probe = function() end,
+}
+waf._run_pre_with_runtime(ctx, rt)
+local got = "nil"
+for i = 1, #(ctx.waf_hits or {}) do
+    if ctx.waf_hits[i].rule == "fim_config_active" then got = ctx.waf_hits[i].matched end
+end
+io.write(got)
+LUAEOF
+
+n29_chua=0
+# `cc <ten> <uri> <mong-APACHE> <mong-HIEN-TAI> <cha> <con>`
+#
+# HAI ky vong, co y: `mong-APACHE` la hanh vi DUNG, `mong-HIEN-TAI` la thu code tra
+# ve hom nay. Bon ca cua review co hai gia tri KHAC NHAU — do la BANG CHUNG loi, ghi
+# vao bo test chu khong de trong mot tep rieng.
+#
+# `want` so voi `mong-HIEN-TAI` nen suite khong do thuong tru (`run.sh` tra 1 se chan
+# moi commit ve sau, va mot suite do mai thi khong con la cong). Nhung cung KHONG im
+# lang: moi ca lech in mot dong `CHUA SUA` kem CA HAI gia tri.
+#
+# Khi mot truc duoc sua: doi `mong-HIEN-TAI` thanh `mong-APACHE` cho ca do. Khi moi ca
+# bang nhau thi bo tham so thu tu.
+cc() {
+    local nhan="$1" uri="$2" dung="$3" nay="$4" tcha="$5" tcon="$6"
+    local B="$R/cc_$(printf '%s' "$nhan" | tr -cd 'a-z0-9')"
+    rm -rf "$B"; mkdir -p "$B/state"
+    local W="$B/home/u1/domains/cc.test/public_html"
+    mkdir -p "$W/con"
+    printf '%b' "$tcha" > "$W/.htaccess"
+    printf '%b' "$tcon" > "$W/con/.htaccess"
+    local E=(FIM_ROOTS="$B/home/*/domains/*/public_html" FIM_STATE="$B/state"
+             FIM_LOG="$B/l" FIM_CRITLOG="$B/c" RCLI_OUT="$B/rcli.txt"
+             FIM_REDIS_CLI="$R/bin/rcli")
+    : > "$B/rcli.txt"
+    env "${E[@]}" bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+    : > "$B/rcli.txt"
+    env "${E[@]}" bash "$HERE/fim.sh" check >/dev/null 2>&1
+    local vcon vcha got
+    vcon=$(awk -F'\t' -v k="waf:fimcfg:$W/con/" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$B/rcli.txt")
+    vcha=$(awk -F'\t' -v k="waf:fimcfg:$W/" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$B/rcli.txt")
+    got=$(env ANTIBOT_SRC="$SRC29" CHAIN="$vcon	$vcha" URI="$uri" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
+    want "29 $nhan" "$got" "$nay"
+    if [ "$dung" != "$nay" ]; then
+        printf '  CHUA SUA  29 %s\n            Apache=%s  hien tai=%s\n' "$nhan" "$dung" "$nay"
+        n29_chua=$((n29_chua + 1))
+    fi
+    rm -rf "$B"
+}
+
+# ── BON CA cua review: `Apache=` khac `hien tai=` -> CHUA SUA ────────
+cc "ca1 FN: con RemoveType .jpg KHONG xoa handler cua cha" \
+   "/con/a.jpg" "handler_ext" "nil" \
+   'AddHandler application/x-httpd-php .jpg\n' 'RemoveType .jpg\n'
+
+cc "ca2 FP: con AddHandler default-handler GHI DE handler cua cha" \
+   "/con/a.jpg" "nil" "handler_ext" \
+   'AddHandler application/x-httpd-php .jpg\n' 'AddHandler default-handler .jpg\n'
+
+cc "ca3 FN: con ForceType text/plain KHONG huy SetHandler cua cha" \
+   "/con/a.jpg" "handler_all" "nil" \
+   'SetHandler application/x-httpd-php\n' 'ForceType text/plain\n'
+
+cc "ca4 FP: con Options Includes (absolute) TAT ExecCGI cua cha" \
+   "/con/a.cgi" "nil" "execcgi_only" \
+   'Options +ExecCGI\n' 'Options Includes\n'
+
+# ── DOI CHUNG: hien tai DA DUNG, phai giu nguyen qua moi phep sua ────
+cc "dc: con RemoveHandler .jpg -> TAT (cung truc)" \
+   "/con/a.jpg" "nil" "nil" \
+   'AddHandler application/x-httpd-php .jpg\n' 'RemoveHandler .jpg\n'
+
+cc "dc: con im lang -> KE THUA cua cha" \
+   "/con/a.jpg" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .jpg\n' '# khong gi\n'
+
+cc "dc: cha im lang + con AddHandler -> con quyet dinh" \
+   "/con/a.jpg" "handler_ext" "handler_ext" \
+   '# khong gi\n' 'AddHandler application/x-httpd-php .jpg\n'
+
+cc "dc: cha SetHandler php + con im lang -> KE THUA @all" \
+   "/con/a.jpg" "handler_all" "handler_all" \
+   'SetHandler application/x-httpd-php\n' '# khong gi\n'
+
+cc "dc: cha SetHandler php + con SetHandler none -> TAT" \
+   "/con/a.jpg" "nil" "nil" \
+   'SetHandler application/x-httpd-php\n' 'SetHandler none\n'
+
+if [ "$n29_chua" -gt 0 ]; then
+    printf '  => %s/9 ca CHUA SUA -- xem cac dong "CHUA SUA" o tren\n' "$n29_chua"
+fi
+fi
+
 # ══ 28. `DEL` BI BO QUA — xac minh phep GO ══════════════════════════
 #
 # `state_marks` gui `DEL` roi chuyen generation NGAY, khong doc nguoc. Nhanh dirty da

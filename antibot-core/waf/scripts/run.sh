@@ -5,7 +5,10 @@
 # Ma thoat:  0 = qua het   1 = co test hong   2 = khong chay duoc
 set -u
 
-RESTY=${RESTY:-/usr/local/openresty/bin/resty}
+# `export` chu khong chi gan: `fim_test.sh` nhom 29 goi `init.lua` qua `resty` de kiem
+# phep merge cha-con, va khong co bien nay thi no BAO QUA MAT thay vi chay — mot ca
+# khong chay phai noi ro, nhung o day no CHAY DUOC nen phai truyen xuong.
+export RESTY=${RESTY:-/usr/local/openresty/bin/resty}
 HERE=$(cd "$(dirname "$0")" && pwd)
 # waf/scripts/ -> len hai cap la goc cay nguon (antibot-core/, hoac thu muc conf
 # da deploy). Duong dan TUONG DOI nen chay dung o ca hai noi: deploy.sh goi no
