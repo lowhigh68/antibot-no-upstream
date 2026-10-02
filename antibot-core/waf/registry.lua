@@ -326,7 +326,7 @@ add("route_multipart", "protocol", "uri", "wordpress", "observe", "enforce",
 -- nhom nay se kich hoat duoc moi correlation dung nhan `fs.new_executable` — tuc
 -- mot lan plugin ghi `.htaccess` doc thanh "co file thuc thi moi". Mot luat rieng
 -- voi nhan rieng thi khong. Cung lap luan da dung cho `body_file_traversal`.
-add("fim_config_changed", "correlation", "uri", "generic", "observe", "enforce",
+add("fim_config_active", "correlation", "uri", "generic", "observe", "enforce",
     0, 1, 1.00, { "fs.config_changed" })
 
 -- ── VUNG MU DA BIET: than co du lieu ma thieu `Content-Type` ─────────

@@ -91,9 +91,9 @@ echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_exec
 
 # ── Muc 13: tep cau hinh vua bi sua (muc 8 cua roadmap) ──
 # `matched` la TEN TEP CAU HINH (hang so trong ma), khong phai duong dan.
-echo "[$N] [waf] ts=7 rid=r24 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.htaccess score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
+echo "[$N] [waf] ts=7 rid=r24 id=- domain=j.test ip=7.7.7.7 rule=fim_config_active target=URI sev=notice pl=0 matched=.htaccess score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=allow fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0"
 # smp=20 -> phai nhan 20
-echo "[$N] [waf] ts=8 rid=r25 id=- domain=j.test ip=7.7.7.7 rule=fim_config_changed target=URI sev=notice pl=0 matched=.user.ini score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
+echo "[$N] [waf] ts=8 rid=r25 id=- domain=j.test ip=7.7.7.7 rule=fim_config_active target=URI sev=notice pl=0 matched=.user.ini score=0.00 action=observe class=navigation richness=- wpauth=0 vfy=0 status=200 exists=1 final=monitor fim=0 mode=enforce exc=- wact=allow would=allow wscore=0.00 pver=2.0 smp=20"
 
 # ── Muc 14: hop dong endpoint (muc 5 cua roadmap) ──
 # `matched` la TEN ROUTE (khoa bang CONTRACTS), khong phai URI tho.

@@ -613,12 +613,12 @@ state_marks() {
         # Tap MONG MUON cua generation nay, ghi TRUOC phep `skip`: mot thu muc vua doi
         # (`$dirtydirs` xu ly no) VAN thuoc tap mong muon, nen no khong duoc tinh la
         # "khoa cu can xoa".
-        printf 'waf:fimchg:%s/\n' "$d" >> "$want"
+        printf 'waf:fimcfg:%s/\n' "$d" >> "$want"
         if [ -n "$skip" ] && grep -qxF "$d" "$skip" 2>/dev/null; then continue; fi
-        redis_resp SETEX "waf:fimchg:$d/" "$MARK_TTL" "$toks" >> "$setf"
+        redis_resp SETEX "waf:fimcfg:$d/" "$MARK_TTL" "$toks" >> "$setf"
         # Tap VUA GUI, khoa thuan mot dong mot khoa. Khac `$want` (tap MONG MUON, gom
         # ca khoa bi `skip`): vong xac minh phai doc nguoc dung nhung khoa DA GUI.
-        printf 'waf:fimchg:%s/\n' "$d" >> "$sentf"
+        printf 'waf:fimcfg:%s/\n' "$d" >> "$sentf"
         n=$((n + 1))
     done < "$cfg"
     rm -f "$cfg"
@@ -635,6 +635,13 @@ state_marks() {
     # So tap mong muon voi tap da ghi lan truoc (`$STATE/statekeys.<tier>.txt`), roi
     # `DEL` phan chenh. CHUYEN generation CHI SAU khi batch xong — khong thi mot lan
     # Redis chet lam ban ghi noi "da xoa" trong khi khoa van song.
+    # DOI TIEN TO `fimchg:` -> `fimcfg:` TU DON DEP O DAY, khong can lenh tay:
+    # `$prevk` (ghi boi ban truoc) chua `waf:fimchg:...`, con `$want` chua
+    # `waf:fimcfg:...`, nen `comm -23` tinh MOI khoa cu la "can xoa". Lot dau sau
+    # deploy ghi 12 khoa moi va xoa 12 khoa cu trong cung mot lan.
+    #
+    # Nhanh doc `fimchg:` trong `init.lua` van can, nhung chi la LUOI AN TOAN cho
+    # khoang giua hai lot quet (cron 10 phut) — khong phai duong chinh.
     local prevk="$STATE/statekeys.$tier.txt" nd=0
     if [ -s "$prevk" ]; then
         local gone
@@ -2707,7 +2714,14 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             # Ban truoc giu `DEL <khoa>` roi tach lai bang `awk '{print $2}'`, tuc phep
             # tach GIA DINH khoa khong co khoang trang. Giu khoa thuan thi `redis_resp`
             # dong goi theo do dai byte va phan xac minh doc dung khoa (xem `redis_resp`).
-            [ -d "$d" ] || { printf 'waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"; continue; }
+            # XOA CA HAI tien to trong giai doan di tru: khoa `fimchg:` cu con song het
+            # TTL 7 ngay, va bo qua no thi mot thu muc DA XOA van co khoa cu bao "dang
+            # nguy hiem" tới 09-10-2026. HAN CHOT 09-10-2026: bo dong `fimchg:`.
+            if [ ! -d "$d" ]; then
+                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgdirs.del"
+                printf 'waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
+                continue
+            fi
             toks=$(dir_tokens "$d")
             if [ -n "$toks" ]; then
                 printf '%s|%s/\n' "$toks" "$d" >> "$chgdirs"
@@ -2717,6 +2731,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
                 # khong co token la binh thuong va KHONG bao gio `DEL` — ~1.064/1.075
                 # thu muc cau hinh khong co token, `DEL` chung la 1.064 lenh cong
                 # 1.064 lan `redis_absent` round-trip moi lot, cho khoa chua tung co.
+                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgdirs.del"
                 printf 'waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
             fi
         done < <(sort -u "$dirtydirs")
@@ -2724,7 +2739,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         chgrespf=$(mktemp) || exit 2
         chgprobef=$(mktemp) || exit 2
         chgkeyf=$(mktemp) || exit 2
-        marked_chg=$(gen_resp "$chgdirs" "waf:fimchg:" "$chgrespf" "$chgprobef" "" "$chgkeyf")
+        marked_chg=$(gen_resp "$chgdirs" "waf:fimcfg:" "$chgrespf" "$chgprobef" "" "$chgkeyf")
         [ -f "$chgdirs.del" ] && delkeys=$(sort -u "$chgdirs.del")
         rm -f "$chgdirs" "$chgdirs.del"
 

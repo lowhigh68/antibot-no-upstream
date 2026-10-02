@@ -35,7 +35,7 @@ package.preload["antibot.waf.body_worker"] = function()
     return dofile(SRC .. "waf/body_worker.lua")
 end
 package.preload["antibot.core.redis_pool"] = function()
-    -- `safe_mget` phai co TRONG stub: `fim_config_changed` tra chuoi to tien bang mot
+    -- `safe_mget` phai co TRONG stub: `fim_config_active` tra chuoi to tien bang mot
     -- `MGET`, va mot ham thieu o day lam nhanh do CHET trong test voi "attempt to call
     -- field 'safe_mget'" chu khong phai tra `nil` nhu y do (da xay ra 01-10).
     return {
@@ -1028,16 +1028,16 @@ do
     -- khong duoc tra gia cho phep dem nay.
     eq("khong co nhom -> khong sinh dong", run_ct(nil, nil), nil)
 
-    -- ── LOI 7: `fim_config_changed` — hai khong gian ten, hai dang khoa ──
+    -- ── LOI 7: `fim_config_active` — hai khong gian ten, hai dang khoa ──
     --
     -- Nhanh nay TRUOC DAY khong co mot ca nao: stub `safe_get` cua bo test luon tra
-    -- `nil` nen `fim_config_changed` thoat ngay o dong dau. Do la ly do loi va cham
+    -- `nil` nen `fim_config_active` thoat ngay o dong dau. Do la ly do loi va cham
     -- khong gian ten song duoc — `AddHandler ... .@all` sinh token `@all` va doc
     -- thanh `handler_all` (nguoi dung tai hien 29-09).
     --
     -- `pool.safe_get` duoc thay TAI CHO de dieu khien gia tri khoa. Thay o `package.
     -- loaded` chu khong o preload: `init.lua` da require xong tu dau tep nay.
-    io.write("\ne2e: fim_config_changed — khong gian ten + di tru (loi 7)\n")
+    io.write("\ne2e: fim_config_active — khong gian ten + di tru (loi 7)\n")
     local pool = require "antibot.core.redis_pool"
     local real_get, real_mget = pool.safe_get, pool.safe_mget
     -- `with_fimchg` dat gia tri cho khoa cua THU MUC CUA REQUEST (phan tu DAU cua
@@ -1045,13 +1045,13 @@ do
     -- co nhom rieng (`with_chain`).
     local function with_fimchg(val, uri, fn)
         pool.safe_get = function(k)
-            if k:find("^waf:fimchg:") then return val end
+            if k:find("^waf:fimcfg:") then return val end
             return nil
         end
         pool.safe_mget = function(keys, n)
             local out = {}
             for i = 1, n do
-                out[i] = (i == 1 and keys[i]:find("^waf:fimchg:")) and val or ngx.null
+                out[i] = (i == 1 and keys[i]:find("^waf:fimcfg:")) and val or ngx.null
             end
             return out
         end
@@ -1061,10 +1061,25 @@ do
     end
     -- KE THUA: `chain` la mang gia tri theo THU TU KHOA — `chain[1]` la thu muc cua
     -- request, phan tu sau la to tien cang xa. `false` nghia la khong co khoa.
-    local function with_chain(chain, fn)
+    -- `chain` cap theo CHI SO (1 = thu muc cua request, cang lon cang xa goc). Tu
+    -- 02-10 ben doc gui `ns*2` khoa trong MOT `MGET` — `ns` khoa `fimcfg:` roi `ns`
+    -- khoa `fimchg:` (dang cu, giai doan di tru) — nen chi so thang chi phu tien to
+    -- MOI. Do la dung cho moi ca ke thua.
+    --
+    -- `chain_old` cap tien to CU: `chain_old[i]` ung voi khoa thu `ns + i`. Can no de
+    -- kiem nhanh di tru, thu se CHAY TREN PRODUCTION tuan nay.
+    local function with_chain(chain, fn, chain_old)
         pool.safe_mget = function(keys, n)
             local out = {}
-            for i = 1, n do out[i] = chain[i] or ngx.null end
+            -- `n` la TONG; nua dau la tien to moi, nua sau la tien to cu.
+            local half = n / 2
+            for i = 1, n do
+                if i <= half then
+                    out[i] = chain[i] or ngx.null
+                else
+                    out[i] = (chain_old and chain_old[i - half]) or ngx.null
+                end
+            end
             return out
         end
         local ok, err = pcall(fn)
@@ -1085,7 +1100,7 @@ do
             }
             waf._run_pre_with_runtime(ctx, rt)
             for i = 1, #(ctx.waf_hits or {}) do
-                if ctx.waf_hits[i].rule == "fim_config_changed" then
+                if ctx.waf_hits[i].rule == "fim_config_active" then
                     got = ctx.waf_hits[i].matched
                 end
             end
@@ -1121,7 +1136,7 @@ do
     -- VAN khong phu duoc `uploads/a.jpg` vi manifest chi liet ke duoi PHP).
     --
     -- `chain[1]` = thu muc CUA REQUEST, phan tu sau la to tien cang xa.
-    local function chain_for(chain, uri)
+    local function chain_for(chain, uri, chain_old)
         local got
         with_chain(chain, function()
             local ctx = {}
@@ -1135,11 +1150,11 @@ do
             }
             waf._run_pre_with_runtime(ctx, rt)
             for i = 1, #(ctx.waf_hits or {}) do
-                if ctx.waf_hits[i].rule == "fim_config_changed" then
+                if ctx.waf_hits[i].rule == "fim_config_active" then
                     got = ctx.waf_hits[i].matched
                 end
             end
-        end)
+        end, chain_old)
         return got
     end
     -- To tien bat, thu muc cua request KHONG co khoa -> VAN phai bao.
@@ -1187,6 +1202,31 @@ do
     -- Tat o CHINH thu muc cua request cung phai co hieu luc (khong chi khi ke thua).
     eq("truc: `-@all` mot minh -> khong bao gi",
        chain_for({ "-@all" }, "/uploads/a.jpg"), nil)
+    -- ── GIAI DOAN DI TRU `fimchg:` -> `fimcfg:` (02-10) ──────────────
+    --
+    -- Khoa doi tien to vi no mang TRANG THAI DANG TON TAI, khong phai su kien "vua
+    -- doi". Ben doc gui CA HAI tien to trong MOT `MGET` (`ns` khoa moi + `ns` khoa
+    -- cu), nen khoa cu con song het TTL van duoc phat hien.
+    --
+    -- Nhanh nay SE CHAY TREN PRODUCTION tuan nay, nen phai co test.
+    -- HAN CHOT 09-10-2026: bo nhanh cu, va khi do bo ca cac ca duoi.
+    eq("di tru: CHI co khoa CU -> van bao",
+       chain_for({ false }, "/uploads/a.jpg", { "ext:jpg" }), "handler_ext")
+    eq("di tru: khoa CU o TO TIEN -> van ke thua",
+       chain_for({ false, false }, "/a/b.jpg", { false, "ext:jpg" }), "handler_ext")
+    -- Khoa MOI thang khi ca hai ton tai: vong merge duyet nguoc nen nua dau (moi)
+    -- duoc ap SAU nua sau (cu).
+    eq("di tru: khoa MOI thang khoa CU (moi TAT, cu BAT)",
+       chain_for({ "rm:jpg" }, "/uploads/a.jpg", { "ext:jpg" }), nil)
+    eq("di tru: khoa MOI thang khoa CU (moi BAT, cu TAT)",
+       chain_for({ "ext:jpg" }, "/uploads/a.jpg", { "rm:jpg" }), "handler_ext")
+    -- `@phpini` o khoa CU, o CHINH thu muc cua request: phai nhan. Ban dau toi chi
+    -- xet `i == 1` nen vi tri `ndir + 1` (thu muc cua request, tien to CU) bi coi la
+    -- ke thua va bi loai OAN.
+    eq("di tru: `@phpini` o khoa CU cua CHINH thu muc -> nhan",
+       chain_for({ false }, "/uploads/a.php", { "@phpini" }), "autoload_phpini")
+    eq("di tru: `@phpini` o khoa CU cua TO TIEN -> KHONG ke thua",
+       chain_for({ false, false }, "/a/b.php", { false, "@phpini" }), nil)
     eq("ke thua: `@phpini` o CHA KHONG ke thua",
        chain_for({ false, "@phpini" }, "/uploads/a.php"), nil)
     eq("ke thua: `@phpini` o CHINH thu muc thi co",

@@ -495,7 +495,25 @@ local function path_suffixes(path)
     return out
 end
 
-local function fim_config_changed(uri, rt)
+-- `fim_config_active`, DOI TEN tu `fim_config_changed` (02-10).
+--
+-- Khoa mang TRANG THAI DANG TON TAI, khong phai su kien "vua doi": `state_marks` ghi
+-- lai no MOI LOT QUET du khong co gi thay doi. Do tren fleet: 620/620 lot `fim.log`
+-- deu bao `0 key bao WAF` (= khong co tep nao VUA DOI) trong khi van co 12 khoa
+-- trang thai song.
+--
+-- Ten cu tron HAI cau hoi khac nhau vao mot nhan:
+--     "co bao nhieu thu muc VUA DOI cau hinh"        -> `fim.log`, `chgcount`
+--     "co bao nhieu thu muc DANG co cau hinh nguy hiem" -> khoa nay
+-- Doc so lieu `rule=fim_config_changed` trong `waf.log` tra loi cau thu HAI nhung
+-- TEN noi cau thu NHAT, nen moi phep dem deu phai giai thich bang mieng.
+--
+-- KHONG tach thanh hai khoa (`fimcfg:` trang thai + `fimchg:` su kien): bden doc se
+-- phai `MGET` HAI chuoi to tien thay vi mot, va hai nguon cho CUNG mot cau hoi la
+-- dung cai da sinh ra loi 526-dong (merge o ca hai ben). Nhan tra ve
+-- (`handler_all`/`handler_ext`/`autoload_*`/`execcgi_*`) da mo ta DUNG "cau hinh la
+-- gi" nen khong doi.
+local function fim_config_active(uri, rt)
     local root = rt.var.document_root
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
@@ -553,20 +571,45 @@ local function fim_config_changed(uri, rt)
     -- MOT `MGET` cho ca chuoi, khong phai mot GET moi tang: do sau that la 0-7 tang
     -- (do tren fleet), nen 8 GET la khong chap nhan duoc tren hot path, con mot `MGET`
     -- 8 khoa la mot round-trip y nhu truoc.
-    local keys, nk = nil, 0
+    -- ── HAI TIEN TO trong MOT `MGET`, giai doan di tru ───────────────
+    --
+    -- Khoa doi tu `waf:fimchg:` sang `waf:fimcfg:` vi no mang TRANG THAI DANG TON
+    -- TAI, khong phai su kien "vua doi": `state_marks` ghi lai no moi lot quet du
+    -- khong co gi thay doi (tren fleet 620/620 lot deu `0 key bao WAF` nhung van co
+    -- 12 khoa trang thai). Ten cu lam telemetry lan hai cau hoi khac nhau — "co bao
+    -- nhieu thu muc VUA DOI cau hinh" va "co bao nhieu thu muc DANG co cau hinh
+    -- nguy hiem" — va do la dieu nguoi dung bat 01-10.
+    --
+    -- Doc CA HAI tien to trong CUNG mot `MGET` chu khong hai lan: khoa `fimchg:` cu
+    -- con song het TTL 7 ngay, va bo doc chung ngay thi 12 thu muc da danh dau MAT
+    -- phat hien cho tới lot `fim.sh` tiep theo. Chuoi moi xep TRUOC chuoi cu, va
+    -- vong merge duyet NGUOC nen khoa MOI duoc ap SAU — tuc khoa moi thang khi ca
+    -- hai cung ton tai.
+    --
+    -- HAN CHOT 09-10-2026 (7 ngay tu 02-10): bo nhanh `fimchg:`, va khi do `nk`
+    -- tro lai mot nua.
+    local keys, nk, ndir = nil, 0, 0
     do
+        local segs, ns = nil, 0
         local seg = dir
         while seg and seg ~= "" do
-            nk = nk + 1
-            keys = keys or {}
-            keys[nk] = "waf:fimchg:" .. root .. seg
+            ns = ns + 1
+            segs = segs or {}
+            segs[ns] = seg
             if seg == "/" then break end
             -- Bo mot tang: `/a/b/` -> `/a/`
             seg = seg:sub(1, #seg - 1):match("^(.*/)")
             -- TRAN do sau. `/a/b/c/d/e/f/g/` la 7 tang va do la ca sau nhat do duoc;
             -- 12 cho du cho cay sau bat thuong ma khong de mot URI dai tuy y sinh ra
             -- mot `MGET` dai tuy y.
-            if nk >= 12 then break end
+            if ns >= 12 then break end
+        end
+        if segs then
+            ndir = ns
+            keys = {}
+            for i = 1, ns do keys[i] = "waf:fimcfg:" .. root .. segs[i] end
+            for i = 1, ns do keys[ns + i] = "waf:fimchg:" .. root .. segs[i] end
+            nk = ns * 2
         end
     end
     if not keys then return nil end
@@ -607,7 +650,11 @@ local function fim_config_changed(uri, rt)
                     -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
                     -- cau hinh cua SAPI/CWD, khong mac nhien theo thu muc. Chi nhan khi
                     -- no o CHINH thu muc cua request.
-                    if e ~= "@phpini" or i == 1 then flag[e] = true end
+                    -- `i == 1` (tien to moi) HOAC `i == ndir + 1` (tien to cu): ca
+                    -- hai deu la THU MUC CUA REQUEST, chi khac tien to. Bo vi tri
+                    -- thu hai thi mot khoa `fimchg:` cu mang `@phpini` bi coi la
+                    -- ke thua va bi loai oan.
+                    if e ~= "@phpini" or i == 1 or i == ndir + 1 then flag[e] = true end
                 elseif e == "*" then
                     -- Khoa CU tu ban truoc ban 28-09, con song tới het TTL 7 ngay.
                     flag = flag or {}; flag["@php"] = true
@@ -872,9 +919,9 @@ local function run_pre(ctx, rt)
         })
     end
 
-    local cfg_mark = fim_config_changed(request.uri, rt)
+    local cfg_mark = fim_config_active(request.uri, rt)
     if cfg_mark then
-        policy.emit(state, "fim_config_changed", {
+        policy.emit(state, "fim_config_active", {
             target  = "URI",
             matched = cfg_mark,
         })

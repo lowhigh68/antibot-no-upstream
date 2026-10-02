@@ -290,16 +290,19 @@ END {
     if (!e_tot && !m_tot) print "  (khong co part nao lech — muc 7 chua co du lieu de quyet)"
     print  "  (`ten sach` + magic_exec = duong ca kenh TEN lan `find_php_tag` deu MU)"
 }'
-
-echo "=== 13. Muc 8: tep CAU HINH vua bi sua o thu muc cua tep dang bi goi ==="
-# `fim_config_changed` tra `waf:fimchg:<docroot><thu muc>/<ten>` va chi hoi khi URI
-# la mot tep PHP chay duoc. Luat `fim_config_changed` la `observe` diem 0.
+echo "=== 13. Muc 8: thu muc cua tep dang bi goi CO cau hinh doi handler ==="
+# `fim_config_active` tra `waf:fimcfg:<docroot><thu muc>/` (DOI TEN tu
+# `fim_config_changed` / `waf:fimchg:` ngay 02-10: khoa mang TRANG THAI DANG TON TAI
+# chu khong phai su kien "vua doi"). Luat la `observe` diem 0.
+#
+# Doc CA HAI ten luat: `waf.log` trong cua so nay co the con dong `fim_config_changed`
+# ghi TRUOC khi deploy. HAN CHOT 09-10-2026: bo ten cu.
 #
 # So sanh voi `fim=` (nhom `fimnew`) o cung cua so: hai nhom DOC LAP, va ty le giua
 # chung la con so quyet dinh co nang diem nhom moi hay khong. `.htaccess` bi ghi lai
 # HOP LE boi LiteSpeed Cache / Wordfence / doi permalink, nen mot so lon o day KHONG
 # phai tin xau — no la ly do de KHONG bat.
-grep -F '[waf]' "$W" | grep -F 'rule=fim_config_changed' | awk "$P"'
+grep -F '[waf]' "$W" | grep -E 'rule=fim_config_(active|changed)' | awk "$P"'
 {
     s = (f["smp"] == "") ? 1 : f["smp"] + 0
     tot += s
@@ -557,18 +560,28 @@ RDB="${POSTDEPLOY_REDIS_DB:-0}"
 if ! command -v "$RCLI" >/dev/null 2>&1; then
     echo "  thieu '$RCLI' — khong doc duoc khoa"
 else
-    nkey=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
-    echo "  khoa waf:fimchg:* dang song : $nkey"
+    # DEM CA HAI tien to: `fimcfg:` la dang moi (02-10), `fimchg:` la dang cu con
+    # song het TTL. In RIENG hai so de thay phep di tru da xong chua — neu `fimchg:`
+    # con > 0 sau mot lot `fim.sh check` thi reconcile KHONG don duoc chung, va do la
+    # mot loi can biet. HAN CHOT 09-10-2026: bo dong `fimchg:`.
+    nkey=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)
+    nold=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
+    echo "  khoa waf:fimcfg:* dang song : $nkey"
+    echo "  khoa waf:fimchg:* (dang CU) : $nold  (mong 0 sau mot lot check)"
+    if [ "${nold:-0}" -gt 0 ]; then
+        echo "  !! $nold khoa dang CU van song — reconcile chua don duoc chung."
+        echo "     Kiem \$STATE/statekeys.full.txt co dang \`waf:fimcfg:\` khong."
+    fi
     if [ "$nkey" -eq 0 ]; then
         echo "  -- 0 khoa: hoac may nay khong co thu muc nao doi handler (hop le), hoac"
         echo "     tier full chua chay lan nao sau ban nay. Kiem bang muc duoi."
     else
         echo "  -- nhan tren tung khoa (do MANH giam dan) --"
-        "$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | sort | while read -r k; do
+        "$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | sort | while read -r k; do
             [ -n "$k" ] || continue
             v=$("$RCLI" -n "$RDB" GET "$k" 2>/dev/null)
             t=$("$RCLI" -n "$RDB" TTL "$k" 2>/dev/null)
-            printf '        %-28s TTL %5ss  %s\n' "$v" "$t" "${k#waf:fimchg:}"
+            printf '        %-28s TTL %5ss  %s\n' "$v" "$t" "${k#waf:fimcfg:}"
         done
     fi
 fi

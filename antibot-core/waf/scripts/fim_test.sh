@@ -3,7 +3,7 @@
 #
 # VI SAO CAN, va vi sao bay gio: `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc
 # hom nay no khong co mot phep kiem nao. Muc 8 them mot nhom thu hai
-# (`waf:fimchg:`) vao dung cho do. Mot loi o day KHONG bao gi — no chi lam mot
+# (`waf:fimcfg:`) vao dung cho do. Mot loi o day KHONG bao gi — no chi lam mot
 # nhom im lang mai mai, dung ho loi "canh bao dung ma khong ai mo".
 #
 # COO LAP HOAN TOAN: `FIM_ROOTS` tro vao mot `mktemp -d`, `FIM_STATE`/`FIM_LOG`
@@ -233,7 +233,7 @@ kttl() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$3} END{print v}' "$RCLI_
 # Lan ghi DAU, cho cac ca xet thu tu.
 kval1() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $4; exit}' "$RCLI_OUT"; }
 
-echo "fim_test: tep cau hinh bi SUA -> waf:fimchg:"
+echo "fim_test: tep cau hinh bi SUA -> waf:fimcfg:"
 
 # ══ 1. BASELINE tren mot cay SACH ═══════════════════════════════════════════
 printf '<?php\n// plugin\n' > "$WEB/wp-content/plugins/p1/p1.php"
@@ -263,8 +263,8 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 #
 # Nay khoa la THU MUC va gia tri la cac DUOI bi anh xa, nen WAF tra duoc mot lan
 # (khong ba round-trip) va biet `.jpg` la duoi dang nguy hiem trong thu muc do.
-want "2 fimchg theo THU MUC" "$(haskey "waf:fimchg:$WEB/")" "yes"
-want "2 KHONG con khoa theo TEP" "$(haskey "waf:fimchg:$WEB/.htaccess")" "no"
+want "2 fimchg theo THU MUC" "$(haskey "waf:fimcfg:$WEB/")" "yes"
+want "2 KHONG con khoa theo TEP" "$(haskey "waf:fimcfg:$WEB/.htaccess")" "no"
 want "2 KHONG co fimnew nao" "$(keys 'waf:fimnew:')" "0"
 # DOI KY VONG CO Y (01-10): truoc day ca nay doi DUNG MOT khoa, vi `fimchg` chi ghi
 # cho thu muc CO tep cau hinh. KE THUA doi dieu do — `.htaccess` o webroot ap cho CA
@@ -277,12 +277,12 @@ want "2 KHONG co fimnew nao" "$(keys 'waf:fimnew:')" "0"
 # hai ca tren. Nen o day chi kiem khoa khong BUNG NO: so khoa phai bang so thu muc co
 # tep PHP duoi webroot, khong phai so TEP.
 want "2 khoa theo thu muc, khong bung no theo tep" \
-     "$([ "$(keys 'waf:fimchg:')" -le 3 ] && echo "trong tam" || echo "qua nhieu: $(keys 'waf:fimchg:')")" "trong tam"
+     "$([ "$(keys 'waf:fimcfg:')" -le 3 ] && echo "trong tam" || echo "qua nhieu: $(keys 'waf:fimcfg:')")" "trong tam"
 # GIA TRI la duoi bi anh xa — day la thong tin ma ban truoc khong co.
 want "2 gia tri la duoi bi anh xa" \
-     "$(kval "waf:fimchg:$WEB/")" "ext:jpg"
+     "$(kval "waf:fimcfg:$WEB/")" "ext:jpg"
 want "2 TTL dung" \
-     "$(kttl "waf:fimchg:$WEB/")" "604800"
+     "$(kttl "waf:fimcfg:$WEB/")" "604800"
 
 # Nhieu duoi, va CHI duoi cua directive ANH XA duoc tinh: `AddType text/plain .txt`
 # khong duoc vao danh sach (do la FP loi 6 da sua o `upload_content.lua`).
@@ -291,7 +291,7 @@ sleep 0.02
 printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-got=$(kval "waf:fimchg:$WEB/")
+got=$(kval "waf:fimcfg:$WEB/")
 want "2b hai duoi duoc anh xa" "$got" "ext:jpg,ext:png"
 case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
                *)     want "2b .txt KHONG duoc tinh" "khong-txt" "khong-txt" ;; esac
@@ -310,7 +310,7 @@ case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
 sleep 0.02
 printf 'AddHandler application/x-httpd-php .@all\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-got=$(kval "waf:fimchg:$WEB/")
+got=$(kval "waf:fimcfg:$WEB/")
 want "2c ten .@all -> ext:@all, KHONG phai @all" "$got" "ext:@all"
 # Bien the: ten trung ca bon co.
 : > "$RCLI_OUT"
@@ -318,7 +318,7 @@ sleep 0.02
 printf 'AddHandler application/x-httpd-php .@php .@phpini .@execcgi\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c ba ten trung co deu co tien to" \
-     "$(kval "waf:fimchg:$WEB/")" \
+     "$(kval "waf:fimcfg:$WEB/")" \
      "ext:@execcgi,ext:@php,ext:@phpini"
 # Huong NGUOC: `SetHandler` van phai ra `@all` THAT (phep sua khong lam mat nghia).
 : > "$RCLI_OUT"
@@ -326,7 +326,7 @@ sleep 0.02
 printf 'SetHandler application/x-httpd-php\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "2c SetHandler van la @all THAT" \
-     "$(kval "waf:fimchg:$WEB/")" "@all"
+     "$(kval "waf:fimcfg:$WEB/")" "@all"
 # TRA lai trang thai cua ca 2b: ca 4 o duoi tinh tu `.htaccess` HIEN CO tren dia
 # (thiet ke "tinh lai tu DIA"), nen mot ca chen vao giua PHAI don trang thai cua no.
 # Thieu buoc nay thi ca 4 doc `@all` cua ca 2c va bao hong o mot cho khong lien quan.
@@ -354,7 +354,7 @@ want "3 fimnew co shell.php" "$(haskey "waf:fimnew:$WEB/shell.php")" "yes"
 # Dieu ca nay THAT SU phai bao ve van nguyen: hai nhom DOC LAP. `shell.php` moi phai
 # vao `fimnew`, va KHONG duoc lam token cua `fimchg` doi. Nen kiem dung do.
 want "3 fimchg KHONG bi shell.php moi lam doi" \
-     "$(kval "waf:fimchg:$WEB/")" "ext:jpg,ext:png"
+     "$(kval "waf:fimcfg:$WEB/")" "ext:jpg,ext:png"
 
 # ══ 4. `.user.ini` bi sua -> fimchg ═════════════════════════════════════════
 : > "$RCLI_OUT"
@@ -369,7 +369,7 @@ want "4 .user.ini moi -> fimnew" "$(haskey "waf:fimnew:$WEB/.user.ini")" "yes"
 sleep 0.02
 printf 'memory_limit=128M\nauto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "4 .user.ini SUA -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "4 .user.ini SUA -> fimchg" "$(haskey "waf:fimcfg:$WEB/")" "yes"
 want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `auto_prepend_file` nap ma cho MOI script PHP trong thu muc, khong doi handler
 # cua duoi nao -> gia tri `*`. Khac han nhom `.htaccess` (danh sach duoi cu the),
@@ -382,7 +382,7 @@ want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `.htaccess` tu buoc 2b van con tren dia nen `jpg,png` van co mat. Do la DUNG —
 # khoa mo ta THU MUC, va day la chinh loi da duoc sua.
 want "4 gia tri co @php (het dau * ba nghia)" \
-     "$(kval "waf:fimchg:$WEB/")" "ext:jpg,ext:png,@php"
+     "$(kval "waf:fimcfg:$WEB/")" "ext:jpg,ext:png,@php"
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
@@ -392,7 +392,7 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 # KHONG con la "im": khoa mo ta CA THU MUC, va `.htaccess` tu buoc 2b van tren dia
 # nen khoa van phai co `jpg,png`. Dieu phai kiem la KHONG co `@php` — tuc mot
 # `.user.ini` khong autoload thi khong gop tin hieu autoload vao.
-val4b=$(kval "waf:fimchg:$WEB/")
+val4b=$(kval "waf:fimcfg:$WEB/")
 want "4b khong autoload -> KHONG co @php" \
      "$(case "$val4b" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
 want "4b nhung khoa VAN co (.htaccess con tren dia)" \
@@ -403,7 +403,7 @@ want "4b nhung khoa VAN co (.htaccess con tren dia)" \
 sleep 0.02
 printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-val4c=$(kval "waf:fimchg:$WEB/")
+val4c=$(kval "waf:fimcfg:$WEB/")
 want "4c autoload rong/none -> KHONG co @php" \
      "$(case "$val4c" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
 
@@ -415,7 +415,7 @@ want "4c autoload rong/none -> KHONG co @php" \
 sleep 0.02
 printf 'index.php\n// sua\n' > "$WEB/index.php"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "5 index.php sua: khong fimchg" "$(keys 'waf:fimchg:')" "0"
+want "5 index.php sua: khong fimchg" "$(keys 'waf:fimcfg:')" "0"
 
 # ══ 6. `--dry` KHONG duoc ghi Redis ═════════════════════════════════════════
 : > "$RCLI_OUT"
@@ -427,7 +427,7 @@ want "6 --dry khong ghi gi" "$(wc -l < "$RCLI_OUT")" "0"
 # Va khong-dry ngay sau do THI ghi — de chac muc 6 xanh vi `--dry`, khong phai vi
 # thay doi da bi tieu thu mat.
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "6 khong-dry thi ghi" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "6 khong-dry thi ghi" "$(haskey "waf:fimcfg:$WEB/")" "yes"
 
 
 
@@ -450,16 +450,16 @@ bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 sleep 0.02
 printf 'AddHandler application/x-httpd-lsphp .jpg\n' > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "8 .htaccess MOI -> fimchg" "$(haskey "waf:fimcfg:$WEB/")" "yes"
 want "8 gia tri dung" \
-     "$(kval1 "waf:fimchg:$WEB/")" "ext:jpg"
+     "$(kval1 "waf:fimcfg:$WEB/")" "ext:jpg"
 
 # `.user.ini` MOI co autoload -> PHAI co fimchg (gia tri `*`).
 : > "$RCLI_OUT"
 sleep 0.02
 printf 'auto_prepend_file=/tmp/x.php\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "8 .user.ini MOI co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "8 .user.ini MOI co autoload -> fimchg" "$(haskey "waf:fimcfg:$WEB/")" "yes"
 
 # BI XOA -> phai phat DEL, khong de khoa song het TTL.
 : > "$RCLI_OUT"
@@ -467,8 +467,8 @@ sleep 0.02
 rm -f "$WEB/.htaccess" "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 want "8 tep cau hinh bi XOA -> DEL khoa" \
-     "$(grep -cP "^DEL\twaf:fimchg:\Q$WEB/\E$" "$RCLI_OUT")" "1"
-want "8 va KHONG dat lai SETEX fimchg" "$(keys 'waf:fimchg:')" "0"
+     "$(grep -cP "^DEL\twaf:fimcfg:\Q$WEB/\E$" "$RCLI_OUT")" "1"
+want "8 va KHONG dat lai SETEX fimchg" "$(keys 'waf:fimcfg:')" "0"
 
 # ══ 9. `.inc` — `upload.lua:PHP_EXT` coi la THUC THI DUOC ════════════════
 #
@@ -490,7 +490,7 @@ want "9 php.ini vao manifest (fimnew)" "$(haskey "waf:fimnew:$WEB/php.ini")" "ye
 sleep 0.02
 printf 'memory_limit=64M\nauto_prepend_file=/tmp/y.php\n' > "$WEB/php.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
-want "9 php.ini SUA co autoload -> fimchg" "$(haskey "waf:fimchg:$WEB/")" "yes"
+want "9 php.ini SUA co autoload -> fimchg" "$(haskey "waf:fimcfg:$WEB/")" "yes"
 # ══ 7. TANG NONG GENERIC (khong chi duong dan WordPress) ════════════════
 #
 # VI SAO: truoc ban nay 5/6 nhanh cua `scan_hot` la duong dan WordPress
@@ -590,7 +590,7 @@ run_state() {
 }
 # Gia tri CUOI CUNG cua khoa thu muc: lenh cuoi cung tac dong len no quyet dinh.
 final_val() {
-    awk -v k="waf:fimchg:$SW/" '
+    awk -v k="waf:fimcfg:$SW/" '
         $1 == "SETEX" && $2 == k { v = $4 }
         $1 == "DEL"   && $2 == k { v = "(DA XOA)" }
         END { print (v == "" ? "(khong co)" : v) }' "$SOUT"
@@ -728,7 +728,7 @@ sleep 0.02
 printf 'RewriteEngine On\n' > "$WEB/x13b/.htaccess"
 out=$(EX_STUCK=1 bash "$HERE/fim.sh" check 2>&1)
 case "$out" in
-    *"VAN CON: waf:fimchg:"*)            want "13B DEL that bai -> bao ten khoa" "co-ten" "co-ten" ;;
+    *"VAN CON: waf:fimcfg:"*)            want "13B DEL that bai -> bao ten khoa" "co-ten" "co-ten" ;;
     *"KHONG XAC MINH DUOC (go fimchg)"*) want "13B DEL that bai -> bao ten khoa" "bao-ma-khong-ten" "co-ten" ;;
     *) want "13B DEL that bai -> bao ten khoa" "IM LANG" "co-ten"
        printf '      [out] %s\n' "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" ;;
@@ -848,9 +848,9 @@ r17() {  # r17 <mode...> — chay fim.sh tren cay rieng
       bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true
 }
 # TAB, y nhu cac ham o tren.
-k17()  { local n; n=$(grep -cP "^SETEX\twaf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
-v17()  { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S17/rcli.txt" 2>/dev/null; }
-nd17() { local n; n=$(grep -cP "^DEL\twaf:fimchg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+k17()  { local n; n=$(grep -cP "^SETEX\twaf:fimcfg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+v17()  { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S17/rcli.txt" 2>/dev/null; }
+nd17() { local n; n=$(grep -cP "^DEL\twaf:fimcfg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
 
 r17 baseline
 : > "$S17/rcli.txt"
@@ -1032,9 +1032,9 @@ r22() { FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
         RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
 # TAB, y nhu `kval`/`keys` o tren — stub ghi `SETEX\t<key>\t<ttl>\t<value>`.
-v22() { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S22/rcli.txt" 2>/dev/null; }
-k22() { local n; n=$(grep -cP "^SETEX\twaf:fimchg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
-d22() { grep -cP "^DEL\twaf:fimchg:\Q$1\E$" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
+v22() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S22/rcli.txt" 2>/dev/null; }
+k22() { local n; n=$(grep -cP "^SETEX\twaf:fimcfg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
+d22() { grep -cP "^DEL\twaf:fimcfg:\Q$1\E$" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
 
 r22 baseline
 : > "$S22/rcli.txt"
@@ -1115,7 +1115,7 @@ want "22 Redis chet luc DEL -> generation KHONG chuyen" \
 # BA bat bien, va chung la ly do `redis_send_resp` ton tai:
 #
 #   1. DUONG DAN CO KHOANG TRANG van danh dau duoc. Ban inline protocol dua khoa qua
-#      STDIN noi khoang trang la RANH GIOI DOI SO, nen `SETEX waf:fimchg:/a b/ 604800
+#      STDIN noi khoang trang la RANH GIOI DOI SO, nen `SETEX waf:fimcfg:/a b/ 604800
 #      ext:php` thanh 5 doi so -> Redis tu choi. `gen_cmds` cu chon duong LOC, tuc BO
 #      KHONG DANH DAU thu muc do (chi hien o stderr) — mot thu muc co that khong duoc
 #      bao ve. Do tren 171-96 01-10: 0 thu muc cau hinh co khoang trang HOM NAY, nhung
@@ -1136,7 +1136,7 @@ r23() { FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
         FIM_LOG="$S23/fim.log" FIM_CRITLOG="$S23/crit.log" \
         RCLI_OUT="$S23/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1; }
-v23() { awk -F'\t' -v k="waf:fimchg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S23/rcli.txt" 2>/dev/null; }
+v23() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S23/rcli.txt" 2>/dev/null; }
 
 printf 'AddHandler application/x-httpd-php .jpg\n' > "$W23/co khoang trang/.htaccess"
 r23 baseline
@@ -1146,7 +1146,7 @@ want "23 thu muc co KHOANG TRANG van co khoa" \
      "$(v23 "$W23/co khoang trang/")" "ext:jpg"
 # Khoa phai den NGUYEN VEN, khong bi cat o khoang trang.
 want "23 khoa khong bi cat o khoang trang" \
-     "$(grep -cP "^SETEX\twaf:fimchg:\Q$W23/co khoang trang/\E\t" "$S23/rcli.txt")" "1"
+     "$(grep -cP "^SETEX\twaf:fimcfg:\Q$W23/co khoang trang/\E\t" "$S23/rcli.txt")" "1"
 
 # Bat bien 2: Redis TU CHOI mot lenh (canary VAN song) -> phai bao loi.
 printf 'AddHandler application/x-httpd-php .png\n' > "$W23/co khoang trang/.htaccess"
@@ -1198,7 +1198,7 @@ r24 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
 : > "$S24/rcli.txt"
 o24=$(r24 bash "$HERE/fim.sh" check 2>&1); rc24=$?
 want "24 doi chung: 3 khoa trang thai, khong loi" \
-     "$(grep -cP '^SETEX\twaf:fimchg:' "$S24/rcli.txt")" "3"
+     "$(grep -cP '^SETEX\twaf:fimcfg:' "$S24/rcli.txt")" "3"
 want "24 doi chung: ma thoat 0" "$rc24" "0"
 
 # Ca that: mat khoa thu 2.
@@ -1221,7 +1221,7 @@ o24c=$(r24 bash "$HERE/fim.sh" check 2>&1); rc24c=$?
 want "24 dirty doi chung: 3 khoa, khong loi xac minh" \
      "$(printf '%s' "$o24c" | grep -c 'KHONG XAC MINH')" "0"
 want "24 dirty doi chung: 3 khoa duoc ghi" \
-     "$(grep -cP '^SETEX\twaf:fimchg:' "$S24/rcli.txt")" "3"
+     "$(grep -cP '^SETEX\twaf:fimcfg:' "$S24/rcli.txt")" "3"
 
 : > "$S24/rcli.txt"
 for dd in a b c; do printf 'AddHandler application/x-httpd-php .gif\n' > "$W24/$dd/.htaccess"; done
