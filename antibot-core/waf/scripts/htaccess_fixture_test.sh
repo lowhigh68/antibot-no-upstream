@@ -79,19 +79,37 @@ while IFS=$'\t' read -r want rule; do
     # `OFFEXEC`/`OFFALL` = PHAT BIEU TAT, khac han `NONE` = khong noi gi. BA trang
     # thai, va fixture phai phan biet duoc chung — gop lai la pin dung cai nhap hai
     # thu do lam mot, tuc chinh lo da bo sot `SetHandler none` / `Options -ExecCGI`.
+    #
+    # Cap nhat 02-10: hop dong BON TRUC. `@all` cu tach thanh `@sh+` (`SetHandler`) va
+    # `@ft+` (`ForceType`) — HAI truc, vi Apache cho `SetHandler` uu tien cao hon.
+    # Fixture van gop chung vao mot lop `ALL` o day, vi cau hoi cua lop nay la "co ap
+    # ca thu muc khong"; phep phan biet hai truc nam o nhom `cha-con` cua `fim_test.sh`
+    # noi co ca chuoi to tien de do.
     case "$out" in
-        "")          got=NONE ;;
-        "@all")      got=ALL ;;
-        "@execcgi")  got=EXECCGI ;;
-        "-@all")     got=OFFALL ;;
-        "-@execcgi") got=OFFEXEC ;;
-        *)           got=HANDLER ;;
+        "")                     got=NONE ;;
+        "@sh+"|"@ft+"|"@all")   got=ALL ;;
+        "@exec+"|"@execcgi")    got=EXECCGI ;;
+        "@sh-"|"@ft-"|"-@all")  got=OFFALL ;;
+        "@exec-"|"-@execcgi")   got=OFFEXEC ;;
+        *)                      got=HANDLER ;;
     esac
     if [ "$want" = "HANDLER" ]; then
         # `AddType ... .php .phtml` cho HAI token; lay token cuoi cua DONG lam duoi
         # mong doi thi chi dung cho ca mot duoi. Ca nhieu duoi co nhom rieng o duoi.
         e=$(printf '%s\n' "$rule" | awk '{ print $NF }' | sed 's/^\.//' | tr 'A-Z' 'a-z')
-        want "$rule" "token-duoi" "$out" "ext:$e"
+        # TIEN TO THEO TRUC: `AddType`/`RemoveType` -> `t`, `AddHandler`/`RemoveHandler`
+        # -> `h`. Day la chinh phep tach ma hop dong moi dua vao, nen fixture phai so
+        # DUNG TRUC chu khong chi dung duoi — neu khong no lai che mot phep gop.
+        #
+        # CAT KHOANG TRANG DAU truoc khi so: mot ca trong bo nay thut le bon khoang
+        # trang (`    AddType ...`, de do container), nen `addtype*` KHONG khop va ca
+        # do bi gan sai truc. Do duoc 02-10: `duoc=t+:php mong=h+:php`.
+        rule_lc=$(printf '%s' "$rule" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//')
+        case "$rule_lc" in
+            addtype*|removetype*) tr_pfx=t ;;
+            *)                    tr_pfx=h ;;
+        esac
+        want "$rule" "token-duoi" "$out" "${tr_pfx}+:$e"
     fi
     # ── HINH DANG TOKEN phai HOP LE ─────────────────────────────────
     #
@@ -102,12 +120,19 @@ while IFS=$'\t' read -r want rule; do
     # BAO XANH. Fixture khi do che dung cai sai cua parser.
     #
     # Rang buoc nay doc lap voi phep so tren: MOI token phai la `@<chu>` hoac mot
-    # duoi hop le (chu/so/gach). Mot token mang `"`, khoang trang, hay `/` la rac.
+    # Rang buoc nay doc lap voi phep so tren: MOI token phai la mot nhan truc hop le
+    # hoac mot duoi hop le (chu/so/gach). Mot token mang `"`, khoang trang, hay `/` la
+    # rac. Danh sach cap nhat 02-10 cho hop dong BON TRUC (`h±`/`t±`/`@sh±`/`@ft±`/
+    # `@exec±`); dang CU van hop le vi khoa dang song con mang no het TTL 7 ngay.
     bad=""
     for tk in $(printf '%s\n' "$out" | tr "," " "); do
         case "$tk" in
-            @all|@php|@phpini|@execcgi|-@all|-@execcgi) ;;
-            ext:*) case "${tk#ext:}" in *[!a-z0-9_-]*|"") bad="$bad $tk" ;; esac ;;
+            @sh+|@sh-|@ft+|@ft-|@exec+|@exec-|@exec+:noop) ;;
+            @php|@phpini) ;;
+            @all|@execcgi|@execcgi:noop|-@all|-@execcgi) ;;
+            h+:*|h-:*|t+:*|t-:*)
+                case "${tk#??:}" in *[!a-z0-9_@-]*|"") bad="$bad $tk" ;; esac ;;
+            ext:*) case "${tk#ext:}" in *[!a-z0-9_@-]*|"") bad="$bad $tk" ;; esac ;;
             *[!a-z0-9_-]*) bad="$bad $tk" ;;
         esac
     done
@@ -153,7 +178,7 @@ done < "$FIX"
 # HAI KY TU `\` va `n`, va khi do phep noi dong CHUA BAO GIO duoc chay.
 { printf 'AddType application/x-httpd-php \\'; printf '\n    .php\n'; } > "$R/cont.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/cont.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-want "noi dong (2 dong)" "shell" "$out" "ext:php"
+want "noi dong (2 dong)" "shell" "$out" "t+:php"
 
 cat > "$R/cont.lua" <<'LUAEOF'
 local uc = dofile(os.getenv("ANTIBOT_SRC") .. "waf/upload_content.lua")
@@ -187,14 +212,14 @@ want "SetHandler trong <FilesMatch> -> KHONG @all" "shell" "${out:-NONE}" "NONE"
   printf '</FilesMatch>\n'
   printf 'SetHandler application/x-httpd-php\n'; } > "$R/fm2.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/fm2.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-want "SetHandler SAU khi dong container -> @all" "shell" "$out" "@all"
+want "SetHandler SAU khi dong container -> @all" "shell" "$out" "@sh+"
 
 # `<IfModule>` KHONG gioi han pham vi theo tep: directive ben trong VAN ap ca thu muc.
 { printf '<IfModule mod_mime.c>\n'
   printf '    AddType application/x-httpd-php .php\n'
   printf '</IfModule>\n'; } > "$R/ifm.htaccess"
 out=$(awk -f "$R/shell.awk" "$R/ifm.htaccess" 2>/dev/null | sort -u | paste -sd, -)
-want "AddType trong <IfModule> -> VAN bao" "shell" "$out" "ext:php"
+want "AddType trong <IfModule> -> VAN bao" "shell" "$out" "t+:php"
 
 # ── PARSER INI: `#`/`;` TRONG DAU NHAY khong phai chu thich ──────────
 #
@@ -240,9 +265,9 @@ ini_raw() {  # ini_raw <ten> <mong: co|khong> <printf-format>
     if awk -f "$HERE/inifile_parse.awk" "$R/raw.ini" 2>/dev/null; then g=co; else g=khong; fi
     want "$1" "ini" "$g" "$2"
 }
-hta_raw "CRLF: Options +ExecCGI"      "@execcgi" 'Options +ExecCGI\r\n'
-hta_raw "CRLF: AddType"               "ext:php"      'AddType application/x-httpd-php .php\r\n'
-hta_raw "CRLF: SetHandler"            "@all"     'SetHandler application/x-httpd-php\r\n'
+hta_raw "CRLF: Options +ExecCGI"      "@exec+" 'Options +ExecCGI\r\n'
+hta_raw "CRLF: AddType"               "t+:php"      'AddType application/x-httpd-php .php\r\n'
+hta_raw "CRLF: SetHandler"            "@sh+"     'SetHandler application/x-httpd-php\r\n'
 
 # ── NHOM 23: RemoveHandler / RemoveType -> token `rm:` ────────────────
 #
@@ -250,18 +275,18 @@ hta_raw "CRLF: SetHandler"            "@all"     'SetHandler application/x-httpd
 # `Remove*` huy mapping KE THUA tu cha (mod_mime) — nen parser phai phat `rm:<duoi>`
 # chu khong chi "khong in gi": ben doc can biet "duoi nay DA BI TAT o day" khac
 # "khong co gi o day". Do la ly do khong the OR moi ancestor.
-hta_raw "rm: chi RemoveHandler"           "rm:jpg"  'RemoveHandler .jpg\n'
-hta_raw "rm: chi RemoveType"              "rm:php"  'RemoveType .php\n'
-hta_raw "rm: Add roi Remove cung duoi"    "rm:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
-hta_raw "rm: Remove roi Add -> BAT lai"   "ext:jpg" 'RemoveHandler .jpg\nAddHandler application/x-httpd-php .jpg\n'
-hta_raw "rm: Remove duoi KHAC khong anh huong" "ext:jpg
-rm:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
+hta_raw "rm: chi RemoveHandler"           "h-:jpg"  'RemoveHandler .jpg\n'
+hta_raw "rm: chi RemoveType"              "t-:php"  'RemoveType .php\n'
+hta_raw "rm: Add roi Remove cung duoi"    "h-:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: Remove roi Add -> BAT lai"   "h+:jpg" 'RemoveHandler .jpg\nAddHandler application/x-httpd-php .jpg\n'
+hta_raw "rm: Remove duoi KHAC khong anh huong" "h+:jpg
+h-:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
 # `Remove*` KHONG loc theo handler: doi so cua no la danh sach DUOI tu token thu HAI,
 # va no rut lai bat ke handler cu la gi.
-hta_raw "rm: RemoveHandler nhieu duoi"    "rm:cgi
-rm:pl" 'RemoveHandler .cgi .pl\n'
+hta_raw "rm: RemoveHandler nhieu duoi"    "h-:cgi
+h-:pl" 'RemoveHandler .cgi .pl\n'
 # Huong NGUOC: `Add*` khong-PHP van bi bo qua, va `Remove*` khong duoc lam no xuat hien.
-hta_raw "rm: AddType text/plain roi Remove" "rm:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: AddType text/plain roi Remove" "h-:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
 
 # ── NHOM 24: HAI TRUC doc lap — handler vs media type ─────────────────
 #
@@ -272,12 +297,17 @@ hta_raw "rm: AddType text/plain roi Remove" "rm:jpg" 'AddType text/plain .jpg\nR
 #       nhung parser cu xoa ca `ext:jpg`.
 #   FP: cha `AddHandler ... .jpg` + con `AddHandler default-handler .jpg` -> Apache
 #       ghi de bang handler LANH, nhung parser cu bo qua dong khong chua `php|cgi`.
-hta_raw "truc: RemoveType KHONG xoa handler" "ext:jpg" 'AddHandler application/x-httpd-php .jpg\nRemoveType .jpg\n'
-hta_raw "truc: RemoveHandler KHONG xoa type" "ext:jpg" 'AddType application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
-hta_raw "truc: cung truc handler -> TAT"     "rm:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
-hta_raw "truc: cung truc type -> TAT"        "rm:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
-hta_raw "truc: ghi de bang handler LANH -> TAT" "rm:jpg" 'AddHandler application/x-httpd-php .jpg\nAddHandler default-handler .jpg\n'
-hta_raw "truc: type lanh KHONG tat handler nguy" "ext:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
+# HAI TOKEN, va do la BANG CHUNG hai truc tach THAT: `RemoveType .jpg` phat `t-:jpg`
+# nhung KHONG cham `h+:jpg`. Truoc 02-10 ca nay cho MOT token `ext:jpg` vi hai truc bi
+# OR trong parser, nen khong the phan biet "handler con song" voi "type bi go".
+hta_raw "truc: RemoveType KHONG xoa handler" "h+:jpg
+t-:jpg" 'AddHandler application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: RemoveHandler KHONG xoa type" "h-:jpg
+t+:jpg" 'AddType application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "truc: cung truc handler -> TAT"     "h-:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "truc: cung truc type -> TAT"        "t-:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: ghi de bang handler LANH -> TAT" "h-:jpg" 'AddHandler application/x-httpd-php .jpg\nAddHandler default-handler .jpg\n'
+hta_raw "truc: type lanh KHONG tat handler nguy" "h+:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
 # Huong NGUOC — quan trong nhat: mot `AddType` LANH don thuan KHONG phu dinh gi. In
 # `rm:css` o day lam ben doc hieu "duoi nay bi TAT", mot cau sai (bo test bat 8 ca).
 hta_raw "truc: AddType lanh KHONG sinh rm:"  ""        'AddType text/css .css\n'
@@ -291,10 +321,10 @@ ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r
 # Nguoi dung tai hien 29-09. Apache/Zend doc TUAN TU va dong SAU ghi de dong TRUOC.
 # Ban truoc hop moi lan xuat hien nen khong bao gio rut lai duoc — FP telemetry hom
 # nay, va FP THAT neu luat duoc promote.
-hta_raw "lan cuoi: +ExecCGI roi -ExecCGI" "-@execcgi" 'Options +ExecCGI\nOptions -ExecCGI\n'
-hta_raw "lan cuoi: -ExecCGI roi +ExecCGI" "@execcgi" 'Options -ExecCGI\nOptions +ExecCGI\n'
-hta_raw "lan cuoi: All roi None"          "-@execcgi" 'Options All\nOptions None\n'
-hta_raw "lan cuoi: None roi All"          "@execcgi" 'Options None\nOptions All\n'
+hta_raw "lan cuoi: +ExecCGI roi -ExecCGI" "@exec-" 'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_raw "lan cuoi: -ExecCGI roi +ExecCGI" "@exec+" 'Options -ExecCGI\nOptions +ExecCGI\n'
+hta_raw "lan cuoi: All roi None"          "@exec-" 'Options All\nOptions None\n'
+hta_raw "lan cuoi: None roi All"          "@exec+" 'Options None\nOptions All\n'
 ini_raw "lan cuoi: x.php roi none"        "khong"    'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n'
 ini_raw "lan cuoi: none roi x.php"        "co"       'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n'
 # Huong NGUOC de phep sua khong thanh "luon tra khong": mot dong DUY NHAT co gia tri
@@ -344,10 +374,10 @@ LX
         XFLAG="${5:-upload_apache_config}" "$RESTY" "$R/x.lua" 2>/dev/null)
     want "$1" "lua" "${g:-LOI}" "$3"
 }
-cross "cheo: +ExecCGI roi -ExecCGI" "-@execcgi" khong 'Options +ExecCGI\nOptions -ExecCGI\n'
-cross "cheo: -ExecCGI roi +ExecCGI" "@execcgi" co    'Options -ExecCGI\nOptions +ExecCGI\n'
-cross "cheo: All roi None"          "-@execcgi" khong 'Options All\nOptions None\n'
-cross "cheo: CRLF +ExecCGI"         "@execcgi" co    'Options +ExecCGI\r\n'
+cross "cheo: +ExecCGI roi -ExecCGI" "@exec-" khong 'Options +ExecCGI\nOptions -ExecCGI\n'
+cross "cheo: -ExecCGI roi +ExecCGI" "@exec+" co    'Options -ExecCGI\nOptions +ExecCGI\n'
+cross "cheo: All roi None"          "@exec-" khong 'Options All\nOptions None\n'
+cross "cheo: CRLF +ExecCGI"         "@exec+" co    'Options +ExecCGI\r\n'
 cross "cheo: ini x.php roi none"    ""         khong 'auto_prepend_file=/tmp/x.php\nauto_prepend_file=none\n' upload_user_ini
 cross "cheo: ini none roi x.php"    ""         co    'auto_prepend_file=none\nauto_prepend_file=/tmp/x.php\n' upload_user_ini
 cross "cheo: ini CRLF none"         ""         khong 'auto_prepend_file=none\r\n' upload_user_ini
@@ -382,15 +412,15 @@ cross "cheo: prepend TAT + append BAT" ""  co    'auto_prepend_file=none\nauto_a
 # `Options -ExecCGI` trong `<FilesMatch>` chi ap cho tap tep hep do; no KHONG rut lai
 # quyen da cap cho ca thu muc. Ban truoc dung MOT cap (`execcgi_on`, `execcgi_depth`)
 # nen dong trong container ghi de trang thai ngoai -> BO SOT (nguoi dung bat 30-09).
-hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@execcgi" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
-hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" "-@execcgi" 'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@exec+" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" "@exec-" 'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
 hta_raw "pham vi: CHI trong FilesMatch"            ""         '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
-hta_raw "pham vi: ngoai BAT, trong Directory None" "@execcgi" 'Options +ExecCGI\n<Directory /x>\nOptions None\n</Directory>\n'
-hta_raw "pham vi: IfModule KHONG gioi han"         "@execcgi" '<IfModule mod_x.c>\nOptions +ExecCGI\n</IfModule>\n'
+hta_raw "pham vi: ngoai BAT, trong Directory None" "@exec+" 'Options +ExecCGI\n<Directory /x>\nOptions None\n</Directory>\n'
+hta_raw "pham vi: IfModule KHONG gioi han"         "@exec+" '<IfModule mod_x.c>\nOptions +ExecCGI\n</IfModule>\n'
 # Huong nguoc: last-wins CUNG pham vi van phai chay, khong duoc thanh "mot lan bat la mai bat"
-hta_raw "pham vi: cung depth 0 last-wins TAT"      "-@execcgi" 'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_raw "pham vi: cung depth 0 last-wins TAT"      "@exec-" 'Options +ExecCGI\nOptions -ExecCGI\n'
 # Long hai cap: TAT o depth 2 khong duoc leo ra depth 0
-hta_raw "pham vi: long hai cap"                    "@execcgi" 'Options +ExecCGI\n<Directory /x>\n<FilesMatch "y">\nOptions -ExecCGI\n</FilesMatch>\n</Directory>\n'
+hta_raw "pham vi: long hai cap"                    "@exec+" 'Options +ExecCGI\n<Directory /x>\n<FilesMatch "y">\nOptions -ExecCGI\n</FilesMatch>\n</Directory>\n'
 
 # ── NHOM 17: Lua theo PHAM VI — nhung tra loi CAU HOI KHAC awk ───────
 #
@@ -460,26 +490,26 @@ hta_ok() {  # hta_ok <ten> <execcgi_ok> <mong> <printf-format>
     printf "$4" > "$R/x.htaccess"
     want "$1" "awk" "$(awk -v execcgi_ok="$2" -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "$3"
 }
-hta_ok "execcgi_ok=1 -> @execcgi nhu cu"      1 "@execcgi"      'Options +ExecCGI\n'
-hta_ok "execcgi_ok=0 -> @execcgi:noop"        0 "@execcgi:noop" 'Options +ExecCGI\n'
-hta_ok "execcgi_ok=1 + All -> @execcgi"       1 "@execcgi"      'Options All -Indexes\n'
-hta_ok "execcgi_ok=0 + All -> noop"           0 "@execcgi:noop" 'Options All -Indexes\n'
+hta_ok "execcgi_ok=1 -> @execcgi nhu cu"      1 "@exec+"      'Options +ExecCGI\n'
+hta_ok "execcgi_ok=0 -> @execcgi:noop"        0 "@exec+:noop" 'Options +ExecCGI\n'
+hta_ok "execcgi_ok=1 + All -> @execcgi"       1 "@exec+"      'Options All -Indexes\n'
+hta_ok "execcgi_ok=0 + All -> noop"           0 "@exec+:noop" 'Options All -Indexes\n'
 # `ext:` KHONG bi anh huong: `AddHandler` thuoc `FileInfo`, va `FileInfo` CO trong
 # whitelist (do duoc: hai site co AddHandler o goc tra 200 va 301, khong 500).
-hta_ok "execcgi_ok=0 KHONG anh huong ext:"    0 "ext:php"       'AddHandler application/x-httpd-php .php\n'
-hta_ok "execcgi_ok=0 KHONG anh huong @all"    0 "@all"          'SetHandler application/x-httpd-php\n'
+hta_ok "execcgi_ok=0 KHONG anh huong ext:"    0 "h+:php"       'AddHandler application/x-httpd-php .php\n'
+hta_ok "execcgi_ok=0 KHONG anh huong @all"    0 "@sh+"          'SetHandler application/x-httpd-php\n'
 # TAT van la TAT o ca hai che do: co sua khong duoc thanh "luon in mot cai gi".
-hta_ok "execcgi_ok=0 + TAT -> TAT tuong minh"  0 "-@execcgi"     'Options +ExecCGI\nOptions -ExecCGI\n'
-hta_ok "execcgi_ok=1 + TAT -> TAT tuong minh"  1 "-@execcgi"     'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_ok "execcgi_ok=0 + TAT -> TAT tuong minh"  0 "@exec-"     'Options +ExecCGI\nOptions -ExecCGI\n'
+hta_ok "execcgi_ok=1 + TAT -> TAT tuong minh"  1 "@exec-"     'Options +ExecCGI\nOptions -ExecCGI\n'
 # KHONG truyen bien -> phai la 1 (mac dinh an toan), khong phai rong hay noop.
 printf 'Options +ExecCGI\n' > "$R/x.htaccess"
 want "execcgi_ok KHONG truyen -> mac dinh @execcgi" "awk" \
-     "$(awk -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "@execcgi"
+     "$(awk -f "$HERE/htaccess_parse.awk" "$R/x.htaccess")" "@exec+"
 # Dang THAT tren fleet: cgi-bin co ca AddHandler lan ExecCGI. `ext:` giu, `@execcgi`
 # thanh noop — hai tin hieu doc lap, khong keo nhau.
-hta_ok "cgi-bin THAT, execcgi_ok=0" 0 "ext:cgi
-ext:pl
-@execcgi:noop" 'Options -Indexes +ExecCGI\nAddHandler cgi-script .cgi .pl\n'
+hta_ok "cgi-bin THAT, execcgi_ok=0" 0 "h+:cgi
+h+:pl
+@exec+:noop" 'Options -Indexes +ExecCGI\nAddHandler cgi-script .cgi .pl\n'
 
 # ── HAI BEN DONG Y: sau dong DO DUOC, khong phai gia dinh ────────────
 #
@@ -490,9 +520,9 @@ ext:pl
 #
 # `cross` doi hai ky vong TUYET DOI (khong phai "hai ben giong nhau"), vi mot phep so
 # "hai ben dong y" khong phat hien duoc loi CHUNG.
-cross "dong y: SetHandler cgi-script"   "@all"    co 'SetHandler cgi-script\n'
-cross "dong y: AddHandler cgi-script"   "ext:sh"  co 'AddHandler cgi-script .sh\n'
-cross "dong y: Action + AddHandler"     "ext:php" co 'Action php-script /cgi-bin/php\nAddHandler php-script .php\n'
+cross "dong y: SetHandler cgi-script"   "@sh+"    co 'SetHandler cgi-script\n'
+cross "dong y: AddHandler cgi-script"   "h+:sh"  co 'AddHandler cgi-script .sh\n'
+cross "dong y: Action + AddHandler"     "h+:php" co 'Action php-script /cgi-bin/php\nAddHandler php-script .php\n'
 cross "dong y: AddOutputFilter -> im"   ""        khong 'AddOutputFilter INCLUDES .shtml\n'
 # ── `php_value`: DA DO, la duong CHET tren fleet nay ────────────────
 #
@@ -527,11 +557,11 @@ ns() {  # ns <ten> <mong> <printf-format>
     printf "$3" > "$R/ns.htaccess"
     want "$1" "ns" "$(awk -f "$HERE/htaccess_parse.awk" "$R/ns.htaccess" | paste -sd, -)" "$2"
 }
-ns "duoi .@all     -> ext:@all"     "ext:@all"     'AddHandler application/x-httpd-php .@all\n'
-ns "duoi .@php     -> ext:@php"     "ext:@php"     'AddHandler application/x-httpd-php .@php\n'
-ns "duoi .@execcgi -> ext:@execcgi" "ext:@execcgi" 'AddHandler application/x-httpd-php .@execcgi\n'
-ns "SetHandler van la @all THAT"    "@all"         'SetHandler application/x-httpd-php\n'
-ns "hai duoi deu co tien to"        "ext:php,ext:phtml" 'AddType application/x-httpd-php .php .phtml\n'
+ns "duoi .@all     -> ext:@all"     "h+:@all"     'AddHandler application/x-httpd-php .@all\n'
+ns "duoi .@php     -> ext:@php"     "h+:@php"     'AddHandler application/x-httpd-php .@php\n'
+ns "duoi .@execcgi -> ext:@execcgi" "h+:@execcgi" 'AddHandler application/x-httpd-php .@execcgi\n'
+ns "SetHandler van la @all THAT"    "@sh+"         'SetHandler application/x-httpd-php\n'
+ns "hai duoi deu co tien to"        "t+:php,t+:phtml" 'AddType application/x-httpd-php .php .phtml\n'
 # HINH DANG: `ext:@all` PHAI bi bao la token rac (`@` khong phai ky tu duoi hop le),
 # nhung no la RAC vo hai — `init.lua` khong co nhanh nao khop `ext:@all` tru khi duoi
 # that cua request la `@all`, ma do khong phai duoi hop le.

@@ -620,149 +620,201 @@ local function fim_config_active(uri, rt)
     local vals = pool.safe_mget(keys, nk)
     if type(vals) ~= "table" then return nil end
 
-    -- Trang thai hieu luc, merge tu goc xuong. `ext:<e>` BAT mot duoi, `rm:<e>` TAT
-    -- no; tang GAN hon ghi de tang xa hon. Day la cho "OR moi ancestor" se SAI:
-    -- `RemoveType .jpg` trong `uploads/wpforms/.htaccess` (co THAT tren fleet, dung
-    -- mot tep) phai huy mapping ke thua tu cha.
-    local st, flag = nil, nil
+    -- ── BON TRUC RIENG, roi PRECEDENCE o duoi ────────────────────────
+    --
+    -- `h` = handler theo duoi, `t` = type theo duoi, `flag` = cac truc "ca thu muc".
+    -- Moi bang dung BA trang thai: `nil` chua noi gi | `false` TAT tuong minh | `true`
+    -- BAT. Tang GAN hon ghi de tang xa hon, va `false` la mot phep ghi de THAT chu
+    -- khong phai "khong co du lieu" — do la cho `nil` khac `false`.
+    --
+    -- Ban truoc chi co MOT bang `st` cho ca hai truc theo duoi, nen `RemoveType .jpg`
+    -- o con xoa luon handler ke thua (ca1: FN) va `AddHandler default-handler .jpg`
+    -- khong xoa duoc type ke thua (ca2: FP).
+    local h, t, flag = nil, nil, nil
     for i = nk, 1, -1 do
         local v = vals[i]
         if v and v ~= ngx.null and v ~= "" then
             for e in v:gmatch("[^,]+") do
-                if e:sub(1, 4) == "ext:" then
-                    st = st or {}; st[e:sub(5)] = true
-                elseif e:sub(1, 3) == "rm:" then
-                    st = st or {}; st[e:sub(4)] = false
-                elseif e:sub(1, 2) == "-@" then
-                    -- PHU DINH TUONG MINH mot truc "ca thu muc": `-@all` tu
-                    -- `SetHandler none` / `ForceType text/plain`, `-@execcgi` tu
-                    -- `Options -ExecCGI`. Ghi de co cua cha y nhu `rm:<e>` ghi de
-                    -- `ext:<e>` — va do la chieu con THIEU truoc 02-10: hai truc nay
-                    -- CHI co chieu BAT, nen mot thu muc con tat tuong minh khong rut
-                    -- lai duoc gi (nguoi dung bat 01-10).
-                    --
-                    -- `false` chu khong `nil`: `nil` la "khong co phat bieu" va se de
-                    -- mot tang XA hon ghi vao sau do. Ba trang thai, khong hai.
+                local p3, p2 = e:sub(1, 3), e:sub(1, 2)
+                if p3 == "h+:" then
+                    h = h or {}; h[e:sub(4)] = true
+                elseif p3 == "h-:" then
+                    h = h or {}; h[e:sub(4)] = false
+                elseif p3 == "t+:" then
+                    t = t or {}; t[e:sub(4)] = true
+                elseif p3 == "t-:" then
+                    t = t or {}; t[e:sub(4)] = false
+                elseif e == "@sh+" then
+                    flag = flag or {}; flag.sh = true
+                elseif e == "@sh-" then
+                    flag = flag or {}; flag.sh = false
+                elseif e == "@ft+" then
+                    flag = flag or {}; flag.ft = true
+                elseif e == "@ft-" then
+                    flag = flag or {}; flag.ft = false
+                elseif e == "@exec+" then
+                    -- `@exec+` THAT xoa `exec_noop`: mot thu muc co CA hai nhan thi
+                    -- cai SONG quyet dinh. Thieu dong `= nil` nay thi `@exec+` den SAU
+                    -- `@exec+:noop` van tra `execcgi_noop` — tuc bao NHE hon su that.
+                    flag = flag or {}; flag.exec = true; flag.exec_noop = nil
+                elseif e == "@exec+:noop" then
+                    -- CHI dat `noop` khi chua co `@exec+` thuc nao. `or` o day giu
+                    -- nguyen co SONG neu no da duoc dat o tang gan hon.
                     flag = flag or {}
-                    flag[e:sub(2)] = false
-                elseif e:sub(1, 1) == "@" then
-                    flag = flag or {}
+                    if flag.exec ~= true or flag.exec_noop then flag.exec_noop = true end
+                    flag.exec = true
+                elseif e == "@exec-" then
+                    flag = flag or {}; flag.exec = false
+                elseif e == "@php" then
+                    flag = flag or {}; flag.php = true
+                elseif e == "@phpini" then
                     -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
                     -- cau hinh cua SAPI/CWD, khong mac nhien theo thu muc. Chi nhan khi
-                    -- no o CHINH thu muc cua request.
-                    -- `i == 1` (tien to moi) HOAC `i == ndir + 1` (tien to cu): ca
-                    -- hai deu la THU MUC CUA REQUEST, chi khac tien to. Bo vi tri
-                    -- thu hai thi mot khoa `fimchg:` cu mang `@phpini` bi coi la
-                    -- ke thua va bi loai oan.
-                    if e ~= "@phpini" or i == 1 or i == ndir + 1 then flag[e] = true end
+                    -- no o CHINH thu muc cua request — `i == 1` (tien to moi) HOAC
+                    -- `i == ndir + 1` (tien to cu).
+                    if i == 1 or i == ndir + 1 then
+                        flag = flag or {}; flag.phpini = true
+                    end
+
+                -- ── DOC-DE-DI-TRU: hop dong TRUOC 02-10 ──────────────
+                --
+                -- Khoa dang song mang dang CU, va TTL la 7 ngay (`FIM_MARK_TTL`). Bo
+                -- cac nhanh nay ngay thi moi thu muc da danh dau MAT PHAT HIEN cho tới
+                -- khi `fim.sh` chay lai — tuc mot cua so mu tu tao ra.
+                --
+                -- Dang cu KHONG tach handler/type, nen no chi ban duoc vao truc
+                -- HANDLER (truc manh hon). Do la phep xap xi AN TOAN theo huong giu
+                -- phat hien: mot `AddType php` cu thanh `h+` thay vi `t+`, va vi
+                -- handler uu tien cao hon type, ket qua cuoi khong doi.
+                --
+                -- HAN CHOT 09-10-2026: bo het nhanh duoi day (7 ngay tu 02-10).
+                elseif e:sub(1, 4) == "ext:" then
+                    h = h or {}; h[e:sub(5)] = true
+                elseif p3 == "rm:" then
+                    h = h or {}; h[e:sub(4)] = false
+                elseif e == "@all" then
+                    flag = flag or {}; flag.sh = true
+                elseif e == "-@all" then
+                    -- Dang CU `-@all` phu dinh truc TOAN-THU-MUC, va CHI truc do: o hop
+                    -- dong cu mot `AddHandler ... .jpg` van con hieu luc sau `SetHandler
+                    -- none` (ca `truc: -@all KHONG tat ext:jpg` trong `policy_test.lua`
+                    -- ghim dieu nay). Nen dat `ft` chu khong `sh`: `ft` nam DUOI muc
+                    -- `AddHandler` trong thang precedence, nen mot `ext:`/`h+:` o bat ky
+                    -- tang nao van duoc xet TRUOC — dung nghia cu — con khi khong co
+                    -- handler theo duoi thi `ft == false` vẫn chan `@all` ke thua.
+                    --
+                    -- Toi dat `sh = false` o ban dau va no lam ca do HONG (`duoc=nil`):
+                    -- `sh` la muc CAO NHAT nen reducer dung lai ngay, khong xet `h`.
+                    flag = flag or {}
+                    if flag.sh == nil then flag.ft = false else flag.sh = false end
+                elseif e == "@execcgi" then
+                    flag = flag or {}; flag.exec = true; flag.exec_noop = nil
+                elseif e == "@execcgi:noop" then
+                    flag = flag or {}
+                    if flag.exec ~= true or flag.exec_noop then flag.exec_noop = true end
+                    flag.exec = true
+                elseif e == "-@execcgi" then
+                    flag = flag or {}; flag.exec = false
                 elseif e == "*" then
-                    -- Khoa CU tu ban truoc ban 28-09, con song tới het TTL 7 ngay.
-                    flag = flag or {}; flag["@php"] = true
-                else
-                    -- DANG CU: duoi THO khong co tien to `ext:`. `fim.sh` da ngung ghi
-                    -- dang nay, nhung khoa cu con song het TTL 7 ngay. HAN CHOT
-                    -- 06-10-2026: bo nhanh nay.
-                    st = st or {}; st[e] = true
+                    flag = flag or {}; flag.php = true
+                elseif p2 ~= "h+" and p2 ~= "h-" and p2 ~= "t+" and p2 ~= "t-" then
+                    -- Dang CU NHAT: duoi THO khong tien to. HAN CHOT 06-10-2026.
+                    h = h or {}; h[e] = true
                 end
             end
         end
     end
-    if not st and not flag then return nil end
-    -- Dung lai `v` cho phan con lai: ghep thanh mot chuoi token hieu luc.
-    local parts, np = nil, 0
-    if st then for e, on in pairs(st) do if on then np = np + 1; parts = parts or {}; parts[np] = "ext:" .. e end end end
-    -- `pairs` tra KHOA, nen phai loc theo GIA TRI: `flag["@all"] = false` (tu `-@all`)
-    -- la PHU DINH, va ghep khoa do vao `parts` se bien no thanh `"@all"` — doc thanh
-    -- BAT, nguoc han y nghia. Ban dau toi viet `for f in pairs(flag)` o day va do la
-    -- mot loi im lang: khong bao gi, chi tra ket qua trai nguoc.
-    if flag then for f, on in pairs(flag) do if on then np = np + 1; parts = parts or {}; parts[np] = f end end end
-    if not parts then return nil end
-    local v = table.concat(parts, ",")
+    if not h and not t and not flag then return nil end
 
-    -- BA KHONG GIAN TEN, khong con mot dau `*` mang ba nghia (nguoi dung bat 28-09):
+    -- ── PRECEDENCE, khong phai phep HOAC ─────────────────────────────
     --
-    --   @all     handler ap CA thu muc (`SetHandler`/`ForceType`/`Options +ExecCGI`)
-    --            -> MOI duoi, KHONG rang buoc `PHP_EXT`. Day la cho ban truoc sai:
-    --            `SetHandler application/x-httpd-php` lam `shell.jpg` CHAY duoc,
-    --            nhung `*` bi hieu la "autoload" nen `jpg` khong khop `PHP_EXT` va
-    --            request `/shell.jpg` khong bao gi.
-    --   @php     autoload tu `.user.ini` -> chi co nghia voi script PHP
-    --   @phpini  autoload tu `php.ini` -> TACH RIENG vi pham vi phu thuoc SAPI:
-    --            `.user.ini` la co che per-directory CHUAN cua CGI/FastCGI, con
-    --            `php.ini` di theo chuoi tim cau hinh cua SAPI/CWD nen KHONG mac
-    --            nhien co cung pham vi theo thu muc. Giu rieng cho tới khi do duoc
-    --            tren DirectAdmin.
-    --   <duoi>   duoi cu the tu `AddType`/`AddHandler`
-    -- NHAN TRA VE DI THANG VAO `matched=` cua waf.log, nen moi token phai co nhan
-    -- RIENG. Ban truoc gop `@php` va `@phpini` thanh cung mot `"autoload"`, tuc
-    -- phep tach chi ton tai o Redis chu KHONG o hanh vi lan so lieu — mai doc log
-    -- khong biet hit den tu `.user.ini` hay `php.ini` (nguoi dung bat 28-09). Ma
-    -- do la chinh cau hoi can tra loi, vi hai loai co pham vi khac nhau.
+    -- Apache quyet dinh handler cua mot tep theo THU TU UU TIEN, va day la thu tu do
+    -- (mod_mime + mod_dir, doc tu tai lieu):
     --
-    -- Duyet het roi CHON theo do manh, khong `return` ngay: mot thu muc co the co
-    -- ca `@all` lan `@php`, va bao cai manh hon la dung.
-    -- Bang tra, khong phai so tung cai: `v` co the co nhieu token va `sufs` nhieu
-    -- hau to, nen so cheo la O(n*m) tren HOT PATH. Bang cho O(n+m).
-    local sufset = {}
-    if sufs then for i = 1, #sufs do sufset[sufs[i]] = true end end
-    local hit_all, hit_ext, hit_php, hit_phpini, hit_exec = false, false, false, false, false
-    local hit_exec_noop = false
-    for e in v:gmatch("[^,]+") do
-        if e == "@all" then
-            hit_all = true                        -- moi duoi, khong rang buoc PHP_EXT
-        elseif e == "@execcgi:noop" then
-            -- `AllowOverride` cua webserver KHONG cho `.htaccess` dat `ExecCGI`, nen
-            -- dong `Options +ExecCGI` khong cap duoc gi (tren DirectAdmin `Options=`
-            -- la whitelist va `ExecCGI` khong nam trong do; `Options All` con lam
-            -- Apache tra 500 — do duoc 30-09). `fim.sh` DO dieu nay tu cau hinh
-            -- Apache that roi phat nhan nay thay cho `@execcgi`.
-            --
-            -- Ghi nhan chu khong bao: dem duoc bao nhieu thu muc SE bat tin hieu neu
-            -- `AllowOverride` doi, ma khong sinh so lieu rac hom nay.
-            hit_exec_noop = true
-        elseif e == "@execcgi" then
-            -- `Options +ExecCGI` CHI cap quyen chay CGI; no KHONG noi tep nao la
-            -- CGI. Mot minh no chua lam gi chay duoc, nen bao RIENG va NHE hon —
-            -- gop vao `@all` la bao manh hon su that.
-            hit_exec = true
-        elseif e == "@php" then
-            hit_php = true
-        elseif e == "@phpini" then
-            hit_phpini = true
-        elseif e == "*" then
-            -- Khoa CU tu ban truoc, con song tới het TTL 7 ngay. Giu nghia cu
-            -- (autoload) de khong doi nghia mot khoa da ghi.
-            hit_php = true
-        elseif e:sub(1, 4) == "ext:" and sufset[e:sub(5)] then
-            -- DANG MOI. Tien to `ext:` tach hai khong gian ten: truoc day mot duoi
-            -- di THO vao cung khong gian voi `@all`/`@php`/`@phpini`/`@execcgi`, nen
-            -- mot tep ten `.@all` cho token `@all` va dong nay doc thanh
-            -- `handler_all` — bao MANH HON su that (nguoi dung tai hien 29-09).
-            hit_ext = true
-        elseif sufset[e] then
-            -- DANG CU, doc-de-di-tru. `fim.sh` da ngung ghi dang nay, nhung khoa cu
-            -- con song het TTL 7 ngay (`FIM_MARK_TTL`), va bo nhanh nay ngay thi
-            -- moi thu muc da danh dau mat phat hien tới khi `fim.sh` chay lai.
-            --
-            -- HAN CHOT 06-10-2026 (7 ngay tu 29-09): bo nhanh nay. Giu lai lau hon
-            -- la giu song chinh cai va cham namespace — mot khoa cu chua `@all` tu
-            -- mot ten tep `.@all` van doc sai o nhanh `@all` o tren.
-            hit_ext = true
+    --   1. `SetHandler`      dat handler cho CA thu muc, GHI DE moi thu duoi.
+    --   2. `AddHandler <e>`  dat handler cho mot duoi, GHI DE content type.
+    --   3. `ForceType`       dat content type cho CA thu muc.
+    --   4. `AddType <e>`     dat content type cho mot duoi.
+    --
+    -- Content type chi tro thanh "chay duoc" khi KHONG co handler nao — do la co che
+    -- `AddType application/x-httpd-php .php` cu. Nen muc 3-4 chi duoc xet SAU khi muc
+    -- 1-2 khong co phat bieu nao.
+    --
+    -- Ban truoc gop ca bon thanh `hit_all` / `hit_ext` roi OR lai, nen:
+    --   · `SetHandler none` o con khong rut lai `AddHandler php` cua cha  (FN)
+    --   · `AddHandler default-handler` o con khong rut lai `AddType php` cua cha (FP)
+    -- Hai ca do la ca2/ca3 cua review, va luoi nhom 29 do chung tren duong day-du.
+    --
+    -- `nil` o moi muc = "chua ai noi gi" -> ROI XUONG muc sau. `false` = TAT TUONG
+    -- MINH -> DUNG LAI, khong roi xuong. Day la toan bo ly do phai co ba trang thai.
+    local hd = nil                    -- handler hieu luc: nil/true/false
+    local qua_duoi = false            -- handler nay den tu MOT DUOI hay ca thu muc
+
+    -- Muc 1: `SetHandler` — ca thu muc, uu tien cao nhat.
+    if flag and flag.sh ~= nil then hd = flag.sh end
+
+    -- Muc 2: `AddHandler` theo duoi. Chi xet khi muc 1 chua phat bieu, VA chi cho
+    -- chinh cac duoi cua tep nay — `sufs` la TAP (`shell.php.jpg` co ca `php` va
+    -- `jpg`), vi `AddHandler` so doi so voi TUNG duoi mot. Muc 7 cua ke hoach.
+    if hd == nil and h and sufs then
+        for i = 1, #sufs do
+            local s = h[sufs[i]]
+            if s ~= nil then
+                -- Trong cung muc, BAT thang TAT: `AddHandler php .php` + `.jpg` lanh
+                -- tren `shell.php.jpg` van CHAY (lo hong upload co dien).
+                if s then hd = true; qua_duoi = true; break end
+                if hd == nil then hd = false; qua_duoi = true end
+            end
         end
     end
 
-    if hit_all then return "handler_all" end
-    if hit_ext then return "handler_ext" end
+    -- Muc 3: `ForceType` — ca thu muc, chi khi KHONG co handler nao phat bieu.
+    if hd == nil and flag and flag.ft ~= nil then hd = flag.ft end
+
+    -- Muc 4: `AddType` theo duoi — thap nhat.
+    if hd == nil and t and sufs then
+        for i = 1, #sufs do
+            local s = t[sufs[i]]
+            if s ~= nil then
+                if s then hd = true; qua_duoi = true; break end
+                if hd == nil then hd = false; qua_duoi = true end
+            end
+        end
+    end
+
+    -- ── NHAN: pham vi cua phat bieu THANG quyet dinh nhan ────────────
+    --
+    -- `handler_all` khi handler ap CA thu muc (`SetHandler`/`ForceType`) va
+    -- `handler_ext` khi no den tu mot duoi. Phan biet nay di thang vao `matched=` cua
+    -- waf.log, nen phai dung: `handler_all` nghia la MOI tep trong thu muc chay duoc,
+    -- ke ca `shell.jpg` — manh hon han `handler_ext`.
+    if hd then
+        if qua_duoi then return "handler_ext" end
+        return "handler_all"
+    end
+
+    -- `hd == false` la TAT TUONG MINH. Cac truc autoload/ExecCGI o duoi la truc KHAC
+    -- (chung khong dat handler), nen van phai xet — mot `SetHandler none` khong tat
+    -- `auto_prepend_file`.
+
+    -- Autoload: chi co nghia voi script PHP, nen rang buoc `PHP_EXT` o doan CUOI.
     if ext and upload.PHP_EXT[ext] then
         -- `.user.ini` truoc `php.ini`: pham vi cua no CHAC CHAN hon (co che
         -- per-directory chuan cua CGI/FastCGI), con `php.ini` di theo chuoi tim cau
         -- hinh cua SAPI/CWD nen chua chac ap cho thu muc nay.
-        if hit_php    then return "autoload_userini" end
-        if hit_phpini then return "autoload_phpini"  end
+        if flag and flag.php    then return "autoload_userini" end
+        if flag and flag.phpini then return "autoload_phpini"  end
     end
-    if hit_exec then return "execcgi_only" end
-    -- SAU nhanh `hit_exec`: mot thu muc co CA hai thi cai SONG quyet dinh.
-    if hit_exec_noop then return "execcgi_noop" end
+
+    if flag and flag.exec then
+        -- `Options +ExecCGI` CHI cap quyen chay CGI; no KHONG noi tep nao la CGI. Mot
+        -- minh no chua lam gi chay duoc, nen bao RIENG va NHE hon.
+        --
+        -- `:noop` = `AllowOverride` cua webserver KHONG cho `.htaccess` dat `ExecCGI`,
+        -- nen dong do khong cap duoc gi. Ghi nhan chu khong bao — xem `fim.sh`.
+        if flag.exec_noop then return "execcgi_noop" end
+        return "execcgi_only"
+    end
     return nil
 end
 

@@ -2754,14 +2754,22 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
     # lam `shell.jpg` CHAY duoc ma request `/shell.jpg` khong khop, vi `jpg` khong
     # thuoc `PHP_EXT`. Ba nghia khac nhau bi gop thanh mot dau.
     #
-    #   <duoi>   duoi CU THE tu `AddType`/`AddHandler`      -> "jpg,png"
-    #   @all     handler ap CA thu muc (`SetHandler`/`ForceType`), MOI duoi
+    #   h+:<e>   `AddHandler` dat handler cho duoi <e>; `h-:<e>` TAT tuong minh
+    #   t+:<e>   `AddType` dat content type cho duoi <e>; `t-:<e>` TAT tuong minh
+    #   @sh+     `SetHandler` ca thu muc; `@sh-` = `SetHandler none`
+    #   @ft+     `ForceType` ca thu muc; `@ft-` = `ForceType text/plain`
+    #   @exec+   `Options ... ExecCGI` (hoac `@exec+:noop`); `@exec-` TAT tuong minh
     #   @php     autoload tu `.user.ini` — chi co nghia voi script PHP
     #   @phpini  autoload tu `php.ini` — TACH RIENG vi pham vi phu thuoc SAPI:
     #            `.user.ini` la co che per-directory CHUAN cua CGI/FastCGI, con
     #            `php.ini` di theo chuoi tim cau hinh cua SAPI/CWD nen KHONG mac
     #            nhien co cung pham vi theo thu muc. Gop hai cai truoc khi do thuc
     #            te tren DirectAdmin la tu tao mot ket luan chua kiem.
+    #
+    # BON TRUC RIENG, va PRECEDENCE o ben doc (`waf/init.lua`), khong o day: parser
+    # chi BAO CAO tung truc. Apache quyet dinh handler theo thu tu `SetHandler` ->
+    # `AddHandler` -> `ForceType` -> `AddType`, nen mot phep OR trong parser khong mo
+    # ta duoc no (doi 02-10; truoc do bon truc bi gop thanh `ext:`/`@all`).
     #
     # `<FilesMatch>`: `SetHandler` trong container KHONG ap cho ca thu muc. Parser
     # nay CHUA doc duoc container context, nen `SetHandler` ben trong mot container

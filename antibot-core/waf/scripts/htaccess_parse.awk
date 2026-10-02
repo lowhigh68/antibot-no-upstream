@@ -173,19 +173,31 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     #
     # `AddHandler <bat ky> .jpg` o con GHI DE handler cua cha — ke ca handler lanh. Nen
     # dong khong chua `php|cgi` KHONG duoc bo qua: no dat `h[e] = 0`.
+    # `AddHandler` LA MOT PHAT BIEU TUONG MINH ve truc handler cua duoi do — ke ca khi
+    # handler LANH. Do la chenh lech voi `AddType`, va no co ly do trong tai lieu
+    # Apache: `AddHandler` DAT handler, nen `AddHandler default-handler .jpg` noi
+    # "duoi .jpg dung handler mac dinh" va dieu do GHI DE moi handler ke thua.
+    #
+    # Ban truoc chi dat `neg` khi CHINH TEP NAY da bat `.jpg` o dong truoc, nen mot tep
+    # con chi co mot dong `AddHandler default-handler .jpg` phat `[]` — khong noi gi —
+    # va handler PHP cua cha thang. Do la ca2 cua review: FP.
+    #
+    # `AddType` thi KHAC va giu nguyen hanh vi cu: `AddType text/css .css` chi khai bao
+    # content type cho mot duoi lanh, no khong phu dinh gi (bo test bat 8 ca khi toi dat
+    # `neg` o day). Mot `AddType` lanh chi la phu dinh khi no GHI DE mot type da bat
+    # trong CUNG pham vi.
+    #
+    # `hneg`/`tneg` RIENG, khong con mot `neg` dung chung: mot `RemoveType .jpg` khong
+    # duoc lam truc HANDLER phat `h-:jpg`. Dung chung bang la chinh cho gop hai truc
+    # ma `END` vua duoc tach ra khoi.
     if (d == "addhandler") {
         dang = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
         for (i = 3; i <= nf; i++) {
             e = TOK[i]; sub(/^\./, "", e)
-            # `dang == 0` KHONG tu dong la phu dinh: `AddType text/css .css` chi khai
-            # bao mot type lanh cho mot duoi lanh — no khong "tat" gi (bo test bat 8 ca
-            # khi toi dat `neg` o day). `neg` chi danh cho `Remove*`, va cho mot `Add*`
-            # tro handler LANH vao duoi ma chinh TEP NAY da bat o dong truoc — tuc mot
-            # phep GHI DE trong cung pham vi.
             if (e != "") {
                 ee = tolower(e)
-                if (dang == 0 && (ee in h) && h[ee]) neg[ee] = 1
                 h[ee] = dang
+                if (dang == 0) hneg[ee] = 1
             }
         }
         next
@@ -196,7 +208,7 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
             e = TOK[i]; sub(/^\./, "", e)
             if (e != "") {
                 ee = tolower(e)
-                if (dang == 0 && (ee in t) && t[ee]) neg[ee] = 1
+                if (dang == 0 && (ee in t) && t[ee]) tneg[ee] = 1
                 t[ee] = dang
             }
         }
@@ -205,11 +217,11 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # `RemoveHandler` chi xoa truc HANDLER; `RemoveType` chi xoa truc TYPE. Doi so la
     # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau).
     if (d == "removehandler") {
-        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { h[tolower(e)] = 0; neg[tolower(e)] = 1 } }
+        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { h[tolower(e)] = 0; hneg[tolower(e)] = 1 } }
         next
     }
     if (d == "removetype") {
-        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { t[tolower(e)] = 0; neg[tolower(e)] = 1 } }
+        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { t[tolower(e)] = 0; tneg[tolower(e)] = 1 } }
         next
     }
 
@@ -250,7 +262,33 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # can tra loi la "CA THU MUC co chay CGI duoc khong", nen chi pham vi ngoai cung
     # tra loi duoc no; cac pham vi trong la tap con, va mot `+ExecCGI` chi trong
     # `<FilesMatch>` khong phai quyen ca thu muc.
+    # CU PHAP TUYET DOI vs TUONG DOI — hai nghia KHAC NHAU, va ban truoc chi hieu mot.
+    #
+    # Tai lieu Apache (mod_core, `Options`): neu MOI tuy chon tren dong deu co `+` hoac
+    # `-` thi chung SUA tap dang co; neu co BAT KY token nao KHONG dau thi dong do THAY
+    # HOAN TOAN tap cua pham vi cha. Nen:
+    #
+    #     Options Includes        -> tap moi = {Includes}. ExecCGI BI LOAI, du cha bat.
+    #     Options -Indexes        -> sua tap cu. ExecCGI cua cha GIU NGUYEN.
+    #     Options All -Indexes    -> `All` khong dau -> THAY tap, va `All` gom ExecCGI.
+    #
+    # Ban truoc chi do `all`/`none`/`±execcgi` nen `Options Includes` khong khop nhanh
+    # nao -> `opt` giu `-1` = "chua noi gi" -> ke thua cha. Do la ca4 cua review: mot FP,
+    # vi Apache da TAT ExecCGI o thu muc do.
+    #
+    # Do 02-10 tren 171-96: trong 47 dong `Options` toan-thu-muc o tang con, 46 la TUONG
+    # DOI va 1 la tuyet doi (`Options All -Indexes`, tuc BAT). Nen phep sua nay khong
+    # doi ket qua cua bat ky thu muc nao dang co tren fleet — no dong mot lo hong co
+    # che, chu khong chua mot FP dang xay ra.
     if (d == "options") {
+        tuyetdoi = 0
+        for (i = 2; i <= nf; i++) {
+            o = tolower(TOK[i])
+            if (o != "" && o !~ /^[+-]/) { tuyetdoi = 1; break }
+        }
+        # Tuyet doi: tap bat dau TU RONG, roi tung token tren dong them vao. Mot dong
+        # khong he nhac ExecCGI thi ket qua la TAT TUONG MINH (`0`), khong phai `-1`.
+        if (tuyetdoi) opt[depth] = 0
         for (i = 2; i <= nf; i++) {
             o = tolower(TOK[i])
             if (o == "all")                              opt[depth] = 1
@@ -265,44 +303,57 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
 # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
 # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
 END {
-    # Quy HAI TRUC ve mot tap token. Mot duoi la THUC THI DUOC khi truc HANDLER bat,
-    # HOAC truc TYPE bat (`AddType application/x-httpd-php .jpg` cung lam Apache chay
-    # no qua PHP khi khong co handler nao khac).
+    # ── BON TRUC, BON KHONG GIAN TEN, KHONG gop o day ────────────────
     #
-    # `rm:<e>` CHI in khi co mot dong PHU DINH TUONG MINH cho duoi do — nghia la
-    # `Remove*`, hoac mot `Add*` tro tai mot handler/type LANH (`AddHandler
-    # default-handler .jpg` ghi de handler PHP cua cha).
+    # Ban truoc QUY BON TRUC VE MOT ngay trong `END` nay:
+    #     on = h[e] || t[e]        -> `ext:<e>`     (gop handler voi type)
+    #     sh -> "@all",  ft -> "@all"               (gop hai truc toan-thu-muc)
+    # Tuc parser TRA LOI THAY cho ben doc. Va mot phep OR khong the mo ta Apache, vi
+    # Apache co THU TU UU TIEN chu khong phai phep hop:
     #
-    # KHONG in `rm:` cho mot `AddType text/css .css` don thuan: dong do khong phu dinh
-    # gi ca, va in `rm:css` lam ben doc hieu la "duoi nay bi TAT o day" — mot cau sai
-    # (bo test bat 8 ca). Phan biet bang `neg[]`: chi dat khi THAT SU co phu dinh.
+    #   `SetHandler` dat handler cho CA thu muc va GHI DE moi `AddHandler`.
+    #   `AddHandler <ext>` dat handler cho mot duoi va GHI DE content type.
+    #   Content type (`AddType`/`ForceType`) CHI tro thanh "handler" khi khong co
+    #   handler nao — do la co che `AddType application/x-httpd-php` cu.
+    #
+    # Gop bang OR mat ca hai chieu: mot `SetHandler none` o con khong rut lai duoc
+    # `AddHandler php` cua cha (phai rut — `SetHandler` uu tien cao hon), va mot
+    # `AddHandler default-handler` o con khong rut lai duoc `AddType php` cua cha
+    # (phai rut — handler uu tien cao hon type). Hai ca nay la ca1..ca3 cua review, va
+    # luoi nhom 29 do chung tren duong day-du.
+    #
+    # Nen parser gio chi BAO CAO tung truc, con PRECEDENCE o ben doc (`init.lua`), noi
+    # duy nhat biet duoi cua request la gi:
+    #
+    #   h+:<e> / h-:<e>   truc HANDLER theo duoi   (`AddHandler` / `RemoveHandler`)
+    #   t+:<e> / t-:<e>   truc TYPE theo duoi      (`AddType` / `RemoveType`)
+    #   @sh+ / @sh-       `SetHandler` ca thu muc
+    #   @ft+ / @ft-       `ForceType` ca thu muc
+    #   @exec+ / @exec-   `Options ... ExecCGI`
+    #
+    # `+` = BAT tuong minh, `-` = TAT tuong minh, KHONG PHAT = chua noi gi (ke thua).
+    # Ba trang thai cho MOI truc, va day la cho `-1` khac `0`.
     for (e in h) seen[e] = 1
     for (e in t) seen[e] = 1
     for (e in seen) {
-        on = ((e in h) && h[e]) || ((e in t) && t[e])
-        if (on)           print "ext:" e
-        else if (e in neg) print "rm:" e
+        # MOI TRUC doc BANG PHU DINH CUA RIENG NO. Dung chung mot `neg` thi mot
+        # `RemoveType .jpg` lam truc HANDLER phat `h-:jpg` — tuc van gop hai truc, chi
+        # di qua cua sau.
+        if (e in h) {
+            if (h[e])           print "h+:" e
+            else if (e in hneg) print "h-:" e
+        }
+        if (e in t) {
+            if (t[e])           print "t+:" e
+            else if (e in tneg) print "t-:" e
+        }
     }
-    # ── BA TRUC "CA THU MUC", moi truc BA trang thai ─────────────────
-    #
-    # `@all` / `@execcgi` truoc day CHI co chieu BAT. Hai ca bi bo sot (nguoi dung bat
-    # 01-10):
-    #   · con `SetHandler none`   -> khong rut lai `@all` cua cha
-    #   · con `Options -ExecCGI`  -> khong rut lai `@execcgi` cua cha
-    # Nen moi truc phat MOT trong BA ket qua: khong gi (chua noi) | `@x` (bat) |
-    # `-@x` (TAT tuong minh). Ben doc merge tu goc xuong va `-@x` ghi de `@x` cua cha,
-    # y nhu `rm:<e>` ghi de `ext:<e>`.
-    #
-    # `-1` la "chua noi gi" nen KHONG phat token — thu muc do thua huong cha. Phan
-    # biet no voi `0` la ca van de: `if (opt[0])` cua ban truoc coi `-1` la true (awk
-    # danh gia moi so khac 0 la true) nen in `@execcgi` cho mot tep RONG. Loi do do
-    # chinh thay doi nay sinh ra va bo test bat ngay.
-    if (sh == 1)      print "@all"
-    else if (sh == 0) print "-@all"
-    if (ft == 1)      print "@all"
-    else if (ft == 0) print "-@all"
-    # `@execcgi` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
+    if (sh == 1)      print "@sh+"
+    else if (sh == 0) print "@sh-"
+    if (ft == 1)      print "@ft+"
+    else if (ft == 0) print "@ft-"
+    # `@exec+` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
     # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
-    if (opt[0] == 1)      print (execcgi_ok + 0 == 0) ? "@execcgi:noop" : "@execcgi"
-    else if (opt[0] == 0) print "-@execcgi"
+    if (opt[0] == 1)      print (execcgi_ok + 0 == 0) ? "@exec+:noop" : "@exec+"
+    else if (opt[0] == 0) print "@exec-"
 }
