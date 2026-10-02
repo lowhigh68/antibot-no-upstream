@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # fim_test.sh — kiem nhanh "TEP CAU HINH bi SUA" cua fim.sh (roadmap muc 8).
 #
 # VI SAO CAN, va vi sao bay gio: `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc
@@ -1275,7 +1276,153 @@ want "25 batch cat ngan -> PHAI bao loi (canary bat truoc)" \
 want "25 va ma thoat = 2" "$rc25b" "2"
 want "25 generation KHONG chuyen" \
      "$(wc -l < "$S25/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "3"
+# ══ 26. TEP RESP THIEU LENH — ba cua deu qua, chi `replies` lech ════
+#
+# Toi GO phep so `replies` o `4cf7f15` voi lap luan "canary la lenh CUOI nen moi phep
+# cat cung cat luon canary". Lap luan do CHI DUNG cho dut DUONG TRUYEN. Nguoi dung bat
+# 02-10: neu TEP RESP thieu mot lenh thi canary VAN duoc noi vao stdin SAU `cat "$f"`,
+# nen no luon toi.
+#
+# DO TREN REDIS THAT (6.0.16): preseed 3 khoa TTL 600, roi gui batch thieu lenh thu 2
+#     errors: 0, replies: 3   (want+1 = 4)
+#     canary = "ok"           -> canary KHONG bat
+#     EXISTS k1 k2 k3 = 3     -> `count_live` KHONG bat (khoa cu con song)
+#     k2 van "old2", TTL 600  -> KHONG duoc refresh
+# `count_live` dem SU TON TAI, khong dem su REFRESH.
+#
+# Ca duoi PRESEED khoa bang mot lot `check` sach TRUOC, roi lot sau moi bo lenh —
+# khong preseed thi `count_live` bat duoc va ca nay khong con do dung thu can do.
+printf '\n── tep RESP thieu lenh (muc 26) ──\n'
+S26="$R/s26"; mkdir -p "$S26/state"
+W26="$S26/home/u1/domains/dr.test/public_html"
+mkdir -p "$W26/a" "$W26/b" "$W26/c"
+for dd in a b c; do printf 'AddHandler application/x-httpd-php .jpg\n' > "$W26/$dd/.htaccess"; done
+r26() { FIM_ROOTS="$S26/home/*/domains/*/public_html" FIM_STATE="$S26/state" \
+        FIM_LOG="$S26/fim.log" FIM_CRITLOG="$S26/crit.log" \
+        RCLI_OUT="$S26/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" "$@"; }
+r26 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+
+# Lot 1: SACH -> ba khoa ton tai (preseed cho lot sau).
+: > "$S26/rcli.txt"
+o26=$(r26 bash "$HERE/fim.sh" check 2>&1); rc26=$?
+want "26 lot preseed: ma thoat 0" "$rc26" "0"
+want "26 lot preseed: 3 khoa" \
+     "$(grep -cP '^SETEX\twaf:fimcfg:' "$S26/rcli.txt")" "3"
+
+# Lot 2: BO lenh thu 2 khoi tep RESP. Khoa cu VAN CON tu lot 1, nen:
+#   canary toi    -> qua
+#   errors: 0     -> qua
+#   EXISTS = 3    -> qua  (count_live mu truoc ca nay)
+#   replies = 3   -> LECH want+1 = 4  -> PHAI bao loi
+o26b=$(FIM_TEST_DROP_NTH=2 r26 bash "$HERE/fim.sh" check 2>&1); rc26b=$?
+want "26 tep RESP thieu lenh -> PHAI bao loi" \
+     "$(printf '%s' "$o26b" | grep -c 'THIEU lenh hoac batch bi cat')" "1"
+want "26 va ma thoat = 2" "$rc26b" "2"
+want "26 generation KHONG chuyen" \
+     "$(wc -l < "$S26/state/statekeys.full.txt" 2>/dev/null | tr -d ' ')" "3"
 # may khong co Apache o duong quen IM LANG toan bo tin hieu ExecCGI.
+
+# ══ 28. `DEL` BI BO QUA — xac minh phep GO ══════════════════════════
+#
+# `state_marks` gui `DEL` roi chuyen generation NGAY, khong doc nguoc. Nhanh dirty da
+# kiem tung khoa bang `redis_absent` tu truoc, nhanh nay thi khong (nguoi dung bat
+# 02-10).
+#
+# Theo dung failure model ma `RCLI_SKIP` dang phong: mot `DEL` bi bo qua lam khoa cu
+# VAN SONG trong khi generation DA QUEN no — lot sau khong con biet de thu lai, va
+# khoa do bao "dang nguy hiem" tới het TTL 7 ngay.
+#
+# `EX_STUCK=1` trong stub = khoa KHONG BAO GIO mat, tuc dung ca `DEL` that bai im
+# lang.
+printf '\n── DEL bi bo qua (muc 28) ──\n'
+S28="$R/s28"; mkdir -p "$S28/state"
+W28="$S28/home/u1/domains/dl.test/public_html"
+# HAI thu muc: xoa `a/.htaccess` thi `statekeys` van con dong cua `b/`, nen generation
+# KHONG bi ghi lai thanh rong — khong co `b/` thi tap mong muon rong va phep so
+# generation mat y nghia (do duoc 02-10).
+mkdir -p "$W28/a" "$W28/b"
+printf 'AddHandler application/x-httpd-php .jpg\n' > "$W28/a/.htaccess"
+printf 'AddHandler application/x-httpd-php .png\n' > "$W28/b/.htaccess"
+r28() { env FIM_ROOTS="$S28/home/*/domains/*/public_html" FIM_STATE="$S28/state" \
+            FIM_LOG="$S28/fim.log" FIM_CRITLOG="$S28/crit.log" \
+            RCLI_OUT="$S28/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" "$@"; }
+r28 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+: > "$S28/rcli.txt"; r28 bash "$HERE/fim.sh" check >/dev/null 2>&1
+want "28 lot 1: hai khoa" \
+     "$(grep -cP '^SETEX\twaf:fimcfg:' "$S28/rcli.txt")" "2"
+sk28=$(cat "$S28/state/statekeys.full.txt" 2>/dev/null)
+
+# BO `.htaccess` -> lot sau phai `DEL` khoa cu. `EX_STUCK=1` lam `DEL` that bai im
+# lang (khoa van ton tai khi doc nguoc).
+# BO `.htaccess` roi chay BASELINE lai: lot sau khong con thay "thay doi" nen thu muc
+# KHONG vao nhanh dirty, va `state_marks` moi la noi phat `DEL`. Khong lam vay thi ca
+# nay do nhanh dirty (da co phep kiem tu truoc) chu khong do `state_marks` — do duoc
+# 02-10: `DEL phat: 0` o duong state.
+rm -f "$W28/a/.htaccess"
+r28 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+: > "$S28/rcli.txt"
+o28=$(EX_STUCK=1 r28 bash "$HERE/fim.sh" check 2>&1); rc28=$?
+want "28 DEL that bai im lang -> PHAI bao loi" \
+     "$(printf '%s' "$o28" | grep -c 'KHONG XAC MINH DUOC phep GO')" "1"
+want "28 va ma thoat = 2" "$rc28" "2"
+want "28 generation KHONG chuyen (con biet de thu lai)" \
+     "$(cat "$S28/state/statekeys.full.txt" 2>/dev/null)" "$sk28"
+
+# ══ 27. LOCALE UTF-8 + ten thu muc tieng Viet ════════════════════════
+#
+# RESP khai do dai doi so bang BYTE, nhung `${#s}` (bash) dem KY TU khi locale la
+# UTF-8. Do duoc (02-10): `waf:fimcfg:/home/u/thư mục/` cho `${#k} = 27` duoi UTF-8
+# nhung 30 byte that.
+#
+# DO TREN REDIS THAT (6.0.16), locale `C.UTF-8`, mot thu muc ten `thư mục/`:
+#     CO    `export LC_ALL=C` -> rc=0, 1 khoa, 0 loi
+#     KHONG `export LC_ALL=C` -> rc=2, 0 khoa,
+#                                "ERR Protocol error: expected '$', got '/'"
+# Mot thu muc ten tieng Viet lam CA BATCH that bai, nen 12 khoa deu khong duoc ghi.
+# Fail-visible (rc=2) chu khong im lang, nhung hau qua la mat toan bo phat hien.
+#
+# CA NAY CAN REDIS THAT: stub `rcli` doc doi so bang `read -r -N "$alen"` nen no
+# KHONG tai hien duoc phep dem sai — `--pipe` that thi bao protocol error. Khong co
+# Redis thi BAO QUA MAT chu khong im lang: mot ca khong chay phai noi ro.
+#
+# `fim_test.sh` dat `LC_ALL=C` o dau tep nen bo test KHONG BAO GIO thay loi nay neu
+# khong ghi de TUONG MINH. Nguoi dung bat 02-10.
+printf '\n── locale UTF-8 + ten tieng Viet (muc 27) ──\n'
+RRCLI="${FIM_TEST_REAL_REDIS_CLI:-redis-cli}"
+RRPORT="${FIM_TEST_REAL_REDIS_PORT:-6399}"
+RRDB="${FIM_TEST_REAL_REDIS_DB:-9}"
+if ! command -v "$RRCLI" >/dev/null 2>&1 \
+   || [ "$("$RRCLI" -p "$RRPORT" ping 2>/dev/null)" != "PONG" ]; then
+    echo "  BO QUA: khong co Redis that o port $RRPORT (can cho ca nay -- stub doc"
+    echo "          theo byte nen khong tai hien duoc phep dem do dai sai)."
+    echo "          Chay: redis-server --daemonize yes --port $RRPORT"
+else
+    S27="$R/s27"; mkdir -p "$S27/state"
+    W27="$S27/home/u1/domains/vn.test/public_html"
+    mkdir -p "$W27/thư mục"
+    printf 'AddHandler application/x-httpd-php .jpg\n' > "$W27/thư mục/.htaccess"
+    cat > "$R/bin/rrcli" <<RREOS
+#!/bin/bash
+exec "$RRCLI" -p "$RRPORT" "\$@"
+RREOS
+    chmod +x "$R/bin/rrcli"
+    "$RRCLI" -p "$RRPORT" -n "$RRDB" FLUSHDB >/dev/null 2>&1
+    r27() { env FIM_ROOTS="$S27/home/*/domains/*/public_html" FIM_STATE="$S27/state" \
+                FIM_LOG="$S27/fim.log" FIM_CRITLOG="$S27/crit.log" \
+                FIM_REDIS_CLI="$R/bin/rrcli" FIM_REDIS_DB="$RRDB" \
+                LC_ALL=C.UTF-8 LANG=C.UTF-8 "$@"; }
+    r27 bash "$HERE/fim.sh" baseline >/dev/null 2>&1
+    o27=$(r27 bash "$HERE/fim.sh" check 2>&1); rc27=$?
+    want "27 locale UTF-8 + ten tieng Viet: ma thoat 0" "$rc27" "0"
+    want "27 KHONG co loi protocol" \
+         "$(printf '%s' "$o27" | grep -ci 'protocol error')" "0"
+    want "27 khoa duoc ghi vao Redis THAT" \
+         "$("$RRCLI" -p "$RRPORT" -n "$RRDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)" "1"
+    want "27 gia tri doc nguoc dung" \
+         "$("$RRCLI" -p "$RRPORT" -n "$RRDB" --raw GET "waf:fimcfg:$W27/thư mục/" 2>/dev/null)" "ext:jpg"
+    "$RRCLI" -p "$RRPORT" -n "$RRDB" FLUSHDB >/dev/null 2>&1
+fi
+
 printf '\n── detect_execcgi_ok: doc AllowOverride (muc 16) ──\n'
 AO="$R/ao"; mkdir -p "$AO/u1" "$AO/extra"
 eok() {  # eok <ten> <mong>

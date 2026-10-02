@@ -46,6 +46,25 @@
 # theo dinh nghia la thu KHONG con moi nua.
 set -uo pipefail
 
+# ── `LC_ALL=C`: DO DAI PHAI LA BYTE ─────────────────────────────────
+#
+# RESP khai do dai doi so bang BYTE (`$<len>\r\n<arg>\r\n`), nhung `${#s}` trong bash
+# va `length()` trong awk dem KY TU khi locale la UTF-8. Do duoc (02-10, WSL
+# `LANG=C.UTF-8`):
+#     k='waf:fimcfg:/home/u/thư mục/'
+#     UTF-8 locale -> ${#k} = 27, awk length() = 27
+#     C locale     -> ${#k} = 30, awk length() = 30
+#     wc -c        -> 30   (so byte THAT)
+# Nen mot thu muc ten tieng Viet lam `redis_resp` khai `$27` cho 30 byte ->
+# `ERR Protocol error: expected '$'` va CA BATCH that bai.
+#
+# `fim_test.sh` DA dat `LC_ALL=C` o dau tep, nen bo test KHONG BAO GIO thay loi nay —
+# dung ho loi "test xanh ma production hong" da bat o `4cf7f15` (stub giai ma RESP o
+# moi che do). Nguoi dung bat 02-10.
+#
+# Dat o DAY, truoc moi ham, va `export` de awk/subshell cung nhan.
+export LC_ALL=C
+
 # Ba bien cho phep ghi de bang moi truong CHI de chay thu tren cay gia. Mac dinh
 # la duong that; khong co cai nay thi script nay khong the kiem duoc o dau ngoai
 # production, va hom nay da hai lan phai giao ma chua chay.
@@ -347,22 +366,36 @@ redis_send_resp() {
         REDIS_ERR="$errs/$want lenh bi Redis TU CHOI (canary van song) -- '$out'"
         return 1
     fi
-    # KHONG co phep so `replies` o day, va day la ket luan DO DUOC chu khong phai
-    # thieu sot.
+    # ── `replies` == `want + 1`: BAT BUOC, va day la phep DUY NHAT bat duoc ca duoi ──
     #
-    # Toi tung them `[ "$reps" -ne $((want + 1)) ]` de bat "batch bi CAT NGAN". Ca do
-    # co THAT — do tren Redis 6.0.16 that (02-10): tep RESP 135 byte / 3 lenh, cat o
-    # 2/3 cho `errors: 0, replies: 2, rc=0` va chi 2/3 khoa duoc ghi, tuc `--pipe`
-    # KHONG co dau hieu loi nao.
+    # Toi da GO phep nay o `4cf7f15` voi lap luan "canary la lenh CUOI nen bat ky phep
+    # cat nao cung cat luon canary". Lap luan do CHI DUNG cho dut DUONG TRUYEN, va toi
+    # da suy luan tu mot ca roi ket luan cho ca ho. Nguoi dung bat 02-10.
     #
-    # NHUNG canary la lenh CUOI cua batch, nen BAT KY phep cat nao cung cat luon
-    # canary -> `canary khong doc nguoc duoc` bat TRUOC. Do duoc bang stub
-    # (`RCLI_TRUNC=2`): thong diep la `KHONG GHI DUOC ... errors: 0, replies: 1`, den
-    # tu nhanh canary. Va dot bien bo phep so `replies` KHONG bi bat boi mot ca nao.
+    # Ca that: tep RESP THIEU mot lenh (phep `>>` that bai vi dia day, hoac `gen_resp`
+    # bo mot dong) nhung canary VAN duoc noi vao stdin SAU `cat "$f"` — nen canary luon
+    # toi, du `$f` thieu gi.
     #
-    # Mot phep kiem khong bao ve ca nao ma canary chua bao ve thi la mot dong code
-    # khong ai biet no o day de lam gi — dung loai ma lan sau co nguoi (ke ca toi) se
-    # "sua" sai huong. Bo di, va giu lai PHEP DO trong chu thich nay.
+    # DO TREN REDIS THAT (6.0.16, 02-10), 3 khoa preseed TTL 600 roi gui batch thieu
+    # lenh thu 2:
+    #     errors: 0, replies: 3        (want+1 = 4)
+    #     canary doc nguoc = "ok"      -> canary KHONG bat duoc
+    #     EXISTS k1 k2 k3 = 3          -> `count_live` KHONG bat duoc (khoa cu con song)
+    #     k2 van = "old2", TTL 600     -> gia tri va TTL KHONG duoc refresh
+    # `count_live` dem SU TON TAI, khong dem su REFRESH — nen no mu truoc ca nay.
+    #
+    # Do la ba cua deu qua, va chi `replies` lech. Mot khoa khong duoc refresh se het
+    # TTL roi bien mat trong im lang, va WAF mat phat hien o thu muc do.
+    local reps
+    reps=$(printf '%s\n' "$out" | sed -n 's/.*replies: \([0-9]\+\).*/\1/p' | tail -1)
+    if [ -z "$reps" ]; then
+        REDIS_ERR="--pipe khong in 'replies:' -- khong ket luan duoc so lenh da chay ('$out')"
+        return 1
+    fi
+    if [ "$reps" -ne $((want + 1)) ]; then
+        REDIS_ERR="chi $reps reply cho $((want + 1)) lenh (gui $want + canary) -- tep RESP THIEU lenh hoac batch bi cat? '$out'"
+        return 1
+    fi
     return 0
 }
 # Sinh lenh SETEX dang RESP cho MOT tap danh dau. Mot ham chu khong hai khoi awk:
@@ -425,19 +458,30 @@ count_live() {
         batch+=("$k")
         n=$((n + 1))
         if [ "$n" -ge 100 ]; then
-            out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "${batch[@]}" 2>>"$LOG" </dev/null | tr -dc '0-9')
-            [ -n "$out" ] || { REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"; return 1; }
+            out=$("$REDIS_CLI" -n "$REDIS_DB" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
+            case "$out" in
+                ""|*[!0-9]*) REDIS_ERR="EXISTS tra '$out' (khong phai so) -- $want khoa KHONG kiem duoc"; return 1 ;;
+            esac
             total=$((total + out))
             batch=(); n=0
         fi
     done < "$kf"
     if [ "$n" -gt 0 ]; then
-        out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "${batch[@]}" 2>>"$LOG" </dev/null | tr -dc '0-9')
-        [ -n "$out" ] || { REDIS_ERR="EXISTS khong tra so -- $want khoa KHONG kiem duoc"; return 1; }
+        out=$("$REDIS_CLI" -n "$REDIS_DB" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
+        case "$out" in
+            ""|*[!0-9]*) REDIS_ERR="EXISTS tra '$out' (khong phai so) -- $want khoa KHONG kiem duoc"; return 1 ;;
+        esac
         total=$((total + out))
     fi
     if [ "$total" -ne "$want" ]; then
-        REDIS_ERR="chi $total/$want khoa thuc su ton tai sau khi ghi"
+        if [ "$want" -eq 0 ]; then
+            # `want = 0` la phep kiem NGUOC: tap nay vua bi `DEL`, nen khong khoa nao
+            # duoc con. Thong diep "chi N/0 khoa ton tai sau khi ghi" doc sai nghia o
+            # ca do.
+            REDIS_ERR="$total khoa VAN CON ton tai sau khi DEL"
+        else
+            REDIS_ERR="chi $total/$want khoa thuc su ton tai sau khi ghi"
+        fi
         return 1
     fi
     return 0
@@ -593,13 +637,16 @@ state_marks() {
     # Lenh di qua TEP RESP chu khong qua bien chuoi: xem `redis_resp`. Mot bien chuoi
     # buoc ta dung inline protocol, noi khoang trang trong duong dan lam lech so doi
     # so ma canary KHONG bat duoc.
-    local cfg want setf delf sentf
-    cfg=$(mktemp) || return 0
-    want=$(mktemp) || { rm -f "$cfg"; return 0; }
-    setf=$(mktemp) || { rm -f "$cfg" "$want"; return 0; }
-    delf=$(mktemp) || { rm -f "$cfg" "$want" "$setf"; return 0; }
-    sentf=$(mktemp) || { rm -f "$cfg" "$want" "$setf" "$delf"; return 0; }
-    delf=$(mktemp) || { rm -f "$cfg" "$want" "$setf"; return 0; }
+    # mktemp that bai KHONG duoc `return 0` im lang: `state_marks` tra 0 nghia la
+    # "khong co gi de lam", va goi no cho mot loi ha tang la dung ho loi fail-silent
+    # da bat nhieu lan trong tep nay. Dat `mark_err` de duong ra bao.
+    local cfg want setf delf sentf gonef
+    cfg=$(mktemp)  || { mark_err="KHONG tao duoc tep tam (cfg) -- khong quet trang thai duoc"; return 0; }
+    want=$(mktemp) || { rm -f "$cfg"; mark_err="KHONG tao duoc tep tam (want)"; return 0; }
+    setf=$(mktemp) || { rm -f "$cfg" "$want"; mark_err="KHONG tao duoc tep tam (setf)"; return 0; }
+    delf=$(mktemp) || { rm -f "$cfg" "$want" "$setf"; mark_err="KHONG tao duoc tep tam (delf)"; return 0; }
+    sentf=$(mktemp) || { rm -f "$cfg" "$want" "$setf" "$delf"; mark_err="KHONG tao duoc tep tam (sentf)"; return 0; }
+    gonef=$(mktemp) || { rm -f "$cfg" "$want" "$setf" "$delf" "$sentf"; mark_err="KHONG tao duoc tep tam (gonef)"; return 0; }
     config_dirs "$snap" | sort -u > "$cfg"
     while IFS= read -r d; do
         [ -n "$d" ] || continue
@@ -615,7 +662,15 @@ state_marks() {
         # "khoa cu can xoa".
         printf 'waf:fimcfg:%s/\n' "$d" >> "$want"
         if [ -n "$skip" ] && grep -qxF "$d" "$skip" 2>/dev/null; then continue; fi
-        redis_resp SETEX "waf:fimcfg:$d/" "$MARK_TTL" "$toks" >> "$setf"
+        # `FIM_TEST_DROP_NTH=<k>` CHI DE TEST: bo lenh thu k khoi tep RESP nhung VAN
+        # tang `n`, tai hien dung ca "tep RESP thieu lenh ma canary van toi" (vi du
+        # `>>` that bai vi dia day). Khong co bien nay thi nhanh nay khong ton tai.
+        #
+        # Hook o phia SINH TEP chu khong o stub: loi nam o `setf`, va mot stub bo lenh
+        # se mo phong "Redis khong thuc thi" — ca KHAC, da co `RCLI_SKIP`.
+        if [ "${FIM_TEST_DROP_NTH:-0}" != "$((n + 1))" ]; then
+            redis_resp SETEX "waf:fimcfg:$d/" "$MARK_TTL" "$toks" >> "$setf"
+        fi
         # Tap VUA GUI, khoa thuan mot dong mot khoa. Khac `$want` (tap MONG MUON, gom
         # ca khoa bi `skip`): vong xac minh phai doc nguoc dung nhung khoa DA GUI.
         printf 'waf:fimcfg:%s/\n' "$d" >> "$sentf"
@@ -650,6 +705,9 @@ state_marks() {
             while IFS= read -r k; do
                 [ -n "$k" ] || continue
                 redis_resp DEL "$k" >> "$delf"
+                # Tap VUA XOA, khoa thuan: `count_live "$gonef" 0` doc nguoc va doi
+                # 0 khoa con ton tai. Xem phan xac minh `DEL` o duoi.
+                printf '%s\n' "$k" >> "$gonef"
                 nd=$((nd + 1))
             done <<EOT
 $gone
@@ -657,28 +715,43 @@ EOT
         fi
     fi
 
-    if [ "$n" -eq 0 ] && [ "$nd" -eq 0 ]; then rm -f "$want" "$setf" "$delf" "$sentf"; return 0; fi
+    if [ "$n" -eq 0 ] && [ "$nd" -eq 0 ]; then rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"; return 0; fi
     if [ $dry -eq 0 ]; then
         if [ "$n" -gt 0 ] && ! redis_send_resp "$setf" "$n"; then
             [ -z "$mark_err" ] && mark_err="KHONG GHI DUOC (fimchg trang thai): $REDIS_ERR. $n khoa co the CHUA duoc ghi."
-            rm -f "$want" "$setf" "$delf" "$sentf"
+            rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
             return 0
         fi
         # XAC MINH DOC NGUOC tren MOI khoa — xem `count_live`.
         if ! count_live "$sentf" "$n"; then
             [ -z "$mark_err" ] && mark_err="KHONG XAC MINH DUOC (fimchg trang thai): $REDIS_ERR."
-            rm -f "$want" "$setf" "$delf" "$sentf"
+            rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
             return 0
         fi
         if [ "$nd" -gt 0 ] && ! redis_send_resp "$delf" "$nd"; then
-            [ -z "$mark_err" ] && mark_err="KHONG GO DUOC (fimchg trang thai): $REDIS_ERR. $nd khoa cu co the VAN CON."
-            rm -f "$want" "$setf" "$delf" "$sentf"
+            [ -z "$mark_err" ] && mark_err="KHONG GO DUOC (fimcfg trang thai): $REDIS_ERR. $nd khoa cu co the VAN CON."
+            rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
+            return 0
+        fi
+        # XAC MINH `DEL`: khoa phai KHONG CON. Nhanh dirty da kiem tung khoa bang
+        # `redis_absent`, nhanh nay truoc 02-10 thi KHONG — gui `DEL` roi chuyen
+        # generation ngay (nguoi dung bat 02-10).
+        #
+        # Theo dung failure model ma `RCLI_SKIP` dang phong: mot `DEL` bi bo qua lam
+        # khoa cu VAN SONG trong khi generation DA QUEN no, nen lot sau khong con biet
+        # de thu lai va khoa do bao "dang nguy hiem" tới het TTL 7 ngay.
+        #
+        # `count_live "$gonef" 0`: dem lai tap VUA XOA va doi 0 khoa con ton tai. Dung
+        # lai ham cua nhanh SETEX nen khong co ban sao thu hai de lech.
+        if [ "$nd" -gt 0 ] && ! count_live "$gonef" 0; then
+            [ -z "$mark_err" ] && mark_err="KHONG XAC MINH DUOC phep GO (fimcfg trang thai): $REDIS_ERR."
+            rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
             return 0
         fi
         # Chuyen generation SAU khi ca hai batch xong.
         sort -u "$want" > "$prevk" 2>/dev/null || :
     fi
-    rm -f "$want" "$setf" "$delf" "$sentf"
+    rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
     STATE_N=$n
     STATE_DEL=$nd
     return 0
