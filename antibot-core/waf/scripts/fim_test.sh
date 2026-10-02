@@ -1362,9 +1362,22 @@ local pool = require("antibot.core.redis_pool")
 local waf  = dofile(SRC .. "waf/init.lua")
 
 -- `CHAIN` = gia tri khoa tu CON len CHA, phan cach TAB. Phan tu rong = khong co khoa.
+--
+-- KHONG dung `gmatch("([^\t]*)")`: `*` khop CA chuoi rong, nen giua hai token no sinh
+-- THEM mot phan tu rong. Voi `CHAIN="a\tb"` ket qua la `{"a", "", "b", ""}` chu khong
+-- phai `{"a","b"}` — `chain[2]` thanh rong, gia tri cua CHA bi day xuong `chain[3]` va
+-- bi `half` cat bo. Do duoc 02-10: ca "cha Options +ExecCGI + con AddHandler" tra
+-- `nil` va toi suyt ket luan `init.lua` co FN ke thua, trong khi loi o chinh harness.
 local chain = {}
-for f in (os.getenv("CHAIN") or ""):gmatch("([^\t]*)") do
-    chain[#chain + 1] = f
+do
+    local s = os.getenv("CHAIN") or ""
+    local i = 1
+    while true do
+        local j = s:find("\t", i, true)
+        if not j then chain[#chain + 1] = s:sub(i); break end
+        chain[#chain + 1] = s:sub(i, j - 1)
+        i = j + 1
+    end
 end
 pool.safe_mget = function(keys, n)
     -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU. Nhom nay chi
@@ -1394,7 +1407,8 @@ io.write(got)
 LUAEOF
 
 n29_chua=0
-# `cc <ten> <uri> <mong-APACHE> <mong-HIEN-TAI> <cha> <con>`
+n29_tong=0
+# `cc <ten> <uri> <mong-APACHE> <mong-HIEN-TAI> <cha> <con> [execcgi_ok]`
 #
 # HAI ky vong, co y: `mong-APACHE` la hanh vi DUNG, `mong-HIEN-TAI` la thu code tra
 # ve hom nay. Bon ca cua review co hai gia tri KHAC NHAU — do la BANG CHUNG loi, ghi
@@ -1407,7 +1421,7 @@ n29_chua=0
 # Khi mot truc duoc sua: doi `mong-HIEN-TAI` thanh `mong-APACHE` cho ca do. Khi moi ca
 # bang nhau thi bo tham so thu tu.
 cc() {
-    local nhan="$1" uri="$2" dung="$3" nay="$4" tcha="$5" tcon="$6"
+    local nhan="$1" uri="$2" dung="$3" nay="$4" tcha="$5" tcon="$6" exok="${7:-}"
     local B="$R/cc_$(printf '%s' "$nhan" | tr -cd 'a-z0-9')"
     rm -rf "$B"; mkdir -p "$B/state"
     local W="$B/home/u1/domains/cc.test/public_html"
@@ -1417,6 +1431,11 @@ cc() {
     local E=(FIM_ROOTS="$B/home/*/domains/*/public_html" FIM_STATE="$B/state"
              FIM_LOG="$B/l" FIM_CRITLOG="$B/c" RCLI_OUT="$B/rcli.txt"
              FIM_REDIS_CLI="$R/bin/rcli")
+    # Tham so 7: CO DINH `EXECCGI_OK`. Khong dat thi `fim.sh` tu do, va trong WSL
+    # `detect_execcgi_ok` doc duoc 0 dong -> tra `1`, con fleet tra `0` (do 02-10 tren
+    # 171-96: hai `cgi-bin/.htaccess` that deu cho `@execcgi:noop`). Ca nao do CO CHE
+    # `Options` phai ghim tri nay, neu khong no dang do `detect_execcgi_ok`.
+    [ -n "$exok" ] && E+=(FIM_EXECCGI_OK="$exok")
     : > "$B/rcli.txt"
     env "${E[@]}" bash "$HERE/fim.sh" baseline >/dev/null 2>&1
     : > "$B/rcli.txt"
@@ -1425,6 +1444,7 @@ cc() {
     vcon=$(awk -F'\t' -v k="waf:fimcfg:$W/con/" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$B/rcli.txt")
     vcha=$(awk -F'\t' -v k="waf:fimcfg:$W/" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$B/rcli.txt")
     got=$(env ANTIBOT_SRC="$SRC29" CHAIN="$vcon	$vcha" URI="$uri" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
+    n29_tong=$((n29_tong + 1))
     want "29 $nhan" "$got" "$nay"
     if [ "$dung" != "$nay" ]; then
         printf '  CHUA SUA  29 %s\n            Apache=%s  hien tai=%s\n' "$nhan" "$dung" "$nay"
@@ -1448,7 +1468,28 @@ cc "ca3 FN: con ForceType text/plain KHONG huy SetHandler cua cha" \
 
 cc "ca4 FP: con Options Includes (absolute) TAT ExecCGI cua cha" \
    "/con/a.cgi" "nil" "execcgi_only" \
-   'Options +ExecCGI\n' 'Options Includes\n'
+   'Options +ExecCGI\n' 'Options Includes\n' 1
+
+# ── `Options All`: DU LIEU BAC BO HAI GIA THUYET LIEN TIEP cua toi ───
+#
+# Do 02-10 tren 171-96: trong 47 dong `Options` toan-thu-muc o tang con, 46 la TUONG
+# DOI (`-Indexes`, `-Indexes +ExecCGI`) va DUNG MOT la tuyet doi (`Options All
+# -Indexes`).
+#
+# Gia thuyet 1 cua toi: "47 cho nay dang cho FP". SAI — 46/47 tuong doi, parser xu ly
+# dung, con so that la 0.
+#
+# Gia thuyet 2: "vay dong `All` do la FN huong nguoc, con BAT ExecCGI ma parser bo
+# sot". CUNG SAI. Do truc tiep bang parser:
+#     Options All -Indexes   EXECCGI_OK=1 -> [@execcgi]   EXECCGI_OK=0 -> [@execcgi:noop]
+# Parser BIET `All` bao gom ExecCGI. Hai ca duoi la DOI CHUNG, khong phai mon ton dong.
+cc "dc: con Options All (absolute) -> BAT ExecCGI (parser DA dung)" \
+   "/con/a.cgi" "execcgi_only" "execcgi_only" \
+   '# khong gi\n' 'Options All -Indexes\n' 1
+
+cc "dc: con Options All nhung server KHONG cho -> :noop" \
+   "/con/a.cgi" "execcgi_noop" "execcgi_noop" \
+   '# khong gi\n' 'Options All -Indexes\n' 0
 
 # ── DOI CHUNG: hien tai DA DUNG, phai giu nguyen qua moi phep sua ────
 cc "dc: con RemoveHandler .jpg -> TAT (cung truc)" \
@@ -1471,9 +1512,60 @@ cc "dc: cha SetHandler php + con SetHandler none -> TAT" \
    "/con/a.jpg" "nil" "nil" \
    'SetHandler application/x-httpd-php\n' 'SetHandler none\n'
 
+# ── DOI CHUNG tu DU LIEU THAT tren fleet (do 02-10 tren 171-96) ──────
+#
+# Hai tep `cgi-bin/.htaccess` that, ca hai y nhau tung byte, va khoa Redis that cua ca
+# hai thu muc cung y nhau:
+#     AddHandler cgi-script .cgi .pl   ->  khoa = @execcgi:noop,ext:cgi,ext:pl
+#
+# NHUNG `@execcgi:noop` KHONG den tu dong `AddHandler` do. Do truc tiep:
+#     AddHandler cgi-script .cgi .pl   EXECCGI_OK=0 -> [ext:cgi,ext:pl]
+#     AddHandler cgi-script .cgi .pl   EXECCGI_OK=1 -> [ext:cgi,ext:pl]
+# Y NHAU o ca hai tri — dong nay chi sinh `ext:`. Nen `@execcgi:noop` trong khoa that
+# den tu mot directive `Options` o TANG KHAC cua chuoi to tien. Ban dau toi dung hai
+# ca nay voi cha RONG va mong `execcgi_noop`, va chung HONG (`duoc=handler_ext`) —
+# dung, vi hinh dang toi dung sai cho voi thuc te.
+#
+# Hai dau `.cgi` VA `.pl` deu vao `sufset`: `AddHandler` so doi so voi TUNG duoi mot,
+# nen giu `sufset` la TAP la dung (muc 7 cua ke hoach). Day la bang chung THAT cho
+# dieu do, khong phai tep dung tay.
+#
+# Chuoi to tien sau NHAT tren fleet la 4 tang duoi root, nen `ns >= 12` trong
+# `init.lua` con thua rat nhieu. Ca `imsvietnam.ac.vn` co .htaccess o CA BA tang
+# (`public_html` -> `bk` -> `cgi-bin`), dung hinh dang ma nhom nay do.
+cc "dc THAT: cgi-bin cua fleet, chi AddHandler -> handler theo DUOI" \
+   "/con/x.cgi" "handler_ext" "handler_ext" \
+   '# khong gi\n' 'AddHandler cgi-script .cgi .pl\n' 0
+
+cc "dc THAT: cung tep do, duoi .pl cung phai khop (sufset la TAP)" \
+   "/con/x.pl" "handler_ext" "handler_ext" \
+   '# khong gi\n' 'AddHandler cgi-script .cgi .pl\n' 0
+
+# Hinh dang THAT: `Options` o CHA sinh `@execcgi`, `AddHandler` o CON sinh `ext:`, nen
+# khoa cua con mang CA HAI nhan — dung nhu khoa that tren fleet.
+#
+# Ket qua la `handler_ext`, KHONG phai `execcgi_noop`: trong `init.lua` nhanh `hit_ext`
+# nam TREN `hit_exec_noop`, co y — mot thu muc co ca hai thi nhan MANH HON thang, va
+# `.cgi` khop `ext:cgi` nen `hit_ext` dung. Toi mong `execcgi_noop` va SAI; thu tu uu
+# tien moi la cau tra loi, khong phai phep HOAC cua hai nhan.
+cc "dc THAT: cha Options +ExecCGI + con AddHandler cgi -> ext THANG noop" \
+   "/con/x.cgi" "handler_ext" "handler_ext" \
+   'Options +ExecCGI\n' 'AddHandler cgi-script .cgi .pl\n' 0
+
+# Cung hinh dang nhung duoi KHONG duoc anh xa: luc do `@execcgi:noop` moi hien ra.
+cc "dc THAT: cung hinh dang, duoi .txt khong anh xa -> execcgi_noop" \
+   "/con/x.txt" "execcgi_noop" "execcgi_noop" \
+   'Options +ExecCGI\n' 'AddHandler cgi-script .cgi .pl\n' 0
+
+cc "dc THAT: 46/47 dong Options o tang con la TUONG DOI -> giu cua cha" \
+   "/con/a.cgi" "execcgi_only" "execcgi_only" \
+   'Options +ExecCGI\n' 'Options -Indexes\n' 1
+
+printf '  => %s/%s ca CHUA SUA' "$n29_chua" "$n29_tong"
 if [ "$n29_chua" -gt 0 ]; then
-    printf '  => %s/9 ca CHUA SUA -- xem cac dong "CHUA SUA" o tren\n' "$n29_chua"
+    printf ' -- xem cac dong "CHUA SUA" o tren'
 fi
+printf '\n'
 fi
 
 # ══ 28. `DEL` BI BO QUA — xac minh phep GO ══════════════════════════
