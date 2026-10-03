@@ -413,6 +413,46 @@ cross "cheo: prepend TAT + append BAT" ""  co    'auto_prepend_file=none\nauto_a
 # quyen da cap cho ca thu muc. Ban truoc dung MOT cap (`execcgi_on`, `execcgi_depth`)
 # nen dong trong container ghi de trang thai ngoai -> BO SOT (nguoi dung bat 30-09).
 hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@exec+" 'Options +ExecCGI\n<FilesMatch "x">\nOptions -ExecCGI\n</FilesMatch>\n'
+
+# ── `depth` AP DONG DEU cho MOI directive ────────────────────────────
+#
+# Do 03-10: bat doi xung THAT trong parser — `SetHandler`/`ForceType` kiem `depth == 0`
+# con `Add*` KHONG kiem gi, nen
+#     <Files *> AddHandler php .jpg </Files>   -> [h+:jpg]
+#     <Files *> SetHandler php     </Files>    -> []
+# Mot `AddHandler` trong `<Files>` chi ap cho TAP TEP KHOP, nen `h+:jpg` la bao MANH
+# HON su that: moi `.jpg` trong thu muc bi tinh la chay duoc.
+#
+# Suite van XANH sau phep sua, nghia la truoc do khong ca nao do duong nay. Cac ca duoi
+# dong lo do.
+hta_raw "depth: AddHandler trong Files -> KHONG phai ca thu muc" "" \
+    '<Files *>\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "depth: AddType trong Files -> KHONG phai ca thu muc" "" \
+    '<Files *>\nAddType application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "depth: SetHandler trong Files -> KHONG phai ca thu muc" "" \
+    '<Files *>\nSetHandler application/x-httpd-php\n</Files>\n'
+hta_raw "depth: ForceType trong Files -> KHONG phai ca thu muc" "" \
+    '<Files *>\nForceType application/x-httpd-php\n</Files>\n'
+
+# CHIEU TAT thi KHONG kiem `depth`, co chu dich: mot `Remove*` trong container rut lai
+# kha nang thuc thi cho mot tap tep, va ghi nhan no o muc thu muc chi lam ket qua NHE
+# hon — huong an toan.
+hta_raw "depth: RemoveHandler trong FilesMatch VAN phat (huong an toan)" "h-:jpg" \
+    '<FilesMatch "x">\nRemoveHandler .jpg\n</FilesMatch>\n'
+hta_raw "depth: AddHandler LANH trong Files VAN phat h- (huong an toan)" "h-:jpg" \
+    '<Files *>\nAddHandler default-handler .jpg\n</Files>\n'
+
+# `<IfModule>` KHONG gioi han pham vi theo tep, nen directive ben trong VAN ap ca thu
+# muc. Thieu ca nay thi mot ban "moi container deu chan" cung qua.
+hta_raw "depth: AddHandler trong IfModule VAN la ca thu muc" "h+:jpg" \
+    '<IfModule mod_php.c>\nAddHandler application/x-httpd-php .jpg\n</IfModule>\n'
+
+# Huong NGUOC: NGOAI container thi van phat day du.
+hta_raw "depth: AddHandler ngoai container -> h+:jpg" "h+:jpg" \
+    'AddHandler application/x-httpd-php .jpg\n'
+# Va mot `AddHandler` ngoai container SAU khi dong container van duoc tinh.
+hta_raw "depth: AddHandler SAU khi dong Files -> h+:jpg" "h+:jpg" \
+    '<Files *>\nRewriteEngine On\n</Files>\nAddHandler application/x-httpd-php .jpg\n'
 hta_raw "pham vi: ngoai TAT, trong FilesMatch BAT" "@exec-" 'Options -ExecCGI\n<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
 hta_raw "pham vi: CHI trong FilesMatch"            ""         '<FilesMatch "x">\nOptions +ExecCGI\n</FilesMatch>\n'
 hta_raw "pham vi: ngoai BAT, trong Directory None" "@exec+" 'Options +ExecCGI\n<Directory /x>\nOptions None\n</Directory>\n'

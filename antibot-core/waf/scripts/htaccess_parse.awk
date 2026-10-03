@@ -190,18 +190,36 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # `hneg`/`tneg` RIENG, khong con mot `neg` dung chung: mot `RemoveType .jpg` khong
     # duoc lam truc HANDLER phat `h-:jpg`. Dung chung bang la chinh cho gop hai truc
     # ma `END` vua duoc tach ra khoi.
+    # ── `depth` PHAI AP DONG DEU CHO MOI DIRECTIVE ───────────────────
+    #
+    # Do 03-10 tren chinh parser nay — bat doi xung THAT, khong phai suy luan:
+    #     <Files *> AddHandler php .jpg </Files>   -> [h+:jpg]
+    #     <Files *> SetHandler php     </Files>    -> []
+    # `SetHandler`/`ForceType` kiem `depth == 0`, con `Add*`/`Remove*` KHONG kiem gi.
+    #
+    # Mot `AddHandler` trong `<Files>` chi ap cho TAP TEP KHOP, khong phai ca thu muc,
+    # nen phat `h+:jpg` la bao MANH HON su that — moi `.jpg` trong thu muc bi tinh la
+    # chay duoc. Huong FP.
+    #
+    # CHIEU BAT (`h+`/`t+`) nay kiem `depth == 0`. CHIEU TAT (`h-`/`t-`) thi KHONG:
+    # mot `RemoveHandler` trong container rut lai kha nang thuc thi cho mot tap tep, va
+    # ghi nhan no o muc thu muc chi lam ket qua NHE hon — huong an toan. Hai chieu
+    # KHAC nhau mot cach co chu dich, va day la ly do.
     if (d == "addhandler") {
         dang = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
         for (i = 3; i <= nf; i++) {
             e = TOK[i]; sub(/^\./, "", e)
             if (e != "") {
                 ee = tolower(e)
-                h[ee] = dang
-                if (dang == 0) hneg[ee] = 1
+                if (dang == 1) { if (depth == 0) h[ee] = 1 }
+                else           { h[ee] = 0; hneg[ee] = 1 }
             }
         }
         next
     }
+    # `AddType` theo cung nguyen tac: chieu BAT kiem `depth`, chieu phu dinh thi khong.
+    # Phu dinh cua `AddType` chi xay ra khi no GHI DE mot type da bat trong CUNG pham vi
+    # (mot `AddType text/css .css` don thuan khong phu dinh gi — rang buoc 8 ca cu).
     if (d == "addtype") {
         dang = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
         for (i = 3; i <= nf; i++) {
@@ -209,7 +227,8 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
             if (e != "") {
                 ee = tolower(e)
                 if (dang == 0 && (ee in t) && t[ee]) tneg[ee] = 1
-                t[ee] = dang
+                if (dang == 1) { if (depth == 0) t[ee] = 1 }
+                else           { t[ee] = 0 }
             }
         }
         next

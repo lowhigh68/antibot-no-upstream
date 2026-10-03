@@ -70,4 +70,30 @@ function strip_comment(s,   out, i, c, q) {
         on[k] = (v != "" && tolower(v) != "none") ? 1 : 0
     }
 }
-END { exit((on["auto_prepend_file"] || on["auto_append_file"]) ? 0 : 1) }
+# ── IN TOKEN, khong chi tra ma thoat ────────────────────────────────
+#
+# Ban truoc CHI co ma thoat: `0` = co nap ma, `1` = khong. Hai gia tri, nen mot tep
+# RONG va mot tep co `auto_prepend_file=none` cho CUNG ket qua — va `none` la cu phap
+# chinh thuc de TAT tinh nang. Ket qua: mot `.user.ini` o thu muc con TAT autoload
+# khong rut lai duoc `@php` ke thua tu cha. Cung lop loi voi `SetHandler none` tren
+# truc handler (sua 02-10).
+#
+# `on[k]` DA biet ba trang thai (chua dat / 0 / 1); chi co `END` nen chung lai thanh
+# mot bit. Nay in token theo TUNG khoa:
+#
+#   @php     / -@php      tu `.user.ini`  (ben goi quyet dinh tien to theo TEN TEP)
+#   khong in             = tep khong he nhac directive nao -> ke thua
+#
+# Ma thoat GIU NGUYEN de ben goi cu khong vo: `0` khi co bat ky directive BAT.
+# `fim.sh` gio doc STDOUT thay vi ma thoat, nhung `upload_content.lua` va cac phep do
+# tay van dung ma thoat duoc.
+END {
+    nbat = 0; ntat = 0
+    for (k in on) { if (on[k]) nbat++; else ntat++ }
+    # BAT thang TAT: Zend giu mot gia tri RIENG cho tung khoa, va chi CAN MOT khoa bat
+    # la co ma duoc nap. Nen `auto_prepend_file=/x.php` + `auto_append_file=none` la CO
+    # NAP (loi nay da bi bat 30-09 khi hai khoa dung chung mot bien).
+    if (nbat > 0)      print "+"
+    else if (ntat > 0) print "-"
+    exit(nbat > 0 ? 0 : 1)
+}

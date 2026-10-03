@@ -576,6 +576,28 @@ else
         echo "  -- 0 khoa: hoac may nay khong co thu muc nao doi handler (hop le), hoac"
         echo "     tier full chua chay lan nao sau ban nay. Kiem bang muc duoi."
     else
+        # DEM KHOA THEO PHIEN BAN GIA TRI. `c942edf` doi hop dong token va `v2` (03-10)
+        # them moc de `init.lua` biet doc luat nao. Mot khoa KHONG moc la khoa ghi bang
+        # ban TRUOC — hop le trong 7 ngay TTL, nhung so do phai ve 0 sau mot lot
+        # `check`, va neu khong thi phep di tru dang tac.
+        nv2=0; nold_val=0
+        while read -r k; do
+            [ -n "$k" ] || continue
+            v=$("$RCLI" -n "$RDB" GET "$k" 2>/dev/null)
+            case "$v" in
+                v2|v2,*) nv2=$((nv2 + 1)) ;;
+                *)       nold_val=$((nold_val + 1)) ;;
+            esac
+        done <<EOT
+$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null)
+EOT
+        echo "  gia tri CO moc v2       : $nv2"
+        echo "  gia tri KHONG moc (cu)  : $nold_val  (mong 0 sau mot lot check full)"
+        if [ "$nold_val" -gt 0 ]; then
+            echo "     -> con khoa dang CU. Hop le trong 7 ngay TTL (FIM_MARK_TTL), vi"
+            echo "        \`fim.sh\` chi ghi lai thu muc nao DOI. Neu con sau do thi"
+            echo "        tier full chua chay, hoac \`dir_tokens\` khong dat moc."
+        fi
         echo "  -- nhan tren tung khoa (do MANH giam dan) --"
         "$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | sort | while read -r k; do
             [ -n "$k" ] || continue

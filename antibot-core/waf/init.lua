@@ -518,6 +518,32 @@ local function fim_config_active(uri, rt)
     if not root or root == "" then return nil end
     local path = wp_paths.script_path(uri)
 
+    -- ── PATH_INFO cho MOI duoi, khong chi duoi PHP ───────────────────
+    --
+    -- `script_path` cat PATH_INFO bang `RX_PHP_EXEC`, va bieu thuc do CHI liet ke duoi
+    -- PHP (`php[0-9]?|phtml|phar|pht|phps`). Do duoc 03-10 bang chinh `init.lua`:
+    --
+    --     URI=/shell.jpg/x  CHAIN=[v2,h+:jpg]  ->  nil     (phai la handler_ext)
+    --     URI=/a.jpg        CHAIN=[v2,h+:jpg]  ->  handler_ext
+    --
+    -- Voi `/shell.jpg/x` thi `script_path` tra NGUYEN URI, nen `dir` thanh
+    -- `/shell.jpg/` — mot thu muc KHONG TON TAI — va `sufs` lay tu `x` (khong duoi).
+    -- Ca hai deu sai: `MGET` tra khoa rac thay vi khoa cua thu muc THAT, va duoi that
+    -- (`jpg`) khong duoc xet. Mot `AddHandler php .jpg` o goc thanh KHONG PHAT HIEN.
+    --
+    -- Cat o day chu KHONG sua `script_path`: ham do co hop dong rieng (khoa
+    -- `waf:fimnew:` dung no o CA hai ben ghi/doc, va `wordpress_paths_test.lua` ghim
+    -- 67 assertion). Doi no se lam lech cap khoa do. Cau hoi o ham NAY khac: "duoi nao
+    -- cua tep THAT can tra", va moi duoi deu co the mang handler.
+    --
+    -- Chi cat khi phan sau dau `/` KHONG co dau `.`: `/a.jpg/b.css` la mot duong dan
+    -- that co the ton tai (thu muc `a.jpg`), con `/a.jpg/x` thi `x` khong co duoi nen
+    -- gan nhu chac chan la PATH_INFO. Huong con lai bo sot, khong bao oan.
+    if path == uri then
+        local base, rest = uri:match("^(.-%.[%w]+)/([^/]*)$")
+        if base and rest and not rest:find(".", 1, true) then path = base end
+    end
+
     -- LAY `ext` TRUOC KHI HOI REDIS.
     --
     -- DINH CHINH chu thich cua chinh toi (nguoi dung bat 28-09): ban dau toi viet
@@ -634,9 +660,72 @@ local function fim_config_active(uri, rt)
     for i = nk, 1, -1 do
         local v = vals[i]
         if v and v ~= ngx.null and v ~= "" then
+            -- ── MOC PHIEN BAN TRONG GIA TRI ──────────────────────────
+            --
+            -- `c942edf` doi hop dong token (`ext:`/`@all` -> `h+:`/`@sh+`) ma KHONG doi
+            -- tien to khoa, nen trong 7 ngay TTL mot khoa `waf:fimcfg:` co the mang
+            -- dang CU hay dang MOI va ben doc phai DOAN tu noi dung. Doan la sai: mot
+            -- ten tep that co the sinh token trung ca hai khong gian.
+            --
+            -- Nay `fim.sh` ghi `v2|<token,...>`. Co moc -> CHI nhanh moi; khong co ->
+            -- CHI nhanh di tru. Hai luat KHONG bao gio cham nhau.
+            --
+            -- Khong dung mot TIEN TO KHOA thu ba (`waf:fimcfg:v2:`) vi `MGET` hien gui
+            -- `ns * 2` khoa; them mot tien to thanh `ns * 3` tren HOT PATH moi request.
+            -- Moc trong gia tri khong ton them khoa nao.
+            --
+            -- Moc la mot TOKEN `v2` o DAU danh sach, khong phai tien to `v2|`:
+            -- `gen_resp` trong `fim.sh` tach dong `<toks>|<thu-muc>/` bang dau `|` DAU
+            -- TIEN, nen mot `|` trong gia tri lam nhanh dirty ghi khoa RAC (do duoc
+            -- 03-10: 30 ca do). `fim.sh` dat no o dau, nen so TIEN TO du — khong can
+            -- quet ca chuoi tren hot path.
+            local v2 = false
+            if v:sub(1, 3) == "v2," then v2 = true; v = v:sub(4)
+            elseif v == "v2" then v2 = true; v = "" end
             for e in v:gmatch("[^,]+") do
-                local p3, p2 = e:sub(1, 3), e:sub(1, 2)
-                if p3 == "h+:" then
+                local p3 = e:sub(1, 3)
+                if not v2 then
+                    -- ── DANG CU, doc-de-di-tru. HAN CHOT 10-10-2026 ──
+                    --
+                    -- Dang cu khong tach handler/type, nen no ban vao truc HANDLER
+                    -- (manh hon trong thang precedence). Xap xi AN TOAN theo huong giu
+                    -- phat hien: mot `AddType php` cu thanh handler thay vi type, va vi
+                    -- handler uu tien cao hon, ket qua cuoi khong doi.
+                    if e:sub(1, 4) == "ext:" then
+                        h = h or {}; h[e:sub(5)] = true
+                    elseif p3 == "rm:" then
+                        h = h or {}; h[e:sub(4)] = false
+                    elseif e == "@all" then
+                        flag = flag or {}; flag.sh = true
+                    elseif e == "-@all" then
+                        -- Dang CU `-@all` phu dinh truc TOAN-THU-MUC, va CHI truc do: o
+                        -- hop dong cu mot `AddHandler ... .jpg` van con hieu luc sau
+                        -- `SetHandler none`. Dat `ft` (nam DUOI `AddHandler` trong thang)
+                        -- chu khong `sh` (muc CAO NHAT — reducer se dung lai va khong xet
+                        -- `h`, lam `-@all + ext:jpg` tra `nil`; bo test bat).
+                        flag = flag or {}
+                        if flag.sh == nil then flag.ft = false else flag.sh = false end
+                    elseif e == "@execcgi" then
+                        flag = flag or {}; flag.exec = true; flag.exec_noop = nil
+                    elseif e == "@execcgi:noop" then
+                        flag = flag or {}
+                        if flag.exec ~= true or flag.exec_noop then flag.exec_noop = true end
+                        flag.exec = true
+                    elseif e == "-@execcgi" then
+                        flag = flag or {}; flag.exec = false
+                    elseif e == "@php" then
+                        flag = flag or {}; flag.php = true
+                    elseif e == "@phpini" then
+                        if i == 1 or i == ndir + 1 then
+                            flag = flag or {}; flag.phpini = true
+                        end
+                    elseif e == "*" then
+                        flag = flag or {}; flag.php = true
+                    else
+                        -- Dang CU NHAT: duoi THO khong tien to. HAN CHOT 06-10-2026.
+                        h = h or {}; h[e] = true
+                    end
+                elseif p3 == "h+:" then
                     h = h or {}; h[e:sub(4)] = true
                 elseif p3 == "h-:" then
                     h = h or {}; h[e:sub(4)] = false
@@ -667,59 +756,20 @@ local function fim_config_active(uri, rt)
                     flag = flag or {}; flag.exec = false
                 elseif e == "@php" then
                     flag = flag or {}; flag.php = true
-                elseif e == "@phpini" then
+                elseif e == "-@php" then
+                    -- `auto_prepend_file=none` TAT TUONG MINH. `false` chu khong `nil`:
+                    -- `nil` de tang XA hon ghi vao sau do (vong duyet di tu goc xuong),
+                    -- tuc mot thu muc con tat autoload khong rut lai duoc cua cha.
+                    flag = flag or {}; flag.php = false
+                elseif e == "@phpini" or e == "-@phpini" then
                     -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
                     -- cau hinh cua SAPI/CWD, khong mac nhien theo thu muc. Chi nhan khi
                     -- no o CHINH thu muc cua request — `i == 1` (tien to moi) HOAC
                     -- `i == ndir + 1` (tien to cu).
                     if i == 1 or i == ndir + 1 then
-                        flag = flag or {}; flag.phpini = true
+                        flag = flag or {}; flag.phpini = (e == "@phpini")
                     end
 
-                -- ── DOC-DE-DI-TRU: hop dong TRUOC 02-10 ──────────────
-                --
-                -- Khoa dang song mang dang CU, va TTL la 7 ngay (`FIM_MARK_TTL`). Bo
-                -- cac nhanh nay ngay thi moi thu muc da danh dau MAT PHAT HIEN cho tới
-                -- khi `fim.sh` chay lai — tuc mot cua so mu tu tao ra.
-                --
-                -- Dang cu KHONG tach handler/type, nen no chi ban duoc vao truc
-                -- HANDLER (truc manh hon). Do la phep xap xi AN TOAN theo huong giu
-                -- phat hien: mot `AddType php` cu thanh `h+` thay vi `t+`, va vi
-                -- handler uu tien cao hon type, ket qua cuoi khong doi.
-                --
-                -- HAN CHOT 09-10-2026: bo het nhanh duoi day (7 ngay tu 02-10).
-                elseif e:sub(1, 4) == "ext:" then
-                    h = h or {}; h[e:sub(5)] = true
-                elseif p3 == "rm:" then
-                    h = h or {}; h[e:sub(4)] = false
-                elseif e == "@all" then
-                    flag = flag or {}; flag.sh = true
-                elseif e == "-@all" then
-                    -- Dang CU `-@all` phu dinh truc TOAN-THU-MUC, va CHI truc do: o hop
-                    -- dong cu mot `AddHandler ... .jpg` van con hieu luc sau `SetHandler
-                    -- none` (ca `truc: -@all KHONG tat ext:jpg` trong `policy_test.lua`
-                    -- ghim dieu nay). Nen dat `ft` chu khong `sh`: `ft` nam DUOI muc
-                    -- `AddHandler` trong thang precedence, nen mot `ext:`/`h+:` o bat ky
-                    -- tang nao van duoc xet TRUOC — dung nghia cu — con khi khong co
-                    -- handler theo duoi thi `ft == false` vẫn chan `@all` ke thua.
-                    --
-                    -- Toi dat `sh = false` o ban dau va no lam ca do HONG (`duoc=nil`):
-                    -- `sh` la muc CAO NHAT nen reducer dung lai ngay, khong xet `h`.
-                    flag = flag or {}
-                    if flag.sh == nil then flag.ft = false else flag.sh = false end
-                elseif e == "@execcgi" then
-                    flag = flag or {}; flag.exec = true; flag.exec_noop = nil
-                elseif e == "@execcgi:noop" then
-                    flag = flag or {}
-                    if flag.exec ~= true or flag.exec_noop then flag.exec_noop = true end
-                    flag.exec = true
-                elseif e == "-@execcgi" then
-                    flag = flag or {}; flag.exec = false
-                elseif e == "*" then
-                    flag = flag or {}; flag.php = true
-                elseif p2 ~= "h+" and p2 ~= "h-" and p2 ~= "t+" and p2 ~= "t-" then
-                    -- Dang CU NHAT: duoi THO khong tien to. HAN CHOT 06-10-2026.
-                    h = h or {}; h[e] = true
                 end
             end
         end

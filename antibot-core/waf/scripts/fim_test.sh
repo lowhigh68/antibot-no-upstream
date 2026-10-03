@@ -229,10 +229,18 @@ haskey() {
     if grep -qP "^SETEX\t\Q$1\E\t" "$RCLI_OUT" 2>/dev/null; then echo yes; else echo no; fi
 }
 # `kval <key>` = gia tri cua LAN GHI CUOI; `kttl <key>` = TTL.
-kval() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$RCLI_OUT"; }
+# `kval`/`kval1` CAT MOC `v2,` truoc khi tra: moc la chi tiet VAN CHUYEN (cho
+# `init.lua` biet doc luat nao), khong phai noi dung ma cac ca nay do. Giu no trong
+# moi ky vong se lam 21 ca nhieu chu hon ma khong them mot rang buoc nao.
+#
+# Moc duoc kiem RIENG o nhom "moc phien ban" ben duoi — mot cho, co chu dich.
+strip_ver() { sed 's/^v2,//; s/^v2$//'; }
+kval() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$RCLI_OUT" | strip_ver; }
 kttl() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$3} END{print v}' "$RCLI_OUT"; }
 # Lan ghi DAU, cho cac ca xet thu tu.
-kval1() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $4; exit}' "$RCLI_OUT"; }
+kval1() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {print $4; exit}' "$RCLI_OUT" | strip_ver; }
+# GIA TRI THO, co moc — cho cac ca kiem chinh moc.
+kval_raw() { awk -F'\t' -v k="$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$RCLI_OUT"; }
 
 echo "fim_test: tep cau hinh bi SUA -> waf:fimcfg:"
 
@@ -405,8 +413,9 @@ sleep 0.02
 printf 'auto_prepend_file=\nauto_append_file=none\n' > "$WEB/.user.ini"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 val4c=$(kval "waf:fimcfg:$WEB/")
-want "4c autoload rong/none -> KHONG co @php" \
-     "$(case "$val4c" in *@php*) echo co ;; *) echo khong ;; esac)" "khong"
+want "4c autoload rong/none -> PHU DINH tuong minh, khong phai im lang" \
+     "$(case ",$val4c," in *,-@php,*) echo "phu-dinh" ;; *,@php,*) echo "BAT" ;; *) echo "im-lang" ;; esac)" \
+     "phu-dinh"
 
 # ══ 5. File THUONG bi sua -> KHONG nhom nao ═════════════════════════════════
 #
@@ -594,7 +603,7 @@ final_val() {
     awk -v k="waf:fimcfg:$SW/" '
         $1 == "SETEX" && $2 == k { v = $4 }
         $1 == "DEL"   && $2 == k { v = "(DA XOA)" }
-        END { print (v == "" ? "(khong co)" : v) }' "$SOUT"
+        END { print (v == "" ? "(khong co)" : v) }' "$SOUT" | strip_ver
 }
 run_state baseline
 
@@ -850,7 +859,7 @@ r17() {  # r17 <mode...> — chay fim.sh tren cay rieng
 }
 # TAB, y nhu cac ham o tren.
 k17()  { local n; n=$(grep -cP "^SETEX\twaf:fimcfg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
-v17()  { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S17/rcli.txt" 2>/dev/null; }
+v17()  { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S17/rcli.txt" 2>/dev/null | strip_ver; }
 nd17() { local n; n=$(grep -cP "^DEL\twaf:fimcfg:" "$S17/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
 
 r17 baseline
@@ -862,10 +871,16 @@ want "17 khong doi gi ma VAN co khoa fimchg" "$([ "$(k17)" -ge 1 ] && echo co ||
 want "17 .htaccess -> ext:jpg"   "$(v17 "$W17/sub/")"  "h+:jpg"
 want "17 .user.ini -> @php"      "$(v17 "$W17/ini/")"  "@php"
 want "17 php.ini -> @phpini"     "$(v17 "$W17/pini/")" "@phpini"
-# DUNG BA khoa, khong hon: ba thu muc sach khong duoc ghi.
-want "17 dung 3 khoa, khong ghi thu muc sach" "$(k17)" "3"
+# BON khoa: ba nguon BAT + `sach2` mang PHU DINH tuong minh.
+#
+# `sach2` chua `auto_prepend_file = none`. Truoc 03-10 no khong sinh khoa, vi parser
+# INI chi tra MA THOAT nen "tat tuong minh" va "khong nhac gi" khong phan biet duoc.
+# Nhung `none` LA mot phat bieu, va no can thiet khi mot thu muc CHA bat autoload —
+# khong co no thi `-@php` khong rut lai duoc `@php` ke thua. Doi lai la mot khoa Redis
+# cho moi thu muc co dong `none`; do tren 171-96 (03-10) de biet con so that.
+want "17 dung 4 khoa (3 BAT + 1 phu dinh)" "$(k17)" "4"
 want "17 sach1 khong co khoa" "$(v17 "$W17/sach1/")" ""
-want "17 sach2 khong co khoa" "$(v17 "$W17/sach2/")" ""
+want "17 sach2 mang PHU DINH -@php" "$(v17 "$W17/sach2/")" "-@php"
 want "17 sach3 khong co khoa" "$(v17 "$W17/sach3/")" ""
 # KHONG `DEL` hang loat: nguon TRANG THAI khong sinh `DEL` cho thu muc khong token.
 want "17 KHONG DEL thu muc sach" "$(nd17)" "0"
@@ -876,7 +891,7 @@ rm -f "$W17/sub/.htaccess"
 : > "$S17/rcli.txt"
 r17 check
 want "17 bo .htaccess -> khong con ghi khoa cho thu muc do" "$(v17 "$W17/sub/")" ""
-want "17 bo mot nguon -> con 2 khoa" "$(k17)" "2"
+want "17 bo mot nguon -> con 3 khoa" "$(k17)" "3"
 
 # Redis chet trong luot KHONG CO THAY DOI NAO: `state_marks` phai bao loi va `check`
 # phai tra 2. Day la mot DUONG RA rieng (`total -eq 0` -> `exit 0`), va truoc khi co
@@ -1033,7 +1048,7 @@ r22() { FIM_ROOTS="$S22/home/*/domains/*/public_html" FIM_STATE="$S22/state" \
         RCLI_OUT="$S22/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1 || true; }
 # TAB, y nhu `kval`/`keys` o tren — stub ghi `SETEX\t<key>\t<ttl>\t<value>`.
-v22() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S22/rcli.txt" 2>/dev/null; }
+v22() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S22/rcli.txt" 2>/dev/null | strip_ver; }
 k22() { local n; n=$(grep -cP "^SETEX\twaf:fimcfg:" "$S22/rcli.txt" 2>/dev/null); echo "${n:-0}"; }
 d22() { grep -cP "^DEL\twaf:fimcfg:\Q$1\E$" "$S22/rcli.txt" 2>/dev/null | tr -d '\n'; }
 
@@ -1137,7 +1152,7 @@ r23() { FIM_ROOTS="$S23/home/*/domains/*/public_html" FIM_STATE="$S23/state" \
         FIM_LOG="$S23/fim.log" FIM_CRITLOG="$S23/crit.log" \
         RCLI_OUT="$S23/rcli.txt" FIM_REDIS_CLI="$R/bin/rcli" \
           bash "$HERE/fim.sh" "$@" >/dev/null 2>&1; }
-v23() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S23/rcli.txt" 2>/dev/null; }
+v23() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S23/rcli.txt" 2>/dev/null | strip_ver; }
 
 printf 'AddHandler application/x-httpd-php .jpg\n' > "$W23/co khoang trang/.htaccess"
 r23 baseline
@@ -1599,11 +1614,114 @@ cc "dc THAT: 46/47 dong Options o tang con la TUONG DOI -> giu cua cha" \
    "/con/a.cgi" "execcgi_only" "execcgi_only" \
    'Options +ExecCGI\n' 'Options -Indexes\n' 1
 
+# ── `sufs` LA MOT TAP, khong phai "duoi cuoi cung" ───────────────────
+#
+# Mot review de nghi duyet duoi PHAI->TRAI va lay anh xa DAU TIEN gap, lap luan rang
+# `shell.php.jpg` voi `AddHandler default-handler .jpg` thi `.jpg` thang. Khong lam, va
+# day la bang chung THAY cho lap luan:
+#
+#   · Tai lieu Apache (mod_mime, `AddHandler`) noi mot tep co the co NHIEU duoi va
+#     directive duoc so "against EACH of them" — khong phai chi duoi cuoi.
+#   · `shell.php.jpg` CHAY qua PHP khi `.php` duoc anh xa. Day la lo hong upload co
+#     dien, va `sufs` la TAP mo ta DUNG no.
+#   · Hai `cgi-bin/.htaccess` THAT tren 171-96 (do 02-10) dung
+#     `AddHandler cgi-script .cgi .pl` — mot dong anh xa HAI duoi, va khoa Redis that
+#     mang CA `ext:cgi` va `ext:pl`. Apache khong chon mot.
+#
+# Doi sang phai->trai se tao mot FN THAT o ca duoi day. Ba ca nay chan phep doi do.
+cc "muc7: shell.php.jpg CHAY khi .php duoc anh xa (sufs la TAP)" \
+   "/con/shell.php.jpg" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .php\n' '# khong gi\n'
+
+# Huong NGUOC: mot duoi KHONG duoc anh xa thi khong duoc tu BAT. Thieu ca nay thi mot
+# ban "luon tra handler_ext khi co bat ky anh xa nao" cung qua.
+cc "muc7: shell.txt.jpg KHONG chay khi chi .php duoc anh xa" \
+   "/con/shell.txt.jpg" "nil" "nil" \
+   'AddHandler application/x-httpd-php .php\n' '# khong gi\n'
+
+# Trong CUNG mot muc, BAT thang TAT: `.php` nguy + `.jpg` lanh tren cung mot ten tep
+# van CHAY. Mot ban "duoi cuoi thang" se tra `nil` o day.
+cc "muc7: .php nguy + .jpg lanh tren cung ten -> VAN chay" \
+   "/con/shell.php.jpg" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .php\nAddHandler default-handler .jpg\n' '# khong gi\n'
+
 printf '  => %s/%s ca CHUA SUA' "$n29_chua" "$n29_tong"
 if [ "$n29_chua" -gt 0 ]; then
     printf ' -- xem cac dong "CHUA SUA" o tren'
 fi
 printf '\n'
+
+# ══ 30. MOC `v2` — hai luat KHONG duoc cham nhau ════════════════════
+#
+# `c942edf` doi hop dong token ma khong doi tien to khoa, nen trong 7 ngay TTL mot
+# khoa `waf:fimcfg:` co the mang dang CU (`ext:`/`@all`) hay dang MOI (`h+:`/`@sh+`).
+# Moc `v2` o dau danh sach quyet dinh doc luat nao.
+#
+# Nhom nay nap chuoi khoa TRUC TIEP (khong qua `fim.sh`) vi chi o day moi dung duoc mot
+# khoa dang CU — `fim.sh` khong con ghi dang do.
+printf '\n── moc v2: hai luat khong cham nhau (muc 30) ──\n'
+mv() {  # mv <ten> <uri> <mong> <khoa-con> [khoa-cha]
+    local nhan="$1" uri="$2" mong="$3" kcon="$4" kcha="${5:-}"
+    local got
+    got=$(env ANTIBOT_SRC="$SRC29" CHAIN="$kcon	$kcha" URI="$uri" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
+    want "30 $nhan" "$got" "$mong"
+}
+
+# Dang CU khong moc: `ext:jpg` phai van doc duoc. Bo nhanh di tru ngay thi moi thu muc
+# da danh dau MAT PHAT HIEN cho tới khi `fim.sh` chay lai — mot cua so mu tu tao ra.
+mv "cu: ext:jpg (khong moc) -> handler_ext" "/a.jpg" "handler_ext" "ext:jpg"
+mv "cu: @all (khong moc) -> handler_all"    "/a.jpg" "handler_all" "@all"
+mv "cu: * (khong moc) -> autoload"          "/a.php" "autoload_userini" "*"
+
+# MOI co moc.
+mv "moi: v2,h+:jpg -> handler_ext"  "/a.jpg" "handler_ext" "v2,h+:jpg"
+mv "moi: v2,@sh+ -> handler_all"    "/a.jpg" "handler_all" "v2,@sh+"
+mv "moi: v2,@php -> autoload"       "/a.php" "autoload_userini" "v2,@php"
+
+# HAI LUAT KHONG CHAM NHAU — day la ly do moc ton tai:
+#   · mot khoa CU chua `h+:jpg` (vi du mot ten tep `.h+:jpg` sinh token do) KHONG duoc
+#     doc theo luat moi;
+#   · mot khoa MOI chua `ext:jpg` KHONG duoc doc theo luat cu.
+# Ca nao cung phai roi vao nhanh "duoi THO" cua luat tuong ung.
+mv "cach ly: khoa CU mang h+:jpg -> doc theo luat CU (duoi tho)" \
+   "/a.h+:jpg" "handler_ext" "h+:jpg"
+mv "cach ly: khoa MOI mang ext:jpg -> KHONG doc theo luat cu" \
+   "/a.jpg" "nil" "v2,ext:jpg"
+
+# KE THUA xuyen hai dang: cha dang CU, con dang MOI. Xay ra THAT trong 7 ngay sau
+# deploy, vi `fim.sh` chi ghi lai thu muc nao DOI.
+mv "tron: cha CU @all + con MOI im lang -> ke thua handler_all" \
+   "/con/a.jpg" "handler_all" "" "@all"
+mv "tron: cha CU @all + con MOI @sh- -> con TAT duoc" \
+   "/con/a.jpg" "nil" "v2,@sh-" "@all"
+mv "tron: cha MOI @sh+ + con CU rong -> ke thua" \
+   "/con/a.jpg" "handler_all" "" "v2,@sh+"
+
+# ── PATH_INFO cho MOI duoi, khong chi duoi PHP ───────────────────────
+#
+# `script_path` cat PATH_INFO bang `RX_PHP_EXEC`, va bieu thuc do CHI liet ke duoi PHP.
+# Do duoc 03-10 bang chinh `init.lua` TRUOC khi sua:
+#     URI=/shell.jpg/x  CHAIN=[v2,h+:jpg]  ->  nil   (phai la handler_ext)
+# `script_path` tra nguyen URI nen `dir` thanh `/shell.jpg/` (thu muc KHONG ton tai) va
+# `sufs` lay tu `x` (khong duoi) — `MGET` tra khoa rac VA duoi that bi bo.
+mv "pathinfo: /shell.jpg/x voi h+:jpg -> handler_ext" \
+   "/shell.jpg/x" "handler_ext" "v2,h+:jpg"
+mv "pathinfo: /a.jpg khong PATH_INFO -> handler_ext" \
+   "/a.jpg" "handler_ext" "v2,h+:jpg"
+
+# KHONG cat khi phan sau CO dau `.`: `/a.jpg/b.css` la mot duong dan that co the ton
+# tai (thu muc ten `a.jpg`), nen phai tra khoa cua thu muc DO chu khong cua `/`.
+mv "pathinfo: /a.jpg/b.css la duong dan THAT -> khong cat" \
+   "/a.jpg/b.css" "nil" "v2,h+:jpg"
+
+# Huong NGUOC: duoi PHP van di qua `script_path` nhu cu.
+mv "pathinfo: /a.php/x cat boi script_path, duoi la php" \
+   "/a.php/x" "handler_ext" "v2,h+:php"
+
+# GIOI HAN da biet, ghi ro chu khong che: mau chi khop MOT doan cuoi, nen
+# `/shell.jpg/x/y` van khong cat duoc. Huong bo sot, khong bao oan.
+mv "pathinfo: GIOI HAN /shell.jpg/x/y chua cat duoc (bo sot, khong bao oan)" \
+   "/shell.jpg/x/y" "nil" "v2,h+:jpg"
 fi
 
 # ══ 28. `DEL` BI BO QUA — xac minh phep GO ══════════════════════════
@@ -1702,8 +1820,11 @@ RREOS
          "$(printf '%s' "$o27" | grep -ci 'protocol error')" "0"
     want "27 khoa duoc ghi vao Redis THAT" \
          "$("$RRCLI" -p "$RRPORT" -n "$RRDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)" "1"
-    want "27 gia tri doc nguoc dung" \
-         "$("$RRCLI" -p "$RRPORT" -n "$RRDB" --raw GET "waf:fimcfg:$W27/thư mục/" 2>/dev/null)" "h+:jpg"
+    # GIA TRI THO tu Redis THAT, co MOC: ca nay la mot trong hai cho kiem moc that su
+    # ton tai tren duong ghi. Cac ca khac cat moc qua `strip_ver` vi chung do NOI DUNG,
+    # con ca nay do HOP DONG VAN CHUYEN — `init.lua` doc luat nao phu thuoc vao no.
+    want "27 gia tri doc nguoc dung, CO moc v2" \
+         "$("$RRCLI" -p "$RRPORT" -n "$RRDB" --raw GET "waf:fimcfg:$W27/thư mục/" 2>/dev/null)" "v2,h+:jpg"
     "$RRCLI" -p "$RRPORT" -n "$RRDB" FLUSHDB >/dev/null 2>&1
 fi
 

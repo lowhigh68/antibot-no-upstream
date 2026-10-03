@@ -593,7 +593,7 @@ config_dirs() {
 # (`htaccess_parse.awk` chay MOT tep moi lan, `inifile_parse.awk` tra ket qua bang MA
 # THOAT) — mot thay doi rui ro hon gia tri 5,8s/30 phut.
 dir_tokens() {
-    local d="$1" toks="" t cf tok
+    local d="$1" toks="" t cf tok ini_s
     [ -d "$d" ] || return 0
     if [ -f "$d/.htaccess" ]; then
         t=$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
@@ -601,11 +601,36 @@ dir_tokens() {
     fi
     for cf in .user.ini php.ini; do
         [ -f "$d/$cf" ] || continue
-        if awk -f "$INI_AWK" "$d/$cf" 2>/dev/null; then
-            tok="@php"; [ "$cf" = "php.ini" ] && tok="@phpini"
-            toks="${toks:+$toks,}$tok"
-        fi
+        # DOC STDOUT, khong doc ma thoat. Parser phat `+` (co nap ma), `-` (TAT tuong
+        # minh), hoac KHONG GI (tep khong nhac directive nao -> ke thua cha). Ban truoc
+        # chi doc ma thoat nen `-` va "khong gi" khong phan biet duoc, va mot
+        # `auto_prepend_file=none` o thu muc con khong rut lai `@php` cua cha.
+        ini_s=$(awk -f "$INI_AWK" "$d/$cf" 2>/dev/null)
+        [ -n "$ini_s" ] || continue
+        tok="@php"; [ "$cf" = "php.ini" ] && tok="@phpini"
+        case "$ini_s" in
+            "+") toks="${toks:+$toks,}$tok" ;;
+            "-") toks="${toks:+$toks,}-$tok" ;;
+        esac
     done
+    # ── MOC PHIEN BAN: mot TOKEN `v2`, khong phai ky tu phan cach ────
+    #
+    # `c942edf` doi hop dong token (`ext:`/`@all` -> `h+:`/`@sh+`) ma khong doi tien to
+    # khoa, nen trong 7 ngay TTL mot khoa `waf:fimcfg:` co the mang dang CU hay MOI va
+    # `init.lua` phai DOAN tu noi dung. Moc nay xoa phep doan: co token `v2` -> luat
+    # moi, khong co -> luat di tru.
+    #
+    # LA MOT TOKEN trong danh sach, khong phai tien to `v2|`: `gen_resp` tach dong
+    # `<toks>|<thu-muc>/` bang `index($0, "|")` — dau `|` DAU TIEN. Mot `v2|` trong gia
+    # tri lam `b="v2"` va `p="t+:jpg|/duong/dan/"`, nen nhanh dirty ghi khoa RAC. Do
+    # duoc 03-10: `0 key bao WAF` trong khi `1 cau hinh doi`, va 30 ca do.
+    #
+    # DAT O DAY, mot cho duy nhat: `dir_tokens` la nguon DUY NHAT sinh gia tri, va ca
+    # hai noi ghi (`state_marks` va nhanh dirty) deu goi no.
+    #
+    # Khong them tien to KHOA thu ba: `MGET` dang gui `ns * 2` khoa moi request, them
+    # mot tien to thanh `ns * 3` tren hot path.
+    [ -n "$toks" ] && toks="v2,$toks"
     printf '%s' "$toks"
 }
 
