@@ -95,6 +95,18 @@ function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
 # Bo chu thich `#`, NHUNG khong bo `#` nam trong dau nhay: mot gia tri handler co
 # the chua `#` (vi du duong socket). Apache khong co chu thich giua dong cho mot
 # gia tri da nhay.
+# ── THOAT DAU PHAY trong TEN DUOI ───────────────────────────────────
+#
+# `fim.sh` ghep token bang dau phay va `init.lua` tach bang `[^,]+`. Linux chi cam `NUL`
+# va `/` trong ten tep, nen mot `.htaccess` co the viet
+#     AddHandler application/x-httpd-php .jpg,evil
+# Do 03-10: parser phat `h+:jpg,evil` -> ben doc hieu thanh token `h+:jpg` va mot token
+# la `evil`, nen request `x.jpg,evil` KHONG khop. FN, va dau vao do khach kiem soat.
+#
+# `%` thoat TRUOC `,` — nguoc lai thi mot `%2C` co THAT trong ten duoi se bi giai thoat
+# thanh dau phay. Chi hai ky tu nay; `init.lua` giai thoat o chieu nguoc lai.
+function esc(s,   r) { r = s; gsub(/%/, "%25", r); gsub(/,/, "%2C", r); return r }
+
 function strip_comment(s,   out, i, c, q) {
     out = ""; q = ""
     for (i = 1; i <= length(s); i++) {
@@ -308,11 +320,11 @@ BEGIN { depth = 0; ifdepth = 0; cdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau).
     # `Remove*` = RESET (`-2`), khong phai explicit-safe. Xem khoi ba trang thai o tren.
     if (d == "removehandler") {
-        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^./, "", e); if (e != "") { h[tolower(e)] = -2; hneg[tolower(e)] = 1 } }
+        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { h[tolower(e)] = -2; hneg[tolower(e)] = 1 } }
         next
     }
     if (d == "removetype") {
-        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^./, "", e); if (e != "") { t[tolower(e)] = -2; tneg[tolower(e)] = 1 } }
+        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { t[tolower(e)] = -2; tneg[tolower(e)] = 1 } }
         next
     }
 
@@ -441,14 +453,14 @@ END {
         # `-2` (reset) se in thanh `h+` — bao NGUY HIEM cho mot phep GO mapping. Cung
         # lop loi voi `if (opt[0])` tung in `@execcgi` cho mot tep RONG.
         if (e in h) {
-            if (h[e] == 1)       print "h+:" e
-            else if (h[e] == -2) print "h0:" e
-            else if (e in hneg)  print "h-:" e
+            if (h[e] == 1)       print "h+:" esc(e)
+            else if (h[e] == -2) print "h0:" esc(e)
+            else if (e in hneg)  print "h-:" esc(e)
         }
         if (e in t) {
-            if (t[e] == 1)       print "t+:" e
-            else if (t[e] == -2) print "t0:" e
-            else if (e in tneg)  print "t-:" e
+            if (t[e] == 1)       print "t+:" esc(e)
+            else if (t[e] == -2) print "t0:" esc(e)
+            else if (e in tneg)  print "t-:" esc(e)
         }
     }
     # BA trang thai moi truc. `-2` la RESET: xoa trang thai cung truc trong luc merge

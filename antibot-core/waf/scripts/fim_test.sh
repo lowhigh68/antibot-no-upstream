@@ -1409,8 +1409,20 @@ do
     end
 end
 pool.safe_mget = function(keys, n)
-    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU.
     local out, half = {}, n / 2
+    -- `WANTKEY`/`WANTVAL`: tra gia tri cho khoa co TEN khop, thay vi theo CHI SO. Can
+    -- cho cac ca ma dieu phai do la `init.lua` yeu cau khoa cua THU MUC NAO — vi du
+    -- tran 12 tang: ban dung yeu cau `waf:fimcfg:<root>/` o phan tu cuoi, ban sai yeu
+    -- cau mot thu muc giua. Do bang chi so thi hai ban cho CUNG ket qua va dot bien
+    -- khong bi bat (do duoc 03-10).
+    local wk, wv = os.getenv("WANTKEY"), os.getenv("WANTVAL")
+    if wk and wk ~= "" then
+        for i = 1, n do
+            out[i] = (keys[i] == wk) and wv or ngx.null
+        end
+        return out
+    end
+    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU.
     for i = 1, half do
         local v = chain[i]
         out[i] = (v and v ~= "") and v or ngx.null
@@ -1808,8 +1820,12 @@ mv "safe: cha t+:jpg + con @ft- -> DUNG" \
 #     URI=/shell.jpg/x  CHAIN=[v2,h+:jpg]  ->  nil   (phai la handler_ext)
 # `script_path` tra nguyen URI nen `dir` thanh `/shell.jpg/` (thu muc KHONG ton tai) va
 # `sufs` lay tu `x` (khong duoi) — `MGET` tra khoa rac VA duoi that bi bo.
-mv "pathinfo: /shell.jpg/x voi h+:jpg -> handler_ext" \
-   "/shell.jpg/x" "handler_ext" "v2,h+:jpg"
+# `?pi` = ket luan den tu PHEP DOAN PATH_INFO. URI khong chung minh duoc `/shell.jpg/`
+# la PATH_INFO hay mot thu muc THAT; neu la thu muc that thi `x` la tep that va nhan
+# `handler_ext` se la FP (review 2 diem 5). Hau to cho policy dem duoc, va khong lan
+# voi ket luan chac chan.
+mv "pathinfo: /shell.jpg/x -> handler_ext?pi (DOAN, khong chac)" \
+   "/shell.jpg/x" "handler_ext?pi" "v2,h+:jpg"
 mv "pathinfo: /a.jpg khong PATH_INFO -> handler_ext" \
    "/a.jpg" "handler_ext" "v2,h+:jpg"
 
@@ -1824,8 +1840,54 @@ mv "pathinfo: /a.php/x cat boi script_path, duoi la php" \
 
 # GIOI HAN da biet, ghi ro chu khong che: mau chi khop MOT doan cuoi, nen
 # `/shell.jpg/x/y` van khong cat duoc. Huong bo sot, khong bao oan.
-mv "pathinfo: GIOI HAN /shell.jpg/x/y chua cat duoc (bo sot, khong bao oan)" \
+mv "pathinfo: GIOI HAN /shell.jpg/x/y chua cat duoc (bo sot)" \
    "/shell.jpg/x/y" "nil" "v2,h+:jpg"
+
+# Duoi co GACH: `[%w]` cu khong cat duoc `.x-y` du parser ho tro duoi do.
+mv "pathinfo: duoi co gach, khong PATH_INFO" "/x.x-y" "handler_ext" "v2,h+:x-y"
+mv "pathinfo: duoi co gach + PATH_INFO"      "/x.x-y/z" "handler_ext?pi" "v2,h+:x-y"
+
+# ── TRAN 12 TANG phai GIU document root (review 2 diem 6) ───────────
+#
+# Vong tra chuoi to tien `break` khi du 12 phan tu, nen `/` KHONG vao `segs` va mot
+# `AddHandler` o webroot bi bo HOAN TOAN. Do 03-10:
+#     URI 13 tang, khoa @ webroot -> `nil`  (dung phai `handler_ext`)
+# Do sau quan sat tren fleet la 4-7 tang, nhung URI do NGUOI GUI quyet dinh — khong
+# phai rang buoc an toan.
+#
+# Do theo TEN KHOA, khong theo chi so: dieu phai do la `init.lua` yeu cau khoa cua THU
+# MUC NAO. Ban dung yeu cau `waf:fimcfg:<root>/` o phan tu cuoi; ban bo webroot yeu cau
+# mot thu muc GIUA (`<root>/a/b/`). Do bang chi so thi hai ban cho CUNG ket qua va dot
+# bien khong bi bat — toi viet ca do truoc va no khong bat duoc gi.
+mk() {  # mk <ten> <uri> <khoa> <gia-tri> <mong>
+    local got
+    got=$(env ANTIBOT_SRC="$SRC29" WANTKEY="$3" WANTVAL="$4" URI="$2" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
+    want "30 $1" "$got" "$5"
+}
+mk "tran: URI 13 tang VAN thay webroot" \
+   "/a/b/c/d/e/f/g/h/i/j/k/l/m/x.jpg" "waf:fimcfg:/nonexistent/" "v2,h+:jpg" "handler_ext:cut"
+# Huong NGUOC: URI ngan thi khoa webroot cung doc duoc va KHONG mang `:cut`.
+mk "tran: URI 3 tang -> webroot doc duoc, khong :cut" \
+   "/a/b/c/x.jpg" "waf:fimcfg:/nonexistent/" "v2,h+:jpg" "handler_ext"
+# Thu muc GIUA cua URI sau: doc duoc binh thuong (khong bi cat mat).
+mk "tran: URI 13 tang, khoa o thu muc cua request" \
+   "/a/b/c/d/e/f/g/h/i/j/k/l/m/x.jpg" "waf:fimcfg:/nonexistent/a/b/c/d/e/f/g/h/i/j/k/l/m/" \
+   "v2,h+:jpg" "handler_ext:cut"
+
+# ── DAU PHAY trong TEN DUOI (review 2 diem 7) ───────────────────────
+#
+# Linux chi cam `NUL` va `/` trong ten tep, nen `AddHandler php .jpg,evil` la hop le.
+# Parser tung phat `h+:jpg,evil` -> ben doc tach thanh `h+:jpg` va mot token la `evil`,
+# nen request `x.jpg,evil` KHONG khop. FN, dau vao do khach kiem soat.
+mv "phay: khoa h+:jpg%2Cevil khop /x.jpg,evil" \
+   "/x.jpg,evil" "handler_ext" "v2,h+:jpg%2Cevil"
+# Va KHONG khop `.jpg` tron — day la cho ban cu sai.
+mv "phay: khoa h+:jpg%2Cevil KHONG khop /x.jpg" \
+   "/x.jpg" "nil" "v2,h+:jpg%2Cevil"
+# `%` THAT trong ten duoi: `%25` giai CUOI, nen `%252c` ve `%2c` chu khong ve `,`.
+mv "phay: % that trong ten duoi (h+:p%252cq khop /x.p%2cq)" \
+   "/x.p%2cq" "handler_ext" "v2,h+:p%252cq"
+mv "phay: h+:jpg binh thuong van khop" "/x.jpg" "handler_ext" "v2,h+:jpg"
 fi
 
 # ══ 28. `DEL` BI BO QUA — xac minh phep GO ══════════════════════════
@@ -1988,11 +2050,13 @@ printf 'AllowOverride All\n' > "$AO32/u1/httpd.conf"
 printf 'AllowOverride AuthConfig FileInfo Indexes Limit Options=Indexes,None\n' > "$AO32/u2/httpd.conf"
 eokf() {  # eokf <ten> <duong-dan> <mong> [EXECCGI_OK]
     local g
+    # Ham DAT `$EXECCGI_R` chu khong in — xem ly do o `execcgi_ok_for` trong `fim.sh`
+    # (command substitution chay trong subshell nen cache `UOK` se mat).
     g=$(FIM_AO32="$AO32" FIM_P="$2" FIM_DEF="${4:-1}" \
         bash -c 'set -uo pipefail
-                 DA_HTTPD="$FIM_AO32"; EXECCGI_OK="$FIM_DEF"; declare -A UOK
+                 DA_HTTPD="$FIM_AO32"; EXECCGI_OK="$FIM_DEF"; EXECCGI_R=1; declare -A UOK
                  '"$(sed -n "/^execcgi_ok_for() {/,/^}/p" "$HERE/fim.sh")"'
-                 execcgi_ok_for "$FIM_P"' 2>/dev/null)
+                 execcgi_ok_for "$FIM_P"; printf "%s" "$EXECCGI_R"' 2>/dev/null)
     want "32 $1" "${g:-LOI}" "$3"
 }
 eokf "user CHO -> 1"  "/home/u1/domains/t.test/public_html" "1"
@@ -2035,6 +2099,42 @@ want "32 dau-cuoi: user CHO -> @exec+" \
      "$(v32 "$S32/home/ua/domains/t.test/public_html/")" "@exec+"
 want "32 dau-cuoi: user CHAN -> @exec+:noop (CUNG lan check)" \
      "$(v32 "$S32/home/ub/domains/t.test/public_html/")" "@exec+:noop"
+
+# ── CACHE phai THAT SU song qua nhieu lan goi (review 2 diem 8) ─────
+#
+# Ban truoc ham `printf` ket qua va cho goi qua `$(...)`. Command substitution chay ham
+# trong SUBSHELL, nen moi phep gan `UOK[...]` mat khi subshell ket thuc. Do 03-10: sau
+# 3 lan goi qua `$()`, `${#UOK[@]}` van la 0 — cache chi ton tai tren giay, va voi 1.075
+# thu muc cau hinh tren fleet thi cung mot `httpd.conf` bi `grep` lai hang tram lan.
+#
+# Ca nay dem SO PHAN TU cua `UOK` sau nhieu lan goi; mot ban quay lai `printf` + `$()`
+# se cho 0.
+cache32=$(FIM_AO32="$AO32" bash -c 'set -uo pipefail
+    DA_HTTPD="$FIM_AO32"; EXECCGI_OK=1; EXECCGI_R=1; declare -A UOK
+    '"$(sed -n "/^execcgi_ok_for() {/,/^}/p" "$HERE/fim.sh")"'
+    for i in 1 2 3 4 5; do execcgi_ok_for /home/u1/domains/t.test/public_html; done
+    printf "%s" "${#UOK[@]}"' 2>/dev/null)
+want "32 cache song qua 5 lan goi (1 phan tu)" "${cache32:-LOI}" "1"
+
+# CACHE KEY LA `(user, domain)`: hai domain cua CUNG user phai la HAI phan tu. Khoa chi
+# mang `<user>` se cho 1, va khi nao do duoc cau truc `<Directory>` that thi phan DOC
+# moi phai doi — cache key da du cho.
+cache32b=$(FIM_AO32="$AO32" bash -c 'set -uo pipefail
+    DA_HTTPD="$FIM_AO32"; EXECCGI_OK=1; EXECCGI_R=1; declare -A UOK
+    '"$(sed -n "/^execcgi_ok_for() {/,/^}/p" "$HERE/fim.sh")"'
+    execcgi_ok_for /home/u1/domains/a.test/public_html
+    execcgi_ok_for /home/u1/domains/b.test/public_html
+    printf "%s" "${#UOK[@]}"' 2>/dev/null)
+want "32 cache key la (user,domain) -> 2 phan tu" "${cache32b:-LOI}" "2"
+
+# Huong NGUOC: CUNG domain goi hai lan -> van MOT phan tu.
+cache32c=$(FIM_AO32="$AO32" bash -c 'set -uo pipefail
+    DA_HTTPD="$FIM_AO32"; EXECCGI_OK=1; EXECCGI_R=1; declare -A UOK
+    '"$(sed -n "/^execcgi_ok_for() {/,/^}/p" "$HERE/fim.sh")"'
+    execcgi_ok_for /home/u1/domains/a.test/public_html
+    execcgi_ok_for /home/u1/domains/a.test/public_html/sub
+    printf "%s" "${#UOK[@]}"' 2>/dev/null)
+want "32 cung domain, thu muc con -> 1 phan tu" "${cache32c:-LOI}" "1"
 printf '\n── wpinv: ghi that bai + khoa cu con song (muc 15) ──\n'
 DA="$R/da"
 mkdir -p "$DA/u1/domains" "$WEB/wp-content"

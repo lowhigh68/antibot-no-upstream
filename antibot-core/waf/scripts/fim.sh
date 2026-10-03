@@ -148,22 +148,41 @@ EXECCGI_OK="${FIM_EXECCGI_OK:-$(detect_execcgi_ok)}"
 # Bang `UOK[<user>]` tra lai theo TUNG user; `EXECCGI_OK` con lai lam mac dinh cho
 # duong dan khong xac dinh duoc user (vi du mot `FIM_ROOTS` tuy chinh trong bo test).
 declare -A UOK 2>/dev/null || :
+EXECCGI_R=1
 
+# `execcgi_ok_for <duong-dan>` -> dat `$EXECCGI_R`, KHONG in ra stdout.
+#
+# VI SAO KHONG `printf` + `$()`: command substitution chay ham trong SUBSHELL, nen moi
+# phep gan `UOK[...]` mat khi subshell ket thuc. Do 03-10: sau 3 lan goi qua `$()`,
+# `${#UOK[@]}` van la 0. Voi 1.075 thu muc cau hinh tren fleet, cung mot `httpd.conf`
+# bi `grep` lai hang tram lan — cache chi ton tai tren giay.
+#
+# CACHE KEY LA `(user, domain)` chu khong chi `<user>`: mot user co the co nhieu domain,
+# va `httpd.conf` cua DirectAdmin co mot khoi `<VirtualHost>` cho TUNG domain. Hien tai
+# ham doc MOI dong `AllowOverride` trong tep nen hai domain cua cung user van cho cung
+# ket qua — do la gioi han da biet, ghi ro o `postdeploy.sh` muc 18. Nhung cache key da
+# du cho, nen khi nao do duoc cau truc `<Directory>` that thi chi phai doi phan DOC.
 execcgi_ok_for() {
-    # `execcgi_ok_for <duong-dan>` -> 0/1
-    local p="$1" u
-    # `/home/<user>/domains/...` — lay doan thu hai. KHONG dung regex tren ca duong
-    # dan: mot thu muc ten `domains` long trong duong dan se lam no lay sai doan.
+    local p="$1" u d k
+    # `/home/<user>/domains/<domain>/...` — lay doan thu hai va thu tu. KHONG dung
+    # regex tren ca duong dan: mot thu muc ten `domains` long trong duong dan se lam no
+    # lay sai doan.
     # Goc `/home` lay tu `FIM_HOME` — CUNG bien ma `wpinv` dung (`HOME_BASE` o ~1041),
     # nen bo test dat duoc mot cay gia va ca dau-cuoi do duoc duong nay. Hardcode
     # `/home` lam ca do KHONG the viet: `/home` khong ghi duoc trong moi truong test.
     local hb="${FIM_HOME:-/home}"
     case "$p" in
         "$hb"/*/*) u=${p#"$hb"/}; u=${u%%/*} ;;
-        *)         printf '%s' "$EXECCGI_OK"; return 0 ;;
+        *)         EXECCGI_R="$EXECCGI_OK"; return 0 ;;
     esac
-    [ -n "$u" ] || { printf '%s' "$EXECCGI_OK"; return 0; }
-    if [ -z "${UOK[$u]:-}" ]; then
+    [ -n "$u" ] || { EXECCGI_R="$EXECCGI_OK"; return 0; }
+    # `<domain>` = doan sau `domains/`, neu co. Khong co thi khoa chi mang user.
+    case "$p" in
+        "$hb/$u"/domains/*) d=${p#"$hb/$u"/domains/}; d=${d%%/*} ;;
+        *)                  d="" ;;
+    esac
+    k="$u/$d"
+    if [ -z "${UOK[$k]:-}" ]; then
         local f="$DA_HTTPD/$u/httpd.conf" line tok yes=0 n=0
         if [ -f "$f" ]; then
             while IFS= read -r line; do
@@ -183,9 +202,9 @@ EOT
         fi
         # KHONG doc duoc tep cua user nay -> dung tri toan may (`EXECCGI_OK`), khong
         # mac dinh `0`: `0` lam MAT tin hieu, con tri toan may giu nguyen hanh vi cu.
-        if [ "$n" -eq 0 ]; then UOK[$u]="$EXECCGI_OK"; else UOK[$u]="$yes"; fi
+        if [ "$n" -eq 0 ]; then UOK[$k]="$EXECCGI_OK"; else UOK[$k]="$yes"; fi
     fi
-    printf '%s' "${UOK[$u]}"
+    EXECCGI_R="${UOK[$k]}"
 }
 INI_AWK="${FIM_INI_AWK:-$(dirname "$0")/inifile_parse.awk}"
 
@@ -650,7 +669,10 @@ dir_tokens() {
     local d="$1" toks="" t cf tok ini_s
     [ -d "$d" ] || return 0
     if [ -f "$d/.htaccess" ]; then
-        t=$(awk -v execcgi_ok="$(execcgi_ok_for "$d")" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+        # GOI KHONG QUA `$()`: ham dat `$EXECCGI_R`. Command substitution chay trong
+        # subshell nen cache `UOK` se mat — xem khoi ly do o `execcgi_ok_for`.
+        execcgi_ok_for "$d"
+        t=$(awk -v execcgi_ok="$EXECCGI_R" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
         [ -n "$t" ] && toks="$t"
     fi
     for cf in .user.ini php.ini; do

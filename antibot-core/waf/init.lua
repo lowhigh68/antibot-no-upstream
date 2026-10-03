@@ -535,13 +535,32 @@ local function fim_config_active(uri, rt)
     -- `waf:fimnew:` dung no o CA hai ben ghi/doc, va `wordpress_paths_test.lua` ghim
     -- 67 assertion). Doi no se lam lech cap khoa do. Cau hoi o ham NAY khac: "duoi nao
     -- cua tep THAT can tra", va moi duoi deu co the mang handler.
-    --
     -- Chi cat khi phan sau dau `/` KHONG co dau `.`: `/a.jpg/b.css` la mot duong dan
-    -- that co the ton tai (thu muc `a.jpg`), con `/a.jpg/x` thi `x` khong co duoi nen
-    -- gan nhu chac chan la PATH_INFO. Huong con lai bo sot, khong bao oan.
+    -- that co the ton tai (thu muc `a.jpg`).
+    --
+    -- DAY LA MOT PHEP DOAN, khong phai ket luan. URI khong chung minh duoc `/a.jpg/`
+    -- la PATH_INFO hay mot thu muc THAT: neu la thu muc that thi `x` la tep that va
+    -- Apache KHONG ap mapping `.jpg` cho no — nhan se la FP. Chu thich cu cua toi noi
+    -- "huong con lai bo sot, khong bao oan"; review 2 diem 5 bac dung dieu do.
+    --
+    -- Nen nhan tra ve mang hau to `?pi` khi ket luan den TU PHEP DOAN. Policy doc
+    -- `matched=` nen dem duoc bao nhieu lan, va mot nhan `handler_ext?pi` khong bi
+    -- nham voi `handler_ext` chac chan. KHONG them `io.open` o access phase: do la hot
+    -- path va mot phep cham dia moi request co dang `/x.ext/seg` la chi phi phai do
+    -- truoc khi quyet.
+    --
+    -- `[%w_-]` thay vi `[%w]`: mot duoi nhu `.x-y` duoc parser ho tro nhung mau cu
+    -- khong cat duoc (review 2 diem 5).
+    --
+    -- GIOI HAN con lai, ghi ro: mau khop MOT doan cuoi, nen `/shell.jpg/x/y` chua cat
+    -- duoc. Huong bo sot.
+    local pi_doan = false
     if path == uri then
-        local base, rest = uri:match("^(.-%.[%w]+)/([^/]*)$")
-        if base and rest and not rest:find(".", 1, true) then path = base end
+        local base, rest = uri:match("^(.-%.[%w_-]+)/([^/]*)$")
+        if base and rest and not rest:find(".", 1, true) then
+            path = base
+            pi_doan = true
+        end
     end
 
     -- LAY `ext` TRUOC KHI HOI REDIS.
@@ -615,6 +634,9 @@ local function fim_config_active(uri, rt)
     -- HAN CHOT 09-10-2026 (7 ngay tu 02-10): bo nhanh `fimchg:`, va khi do `nk`
     -- tro lai mot nua.
     local keys, nk, ndir = nil, 0, 0
+    -- `depth_cut`: co tang NAO bi bo khong. Phai o NGOAI `do` block de nhan tra ve
+    -- doc duoc — mot URI dai bat thuong khong duoc im lang.
+    local depth_cut = false
     do
         local segs, ns = nil, 0
         local seg = dir
@@ -625,10 +647,22 @@ local function fim_config_active(uri, rt)
             if seg == "/" then break end
             -- Bo mot tang: `/a/b/` -> `/a/`
             seg = seg:sub(1, #seg - 1):match("^(.*/)")
-            -- TRAN do sau. `/a/b/c/d/e/f/g/` la 7 tang va do la ca sau nhat do duoc;
-            -- 12 cho du cho cay sau bat thuong ma khong de mot URI dai tuy y sinh ra
-            -- mot `MGET` dai tuy y.
-            if ns >= 12 then break end
+            -- TRAN do sau: khong de mot URI dai tuy y sinh ra mot `MGET` dai tuy y.
+            -- Do sau quan sat tren fleet la 4-7 tang, nhung do KHONG phai rang buoc an
+            -- toan — URI do nguoi gui quyet dinh.
+            --
+            -- GIU WEBROOT khi bi cat: `break` tran lam `/` KHONG vao `segs`, nen mot
+            -- `AddHandler` o webroot bi bo HOAN TOAN. Do 03-10:
+            --     URI 13 tang, khoa @ webroot -> `nil`  (dung phai `handler_ext`)
+            --     URI  3 tang, khoa @ webroot -> `handler_ext`
+            -- Day la FN do dau vao kiem soat duoc, nen phai dat phan tu CUOI thanh `/`
+            -- thay vi bo han. Ket qua: mat cac tang GIUA, giu hai dau — tang gan request
+            -- nhat (quan trong nhat) va webroot (pham vi rong nhat).
+            if ns >= 12 then
+                segs[ns] = "/"
+                depth_cut = true
+                break
+            end
         end
         if segs then
             ndir = ns
@@ -658,7 +692,28 @@ local function fim_config_active(uri, rt)
     -- khong xoa duoc type ke thua (ca2: FP).
     local h, t, flag = nil, nil, nil
     -- ── MOT GIA TRI MOI TANG: fallback, KHONG phai cong hai snapshot ──
+    -- ── GIAI THOAT TEN DUOI ──────────────────────────────────────────
     --
+    -- Parser thoat `,` thanh `%2C` va `%` thanh `%25` trong TEN DUOI, vi `fim.sh` ghep
+    -- token bang dau phay va Linux cho phep `,` trong ten tep: mot
+    -- `AddHandler php .jpg,evil` tung sinh `h+:jpg,evil` -> ben doc hieu thanh token
+    -- `h+:jpg` va mot token la `evil`, nen request `x.jpg,evil` KHONG khop (FN, dau vao
+    -- do khach kiem soat).
+    --
+    -- THU TU NGUOC khi giai: `%2C` TRUOC, `%25` CUOI. Nguoc lai thi `%252c` (mot `%`
+    -- THAT trong ten duoi) bi giai thanh `%2c` roi thanh `,` — sai han.
+    --
+    -- Nhan ca `%2c` chu thuong: `tolower` trong parser chay TRUOC khi thoat, nen mot
+    -- `%2C` co that trong ten tep thanh `%2c`.
+    --
+    -- `find` truoc khi `gsub`: hau het ten duoi khong co `%` nao, va day la hot path.
+    local function unesc(s)
+        if not s:find("%", 1, true) then return s end
+        s = s:gsub("%%2[Cc]", ",")
+        return (s:gsub("%%25", "%%"))
+    end
+
+    local h, t, flag = nil, nil, nil
     -- `keys` xep `ns` khoa MOI (con -> cha) roi `ns` khoa CU (con -> cha). Ban truoc
     -- duyet `i = nk, 1, -1` tren CA mang, nen thu tu ap thuc te la
     --     cu-cha -> cu-con -> moi-cha -> moi-con
@@ -761,17 +816,17 @@ local function fim_config_active(uri, rt)
                 --   "reset"  mapping BI GO -> reducer ROI XUONG
                 --   nil      khong phat bieu -> ke thua
                 elseif p3 == "h+:" then
-                    h = h or {}; h[e:sub(4)] = true
+                    h = h or {}; h[unesc(e:sub(4))] = true
                 elseif p3 == "h-:" then
-                    h = h or {}; h[e:sub(4)] = false
+                    h = h or {}; h[unesc(e:sub(4))] = false
                 elseif p3 == "h0:" then
-                    h = h or {}; h[e:sub(4)] = "reset"
+                    h = h or {}; h[unesc(e:sub(4))] = "reset"
                 elseif p3 == "t+:" then
-                    t = t or {}; t[e:sub(4)] = true
+                    t = t or {}; t[unesc(e:sub(4))] = true
                 elseif p3 == "t-:" then
-                    t = t or {}; t[e:sub(4)] = false
+                    t = t or {}; t[unesc(e:sub(4))] = false
                 elseif p3 == "t0:" then
-                    t = t or {}; t[e:sub(4)] = "reset"
+                    t = t or {}; t[unesc(e:sub(4))] = "reset"
                 elseif e == "@sh+" then
                     flag = flag or {}; flag.sh = true
                 elseif e == "@sh-" then
@@ -903,9 +958,14 @@ local function fim_config_active(uri, rt)
     -- `handler_ext` khi no den tu mot duoi. Phan biet nay di thang vao `matched=` cua
     -- waf.log, nen phai dung: `handler_all` nghia la MOI tep trong thu muc chay duoc,
     -- ke ca `shell.jpg` — manh hon han `handler_ext`.
+    -- `:cut` = chuoi to tien BI CAT o tran 12 tang, nen ket luan nay doc tu mot tap
+    -- khoa KHONG day du. Nhan di thang vao `matched=` cua waf.log, nen hau to la cach
+    -- re nhat de dem duoc bao nhieu lan dieu do xay ra that — khong them rule, khong
+    -- them signal.
+    local hau = (depth_cut and ":cut" or "") .. (pi_doan and "?pi" or "")
     if hd then
-        if qua_duoi then return "handler_ext" end
-        return "handler_all"
+        if qua_duoi then return "handler_ext" .. hau end
+        return "handler_all" .. hau
     end
 
     -- `hd == false` la TAT TUONG MINH. Cac truc autoload/ExecCGI o duoi la truc KHAC
@@ -917,8 +977,8 @@ local function fim_config_active(uri, rt)
         -- `.user.ini` truoc `php.ini`: pham vi cua no CHAC CHAN hon (co che
         -- per-directory chuan cua CGI/FastCGI), con `php.ini` di theo chuoi tim cau
         -- hinh cua SAPI/CWD nen chua chac ap cho thu muc nay.
-        if flag and flag.php    then return "autoload_userini" end
-        if flag and flag.phpini then return "autoload_phpini"  end
+        if flag and flag.php    then return "autoload_userini" .. hau end
+        if flag and flag.phpini then return "autoload_phpini"  .. hau end
     end
 
     if flag and flag.exec then
@@ -927,8 +987,8 @@ local function fim_config_active(uri, rt)
         --
         -- `:noop` = `AllowOverride` cua webserver KHONG cho `.htaccess` dat `ExecCGI`,
         -- nen dong do khong cap duoc gi. Ghi nhan chu khong bao — xem `fim.sh`.
-        if flag.exec_noop then return "execcgi_noop" end
-        return "execcgi_only"
+        if flag.exec_noop then return "execcgi_noop" .. hau end
+        return "execcgi_only" .. hau
     end
     return nil
 end

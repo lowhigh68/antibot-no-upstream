@@ -280,6 +280,32 @@ hta_raw "CRLF: SetHandler"            "@sh+"     'SetHandler application/x-httpd
 # chu khong chi "khong in gi": ben doc can biet "duoi nay DA BI TAT o day" khac
 # "khong co gi o day". Do la ly do khong the OR moi ancestor.
 hta_raw "rm: chi RemoveHandler"           "h0:jpg"  'RemoveHandler .jpg\n'
+
+# ── DUOI KHONG CO DAU CHAM ───────────────────────────────────────────
+#
+# Apache nhan ca `.jpg` va `jpg`. Nhung `sub(/^./, "", e)` (thieu gach nguoc) xoa KY TU
+# DAU BAT KY, nen `RemoveHandler jpg` cho `h0:pg`. Loi do CHINH TOI gay ra o `3186420`
+# khi them cong `depth` bang `awk` — gach nguoc bi an. Khong ca nao bat vi ca bo test
+# chi thu dang CO dau cham.
+hta_raw "duoi khong dau cham: RemoveHandler jpg" "h0:jpg" 'RemoveHandler jpg\n'
+hta_raw "duoi khong dau cham: RemoveType jpg"    "t0:jpg" 'RemoveType jpg\n'
+hta_raw "duoi khong dau cham: AddHandler php jpg" "h+:jpg" \
+    'AddHandler application/x-httpd-php jpg\n'
+hta_raw "duoi khong dau cham: AddType php jpg"    "t+:jpg" \
+    'AddType application/x-httpd-php jpg\n'
+
+# ── DAU PHAY trong TEN DUOI duoc THOAT (review 2 diem 7) ────────────
+hta_raw "phay: .jpg,evil -> h+:jpg%2Cevil" "h+:jpg%2Cevil" \
+    'AddHandler application/x-httpd-php .jpg,evil\n'
+hta_raw "phay: hai duoi, mot co phay" "h+:a%2Cb
+h+:c" 'AddHandler application/x-httpd-php .a,b .c\n'
+# `%` THAT phai duoc thoat TRUOC `,`, neu khong mot `%2C` co that bi giai sai.
+# `%%2C` trong tham so: `hta_raw` dung `printf "$3"` nen `%2C` bi coi la chi thi dinh
+# dang va bi an. Day la mot cho de lech giua lenh do va dau vao THAT.
+hta_raw "phay: % that trong ten duoi" "h+:p%252cq" \
+    'AddHandler application/x-httpd-php .p%%2Cq\n'
+hta_raw "phay: ten duoi khong co gi dac biet" "h+:jpg" \
+    'AddHandler application/x-httpd-php .jpg\n'
 hta_raw "rm: chi RemoveType"              "t0:php"  'RemoveType .php\n'
 hta_raw "rm: Add roi Remove cung duoi"    "h0:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
 hta_raw "rm: Remove roi Add -> BAT lai"   "h+:jpg" 'RemoveHandler .jpg\nAddHandler application/x-httpd-php .jpg\n'
