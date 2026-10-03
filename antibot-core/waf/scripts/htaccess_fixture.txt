@@ -36,10 +36,10 @@ HANDLER	aDdHaNdLeR application/x-httpd-php .php
 ALL	SetHandler application/x-httpd-php
 ALL	ForceType application/x-httpd-php
 ALL	sethandler application/x-httpd-php
-OFFALL	SetHandler none
-OFFALL	SetHandler None
+RESET	SetHandler none
+RESET	SetHandler None
 OFFALL	ForceType text/plain
-OFFALL	sethandler none
+RESET	sethandler none
 
 # ── FP da bat va da sua (loi 6 cua nguoi dung, vong review truoc) ───
 # Token THU NHAT quyet dinh. `php` o day chi nam trong DUOI, khong trong handler.

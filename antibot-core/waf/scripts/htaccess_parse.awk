@@ -112,7 +112,7 @@ function strip_comment(s,   out, i, c, q) {
 # va do la ly do `@execcgi` tung KHONG BAO GIO in: `opt[depth]` voi `depth` chua khoi
 # tao ghi vao `opt[""]` trong khi `END` doc `opt[0]`, va awk danh chi muc bang CHUOI
 # nen `"" != "0"`.
-BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
+BEGIN { depth = 0; ifdepth = 0; cdepth = 0; sh = -1; ft = -1; opt[0] = -1
         if (execcgi_ok == "") execcgi_ok = 1 }
 
 {
@@ -143,12 +143,42 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # ban truoc dung regex phan biet hoa thuong nen `<filesmatch>` viet thuong KHONG
     # duoc tinh la container, va `SetHandler` ben trong bi nang thanh `@all` (da tai
     # hien duoc).
+    #
+    # ── MAU KHOP-TAT-CA van la phat bieu ve CA THU MUC ──────────────
+    #
+    # `<Files *>` khop MOI tep, nen mot directive trong no DUNG la phat bieu ve ca thu
+    # muc — khac han `<Files "safe.jpg">` chi noi ve mot tep. Do 03-10 tren 171-96: tep
+    # `.htaccess` cua `wpforms` dat `RemoveHandler`/`RemoveType` trong `<Files *>`, va
+    # coi no la container hep lam khoa Redis do bien mat (20 token -> rong) — tuc MAT
+    # mot cau hinh dang CHAN thuc thi o thu muc upload cua plugin.
+    #
+    # NGAN XEP (`cstack`) chu khong mot bo dem: `</Files>` phai giam dung cai da tang.
+    # Mot container khop-tat-ca KHONG tang `depth`, nen khi dong no cung khong duoc
+    # giam — thieu ngan xep thi `depth` tut xuong am va moi directive sau do bi coi la
+    # toan-thu-muc.
     if (low ~ /^<[ \t]*\/[ \t]*(filesmatch|files|location|locationmatch|directory|directorymatch|if)/) {
-        if (depth > 0) depth--
+        if (cdepth > 0) {
+            if (cstack[cdepth] == 1 && depth > 0) depth--
+            delete cstack[cdepth]
+            cdepth--
+        }
         next
     }
     if (low ~ /^<[ \t]*(filesmatch|files|location|locationmatch|directory|directorymatch|if)[ \t>]/) {
-        depth++; next
+        cdepth++
+        # Doi so cua container: lay phan giua ten va `>`, bo dau nhay.
+        arg = line
+        sub(/^<[ \t]*[A-Za-z]+[ \t]*/, "", arg)
+        sub(/[ \t]*>.*$/, "", arg)
+        gsub(/^["']|["']$/, "", arg)
+        # KHOP-TAT-CA: `*` (glob cua `<Files>`), hoac `.*` / `^.*$` (regex cua
+        # `<FilesMatch>`). Chi nhung mau NAY — mot `<Files "*.jpg">` la container HEP.
+        if (arg == "*" || arg == ".*" || arg == "^.*$" || arg == "^.*" || arg == ".*$") {
+            cstack[cdepth] = 0     # khong tang `depth`
+        } else {
+            cstack[cdepth] = 1; depth++
+        }
+        next
     }
 
     nf = tokenize(line, TOK)
@@ -211,8 +241,46 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
             e = TOK[i]; sub(/^\./, "", e)
             if (e != "") {
                 ee = tolower(e)
-                if (dang == 1) { if (depth == 0) h[ee] = 1 }
-                else           { h[ee] = 0; hneg[ee] = 1 }
+                # ── BA TRANG THAI, khong hai ───────────────────────
+                #
+                # `AddHandler default-handler .jpg` va `RemoveHandler .jpg` KHONG cung
+                # nghia, du ban truoc phat cung `h-:jpg`:
+                #   · `default-handler` DAT mot explicit handler lanh -> Apache khong
+                #     can dung content type lam synthetic handler nua.
+                #   · `RemoveHandler` GO mapping -> khong con explicit handler, nen mot
+                #     `AddType php` VAN co the tro thanh handler.
+                # Do 03-10: cha `t+:jpg` + con `RemoveHandler .jpg` cho `nil`, dung
+                # phai `handler_ext`. FN.
+                #
+                #   1   nguy hiem        -> `h+:`
+                #   0   explicit LANH    -> `h-:`  (DUNG lai, khong roi xuong truc duoi)
+                #  -2   mapping BI GO    -> `h0:`  (xoa trang thai, CHO roi xuong)
+                # ── `depth` ap cho CA HAI CHIEU ────────────────────
+                #
+                # Ban truoc chi cong `depth` o chieu BAT, lap luan rang mot token TAT
+                # trong container lam ket qua "nhe hon" nen la huong an toan. SAI voi
+                # mot WAF: nhe hon o day chinh la BO TIN HIEU.
+                #
+                #     # cha
+                #     AddHandler application/x-httpd-php .jpg
+                #     # con
+                #     <Files "safe.jpg">
+                #         RemoveHandler .jpg
+                #     </Files>
+                #
+                # Chi `safe.jpg` duoc go handler; `evil.jpg` trong cung thu muc VAN chay
+                # PHP. Do 03-10: parser phat `h0:jpg` cho CA thu muc, nen moi `.jpg` o
+                # con bi ket luan lanh. FN.
+                #
+                # Mot directive trong `<Files>`/`<FilesMatch>`/`<If>` KHONG phat bieu gi
+                # ve ca thu muc — ca hai chieu. Huong nay bo sot cac directive NGUY HIEM
+                # trong container (do la gioi han da biet, xem `scoped_exec_config` o
+                # cuoi tep), nhung KHONG cho mot token lanh trong container triet tieu
+                # trang thai nguy hiem toan thu muc.
+                if (depth == 0) {
+                    if (dang == 1) h[ee] = 1
+                    else         { h[ee] = 0; hneg[ee] = 1 }
+                }
             }
         }
         next
@@ -226,21 +294,25 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
             e = TOK[i]; sub(/^\./, "", e)
             if (e != "") {
                 ee = tolower(e)
-                if (dang == 0 && (ee in t) && t[ee]) tneg[ee] = 1
-                if (dang == 1) { if (depth == 0) t[ee] = 1 }
-                else           { t[ee] = 0 }
+                # `depth` ap cho CA HAI chieu — xem khoi ly do o `addhandler`.
+                if (depth == 0) {
+                    if (dang == 0 && (ee in t) && t[ee]) tneg[ee] = 1
+                    if (dang == 1) t[ee] = 1
+                    else           t[ee] = 0
+                }
             }
         }
         next
     }
     # `RemoveHandler` chi xoa truc HANDLER; `RemoveType` chi xoa truc TYPE. Doi so la
     # DANH SACH DUOI tu token thu HAI (khong co mime/handler o dau).
+    # `Remove*` = RESET (`-2`), khong phai explicit-safe. Xem khoi ba trang thai o tren.
     if (d == "removehandler") {
-        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { h[tolower(e)] = 0; hneg[tolower(e)] = 1 } }
+        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^./, "", e); if (e != "") { h[tolower(e)] = -2; hneg[tolower(e)] = 1 } }
         next
     }
     if (d == "removetype") {
-        for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^\./, "", e); if (e != "") { t[tolower(e)] = 0; tneg[tolower(e)] = 1 } }
+        if (depth == 0) for (i = 2; i <= nf; i++) { e = TOK[i]; sub(/^./, "", e); if (e != "") { t[tolower(e)] = -2; tneg[tolower(e)] = 1 } }
         next
     }
 
@@ -256,12 +328,19 @@ BEGIN { depth = 0; ifdepth = 0; sh = -1; ft = -1; opt[0] = -1
     # khong noi gi thi thua huong cha; mot thu muc noi `none` thi RUT LAI cua cha. Ban
     # truoc nhap hai thu do lam mot (khong in gi) nen mat chieu rut.
     #   sh = -1 chua noi gi | 0 TAT tuong minh | 1 BAT
+    # `SetHandler None` / `ForceType None` = RESET (`-2`), KHAC mot gia tri lanh (`0`).
+    # Tai lieu Apache: `SetHandler None` override mot `SetHandler` TRUOC do (bo forced
+    # handler, cac mapping khac ap tro lai); `ForceType None` khoi phuc MIME association
+    # binh thuong. Do 03-10: cha `h+:jpg` + con `SetHandler None` cho `nil`, dung phai
+    # `handler_ext` — `None` khong duoc chan mapping `AddHandler`. FN.
     if (d == "sethandler") {
-        if (depth == 0) sh = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
+        if (depth == 0) sh = (tolower(v) == "none") ? -2 \
+                             : ((tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0)
         next
     }
     if (d == "forcetype") {
-        if (depth == 0) ft = (tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0
+        if (depth == 0) ft = (tolower(v) == "none") ? -2 \
+                             : ((tolower(v) ~ /php|cgi|proxy:unix:|proxy:fcgi:/) ? 1 : 0)
         next
     }
 
@@ -358,19 +437,28 @@ END {
         # MOI TRUC doc BANG PHU DINH CUA RIENG NO. Dung chung mot `neg` thi mot
         # `RemoveType .jpg` lam truc HANDLER phat `h-:jpg` — tuc van gop hai truc, chi
         # di qua cua sau.
+        # SO SANH TUONG MINH, khong `if (h[e])`: awk danh gia MOI so khac 0 la true, nen
+        # `-2` (reset) se in thanh `h+` — bao NGUY HIEM cho mot phep GO mapping. Cung
+        # lop loi voi `if (opt[0])` tung in `@execcgi` cho mot tep RONG.
         if (e in h) {
-            if (h[e])           print "h+:" e
-            else if (e in hneg) print "h-:" e
+            if (h[e] == 1)       print "h+:" e
+            else if (h[e] == -2) print "h0:" e
+            else if (e in hneg)  print "h-:" e
         }
         if (e in t) {
-            if (t[e])           print "t+:" e
-            else if (e in tneg) print "t-:" e
+            if (t[e] == 1)       print "t+:" e
+            else if (t[e] == -2) print "t0:" e
+            else if (e in tneg)  print "t-:" e
         }
     }
-    if (sh == 1)      print "@sh+"
-    else if (sh == 0) print "@sh-"
-    if (ft == 1)      print "@ft+"
-    else if (ft == 0) print "@ft-"
+    # BA trang thai moi truc. `-2` la RESET: xoa trang thai cung truc trong luc merge
+    # NHUNG cho reducer roi xuong truc uu tien thap hon. `0` la explicit-safe va DUNG.
+    if (sh == 1)       print "@sh+"
+    else if (sh == 0)  print "@sh-"
+    else if (sh == -2) print "@sh0"
+    if (ft == 1)       print "@ft+"
+    else if (ft == 0)  print "@ft-"
+    else if (ft == -2) print "@ft0"
     # `@exec+` in o DAY, sau khi da doc het tep: chi luc do moi biet dong `Options`
     # CUOI CUNG o pham vi 0 la dong nao. Chi `opt[0]` duoc doc — xem ly do o tren.
     if (opt[0] == 1)      print (execcgi_ok + 0 == 0) ? "@exec+:noop" : "@exec+"

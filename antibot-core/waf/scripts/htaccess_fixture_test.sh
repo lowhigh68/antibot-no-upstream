@@ -90,6 +90,10 @@ while IFS=$'\t' read -r want rule; do
         "@sh+"|"@ft+"|"@all")   got=ALL ;;
         "@exec+"|"@execcgi")    got=EXECCGI ;;
         "@sh-"|"@ft-"|"-@all")  got=OFFALL ;;
+        # `@sh0`/`@ft0` la RESET, KHONG phai "tat tuong minh": chung GO mapping va cho
+        # co che binh thuong ap tro lai. Lop RIENG — gop vao OFFALL se pin dung cai
+        # nhap hai thu do lam mot (review 2 diem 2).
+        "@sh0"|"@ft0")         got=RESET ;;
         "@exec-"|"-@execcgi")   got=OFFEXEC ;;
         *)                      got=HANDLER ;;
     esac
@@ -127,7 +131,7 @@ while IFS=$'\t' read -r want rule; do
     bad=""
     for tk in $(printf '%s\n' "$out" | tr "," " "); do
         case "$tk" in
-            @sh+|@sh-|@ft+|@ft-|@exec+|@exec-|@exec+:noop) ;;
+            @sh+|@sh-|@sh0|@ft+|@ft-|@ft0|@exec+|@exec-|@exec+:noop) ;;
             @php|@phpini) ;;
             @all|@execcgi|@execcgi:noop|-@all|-@execcgi) ;;
             h+:*|h-:*|t+:*|t-:*)
@@ -164,7 +168,7 @@ while IFS=$'\t' read -r want rule; do
     # UPLOAD nen no khong thay gi dang chu y -> `NONE`. Gop chung vao nhanh `HANDLER`
     # se doi Lua bao `handler=co` cho mot dong TAT — nguoc han.
     case "$want" in
-        NONE|OFFEXEC|OFFALL) exp_lua=NONE ;;
+        NONE|OFFEXEC|OFFALL|RESET) exp_lua=NONE ;;
         *)                   exp_lua=HANDLER ;;
     esac
     want "$rule" "lua(co/khong)" "$lua_got" "$exp_lua"
@@ -275,18 +279,18 @@ hta_raw "CRLF: SetHandler"            "@sh+"     'SetHandler application/x-httpd
 # `Remove*` huy mapping KE THUA tu cha (mod_mime) — nen parser phai phat `rm:<duoi>`
 # chu khong chi "khong in gi": ben doc can biet "duoi nay DA BI TAT o day" khac
 # "khong co gi o day". Do la ly do khong the OR moi ancestor.
-hta_raw "rm: chi RemoveHandler"           "h-:jpg"  'RemoveHandler .jpg\n'
-hta_raw "rm: chi RemoveType"              "t-:php"  'RemoveType .php\n'
-hta_raw "rm: Add roi Remove cung duoi"    "h-:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: chi RemoveHandler"           "h0:jpg"  'RemoveHandler .jpg\n'
+hta_raw "rm: chi RemoveType"              "t0:php"  'RemoveType .php\n'
+hta_raw "rm: Add roi Remove cung duoi"    "h0:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
 hta_raw "rm: Remove roi Add -> BAT lai"   "h+:jpg" 'RemoveHandler .jpg\nAddHandler application/x-httpd-php .jpg\n'
 hta_raw "rm: Remove duoi KHAC khong anh huong" "h+:jpg
-h-:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
+h0:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
 # `Remove*` KHONG loc theo handler: doi so cua no la danh sach DUOI tu token thu HAI,
 # va no rut lai bat ke handler cu la gi.
-hta_raw "rm: RemoveHandler nhieu duoi"    "h-:cgi
-h-:pl" 'RemoveHandler .cgi .pl\n'
+hta_raw "rm: RemoveHandler nhieu duoi"    "h0:cgi
+h0:pl" 'RemoveHandler .cgi .pl\n'
 # Huong NGUOC: `Add*` khong-PHP van bi bo qua, va `Remove*` khong duoc lam no xuat hien.
-hta_raw "rm: AddType text/plain roi Remove" "h-:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: AddType text/plain roi Remove" "h0:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
 
 # ── NHOM 24: HAI TRUC doc lap — handler vs media type ─────────────────
 #
@@ -301,11 +305,11 @@ hta_raw "rm: AddType text/plain roi Remove" "h-:jpg" 'AddType text/plain .jpg\nR
 # nhung KHONG cham `h+:jpg`. Truoc 02-10 ca nay cho MOT token `ext:jpg` vi hai truc bi
 # OR trong parser, nen khong the phan biet "handler con song" voi "type bi go".
 hta_raw "truc: RemoveType KHONG xoa handler" "h+:jpg
-t-:jpg" 'AddHandler application/x-httpd-php .jpg\nRemoveType .jpg\n'
-hta_raw "truc: RemoveHandler KHONG xoa type" "h-:jpg
+t0:jpg" 'AddHandler application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: RemoveHandler KHONG xoa type" "h0:jpg
 t+:jpg" 'AddType application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
-hta_raw "truc: cung truc handler -> TAT"     "h-:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
-hta_raw "truc: cung truc type -> TAT"        "t-:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
+hta_raw "truc: cung truc handler -> TAT"     "h0:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
+hta_raw "truc: cung truc type -> TAT"        "t0:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
 hta_raw "truc: ghi de bang handler LANH -> TAT" "h-:jpg" 'AddHandler application/x-httpd-php .jpg\nAddHandler default-handler .jpg\n'
 hta_raw "truc: type lanh KHONG tat handler nguy" "h+:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
 # Huong NGUOC — quan trong nhat: mot `AddType` LANH don thuan KHONG phu dinh gi. In
@@ -425,22 +429,62 @@ hta_raw "pham vi: ngoai BAT, trong FilesMatch TAT" "@exec+" 'Options +ExecCGI\n<
 #
 # Suite van XANH sau phep sua, nghia la truoc do khong ca nao do duong nay. Cac ca duoi
 # dong lo do.
-hta_raw "depth: AddHandler trong Files -> KHONG phai ca thu muc" "" \
-    '<Files *>\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
-hta_raw "depth: AddType trong Files -> KHONG phai ca thu muc" "" \
-    '<Files *>\nAddType application/x-httpd-php .jpg\n</Files>\n'
-hta_raw "depth: SetHandler trong Files -> KHONG phai ca thu muc" "" \
-    '<Files *>\nSetHandler application/x-httpd-php\n</Files>\n'
-hta_raw "depth: ForceType trong Files -> KHONG phai ca thu muc" "" \
-    '<Files *>\nForceType application/x-httpd-php\n</Files>\n'
+hta_raw "depth: AddHandler trong Files HEP -> KHONG phai ca thu muc" "" \
+    '<Files "x.jpg">\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "depth: AddType trong Files HEP -> KHONG phai ca thu muc" "" \
+    '<Files "x.jpg">\nAddType application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "depth: SetHandler trong Files HEP -> KHONG phai ca thu muc" "" \
+    '<Files "x.jpg">\nSetHandler application/x-httpd-php\n</Files>\n'
+hta_raw "depth: ForceType trong Files HEP -> KHONG phai ca thu muc" "" \
+    '<Files "x.jpg">\nForceType application/x-httpd-php\n</Files>\n'
 
-# CHIEU TAT thi KHONG kiem `depth`, co chu dich: mot `Remove*` trong container rut lai
-# kha nang thuc thi cho mot tap tep, va ghi nhan no o muc thu muc chi lam ket qua NHE
-# hon — huong an toan.
-hta_raw "depth: RemoveHandler trong FilesMatch VAN phat (huong an toan)" "h-:jpg" \
+# ── MAU KHOP-TAT-CA van la phat bieu ve CA THU MUC ──────────────────
+#
+# `<Files *>` khop MOI tep, nen mot directive trong no DUNG la phat bieu ve ca thu muc.
+# Do 03-10 tren 171-96: `.htaccess` cua `wpforms` dat `RemoveHandler`/`RemoveType` trong
+# `<Files *>`, va coi no la container HEP lam khoa Redis do bien mat (21 token -> rong)
+# — tuc MAT mot cau hinh dang CHAN thuc thi o thu muc upload cua plugin.
+hta_raw "khop-tat-ca: <Files *> AddHandler -> CA thu muc" "h+:jpg" \
+    '<Files *>\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "khop-tat-ca: <Files \"*\"> co nhay -> CA thu muc" "h+:jpg" \
+    '<Files "*">\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
+hta_raw "khop-tat-ca: <FilesMatch \".*\"> -> CA thu muc" "@sh+" \
+    '<FilesMatch ".*">\nSetHandler application/x-httpd-php\n</FilesMatch>\n'
+hta_raw "khop-tat-ca: <FilesMatch \"^.*\$\"> -> CA thu muc" "@sh+" \
+    '<FilesMatch "^.*$">\nSetHandler application/x-httpd-php\n</FilesMatch>\n'
+# `<Files "*.jpg">` la container HEP — `*` chi la mot phan cua mau.
+hta_raw "khop-tat-ca: <Files \"*.jpg\"> la HEP -> khong phat" "" \
+    '<Files "*.jpg">\nAddHandler application/x-httpd-php .jpg\n</Files>\n'
+
+# NGAN XEP: dong mot container khop-tat-ca KHONG duoc giam `depth`. Thieu ngan xep thi
+# `depth` tut xuong am va moi directive SAU do bi coi la toan-thu-muc.
+hta_raw "ngan xep: sau </Files *> van dem dung" "h+:jpg" \
+    '<Files *>\nRewriteEngine On\n</Files>\nAddHandler application/x-httpd-php .jpg\n'
+hta_raw "ngan xep: khop-tat-ca LONG container hep" "" \
+    '<Files *>\n<Files "x">\nSetHandler application/x-httpd-php\n</Files>\n</Files>\n'
+hta_raw "ngan xep: container hep LONG khop-tat-ca" "" \
+    '<Files "x">\n<Files *>\nSetHandler application/x-httpd-php\n</Files>\n</Files>\n'
+
+# CHIEU TAT cung kiem `depth`: mot token lanh/reset trong container HEP khong duoc
+# triet tieu trang thai nguy hiem toan thu muc (review 2 diem 3).
+#
+#     # cha
+#     AddHandler application/x-httpd-php .jpg
+#     # con
+#     <Files "safe.jpg">
+#         RemoveHandler .jpg
+#     </Files>
+#
+# Chi `safe.jpg` duoc go handler; `evil.jpg` trong cung thu muc VAN chay PHP. Ban truoc
+# phat `h0:jpg` cho CA thu muc nen moi `.jpg` o con bi ket luan lanh — FN. Chu thich cu
+# cua toi goi day la "huong an toan"; voi mot WAF, nhe hon chinh la BO TIN HIEU.
+hta_raw "depth: RemoveHandler trong Files HEP -> KHONG phat" "" \
     '<FilesMatch "x">\nRemoveHandler .jpg\n</FilesMatch>\n'
-hta_raw "depth: AddHandler LANH trong Files VAN phat h- (huong an toan)" "h-:jpg" \
-    '<Files *>\nAddHandler default-handler .jpg\n</Files>\n'
+hta_raw "depth: AddHandler LANH trong Files HEP -> KHONG phat" "" \
+    '<Files "x.jpg">
+AddHandler default-handler .jpg
+</Files>
+'
 
 # `<IfModule>` KHONG gioi han pham vi theo tep, nen directive ben trong VAN ap ca thu
 # muc. Thieu ca nay thi mot ban "moi container deu chan" cung qua.

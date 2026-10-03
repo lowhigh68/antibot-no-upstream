@@ -1394,13 +1394,30 @@ do
         i = j + 1
     end
 end
+-- `OLD` = nua SAU cua mang `MGET` (tien to `waf:fimchg:` cu), cung dang phan cach TAB.
+-- Thieu bien nay thi khong ca nao dat duoc gia tri vao HAI namespace that, va dot bien
+-- R-r1 (quay lai `for i = nk, 1, -1`) KHONG bi bat — do duoc 03-10.
+local old = {}
+do
+    local s = os.getenv("OLD") or ""
+    local i = 1
+    while true do
+        local j = s:find("\t", i, true)
+        if not j then old[#old + 1] = s:sub(i); break end
+        old[#old + 1] = s:sub(i, j - 1)
+        i = j + 1
+    end
+end
 pool.safe_mget = function(keys, n)
-    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU. Nhom nay chi
-    -- dung tien to moi; nua sau tra `ngx.null`.
+    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU.
     local out, half = {}, n / 2
-    for i = 1, n do
-        local v = (i <= half) and chain[i] or nil
+    for i = 1, half do
+        local v = chain[i]
         out[i] = (v and v ~= "") and v or ngx.null
+    end
+    for i = 1, half do
+        local v = old[i]
+        out[half + i] = (v and v ~= "") and v or ngx.null
     end
     return out
 end
@@ -1511,17 +1528,24 @@ cc "prec: handler TAT o con DE BE type BAT o cha" \
 cc "prec: type lanh o con KHONG de be handler o cha" \
    "/con/a.jpg" "handler_ext" "handler_ext" \
    'AddHandler application/x-httpd-php .jpg\n' 'AddType image/jpeg .jpg\n'
-# `SetHandler` la muc CAO NHAT trong thang, va nhan dinh do vuot CA khoang cach tang:
-# Apache gop `.htaccess` theo thu muc, nen `SetHandler none` cua cha VAN hieu luc o con
-# tru khi con DAT LAI chinh `SetHandler`. Mot `AddHandler` o con khong go duoc no.
+# `SetHandler None` KHONG phai mot handler lanh — no la RESET.
 #
-# Toi viet ky vong `handler_ext` o ban dau — tu mau thuan voi chinh dong chu thich nay —
-# va bo test bat ngay (`duoc=nil mong=handler_ext`). Ca doi chung
-# `cha SetHandler php + con SetHandler none -> TAT` cho thay chieu con lai: CUNG truc
-# thi tang gan hon thang.
-cc "prec: SetHandler none o cha THANG AddHandler php o con" \
-   "/con/a.jpg" "nil" "nil" \
+# Tai lieu Apache (core, `SetHandler`): "Setting the value to None ... reverts to the
+# normal handling". Nen `SetHandler none` o cha CHI bo forced handler; mot `AddHandler`
+# o con VAN ap dung.
+#
+# Toi viet ky vong `nil` o ban truoc va KHANG DINH no bang mot dong chu thich tu suy
+# luan ("SetHandler la muc CAO NHAT nen vuot ca khoang cach tang"). Review 2 diem 2 bat
+# dung ca nay la oracle SAI, va tai lieu Apache xac nhan review dung. Ba trang thai
+# (`@sh0` cho `None`, `@sh-` cho mot gia tri lanh) moi mo ta duoc phan biet nay.
+cc "prec: SetHandler None o cha la RESET -> AddHandler o con VAN ap" \
+   "/con/a.jpg" "handler_ext" "handler_ext" \
    'SetHandler none\n' 'AddHandler application/x-httpd-php .jpg\n'
+
+# Huong NGUOC: mot gia tri LANH (khong phai `None`) thi DUNG lai.
+cc "prec: SetHandler default-handler o cha CHAN AddHandler o con" \
+   "/con/a.jpg" "nil" "nil" \
+   'SetHandler default-handler\n' 'AddHandler application/x-httpd-php .jpg\n'
 
 # ── `Options All`: DU LIEU BAC BO HAI GIA THUYET LIEN TIEP cua toi ───
 #
@@ -1638,12 +1662,34 @@ cc "muc7: shell.php.jpg CHAY khi .php duoc anh xa (sufs la TAP)" \
 cc "muc7: shell.txt.jpg KHONG chay khi chi .php duoc anh xa" \
    "/con/shell.txt.jpg" "nil" "nil" \
    'AddHandler application/x-httpd-php .php\n' '# khong gi\n'
-
-# Trong CUNG mot muc, BAT thang TAT: `.php` nguy + `.jpg` lanh tren cung mot ten tep
-# van CHAY. Mot ban "duoi cuoi thang" se tra `nil` o day.
-cc "muc7: .php nguy + .jpg lanh tren cung ten -> VAN chay" \
-   "/con/shell.php.jpg" "handler_ext" "handler_ext" \
+# RIGHTMOST WINS trong CUNG mot truc — tai lieu Apache (mod_mime, "Files with Multiple
+# Extensions"): "If more than one extension is given that maps onto the same type of
+# metadata, then the one to the right will be used, except for languages and content
+# encodings."
+#
+# Hai dong duoi deu la `AddHandler` — CUNG truc — nen `.jpg` o ben phai THANG, va
+# `shell.php.jpg` KHONG chay. Toi ghim `handler_ext` o ban truoc va do la oracle SAI;
+# review 2 diem 4 bat dung ca nay. Lan truoc toi con BAC BO diem nay bang mot lap luan
+# ve `AddType`/`AddLanguage` — lap luan do khong ap cho hai `AddHandler`.
+cc "muc7: hai AddHandler cung truc -> duoi BEN PHAI thang" \
+   "/con/shell.php.jpg" "nil" "nil" \
    'AddHandler application/x-httpd-php .php\nAddHandler default-handler .jpg\n' '# khong gi\n'
+
+# Dao thu tu duoi trong TEN TEP: `.php` o ben phai -> CHAY.
+cc "muc7: shell.jpg.php -> .php ben phai thang -> CHAY" \
+   "/con/shell.jpg.php" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .php\nAddHandler default-handler .jpg\n' '# khong gi\n'
+
+# GIUA cac truc thi KHAC: handler thang media-type. Tai lieu Apache: "Care should be
+# taken when a file with multiple extensions gets associated with both a media-type and
+# a handler. This will usually result in the request being handled by the module
+# associated with the handler."
+#
+# Nen lo hong upload co dien VAN bi bat: `.jpg` chi co `AddType`, khong canh tranh truc
+# handler.
+cc "muc7: handler .php + TYPE .jpg -> handler thang -> CHAY" \
+   "/con/shell.php.jpg" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .php\nAddType image/jpeg .jpg\n' '# khong gi\n'
 
 printf '  => %s/%s ca CHUA SUA' "$n29_chua" "$n29_tong"
 if [ "$n29_chua" -gt 0 ]; then
@@ -1696,6 +1742,64 @@ mv "tron: cha CU @all + con MOI @sh- -> con TAT duoc" \
    "/con/a.jpg" "nil" "v2,@sh-" "@all"
 mv "tron: cha MOI @sh+ + con CU rong -> ke thua" \
    "/con/a.jpg" "handler_all" "" "v2,@sh+"
+
+# ── HAI NAMESPACE THAT: fallback theo TUNG TANG, khong cong hai snapshot ──
+#
+# Cac ca `mv` o tren chi dat gia tri vao nua `fimcfg` (MOI); chung tron GRAMMAR trong
+# cung mot nua. Nen dot bien R-r1 (quay lai `for i = nk, 1, -1` tren CA mang) khong bi
+# bat — do duoc 03-10, suite van xanh.
+#
+# `mv2 <ten> <uri> <mong> <moi-con> <moi-cha> <cu-con> <cu-cha>` dat CA HAI namespace.
+#
+# Ban truoc xep khoa `moi-con, moi-cha, cu-con, cu-cha` roi duyet tu CUOI ve DAU, nen
+# thu tu ap thuc te la `cu-cha -> cu-con -> moi-cha -> moi-con` — KHONG phai thu tu
+# Apache `cha -> con`. Do duoc:
+#   FN: moi=[con rong, cha h-:jpg]  cu=[con ext:jpg, cha rong] -> `nil`, dung `handler_ext`
+#   FP: cung thu muc, moi=[v2,@php] cu=[ext:jpg]               -> `handler_ext`, dung `nil`
+mv2() {
+    local nhan="$1" uri="$2" mong="$3" mcon="$4" mcha="$5" ccon="$6" ccha="$7"
+    local got
+    got=$(env ANTIBOT_SRC="$SRC29" CHAIN="$mcon	$mcha" OLD="$ccon	$ccha" \
+              URI="$uri" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
+    want "30 $nhan" "$got" "$mong"
+}
+
+# THU TU TANG: con thang cha, bat ke khoa o namespace nao.
+mv2 "ns: cha MOI an toan + con CU nguy -> CON thang" \
+    "/con/a.jpg" "handler_ext" "" "v2,h-:jpg" "ext:jpg" ""
+mv2 "ns: cha CU nguy + con MOI an toan -> CON thang" \
+    "/con/a.jpg" "nil" "v2,h-:jpg" "" "" "ext:jpg"
+
+# CUNG THU MUC co ca hai khoa: khoa MOI la snapshot THAY THE, khong phai bo sung.
+# Snapshot moi khong con `.jpg` nghia la mapping do DA BI BO.
+mv2 "ns: cung thu muc, MOI thieu truc cu -> truc cu KHONG song tiep" \
+    "/con/a.jpg" "nil" "v2,@php" "" "ext:jpg" ""
+mv2 "ns: cung thu muc, MOI co truc -> doc theo MOI" \
+    "/con/a.jpg" "handler_ext" "v2,h+:jpg" "" "@all" ""
+
+# CHI co khoa CU -> van doc duoc (di tru chua xong).
+mv2 "ns: chi khoa CU o con" "/con/a.jpg" "handler_ext" "" "" "ext:jpg" ""
+mv2 "ns: chi khoa CU o cha" "/con/a.jpg" "handler_all" "" "" "" "@all"
+
+# ── RESET phai ROI XUONG, explicit-safe phai DUNG (review 2 diem 2) ──
+#
+# Dot bien R-r2 (coi `"reset"` nhu `false`) khong bi bat boi cac ca `mv` o tren. Ba ca
+# duoi la ba ca FN ma review neu, do tren duong doc THAT.
+mv "reset: cha t+:jpg + con h0:jpg -> type thanh synthetic handler" \
+   "/con/a.jpg" "handler_ext" "v2,h0:jpg" "v2,t+:jpg"
+mv "reset: cha h+:jpg + con @sh0 -> AddHandler cua cha VAN ap" \
+   "/con/a.jpg" "handler_ext" "v2,@sh0" "v2,h+:jpg"
+mv "reset: cha t+:jpg + con @ft0 -> MIME association khoi phuc" \
+   "/con/a.jpg" "handler_ext" "v2,@ft0" "v2,t+:jpg"
+
+# Huong NGUOC: explicit-safe DUNG lai, khong roi xuong. Thieu cap ca nay thi mot ban
+# "coi moi phu dinh la reset" cung qua.
+mv "safe: cha t+:jpg + con h-:jpg -> DUNG, khong roi xuong type" \
+   "/con/a.jpg" "nil" "v2,h-:jpg" "v2,t+:jpg"
+mv "safe: cha h+:jpg + con @sh- -> DUNG" \
+   "/con/a.jpg" "nil" "v2,@sh-" "v2,h+:jpg"
+mv "safe: cha t+:jpg + con @ft- -> DUNG" \
+   "/con/a.jpg" "nil" "v2,@ft-" "v2,t+:jpg"
 
 # ── PATH_INFO cho MOI duoi, khong chi duoi PHP ───────────────────────
 #

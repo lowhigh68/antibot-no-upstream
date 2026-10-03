@@ -657,9 +657,32 @@ local function fim_config_active(uri, rt)
     -- o con xoa luon handler ke thua (ca1: FN) va `AddHandler default-handler .jpg`
     -- khong xoa duoc type ke thua (ca2: FP).
     local h, t, flag = nil, nil, nil
-    for i = nk, 1, -1 do
+    -- ── MOT GIA TRI MOI TANG: fallback, KHONG phai cong hai snapshot ──
+    --
+    -- `keys` xep `ns` khoa MOI (con -> cha) roi `ns` khoa CU (con -> cha). Ban truoc
+    -- duyet `i = nk, 1, -1` tren CA mang, nen thu tu ap thuc te la
+    --     cu-cha -> cu-con -> moi-cha -> moi-con
+    -- KHONG phai thu tu Apache `cha -> con`. Do duoc 03-10 bang chinh `init.lua`:
+    --
+    --   FN: NEW=[con rong, cha v2,h-:jpg]  OLD=[con ext:jpg, cha rong]
+    --       -> `nil`, dung phai `handler_ext` (Apache lay con, va con CU bat .jpg)
+    --   FP: NEW=[con v2,@php]  OLD=[con ext:jpg]  cung mot thu muc
+    --       -> `handler_ext`, dung phai `nil` (snapshot MOI khong con .jpg)
+    --
+    -- Hai loi khac nhau: cai dau la THU TU TANG, cai sau la hai snapshot cua CUNG mot
+    -- thu muc duoc cong lai. Marker `v2` chi chon GRAMMAR cho tung value, no khong lam
+    -- khoa moi THAY THE khoa cu.
+    --
+    -- Nay: moi tang chon MOT value (moi neu co, nguoc lai cu), roi duyet tu CHA xuong
+    -- CON. Van mot `MGET` — chi doi cach ghep cap truoc khi reducer nhan token.
+    for i = ndir, 1, -1 do
         local v = vals[i]
-        if v and v ~= ngx.null and v ~= "" then
+        if v == ngx.null or v == "" then v = nil end
+        if not v then
+            local o = vals[ndir + i]
+            if o ~= ngx.null and o ~= "" then v = o end
+        end
+        if v then
             -- ── MOC PHIEN BAN TRONG GIA TRI ──────────────────────────
             --
             -- `c942edf` doi hop dong token (`ext:`/`@all` -> `h+:`/`@sh+`) ma KHONG doi
@@ -716,7 +739,10 @@ local function fim_config_active(uri, rt)
                     elseif e == "@php" then
                         flag = flag or {}; flag.php = true
                     elseif e == "@phpini" then
-                        if i == 1 or i == ndir + 1 then
+                        -- `i == 1` la thu muc CUA REQUEST. Khong con `i == ndir + 1`:
+                        -- vong gio chi chay `1..ndir` va chon MOT value moi tang, nen
+                        -- chi so khong con mang nghia "tien to nao".
+                        if i == 1 then
                             flag = flag or {}; flag.phpini = true
                         end
                     elseif e == "*" then
@@ -725,22 +751,39 @@ local function fim_config_active(uri, rt)
                         -- Dang CU NHAT: duoi THO khong tien to. HAN CHOT 06-10-2026.
                         h = h or {}; h[e] = true
                     end
+                -- BON trang thai moi truc, va day la ly do `"reset"` khong the la
+                -- `nil`: `nil` de tang XA hon ghi vao sau do (merge di tu cha xuong
+                -- con), con `"reset"` la mot phat bieu THAT cua tang nay — no xoa
+                -- trang thai cung truc nhung CHO reducer roi xuong truc uu tien thap
+                -- hon.
+                --   true     nguy hiem
+                --   false    explicit LANH -> reducer DUNG lai
+                --   "reset"  mapping BI GO -> reducer ROI XUONG
+                --   nil      khong phat bieu -> ke thua
                 elseif p3 == "h+:" then
                     h = h or {}; h[e:sub(4)] = true
                 elseif p3 == "h-:" then
                     h = h or {}; h[e:sub(4)] = false
+                elseif p3 == "h0:" then
+                    h = h or {}; h[e:sub(4)] = "reset"
                 elseif p3 == "t+:" then
                     t = t or {}; t[e:sub(4)] = true
                 elseif p3 == "t-:" then
                     t = t or {}; t[e:sub(4)] = false
+                elseif p3 == "t0:" then
+                    t = t or {}; t[e:sub(4)] = "reset"
                 elseif e == "@sh+" then
                     flag = flag or {}; flag.sh = true
                 elseif e == "@sh-" then
                     flag = flag or {}; flag.sh = false
+                elseif e == "@sh0" then
+                    flag = flag or {}; flag.sh = "reset"
                 elseif e == "@ft+" then
                     flag = flag or {}; flag.ft = true
                 elseif e == "@ft-" then
                     flag = flag or {}; flag.ft = false
+                elseif e == "@ft0" then
+                    flag = flag or {}; flag.ft = "reset"
                 elseif e == "@exec+" then
                     -- `@exec+` THAT xoa `exec_noop`: mot thu muc co CA hai nhan thi
                     -- cai SONG quyet dinh. Thieu dong `= nil` nay thi `@exec+` den SAU
@@ -764,9 +807,8 @@ local function fim_config_active(uri, rt)
                 elseif e == "@phpini" or e == "-@phpini" then
                     -- `@phpini` KHONG ke thua: pham vi cua `php.ini` di theo chuoi tim
                     -- cau hinh cua SAPI/CWD, khong mac nhien theo thu muc. Chi nhan khi
-                    -- no o CHINH thu muc cua request — `i == 1` (tien to moi) HOAC
-                    -- `i == ndir + 1` (tien to cu).
-                    if i == 1 or i == ndir + 1 then
+                    -- no o CHINH thu muc cua request (`i == 1`).
+                    if i == 1 then
                         flag = flag or {}; flag.phpini = (e == "@phpini")
                     end
 
@@ -800,36 +842,59 @@ local function fim_config_active(uri, rt)
     local hd = nil                    -- handler hieu luc: nil/true/false
     local qua_duoi = false            -- handler nay den tu MOT DUOI hay ca thu muc
 
-    -- Muc 1: `SetHandler` — ca thu muc, uu tien cao nhat.
-    if flag and flag.sh ~= nil then hd = flag.sh end
+    -- ── HAI QUY TAC, doc tu tai lieu Apache ──────────────────────────
+    --
+    -- mod_mime, "Files with Multiple Extensions":
+    --   "If more than one extension is given that maps onto the same type of metadata,
+    --    then the one to the right will be used, except for languages and content
+    --    encodings."
+    --   "Care should be taken when a file with multiple extensions gets associated with
+    --    both a media-type and a handler. This will usually result in the request being
+    --    handled by the module associated with the handler."
+    --
+    -- Hai cau KHONG mau thuan va chung cho hai quy tac KHAC nhau:
+    --   1. TRONG cung mot truc: duoi BEN PHAI thang.
+    --   2. GIUA cac truc: handler thang media-type.
+    --
+    -- Ban truoc duyet `sufs` nhu mot TAP va cho `true` thang moi `false`, nen
+    --     AddHandler php .php
+    --     AddHandler default-handler .jpg
+    -- tren `shell.php.jpg` tra `handler_ext` — SAI, vi ca hai dong deu la truc HANDLER
+    -- va `.jpg` o ben phai. Day la FP, va toi da BAC BO diem nay mot lan truoc bang mot
+    -- lap luan ve `AddType`/`AddLanguage` — lap luan do khong ap cho hai `AddHandler`.
+    --
+    -- Nhung `AddHandler php .php` + `AddType image/jpeg .jpg` thi VAN chay PHP: hai
+    -- truc KHAC nhau, va quy tac 2 cho handler thang. Lo hong upload co dien van bi bat.
 
-    -- Muc 2: `AddHandler` theo duoi. Chi xet khi muc 1 chua phat bieu, VA chi cho
-    -- chinh cac duoi cua tep nay — `sufs` la TAP (`shell.php.jpg` co ca `php` va
-    -- `jpg`), vi `AddHandler` so doi so voi TUNG duoi mot. Muc 7 cua ke hoach.
-    if hd == nil and h and sufs then
-        for i = 1, #sufs do
-            local s = h[sufs[i]]
-            if s ~= nil then
-                -- Trong cung muc, BAT thang TAT: `AddHandler php .php` + `.jpg` lanh
-                -- tren `shell.php.jpg` van CHAY (lo hong upload co dien).
-                if s then hd = true; qua_duoi = true; break end
-                if hd == nil then hd = false; qua_duoi = true end
-            end
+    -- `trang_thai_phai_sang_trai`: duyet `sufs` tu PHAI sang TRAI, lay phat bieu DAU
+    -- TIEN gap tren truc do. `nil` = truc nay khong noi gi ve bat ky duoi nao cua tep.
+    local function duoi_hieu_luc(bang)
+        if not bang or not sufs then return nil end
+        for i = #sufs, 1, -1 do
+            local s = bang[sufs[i]]
+            if s ~= nil then return s end
         end
+        return nil
+    end
+
+    -- Muc 1: `SetHandler` — ca thu muc, uu tien cao nhat.
+    if flag and flag.sh ~= nil and flag.sh ~= "reset" then hd = flag.sh end
+
+    -- Muc 2: `AddHandler` theo duoi — duoi BEN PHAI thang (quy tac 1).
+    if hd == nil then
+        local s = duoi_hieu_luc(h)
+        -- `"reset"` KHONG dung lai: `RemoveHandler` go mapping, nen Apache duoc phep
+        -- roi xuong content type. `false` (explicit-safe) thi DUNG.
+        if s ~= nil and s ~= "reset" then hd = s; qua_duoi = true end
     end
 
     -- Muc 3: `ForceType` — ca thu muc, chi khi KHONG co handler nao phat bieu.
-    if hd == nil and flag and flag.ft ~= nil then hd = flag.ft end
+    if hd == nil and flag and flag.ft ~= nil and flag.ft ~= "reset" then hd = flag.ft end
 
-    -- Muc 4: `AddType` theo duoi — thap nhat.
-    if hd == nil and t and sufs then
-        for i = 1, #sufs do
-            local s = t[sufs[i]]
-            if s ~= nil then
-                if s then hd = true; qua_duoi = true; break end
-                if hd == nil then hd = false; qua_duoi = true end
-            end
-        end
+    -- Muc 4: `AddType` theo duoi — thap nhat, cung quy tac phai-sang-trai.
+    if hd == nil then
+        local s = duoi_hieu_luc(t)
+        if s ~= nil and s ~= "reset" then hd = s; qua_duoi = true end
     end
 
     -- ── NHAN: pham vi cua phat bieu THANG quyet dinh nhan ────────────
