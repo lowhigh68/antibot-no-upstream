@@ -133,6 +133,60 @@ EOT
     if [ "$n" -eq 0 ] || [ "$yes" -eq 1 ]; then echo 1; else echo 0; fi
 }
 EXECCGI_OK="${FIM_EXECCGI_OK:-$(detect_execcgi_ok)}"
+
+# ── `AllowOverride` THEO USER, khong phai mot boolean toan may ───────
+#
+# `detect_execcgi_ok` gop MOI `httpd.conf` cua MOI user vao mot `yes`, nen mot user cho
+# `ExecCGI` lam moi user con lai cung duoc tinh la cho. Do 03-10 tren 171-96: fleet
+# DONG NHAT (66 dong `AllowOverride` giong nhau tung ky tu, 73/73 user CHAN), nen bug
+# nay khong gay loi HOM NAY — nhung no la mot FP cho san neu mot user duoc doi.
+#
+# `httpd-userdir.conf` tren may do la `AllowOverride FileInfo AuthConfig Limit Indexes`
+# — khong co `Options`, nen cung chan. Code cu doc ca hai nguon vao mot bien, nen ket
+# qua dung mot cach TINH CO.
+#
+# Bang `UOK[<user>]` tra lai theo TUNG user; `EXECCGI_OK` con lai lam mac dinh cho
+# duong dan khong xac dinh duoc user (vi du mot `FIM_ROOTS` tuy chinh trong bo test).
+declare -A UOK 2>/dev/null || :
+
+execcgi_ok_for() {
+    # `execcgi_ok_for <duong-dan>` -> 0/1
+    local p="$1" u
+    # `/home/<user>/domains/...` — lay doan thu hai. KHONG dung regex tren ca duong
+    # dan: mot thu muc ten `domains` long trong duong dan se lam no lay sai doan.
+    # Goc `/home` lay tu `FIM_HOME` — CUNG bien ma `wpinv` dung (`HOME_BASE` o ~1041),
+    # nen bo test dat duoc mot cay gia va ca dau-cuoi do duoc duong nay. Hardcode
+    # `/home` lam ca do KHONG the viet: `/home` khong ghi duoc trong moi truong test.
+    local hb="${FIM_HOME:-/home}"
+    case "$p" in
+        "$hb"/*/*) u=${p#"$hb"/}; u=${u%%/*} ;;
+        *)         printf '%s' "$EXECCGI_OK"; return 0 ;;
+    esac
+    [ -n "$u" ] || { printf '%s' "$EXECCGI_OK"; return 0; }
+    if [ -z "${UOK[$u]:-}" ]; then
+        local f="$DA_HTTPD/$u/httpd.conf" line tok yes=0 n=0
+        if [ -f "$f" ]; then
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                n=$((n + 1))
+                line=${line#*[Aa]llow[Oo]verride}
+                for tok in $line; do
+                    case "$tok" in
+                        All)        yes=1 ;;
+                        Options)    yes=1 ;;
+                        Options=*)  case ",${tok#Options=}," in *,ExecCGI,*) yes=1 ;; esac ;;
+                    esac
+                done
+            done <<EOT
+$(grep -hiE '^[[:space:]]*AllowOverride' "$f" 2>/dev/null)
+EOT
+        fi
+        # KHONG doc duoc tep cua user nay -> dung tri toan may (`EXECCGI_OK`), khong
+        # mac dinh `0`: `0` lam MAT tin hieu, con tri toan may giu nguyen hanh vi cu.
+        if [ "$n" -eq 0 ]; then UOK[$u]="$EXECCGI_OK"; else UOK[$u]="$yes"; fi
+    fi
+    printf '%s' "${UOK[$u]}"
+}
 INI_AWK="${FIM_INI_AWK:-$(dirname "$0")/inifile_parse.awk}"
 
 # TAO VA DAT QUYEN NGAY O DAY, mot cho duy nhat. Truoc ban nay co BA cho goi
@@ -596,7 +650,7 @@ dir_tokens() {
     local d="$1" toks="" t cf tok ini_s
     [ -d "$d" ] || return 0
     if [ -f "$d/.htaccess" ]; then
-        t=$(awk -v execcgi_ok="$EXECCGI_OK" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+        t=$(awk -v execcgi_ok="$(execcgi_ok_for "$d")" -f "$HTA_AWK" "$d/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
         [ -n "$t" ] && toks="$t"
     fi
     for cf in .user.ini php.ini; do

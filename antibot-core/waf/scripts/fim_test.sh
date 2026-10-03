@@ -1868,6 +1868,69 @@ eok "16 ca hai KHONG cho -> 0" "0"
 printf 'AllowOverride None\n' > "$AO/u1/httpd.conf"
 printf 'AllowOverride None\n' > "$AO/u2/httpd.conf"
 eok "16 AllowOverride None -> 0" "0"
+
+# ── `execcgi_ok_for`: THEO USER, khong phai mot boolean toan may (muc 32) ──
+#
+# `detect_execcgi_ok` gop MOI user vao mot `yes`, nen ca "mot dong cho, mot dong khong
+# -> 1" o tren la DUNG cho ham do nhung SAI cho cau hoi that: thu muc NAY co chay CGI
+# duoc khong. Mot user cho `ExecCGI` khong lam user khac duoc cho.
+#
+# Do 03-10 tren 171-96: fleet DONG NHAT (66 dong `AllowOverride` giong nhau tung ky tu,
+# 73/73 user CHAN), nen bug nay khong gay loi HOM NAY. Cac ca duoi do CO CHE, de mot
+# user duoc doi `AllowOverride` khong keo ca may theo.
+printf '\n── execcgi_ok_for: theo tung user (muc 32) ──\n'
+AO32="$R/ao32"; mkdir -p "$AO32/u1" "$AO32/u2"
+printf 'AllowOverride All\n' > "$AO32/u1/httpd.conf"
+printf 'AllowOverride AuthConfig FileInfo Indexes Limit Options=Indexes,None\n' > "$AO32/u2/httpd.conf"
+eokf() {  # eokf <ten> <duong-dan> <mong> [EXECCGI_OK]
+    local g
+    g=$(FIM_AO32="$AO32" FIM_P="$2" FIM_DEF="${4:-1}" \
+        bash -c 'set -uo pipefail
+                 DA_HTTPD="$FIM_AO32"; EXECCGI_OK="$FIM_DEF"; declare -A UOK
+                 '"$(sed -n "/^execcgi_ok_for() {/,/^}/p" "$HERE/fim.sh")"'
+                 execcgi_ok_for "$FIM_P"' 2>/dev/null)
+    want "32 $1" "${g:-LOI}" "$3"
+}
+eokf "user CHO -> 1"  "/home/u1/domains/t.test/public_html" "1"
+eokf "user CHAN -> 0" "/home/u2/domains/t.test/public_html" "0"
+# HAI user tren CUNG mot may cho HAI ket qua: day la dieu `detect_execcgi_ok` khong
+# lam duoc, va la toan bo ly do ham nay ton tai.
+eokf "user KHONG co tep -> dung tri toan may (1)" "/home/u3/domains/t.test/public_html" "1"
+eokf "user KHONG co tep, tri toan may 0 -> 0"     "/home/u3/domains/t.test/public_html" "0" "0"
+# Duong dan NGOAI `/home` (vi du `FIM_ROOTS` tuy chinh trong bo test) -> tri toan may.
+eokf "ngoai /home -> tri toan may (1)" "/srv/web/public_html" "1"
+eokf "ngoai /home, tri toan may 0 -> 0" "/srv/web/public_html" "0" "0"
+# `/home` nhung KHONG du hai doan -> tri toan may, khong duoc lay `home` lam user.
+eokf "/home mot doan -> tri toan may" "/home/u1" "1"
+
+# ── DAU-CUOI: `dir_tokens` phai THAT SU goi `execcgi_ok_for` ─────────
+#
+# Bay ca tren do CHINH HAM. Dot bien PR-F (doi lai thanh `execcgi_ok="$EXECCGI_OK"`)
+# KHONG bi bat boi chung — suite van xanh cho mot ban da quay ve boolean toan may. Hai
+# ca duoi dong lo do: hai user tren CUNG mot lan `check`, moi user mot `AllowOverride`,
+# va khoa Redis cua ho phai KHAC nhau.
+S32="$R/s32"; mkdir -p "$S32/state" "$S32/da/ua" "$S32/da/ub"
+printf 'AllowOverride All\n' > "$S32/da/ua/httpd.conf"
+printf 'AllowOverride AuthConfig FileInfo Indexes Limit Options=Indexes,None\n' \
+  > "$S32/da/ub/httpd.conf"
+for u in ua ub; do
+    mkdir -p "$S32/home/$u/domains/t.test/public_html"
+    printf 'Options +ExecCGI\n' > "$S32/home/$u/domains/t.test/public_html/.htaccess"
+    printf '<?php\n' > "$S32/home/$u/domains/t.test/public_html/i.php"
+done
+r32() {
+    FIM_ROOTS="$S32/home/*/domains/*/public_html" FIM_STATE="$S32/state" \
+    FIM_LOG="$S32/f.log" FIM_CRITLOG="$S32/c.log" RCLI_OUT="$S32/rcli.txt" \
+    FIM_REDIS_CLI="$R/bin/rcli" FIM_HOME="$S32/home" FIM_DA_HTTPD="$S32/da" \
+    bash "$HERE/fim.sh" "$@" >/dev/null 2>&1
+}
+v32() { awk -F'\t' -v k="waf:fimcfg:$1" '$1=="SETEX" && $2==k {v=$4} END{print v}' "$S32/rcli.txt" 2>/dev/null | strip_ver; }
+: > "$S32/rcli.txt"; r32 baseline
+: > "$S32/rcli.txt"; r32 check
+want "32 dau-cuoi: user CHO -> @exec+" \
+     "$(v32 "$S32/home/ua/domains/t.test/public_html/")" "@exec+"
+want "32 dau-cuoi: user CHAN -> @exec+:noop (CUNG lan check)" \
+     "$(v32 "$S32/home/ub/domains/t.test/public_html/")" "@exec+:noop"
 printf '\n── wpinv: ghi that bai + khoa cu con song (muc 15) ──\n'
 DA="$R/da"
 mkdir -p "$DA/u1/domains" "$WEB/wp-content"
