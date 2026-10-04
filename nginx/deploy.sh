@@ -723,27 +723,106 @@ else
             echo "    AUTH, moi phep Redis that bai im lang. Lay lai mat khau roi ghi vao"
             echo "    $_pw (chown root:$NGX_USER, chmod 640), hoac tat requirepass." ;;
         *)
-    echo "    redis.pass: khong co -- Redis cung khong dung mat khau (chua lam)."
-    echo "    Day la P0 cua Review 4 muc 4.2: Redis giu verified:*/whitelist/ban/khoa"
-    echo "    FIM, nen ai ghi duoc la tu cap cho minh ve di qua lop cham diem."
-    echo "    DAN NGUYEN KHOI DUOI (ca hai phia trong CUNG mot lan — lech chieu nao"
-    echo "    cung lam moi phep Redis that bai IM LANG, va khi do error.log KHONG co"
-    echo "    dong NOAUTH nao, site van tra 200):"
-    echo
-    echo "      install -d -m 750 -o root -g $NGX_USER /etc/antibot"
-    echo "      openssl rand -base64 36 | tr -d '/+=' | head -c 32 > $_pw"
-    echo "      chown root:$NGX_USER $_pw && chmod 640 $_pw"
-    echo "      redis-cli CONFIG SET requirepass \"\$(cat $_pw)\""
-    echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" CONFIG REWRITE"
-    echo "      $NGINX -t && $NGINX -s reload"
-    echo
-    echo "    CHI SAU KHI khoi tren xong moi nghiem thu (chay som thi chinh phep do"
-    echo "    bao AUTH failed, vi Redis chua co mat khau nao de nhan):"
-    echo "      PW=\$(cat $_pw)"
-    echo "      redis-cli --no-auth-warning -a \"\$PW\" CONFIG RESETSTAT"
-    echo "      <mot request vao site bat ky>"
-    echo "      redis-cli --no-auth-warning -a \"\$PW\" INFO commandstats | grep cmdstat_auth"
-    echo "    Mong: calls>=1 va failed_calls=0. failed_calls>0 = mat khau hai ben LECH."
+    # ── TU BAT, roi TU NGHIEM THU, trong CUNG mot lan chay ───────────
+    #
+    # In huong dan bat nguoi van hanh dan tay la cach chac chan de sai thu tu: tren
+    # cloud28-246 04-10 chinh toi dua khoi nghiem thu truoc khoi bat, va ket qua la
+    # `failed_calls=1` tren mot may hoan toan binh thuong. Sau may thi sai mot lan
+    # la du.
+    #
+    # THU TU BAT BUOC, va day la ly do viec nay phai nam TRONG script:
+    #   1. tao tep (worker doc duoc)   -> chua anh huong gi
+    #   2. CONFIG SET requirepass      -> tu giay nay client cu bi tu choi
+    #   3. reload NGAY                 -> worker moi doc tep va AUTH
+    #   4. CONFIG REWRITE              -> chi khi 1-3 da xong; thieu buoc nay thi
+    #                                     restart Redis la mat mat khau (tu rollback)
+    # Dao buoc 2 va 3 thi co mot cua so WAF fail-open; lam 4 truoc 3 thi mot ban
+    # cau hinh sai thanh vinh vien.
+    echo "    redis.pass: khong co, Redis cung chua dat mat khau -> BAT NGAY (P0 Review 4 4.2)"
+    _ok=1
+    install -d -m 750 -o root -g "$NGX_USER" /etc/antibot 2>/dev/null || _ok=0
+    if [ "$_ok" = 1 ] && [ ! -s "$_pw" ]; then
+        umask 077
+        if command -v openssl >/dev/null 2>&1; then
+            openssl rand -base64 36 | tr -d '/+=' | head -c 32 > "$_pw" || _ok=0
+        else
+            tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 > "$_pw" || _ok=0
+        fi
+        umask 022
+    fi
+    chown "root:$NGX_USER" "$_pw" 2>/dev/null || _ok=0
+    chmod 0640 "$_pw" 2>/dev/null || _ok=0
+    # Do do dai THAT: `head -c 32` tren mot nguon ngau nhien co the ra ngan hon neu
+    # `tr` loc nhieu. Mat khau rong = bat `requirepass ""` = khong bat gi.
+    _pl=$(wc -c < "$_pw" 2>/dev/null | tr -d ' ')
+    if [ "$_ok" != 1 ] || [ "${_pl:-0}" -lt 16 ]; then
+        echo "    *** khong tao duoc $_pw (do dai=${_pl:-0}) — BO QUA, Redis giu nguyen ***"
+    elif ! su -s /bin/sh -c "head -1 '$_pw' >/dev/null 2>&1" "$NGX_USER" 2>/dev/null; then
+        # Kiem TRUOC khi bat: bat ma worker khong doc duoc = tu gay fail-open.
+        echo "    *** $NGX_USER khong doc duoc $_pw — KHONG bat requirepass ***"
+    else
+        _P=$(cat "$_pw")
+        if redis-cli -p 6379 CONFIG SET requirepass "$_P" >/dev/null 2>&1; then
+            echo "    requirepass: BAT (do dai $_pl)"
+            if $NGINX -t >/dev/null 2>&1 && $NGINX -s reload >/dev/null 2>&1; then
+                echo "    nginx: reloaded"
+            else
+                echo "    *** nginx reload THAT BAI — WAF dang fail-open, chay tay: $NGINX -t ***"
+            fi
+            # NGHIEM THU bang `cmdstat_auth`, khong bang `NOAUTH=0`: worker doc
+            # khong duoc thi KHONG GUI lenh nao, nen error.log sach va site tra 200
+            # — ca hai la hau qua cua fail-open, khong phai bang chung tot.
+            # Kiem mat khau trong TEP that su mo duoc Redis. Doc lap voi
+            # `commandstats`, va la phep do duy nhat dung tren MOI phien ban.
+            if [ "$(redis-cli -p 6379 --no-auth-warning -a "$_P" PING 2>&1 | head -1)" = "PONG" ]; then
+                echo "    mat khau trong $_pw mo duoc Redis: ok"
+            else
+                echo "    *** mat khau trong $_pw KHONG mo duoc Redis — hai ben LECH ***"
+            fi
+            redis-cli -p 6379 --no-auth-warning -a "$_P" CONFIG RESETSTAT >/dev/null 2>&1
+            sleep 2
+            _au=$(redis-cli -p 6379 --no-auth-warning -a "$_P" INFO commandstats 2>/dev/null \
+                  | grep '^cmdstat_auth:' | head -1)
+            # `failed_calls` CHI co tu Redis 6.2. Tren 6.0 (`redis-server v=6.0.16`,
+            # do trong WSL 04-10) dong nay la
+            #     cmdstat_auth:calls=2,usec=13,usec_per_call=6.50
+            # khong co truong nao ca. Ban truoc dung `case *failed_calls=0*` nen roi
+            # vao nhanh "AUTH THAT BAI" tren mot AUTH HOAN TOAN THANH CONG — bao dong
+            # gia tren may Redis cu. Fleet co ca hai phien ban.
+            #
+            # Nen tach hai cau hoi: CO truong `failed_calls` thi doc no; KHONG co thi
+            # `calls>=1` da la bang chung AUTH di qua (lenh that bai van vao `calls`,
+            # nhung mot AUTH sai se lam cac lenh SAU do tra NOAUTH, va phep PING
+            # o tren bat duoc dieu do).
+            _fc=$(printf '%s' "$_au" | sed -n 's/.*failed_calls=\([0-9]*\).*/\1/p')
+            # NEO vao `cmdstat_auth:calls=`: `.*calls=` tham lam se khop den
+            # `failed_calls=` va lay ra `0` tren dung output cua may that
+            # (`...rejected_calls=0,failed_calls=0` -> `_cl=0` -> bao "khong doc
+            # duoc so lan goi" tren mot AUTH thanh cong). Do 04-10.
+            _cl=$(printf '%s' "$_au" | sed -n 's/^cmdstat_auth:calls=\([0-9]*\).*/\1/p')
+            if [ -z "$_au" ]; then
+                echo "    nghiem thu: chua co lenh AUTH nao sau 2s."
+                echo "      Binh thuong neu may dang khong co request. Kiem lai sau:"
+                echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" INFO commandstats | grep cmdstat_auth"
+            elif [ -n "$_fc" ] && [ "$_fc" != "0" ]; then
+                echo "    *** nghiem thu: $_au — co AUTH THAT BAI, mat khau hai ben LECH ***"
+            elif [ "${_cl:-0}" -ge 1 ]; then
+                echo "    nghiem thu: $_au -> WAF that su AUTH, ok"
+            else
+                echo "    nghiem thu: $_au (khong doc duoc so lan goi)"
+            fi
+            # CHI ghi vao redis.conf SAU khi moi thu da chay. Truoc do thi mot ban
+            # sai co the rollback bang `CONFIG SET requirepass ""`.
+            if redis-cli -p 6379 --no-auth-warning -a "$_P" CONFIG REWRITE >/dev/null 2>&1; then
+                echo "    CONFIG REWRITE: da ghi vao redis.conf (song qua restart)"
+            else
+                echo "    *** CONFIG REWRITE that bai — restart Redis se MAT mat khau ***"
+                echo "      Kiem Redis co 'configfile' khong: redis-cli INFO server | grep config_file"
+            fi
+        else
+            echo "    *** CONFIG SET requirepass that bai — Redis giu nguyen, khong mat gi ***"
+        fi
+    fi
             ;;
     esac
 fi
