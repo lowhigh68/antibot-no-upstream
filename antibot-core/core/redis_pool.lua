@@ -5,6 +5,28 @@ local config = require "antibot.core.config"
 
 local CFG = config.redis
 
+-- ── AUTH TREN DUONG NONG ─────────────────────────────────────────────
+--
+-- Redis la CONTROL PLANE cua lop nay, khong phai cache: no giu `verified:*`,
+-- whitelist, ban va khoa FIM. Mot tenant ghi duoc `verified:<cookie>` = tu cap cho
+-- minh ve di qua toan bo lop cham diem. Vi vay `requirepass`/ACL tren server la
+-- muc P0, va client PHAI biet AUTH truoc khi bat no -- bat o server ma client chua
+-- biet thi MOI phep Redis that bai va WAF fail-open trong im lang.
+--
+-- `password = ""` = KHONG gui AUTH, tuc hanh vi y nguyen ban cu. Cho phep bat
+-- server truoc hay sau deploy deu khong vo.
+--
+-- HAI diem khac `redis_intel_pool.lua`, va ca hai deu co chu y:
+--
+-- 1. CHI AUTH TREN KET NOI MOI. `set_keepalive` tra ket noi ve pool con NGUYEN
+--    trang thai da xac thuc, nen AUTH lai tren ket noi tai dung la mot round-trip
+--    THEM vao MOI request. `get_reused_times() > 0` = lay tu pool = da AUTH roi.
+--
+-- 2. AUTH LOI thi TRA NIL, khong tra ket noi. `intel_pool` chi `log(WARN)` roi tra
+--    `red` ra ngoai, nen ben goi tuong minh co handle dung duoc trong khi moi lenh
+--    sau do deu tra `NOAUTH`. Mot handle "co ve song" nguy hon mot `nil`: `nil` thi
+--    ben goi da co nhanh xu ly (fail-open co y thuc), con handle chet thi khong.
+--    Ket noi loi cung KHONG duoc dua vao pool -- dong thang bang `close()`.
 function _M.get()
     local red = redis:new()
     red:set_timeout(CFG.timeout_ms)
@@ -15,7 +37,23 @@ function _M.get()
         return nil, err
     end
 
-    if CFG.db and CFG.db > 0 then
+    local moi = true
+    local n, nerr = red:get_reused_times()
+    if n and n > 0 then moi = false end
+    if not n then
+        ngx.log(ngx.WARN, "[redis_pool] get_reused_times failed: ", nerr)
+    end
+
+    if moi and CFG.password and CFG.password ~= "" then
+        local aok, aerr = red:auth(CFG.password)
+        if not aok then
+            ngx.log(ngx.ERR, "[redis_pool] AUTH failed: ", aerr)
+            red:close()
+            return nil, aerr
+        end
+    end
+
+    if moi and CFG.db and CFG.db > 0 then
         local ok2, err2 = red:select(CFG.db)
         if not ok2 then
             ngx.log(ngx.WARN, "[redis_pool] SELECT failed: ", err2)

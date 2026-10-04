@@ -2296,6 +2296,105 @@ case "$out15b" in
     *"khoa da ghi"*) want "15 rcli chay duoc -> co ghi khoa" "co" "co" ;;
     *) want "15 rcli chay duoc -> co ghi khoa" "khong: $out15b" "co" ;;
 esac
+
+# ── Nhom 33: MAT KHAU REDIS den duoc `redis-cli` ─────────────────────
+#
+# `fim.sh` la client Redis thu BA. Bat `requirepass` tren server ma client nay chua
+# biet = FIM mat quyen ghi, va mat trong IM LANG: WAF don gian khong con nhan tin
+# hieu nao. Vi vay phep do o day KHONG hoi "bo test co xanh khong" — ban gia `rcli`
+# nuot moi doi so la khong hieu o nhanh `*) shift ;;`, nen no se bao QUA cho ca mot
+# ban khong he gui mat khau. Phai do ARGV THAT.
+#
+# Ban gia rieng o nhom nay chi lam mot viec: GHI LAI argv roi tra loi toi thieu.
+S33="$S/g33"; mkdir -p "$S33/bin" "$S33/home/u1/domains/d1/public_html"
+cat > "$S33/bin/rcli_argv" <<'A33'
+#!/bin/bash
+printf '%s\n' "$*" >> "$ARGV_OUT"
+# Tra loi toi thieu de `fim.sh` di qua duoc vong xac minh canary.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        GET)    echo "ok"; exit 0 ;;
+        EXISTS) echo "1";  exit 0 ;;
+        DEL)    echo "1";  exit 0 ;;
+        --pipe) cat >/dev/null; echo "errors: 0, replies: 1"; exit 0 ;;
+    esac
+    shift
+done
+exit 0
+A33
+chmod +x "$S33/bin/rcli_argv"
+
+a33() {  # a33 <mat-khau>  -> in argv da ghi
+    : > "$S33/argv.txt"
+    # Dung CHINH fixture cua nhom 15 (`$DA` + `$R/home`): o do co `wp-settings.php`
+    # that tren dia nen `wpinv` TIM RA site va that su goi `redis-cli`. Fixture rong
+    # thi `wpinv` ghi 0 khoa va KHONG goi gi — phep do se bao "qua" vi khong co dong
+    # argv nao sai, trong khi no chua do duoc gi (da bat dung loi nay o lan dau).
+    local E=(FIM_STATE="$S33/st" FIM_LOG="$S33/f.log" FIM_CRITLOG="$S33/c.log"
+             FIM_HOME="$R/home" FIM_DA_DATA="$DA"
+             FIM_REDIS_CLI="$S33/bin/rcli_argv" ARGV_OUT="$S33/argv.txt")
+    [ -n "$1" ] && E+=(FIM_REDIS_PASS="$1")
+    env "${E[@]}" bash "$HERE/fim.sh" wpinv >/dev/null 2>&1
+    cat "$S33/argv.txt" 2>/dev/null
+}
+
+# KHONG dat mat khau -> KHONG duoc co `-a` o bat ky dong nao. Day la chieu bao ve
+# hanh vi ban cu: them tinh nang nay khong duoc lam doi cach goi khi chua bat.
+g33a=$(a33 "")
+case "$g33a" in
+    *" -a "*) want "33 khong mat khau -> KHONG gui -a" "co -a: $g33a" "khong co -a" ;;
+    "")       want "33 khong mat khau -> KHONG gui -a" "KHONG GOI redis-cli" "khong co -a" ;;
+    *)        want "33 khong mat khau -> KHONG gui -a" "khong co -a" "khong co -a" ;;
+esac
+# `-n <db>` phai con nguyen: refactor sang mang khong duoc lam mat doi so db.
+case "$g33a" in
+    *"-n 0"*) want "33 khong mat khau -> van co -n 0" "co" "co" ;;
+    *)        want "33 khong mat khau -> van co -n 0" "MAT: $g33a" "co" ;;
+esac
+
+# CO mat khau -> MOI dong goi phai mang `-a`. Mot cho bi bo sot la mot cho ghi
+# that bai, nen do TUNG DONG chu khong chi `grep` mot lan.
+g33b=$(a33 "s3cret")
+n33=0; thieu33=0
+while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    n33=$((n33 + 1))
+    case "$l" in *"-a s3cret"*) ;; *) thieu33=$((thieu33 + 1)) ;; esac
+done <<< "$g33b"
+want "33 co mat khau -> co goi redis-cli" "$([ "$n33" -gt 0 ] && echo co || echo khong)" "co"
+want "33 co mat khau -> MOI dong deu mang -a (thieu/tong)" "$thieu33/$n33" "0/$n33"
+# `--no-auth-warning`: `redis-cli` in canh bao ra STDERR, va `fim.sh` gom STDERR vao
+# `$LOG` roi doc lai de ket luan loi -> mot canh bao vo hai se bi doc thanh loi.
+case "$g33b" in
+    *"--no-auth-warning"*) want "33 co mat khau -> co --no-auth-warning" "co" "co" ;;
+    *)                     want "33 co mat khau -> co --no-auth-warning" "THIEU" "co" ;;
+esac
+
+
+# ── Nhom 33b: KHONG con cho goi nao dung dang cu ─────────────────────
+#
+# Nhom 33 o tren chi thay cac dong ma `wpinv` THAT SU chay. Mot cho goi o nhanh khac
+# (`count_live` chi chay trong `check`) co the quay ve dang cu ma bo test van xanh —
+# da do duoc: sua mot cho `--raw EXISTS` ve `-n "$REDIS_DB"` thi 33 KHONG bat duoc.
+#
+# Cau hoi "ca CHIN cho goi co dung chung mot mang khong" la cau hoi VE MA NGUON, nen
+# do bang cach doc ma nguon. Dem dong co `$REDIS_CLI` kem `-n "$REDIS_DB"`: chi dong
+# DINH NGHIA `RARGS=(-n "$REDIS_DB")` duoc phep, moi cho goi khac la mot cho se mat
+# quyen ghi khi bat mat khau.
+# `grep -cF`: CHUOI CO DINH. Dang regex thi `[@]` la mot LOP KY TU khop dung mot `@`,
+# nen `"${RARGS[@]}"` viet thang se KHONG khop dong thuc te va phep dem tra 0 tren
+# mot tep hoan toan dung (da bat 04-10). `-F` bo han cau hoi escape.
+#
+# `grep -c` in `0` VA tra ma thoat 1 khi khong khop, nen `|| echo 0` them mot `0` THU
+# HAI va gia tri thanh `0\n0` -> so sanh that bai tren mot ket qua DUNG (cung bat
+# 04-10). Vi vay khong dung `||` o day.
+n33c=$(grep -cF '"$REDIS_CLI" -n "$REDIS_DB"' "$HERE/fim.sh"); n33c=${n33c:-0}
+want "33b khong cho goi nao con dang cu '\$REDIS_CLI -n \$REDIS_DB'" "$n33c" "0"
+# Va huong nguoc: phai THAT SU co cho goi qua mang (neu grep sai thi so 0 o tren la
+# vo nghia — ca hai so phai khop nhau).
+n33d=$(grep -cF '"$REDIS_CLI" "${RARGS[@]}"' "$HERE/fim.sh"); n33d=${n33d:-0}
+want "33b co cho goi qua \${RARGS[@]} (9 cho)" "$n33d" "9"
+
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

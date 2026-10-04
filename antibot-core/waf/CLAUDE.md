@@ -1177,14 +1177,30 @@ trùng **phút** với webshell đầu tiên trên **cả hai** site (`thegioisa
 **đã có quyền admin** rồi tự cài plugin làm công cụ ghi file. Plugin là *hệ quả*,
 không phải *nguyên nhân*.
 
-Cách ly user còn nguyên: `open_basedir` được DirectAdmin đặt trong
+Cách ly user còn nguyên **ở mức user**: `open_basedir` được DirectAdmin đặt trong
 `php-fpm*.conf` **của từng user**, giới hạn ở `/home/<user>/` chứ không phải
-`/home/`. Một site bị chiếm **không** đọc được `wp-config.php` của site khác.
-Nên đây là sự cố của hai khách, không phải của máy.
+`/home/`. Nên đây là sự cố của hai khách, không phải của máy.
+
+**Nhưng đừng đọc câu trên thành "site A không hại được site B" (chỉnh 04-10, Review
+4 mục 4.3).** Hai giới hạn, cả hai đều đo được:
+
+1. Ranh giới là **user**, không phải **site**. Một DirectAdmin user có nhiều domain
+   thì mọi domain đó nằm trong CÙNG `/home/<user>/`, nên `open_basedir` không chia
+   chúng ra. `SuexecUserGroup USER GROUP` cũng cho thấy đơn vị Unix identity là
+   account, không phải domain. Muốn từng site là một tenant thì cần UID/FPM identity
+   riêng theo domain — `open_basedir=/home/<user>/` không làm được việc đó.
+2. Chính PHP gọi `open_basedir` là "extra safety net", **không phải** cơ chế bảo mật
+   toàn diện: nó không giới hạn Unix-domain socket và không kiểm soát một command đã
+   được sinh ra. Vì vậy nó không được dùng làm **bằng chứng duy nhất** cho cách ly.
+
+Đo lại bằng `waf/scripts/secaudit.sh` (chạy bằng UID tenant thật, không chạy bằng
+root), mục 4: nó hỏi kernel `[ -r ]`/`[ -w ]` trên thư mục của tenant khác chứ không
+đọc nội dung tệp nào của khách.
 
 **Phạm vi đã chốt (20-09):** xử lý credential/user là việc của enduser. Tầng này
 lo phần hệ thống, và vì đường vào phải **giả định luôn mở**, thiết kế đúng là
-"một site bị chiếm không được hại site khác" — điều `open_basedir` đã bảo đảm —
+"một site bị chiếm không được hại site khác" — một MỤC TIÊU, không phải điều
+`open_basedir` đã bảo đảm (xem hai giới hạn ở trên) —
 cộng với "máy tự nói khi tồn đọng vượt ngưỡng", điều `21a81cb` vừa thêm.
 
 ## Trạng thái tầng WAF — đo bằng code, không đọc bảng kế hoạch

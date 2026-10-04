@@ -7,6 +7,19 @@ _M.redis = {
     pool_size   = 100,
     pool_idle_s = 30,
     db          = 0,
+    -- RONG = khong gui AUTH, tuc hanh vi y nguyen ban cu.
+    --
+    -- Redis giu `verified:*`, whitelist, ban va khoa FIM, nen no la CONTROL PLANE:
+    -- ai ghi duoc vao day thi tu cap cho minh ve di qua lop cham diem. `requirepass`
+    -- hoac ACL tren server la muc P0 cua Review 4.
+    --
+    -- BAT DONG THOI O CA HAI BEN, trong cung mot lan deploy. Lech chieu nao cung lam
+    -- MOI phep Redis that bai (fail-open im lang, khong phai cham):
+    --   server co mat khau, client chua co -> moi lenh tra NOAUTH
+    --   client co mat khau, server chua co -> AUTH loi, `_M.get` tra nil
+    -- Ba noi phai khop: bien nay, `FIM_REDIS_PASS` cua `fim.sh`, va `requirepass`
+    -- cua Redis. `secaudit.sh` muc 2 do lai ket qua that tu UID tenant.
+    password    = "",
 }
 
 -- NGƯỠNG QUYẾT ĐỊNH — nay là NGUỒN SỰ THẬT DUY NHẤT.

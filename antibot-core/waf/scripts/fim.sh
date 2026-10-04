@@ -324,6 +324,28 @@ GROUP_MAX=5
 REDIS_CLI="${FIM_REDIS_CLI:-redis-cli}"
 REDIS_DB="${FIM_REDIS_DB:-0}"
 
+# ── MAT KHAU REDIS: MOT NOI DAT, CHIN NOI DUNG ───────────────────────
+#
+# `fim.sh` la client Redis THU BA cua he nay (hai cai kia la `core/redis_pool.lua`
+# va `core/redis_intel_pool.lua`). Khi bat `requirepass`/ACL tren server ma QUEN
+# mot client thi client do mat TOAN BO quyen ghi -- va `fim.sh` mat quyen ghi thi
+# WAF khong con nhan tin hieu FIM nao, trong IM LANG. Day dung lop loi da giet
+# `wp_paths.mark()` bon thang.
+#
+# Dong goi vao MOT mang dung chung cho ca chin cho goi `redis-cli`, thay vi them
+# `-a` vao tung cho: chin cho thi chac chan co cho bi bo sot, va cho bi bo sot
+# khong bao loi, no chi lang le khong ghi duoc.
+#
+# `--no-auth-warning` vi `redis-cli` in canh bao mat khau ra STDERR, va STDERR o
+# day duoc gom vao `$LOG` roi doc lai de ket luan "co loi khong" -- mot canh bao
+# vo hai se bi doc thanh loi.
+#
+# RONG = khong gui mat khau, hanh vi y nguyen ban cu. Phai khop `_M.redis.password`
+# trong `core/config.lua` VA `requirepass` cua Redis, bat trong CUNG mot lan deploy.
+REDIS_PASS="${FIM_REDIS_PASS:-}"
+RARGS=(-n "$REDIS_DB")
+[ -n "$REDIS_PASS" ] && RARGS+=(--no-auth-warning -a "$REDIS_PASS")
+
 # ── Redis: LOI khac han VANG MAT ────────────────────────────────────
 #
 # Nguoi dung bat 29-09. Bon cap ghi/doc trong tep nay deu co CUNG ba loi:
@@ -416,12 +438,12 @@ redis_send_resp() {
     # treo 30-09). Ap nham no vao day lam stdin thanh /dev/null, va stub doc 0 lenh —
     # `errors: 0, replies: 0` cong SIGPIPE 141. Do duoc trong WSL truoc khi sua.
     { cat "$f"; redis_resp SETEX "$REDIS_CANARY" 60 ok; } \
-        | "$REDIS_CLI" -n "$REDIS_DB" --pipe >"$f.out" 2>&1
+        | "$REDIS_CLI" "${RARGS[@]}" --pipe >"$f.out" 2>&1
     rc=$?
     out=$(cat "$f.out" 2>/dev/null); rm -f "$f.out"
     local got
-    got=$("$REDIS_CLI" -n "$REDIS_DB" GET "$REDIS_CANARY" 2>>"$LOG" </dev/null)
-    "$REDIS_CLI" -n "$REDIS_DB" DEL "$REDIS_CANARY" >/dev/null 2>>"$LOG" </dev/null
+    got=$("$REDIS_CLI" "${RARGS[@]}" GET "$REDIS_CANARY" 2>>"$LOG" </dev/null)
+    "$REDIS_CLI" "${RARGS[@]}" DEL "$REDIS_CANARY" >/dev/null 2>>"$LOG" </dev/null
     if [ "$got" != "ok" ]; then
         REDIS_ERR="canary khong doc nguoc duoc (ma thoat=$rc, doc='$got', pipe='$out')"
         return 1
@@ -531,7 +553,7 @@ count_live() {
         batch+=("$k")
         n=$((n + 1))
         if [ "$n" -ge 100 ]; then
-            out=$("$REDIS_CLI" -n "$REDIS_DB" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
+            out=$("$REDIS_CLI" "${RARGS[@]}" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
             case "$out" in
                 ""|*[!0-9]*) REDIS_ERR="EXISTS tra '$out' (khong phai so) -- $want khoa KHONG kiem duoc"; return 1 ;;
             esac
@@ -540,7 +562,7 @@ count_live() {
         fi
     done < "$kf"
     if [ "$n" -gt 0 ]; then
-        out=$("$REDIS_CLI" -n "$REDIS_DB" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
+        out=$("$REDIS_CLI" "${RARGS[@]}" --raw EXISTS "${batch[@]}" 2>>"$LOG" </dev/null)
         case "$out" in
             ""|*[!0-9]*) REDIS_ERR="EXISTS tra '$out' (khong phai so) -- $want khoa KHONG kiem duoc"; return 1 ;;
         esac
@@ -591,7 +613,7 @@ gen_resp() {
 # mot.
 redis_absent() {
     local out
-    out=$("$REDIS_CLI" -n "$REDIS_DB" EXISTS "$1" 2>>"$LOG" </dev/null)
+    out=$("$REDIS_CLI" "${RARGS[@]}" EXISTS "$1" 2>>"$LOG" </dev/null)
     case "$out" in
         0) return 0 ;;
         1) return 1 ;;
@@ -1224,7 +1246,7 @@ if [ "$mode" = "wpinv" ]; then
             # cau hinh hai ben la viec cua deploy/config check, khong phai cua day.
             probe=$(sed -n 1p "$wpprobef")
             if [ "${nkeys:-0}" -gt 0 ] && \
-               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG" </dev/null)" != "1" ]; then
+               [ "$("$REDIS_CLI" "${RARGS[@]}" GET "$probe" 2>>"$LOG" </dev/null)" != "1" ]; then
                 rm -f "$wprespf" "$wpprobef"
                 echo "wpinv: KHONG XAC MINH DUOC -- da ghi $nkeys khoa nhung doc nguoc that bai." >&2
                 echo "wpinv: kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua." >&2
@@ -2795,7 +2817,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # DINH khoa khong co khoang trang — dung gia dinh ma RESP vua bo di.
         probe=$(sed -n 1p "$probef")
         want=$(sed -n 2p "$probef")
-        if [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$probe" 2>>"$LOG" </dev/null)" != "$want" ]; then
+        if [ "$("$REDIS_CLI" "${RARGS[@]}" GET "$probe" 2>>"$LOG" </dev/null)" != "$want" ]; then
             mark_err="KHONG XAC MINH DUOC: da ghi $marked key nhung doc nguoc that bai."
             mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
         fi
@@ -2976,7 +2998,7 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             # phep doc GIA DINH ca khoa lan gia tri khong co newline. Gio chung la bien
             # thuong nen khong con gia dinh nao.
             if [ -z "$mark_err" ] && [ -n "$chgprobe" ] && \
-               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$chgprobe" 2>>"$LOG" </dev/null)" != "$chgwant" ]; then
+               [ "$("$REDIS_CLI" "${RARGS[@]}" GET "$chgprobe" 2>>"$LOG" </dev/null)" != "$chgwant" ]; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi
