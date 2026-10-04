@@ -698,3 +698,66 @@ echo "  dat nguong = 0 sau >1 ngay : khong co thu muc may sinh tep tren may nay 
 echo "  dat nguong > 0, dong HIGH NEW moi giam : co che dang lam viec"
 echo "  dat nguong > 0 ma HIGH NEW khong giam  : thu muc dat nguong KHAC thu muc dang bao"
 echo "  mot thu muc trong uploads/ dat nguong  : nguong gom KHONG ha o do (thiet ke) — xem no"
+
+echo
+echo "── 20. CORRELATION dang SHADOW: so lieu de promote ─────────────"
+# ── VI SAO CO MUC NAY ────────────────────────────────────────────────
+#
+# Review 4 giai doan P1 muc 1 noi: "Dung so lieu `postdeploy.sh` de promote lan
+# luot cac correlation cung-part co confidence cao". Nhung dem lai 04-10:
+# `postdeploy.sh` doc `uprule=` DUNG 0 LAN. `waf.log` CO ghi cot do, `registry.lua`
+# CO ba rule `shadow` — nhung khong co duong ra so lieu, nen khong ai promote duoc
+# gi ca. Dung lop "canh bao dung ma khong ai mo" (fim.sh bao 13 lan vao mail cron).
+#
+# Muc nay KHONG quyet dinh gi. No chi tra lo so de nguoi van hanh thay:
+#   · bao nhieu lan moi luat ban trong cua so
+#   · co bao nhieu DOMAIN va IP rieng biet -> mot domain chiem het = nghi FP cuc bo
+#   · ban ket qua cuoi (`final=`) la gi -> neu da bi chan boi luat khac thi promote
+#     khong doi gi, con `allow` het thi promote la mot thay doi THAT
+#
+# Promote khi nao la quyet dinh cua nguoi van hanh, khong phai cua script.
+if [ -z "$WF" ]; then
+    echo "  khong co waf.log sau moc deploy -> KHONG DO DUOC (khac 0 lan ban)"
+else
+    echo "  (doc: $(names $WF))"
+    # ── DOC DUNG SCHEMA: `final=` KHONG co trong dong nay ─────────────
+    #
+    # `uprule=` nam o dong `[waf-body]` (`async/waf_logger.lua:188-191`), con
+    # `final=` nam o dong log KHAC (`:501`, cac rule WAF). Ban dau toi viet cot
+    # `final=` vao day va no se LUON RONG — dung lop loi "doc schema log truoc khi
+    # viet lenh do" (toi tung dung `uri=` khi cot that la `matched=`).
+    #
+    # Cot THAT cung dong, va huu ich hon cho viec promote:
+    #   `pf=`  bang chung than multipart co soi duoc khong (`ok` = da soi)
+    #   `php=` co thay dau PHP trong noi dung khong
+    # Mot luat ban nhieu ma `pf=` khong phai `ok` nghia la no ban khi CHUA SOI
+    # duoc than — promote cai do la promote mot phong doan.
+    catf $WF | awk '
+        {
+            ur = ""; dm = ""; ipa = ""; pf = ""
+            for (i = 1; i <= NF; i++) {
+                if      (substr($i, 1, 7) == "uprule=") ur  = substr($i, 8)
+                else if (substr($i, 1, 7) == "domain=") dm  = substr($i, 8)
+                else if (substr($i, 1, 3) == "ip=")     ipa = substr($i, 4)
+                else if (substr($i, 1, 3) == "pf=")     pf  = substr($i, 4)
+            }
+            if (ur == "" || ur == "-") next
+            n[ur]++
+            if (dm  != "" && !(ur SUBSEP dm  in sd)) { sd[ur, dm]  = 1; nd[ur]++ }
+            if (ipa != "" && !(ur SUBSEP ipa in si)) { si[ur, ipa] = 1; ni[ur]++ }
+            if (pf == "ok") nok[ur]++
+        }
+        END {
+            if (length(n) == 0) {
+                print "  khong mot lan ban nao (uprule= trong cua so deu la -)"
+                exit
+            }
+            printf "  %-26s %7s %7s %7s %9s\n", "uprule", "lan", "domain", "ip", "pf=ok"
+            for (r in n) printf "  %-26s %7d %7d %7d %9d\n", r, n[r], nd[r], ni[r], nok[r] + 0
+        }'
+    echo "  -- CACH DOC --"
+    echo "  domain=1 ma lan RAT cao      : nghi FP cuc bo o mot site, dung promote toan fleet"
+    echo "  pf=ok THAP hon lan nhieu     : luat ban khi CHUA soi duoc than -> promote la phong doan"
+    echo "  pf=ok == lan                 : moi lan ban deu co bang chung than -> co co so promote"
+    echo "  0 lan ban sau >1 ngay        : luat chua gap luu luong thuc -> chua co co so promote"
+fi
