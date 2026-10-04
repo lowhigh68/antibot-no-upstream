@@ -167,7 +167,51 @@ fi
 # Can resty chu khong phai luajit: luat quyet dinh bang PCRE lookahead cua ngx.re.
 if [ -x "$RESTY" ] && [ -x "$REPO_DIR/antibot-core/waf/scripts/run.sh" ]; then
     echo "[3b] Chay T (test luat WAF)..."
+
+    # ── REDIS TAM cho nhom 27 (`LC_ALL=C`) ──────────────────────────
+    #
+    # Nhom 27 kiem mot loi protocol THAT: RESP khai do dai doi so bang BYTE, nhung
+    # `${#s}` va `length()` dem KY TU khi locale la UTF-8 — nen mot thu muc ten tieng
+    # Viet lam CA batch that bai (`ERR Protocol error: expected '$', got '/'`) va 12
+    # khoa khong duoc ghi. Stub KHONG tai hien duoc: no khong doc do dai.
+    #
+    # Khong co Redis o 6399 thi nhom do bao `BO QUA` — do duoc 04-10 tren 171-96, va do
+    # la nhom DUY NHAT bi bo qua. Mot deploy khong tu kiem duoc `LC_ALL` tren may co
+    # locale khac WSL thi loi do quay lai trong im lang.
+    #
+    # PORT 6399 chu khong 6379: khong cham instance dang phuc vu. `--save ''` +
+    # `--appendonly no` de khong ghi dia. Tat o `trap` nen no khong song sot qua mot
+    # deploy that bai.
+    RTEST_PORT=6399
+    RTEST_PID=""
+    if command -v redis-server >/dev/null 2>&1 \
+       && [ "$(redis-cli -p "$RTEST_PORT" ping 2>/dev/null)" != "PONG" ]; then
+        redis-server --port "$RTEST_PORT" --daemonize yes --save '' \
+                     --appendonly no --bind 127.0.0.1 >/dev/null 2>&1 || :
+        # Cho toi 2 giay. KHONG `sleep` co dinh: mot may nhanh khong phai cho, va mot
+        # may cham thi 0.2s khong du.
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+            [ "$(redis-cli -p "$RTEST_PORT" ping 2>/dev/null)" = "PONG" ] && break
+            sleep 0.2
+        done
+        if [ "$(redis-cli -p "$RTEST_PORT" ping 2>/dev/null)" = "PONG" ]; then
+            RTEST_PID=$(redis-cli -p "$RTEST_PORT" INFO server 2>/dev/null \
+                        | sed -n 's/^process_id:\([0-9]*\).*/\1/p')
+            echo "     Redis tam o port $RTEST_PORT (pid ${RTEST_PID:-?}) cho nhom 27."
+        else
+            echo "     KHONG khoi dong duoc Redis tam -- nhom 27 se BO QUA."
+        fi
+    fi
+    # Tat NGAY khi roi buoc nay, ke ca khi test hong hay script bi ngat.
+    rtest_stop() {
+        [ -n "${RTEST_PID:-}" ] || return 0
+        redis-cli -p "$RTEST_PORT" SHUTDOWN NOSAVE >/dev/null 2>&1 || kill "$RTEST_PID" 2>/dev/null || :
+        RTEST_PID=""
+    }
+    trap rtest_stop EXIT INT TERM
+
     if ! "$REPO_DIR/antibot-core/waf/scripts/run.sh"; then
+        rtest_stop
         if [ "${SKIP_TEST:-0}" = "1" ]; then
             echo "     SKIP_TEST=1 — di tiep BAT CHAP test hong."
         else
@@ -176,6 +220,8 @@ if [ -x "$RESTY" ] && [ -x "$REPO_DIR/antibot-core/waf/scripts/run.sh" ]; then
             exit 1
         fi
     fi
+    rtest_stop
+    trap - EXIT INT TERM
 fi
 
 echo "[4] Sync core folder..."
