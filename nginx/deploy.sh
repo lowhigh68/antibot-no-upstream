@@ -640,54 +640,83 @@ NGX_USER=$(sed -n 's/^[[:space:]]*user[[:space:]]\+\([^;[:space:]]*\).*/\1/p' \
            "$(dirname "$TARGET_DIR")/nginx.conf" 2>/dev/null | head -1)
 NGX_USER="${NGX_USER:-nginx}"
 echo "    worker chay bang: $NGX_USER"
+# TU SUA, khong chi in goi y. Buoc [4c] o tren da tu `chown nginx:nginx` +
+# `chmod 0750` cho `/var/log/antibot`, nen in goi y o day la HAI CHUAN trong cung
+# mot tep — va vi dieu nay phai dung tren CA SAU may, in goi y nghia la nam may
+# con lai bi bo sot cho den khi co nguoi doc log deploy.
+#
+# `640 root:nginx`: worker (`user nginx`) PHAI doc duoc vi cay nay khong co
+# `init_by_lua` — `config.lua` duoc `require` lan dau trong WORKER da ha quyen.
+# Tenant KHONG duoc doc: `config.lua` chua `pow.challenge_secret`, doc duoc la tu
+# sinh cookie `verified:*` hop le va di qua TOAN BO lop cham diem.
 for _f in "$TARGET_DIR/core/config.lua" "$TARGET_DIR/admin/init.lua"; do
     [ -e "$_f" ] || continue
     _m=$(stat -c '%a' "$_f" 2>/dev/null)
-    if world_readable "$_m"; then
-        echo "    *** ${_f##*/} la $_m — MOI user tren may doc duoc ***"
-        echo "        chmod 640 '$_f' && chown root:$NGX_USER '$_f'"
+    _og=$(stat -c '%U:%G' "$_f" 2>/dev/null)
+    if world_readable "$_m" || [ "$_og" != "root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_f" 2>/dev/null || :
+        chmod 0640 "$_f" 2>/dev/null || :
+        _m2=$(stat -c '%a %U:%G' "$_f" 2>/dev/null)
+        if [ "$_m2" = "640 root:$NGX_USER" ]; then
+            echo "    ${_f##*/}: $_m $_og -> $_m2 (da sua)"
+        else
+            echo "    *** ${_f##*/}: SUA KHONG DUOC, con $_m2 ***"
+            echo "        chmod 640 '$_f' && chown root:$NGX_USER '$_f'"
+        fi
     else
-        echo "    ${_f##*/}: $_m $(stat -c '%U:%G' "$_f" 2>/dev/null) — ok"
+        echo "    ${_f##*/}: $_m $_og — ok"
     fi
 done
 # `redis.pass`: phai KHONG world-readable, nhung PHAI de worker doc duoc.
 _pw=/etc/antibot/redis.pass
 if [ -e "$_pw" ]; then
-    _pm=$(stat -c '%a' "$_pw" 2>/dev/null)
-    _pg=$(stat -c '%G' "$_pw" 2>/dev/null)
-    if world_readable "$_pm"; then
-        echo "    *** redis.pass la $_pm — world-readable, tenant doc duoc mat khau ***"
-        echo "        chmod 640 $_pw && chown root:$NGX_USER $_pw"
+    # Thu muc TRUOC, tep SAU. Do 04-10 tren cloud171-96: tep da `640 root:nginx`
+    # ma `nginx` VAN bi `Permission denied`, vi `/etc/antibot` la `700 root:root`.
+    # Doc mot tep can bit `x` tren MOI thu muc tren duong dan, nen sua tep ma
+    # khong sua thu muc la sua xong ma van hong.
+    _pd=${_pw%/*}
+    if [ -d "$_pd" ]; then
+        _dm=$(stat -c '%a %U:%G' "$_pd" 2>/dev/null)
+        if [ "$_dm" != "750 root:$NGX_USER" ]; then
+            chown "root:$NGX_USER" "$_pd" 2>/dev/null || :
+            chmod 0750 "$_pd" 2>/dev/null || :
+            echo "    $_pd: $_dm -> $(stat -c '%a %U:%G' "$_pd" 2>/dev/null)"
+        fi
     fi
-    # Kiem THUC TE worker co doc duoc khong, khong doan tu che do.
-    #
-    # Che do cua TEP khong du: quyen doc mot tep con can bit `x` tren MOI thu muc
-    # tren duong dan. Do 04-10 tren cloud171-96: tep da la `640 root:nginx` ma
-    # `nginx` VAN bi `Permission denied`, vi `/etc/antibot` la `700 root:root` —
-    # thu muc 700 chi cho root di xuyen qua. Ban truoc chi bao `chown`/`chmod`
-    # TEP, nen nguoi doc sua tep roi tuong xong trong khi van hong.
+    _pm=$(stat -c '%a %U:%G' "$_pw" 2>/dev/null)
+    if [ "$_pm" != "640 root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_pw" 2>/dev/null || :
+        chmod 0640 "$_pw" 2>/dev/null || :
+        echo "    redis.pass: $_pm -> $(stat -c '%a %U:%G' "$_pw" 2>/dev/null)"
+    fi
+    # BANG CHUNG THAT, khong suy ra tu che do: ACL/SELinux/mount co the khac.
     if ! su -s /bin/sh -c "head -1 '$_pw' >/dev/null 2>&1" "$NGX_USER" 2>/dev/null; then
-        echo "    *** $NGX_USER KHONG doc duoc $_pw ***"
+        echo "    *** $NGX_USER VAN KHONG doc duoc $_pw ***"
         echo "        Worker doc ra chuoi rong -> khong gui AUTH -> MOI phep Redis cua"
-        echo "        WAF that bai IM LANG (fail-open, site van tra 200)."
-        # Chi ra CHINH xac khau nao chan: tep hay mot thu muc tren duong dan.
+        echo "        WAF that bai IM LANG (fail-open). LUU Y: khi do error.log KHONG co"
+        echo "        dong NOAUTH nao va site van tra 200 — ca hai KHONG phai bang chung tot."
         _d=${_pw%/*}; [ -n "$_d" ] || _d=/
         while [ -n "$_d" ]; do
-            if ! su -s /bin/sh -c "test -x '$_d'" "$NGX_USER" 2>/dev/null; then
-                echo "        chan tai THU MUC $_d ($(stat -c '%a %U:%G' "$_d" 2>/dev/null))"
-                echo "          sua: chown root:$NGX_USER $_d && chmod 750 $_d"
-            fi
+            su -s /bin/sh -c "test -x '$_d'" "$NGX_USER" 2>/dev/null \
+              || echo "        chan tai THU MUC $_d ($(stat -c '%a %U:%G' "$_d" 2>/dev/null))"
             [ "$_d" = "/" ] && break
             _d=${_d%/*}; [ -n "$_d" ] || _d=/
         done
-        if ! su -s /bin/sh -c "test -r '$_pw'" "$NGX_USER" 2>/dev/null; then
-            echo "        va/hoac tai TEP: chown root:$NGX_USER $_pw && chmod 640 $_pw"
-        fi
     else
-        echo "    redis.pass: $_pm root:$_pg — $NGX_USER doc duoc, ok"
+        echo "    redis.pass: $(stat -c '%a %U:%G' "$_pw" 2>/dev/null) — $NGX_USER doc duoc, ok"
+        echo "    Bang chung WAF that su AUTH (chay sau reload):"
+        echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" CONFIG RESETSTAT"
+        echo "      <mot request>; redis-cli ... INFO commandstats | grep cmdstat_auth"
     fi
 else
-    echo "    redis.pass: khong co — Redis dang khong dung mat khau"
+    echo "    redis.pass: khong co — Redis dang khong dung mat khau."
+    echo "    Bat (CA HAI phia trong CUNG mot lan, lech chieu nao cung fail-open im lang):"
+    echo "      install -d -m 750 -o root -g $NGX_USER /etc/antibot"
+    echo "      openssl rand -base64 36 | tr -d '/+=' | head -c 32 > $_pw"
+    echo "      chown root:$NGX_USER $_pw && chmod 640 $_pw"
+    echo "      redis-cli CONFIG SET requirepass \"\$(cat $_pw)\""
+    echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" CONFIG REWRITE"
+    echo "      $(dirname "$TARGET_DIR")/../sbin/nginx -s reload"
 fi
 
 # ---------------------------------------------------------------------------
