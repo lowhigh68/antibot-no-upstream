@@ -557,6 +557,10 @@ echo
 echo "── 18. khoa TRANG THAI cho WAF ───────────────────────────────"
 RCLI="${POSTDEPLOY_REDIS_CLI:-redis-cli}"
 RDB="${POSTDEPLOY_REDIS_DB:-0}"
+# Rong = khong gui AUTH. Phai khop `requirepass` cua Redis; lech thi muc 18 bao
+# "0 khoa" tren mot Redis day khoa — tuc mot bao cao SAI, khong phai mot loi.
+RAUTH=()
+[ -n "${ANTIBOT_REDIS_PASS:-}" ] && RAUTH=(--no-auth-warning -a "$ANTIBOT_REDIS_PASS")
 if ! command -v "$RCLI" >/dev/null 2>&1; then
     echo "  thieu '$RCLI' — khong doc duoc khoa"
 else
@@ -564,8 +568,8 @@ else
     # song het TTL. In RIENG hai so de thay phep di tru da xong chua — neu `fimchg:`
     # con > 0 sau mot lot `fim.sh check` thi reconcile KHONG don duoc chung, va do la
     # mot loi can biet. HAN CHOT 09-10-2026: bo dong `fimchg:`.
-    nkey=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)
-    nold=$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
+    nkey=$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)
+    nold=$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
     echo "  khoa waf:fimcfg:* dang song : $nkey"
     echo "  khoa waf:fimchg:* (dang CU) : $nold  (mong 0 sau mot lot check)"
     if [ "${nold:-0}" -gt 0 ]; then
@@ -583,13 +587,13 @@ else
         nv2=0; nold_val=0
         while read -r k; do
             [ -n "$k" ] || continue
-            v=$("$RCLI" -n "$RDB" GET "$k" 2>/dev/null)
+            v=$("$RCLI" "${RAUTH[@]}" -n "$RDB" GET "$k" 2>/dev/null)
             case "$v" in
                 v2|v2,*) nv2=$((nv2 + 1)) ;;
                 *)       nold_val=$((nold_val + 1)) ;;
             esac
         done <<EOT
-$("$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null)
+$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null)
 EOT
         echo "  gia tri CO moc v2       : $nv2"
         echo "  gia tri KHONG moc (cu)  : $nold_val  (mong 0 sau mot lot check full)"
@@ -599,10 +603,10 @@ EOT
             echo "        tier full chua chay, hoac \`dir_tokens\` khong dat moc."
         fi
         echo "  -- nhan tren tung khoa (do MANH giam dan) --"
-        "$RCLI" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | sort | while read -r k; do
+        "$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | sort | while read -r k; do
             [ -n "$k" ] || continue
-            v=$("$RCLI" -n "$RDB" GET "$k" 2>/dev/null)
-            t=$("$RCLI" -n "$RDB" TTL "$k" 2>/dev/null)
+            v=$("$RCLI" "${RAUTH[@]}" -n "$RDB" GET "$k" 2>/dev/null)
+            t=$("$RCLI" "${RAUTH[@]}" -n "$RDB" TTL "$k" 2>/dev/null)
             printf '        %-28s TTL %5ss  %s\n' "$v" "$t" "${k#waf:fimcfg:}"
         done
     fi

@@ -43,6 +43,11 @@
 set -u
 LOG=${LOG:-/var/log/antibot/antibot.log}
 RCLI=${RCLI:-redis-cli}
+# Tep nay goi `$RCLI` KHONG trong dau nhay o ca 8 cho, nen word-splitting cho phep
+# gop doi so xac thuc thang vao bien — khong can mang rieng. Rong = khong gui AUTH.
+# Lech voi `requirepass` thi cac phep dem o day tra 0 va trong nhu "khong co du
+# lieu", nen doi so nay phai khop `core/config.lua`.
+[ -n "${ANTIBOT_REDIS_PASS:-}" ] && RCLI="$RCLI --no-auth-warning -a $ANTIBOT_REDIS_PASS"
 
 usage() { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; }
 

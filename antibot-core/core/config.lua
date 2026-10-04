@@ -1,5 +1,28 @@
 local _M = {}
 
+-- ── DOC MAT KHAU REDIS TU TEP, KHONG VIET VAO DAY ────────────────────
+--
+-- `secaudit.sh` do duoc 04-10: `core/config.lua` tenant DOC DUOC. Nen viet mat khau
+-- thang vao tep nay la BIEN mot bi mat thanh mot bi mat ai cung doc — dung cai lo
+-- ma Review 4 muc 4.3 chi ra. Mat khau nam o mot tep RIENG, chmod 600 root:root,
+-- va tep do KHONG nam trong cay deploy nen `deploy.sh` khong ghi de len.
+--
+-- Khong co tep -> chuoi rong -> KHONG gui AUTH -> hanh vi y nguyen ban cu. Vi vay
+-- bat o Redis TRUOC khi tao tep la hong, va tao tep truoc khi bat o Redis cung hong:
+-- hai viec phai di cung nhau (xem thu tu lenh trong `waf/CLAUDE.md`).
+--
+-- `io.open` chay duoc o `init_by_lua` (khong phai cosocket), nen doc mot lan luc
+-- khoi dong la du; moi worker thua ket qua qua `require` cache.
+local function doc_mat_khau()
+    local p = os.getenv("ANTIBOT_REDIS_PASS_FILE") or "/etc/antibot/redis.pass"
+    local f = io.open(p, "r")
+    if not f then return "" end
+    local s = f:read("*l") or ""
+    f:close()
+    -- Trim: tep tao bang `echo` co `\n`, va sua tay tu Windows co the co `\r`.
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 _M.redis = {
     host        = "127.0.0.1",
     port        = 6379,
@@ -7,19 +30,17 @@ _M.redis = {
     pool_size   = 100,
     pool_idle_s = 30,
     db          = 0,
-    -- RONG = khong gui AUTH, tuc hanh vi y nguyen ban cu.
-    --
     -- Redis giu `verified:*`, whitelist, ban va khoa FIM, nen no la CONTROL PLANE:
-    -- ai ghi duoc vao day thi tu cap cho minh ve di qua lop cham diem. `requirepass`
-    -- hoac ACL tren server la muc P0 cua Review 4.
+    -- ai ghi duoc vao day thi tu cap cho minh ve di qua lop cham diem.
     --
-    -- BAT DONG THOI O CA HAI BEN, trong cung mot lan deploy. Lech chieu nao cung lam
-    -- MOI phep Redis that bai (fail-open im lang, khong phai cham):
-    --   server co mat khau, client chua co -> moi lenh tra NOAUTH
-    --   client co mat khau, server chua co -> AUTH loi, `_M.get` tra nil
-    -- Ba noi phai khop: bien nay, `FIM_REDIS_PASS` cua `fim.sh`, va `requirepass`
-    -- cua Redis. `secaudit.sh` muc 2 do lai ket qua that tu UID tenant.
-    password    = "",
+    -- SAU noi phai khop khi bat mat khau (5 script + Lua nay):
+    --   `requirepass` cua Redis
+    --   /etc/antibot/redis.pass            <- Lua doc o day
+    --   ANTIBOT_REDIS_PASS                 <- fim.sh, threat_feed_sync, measure,
+    --                                         postdeploy, monitor_ip_sync
+    -- Lech chieu nao cung lam MOI phep Redis that bai IM LANG (fail-open, khong
+    -- phai cham). `secaudit.sh` muc 2 do lai ket qua that tu UID tenant.
+    password    = doc_mat_khau(),
 }
 
 -- NGƯỠNG QUYẾT ĐỊNH — nay là NGUỒN SỰ THẬT DUY NHẤT.

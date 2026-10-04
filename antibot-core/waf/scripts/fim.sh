@@ -342,7 +342,11 @@ REDIS_DB="${FIM_REDIS_DB:-0}"
 #
 # RONG = khong gui mat khau, hanh vi y nguyen ban cu. Phai khop `_M.redis.password`
 # trong `core/config.lua` VA `requirepass` cua Redis, bat trong CUNG mot lan deploy.
-REDIS_PASS="${FIM_REDIS_PASS:-}"
+# `FIM_REDIS_PASS` giu nguyen de bo test dat rieng duoc, nhung MAC DINH doc
+# `ANTIBOT_REDIS_PASS` — cung mot ten voi bon script con lai (`threat_feed_sync`,
+# `measure`, `postdeploy`, `monitor_ip_sync`). Hai ten bien cho cung mot bi mat la
+# cach chac chan de quen mot cho khi doi mat khau.
+REDIS_PASS="${FIM_REDIS_PASS:-${ANTIBOT_REDIS_PASS:-}}"
 RARGS=(-n "$REDIS_DB")
 [ -n "$REDIS_PASS" ] && RARGS+=(--no-auth-warning -a "$REDIS_PASS")
 

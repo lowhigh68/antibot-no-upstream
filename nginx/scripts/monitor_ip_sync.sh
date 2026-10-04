@@ -82,8 +82,17 @@ SOURCES=(
 # đọc bên Lua. Đừng bật cho tới khi giải quyết xong chuyện đó.
 
 ts()    { date '+%Y-%m-%d %H:%M:%S'; }
-RCLI()  { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "$@"; }
-RPIPE() { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" --pipe; }
+# MAT KHAU REDIS: rong = khong gui AUTH (hanh vi ban cu). Phai khop
+# `_M.redis.password` trong `core/config.lua` va `requirepass` cua Redis — lech
+# chieu nao cung lam MOI phep Redis that bai trong IM LANG.
+# `--no-auth-warning`: `redis-cli` in canh bao ra STDERR, va nhieu cho o day gom
+# STDERR lai de ket luan "co loi khong".
+REDIS_PASS="${ANTIBOT_REDIS_PASS:-}"
+RAUTH=()
+[ -n "$REDIS_PASS" ] && RAUTH=(--no-auth-warning -a "$REDIS_PASS")
+
+RCLI()  { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "${RAUTH[@]}" "$@"; }
+RPIPE() { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "${RAUTH[@]}" --pipe; }
 log()   { echo "[$(ts)] $*" | tee -a "$LOG_FILE"; }
 warn()  { echo "[$(ts)] WARN: $*" | tee -a "$LOG_FILE" >&2; }
 
