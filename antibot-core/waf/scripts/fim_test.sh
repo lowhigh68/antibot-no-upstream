@@ -1622,6 +1622,38 @@ cc "dc: cha SetHandler php + con SetHandler none -> TAT" \
 # Chuoi to tien sau NHAT tren fleet la 4 tang duoi root, nen `ns >= 12` trong
 # `init.lua` con thua rat nhieu. Ca `imsvietnam.ac.vn` co .htaccess o CA BA tang
 # (`public_html` -> `bk` -> `cgi-bin`), dung hinh dang ma nhom nay do.
+# ── wpforms: DU LIEU THAT duy nhat co trang thai RESET (do 04-10) ────
+#
+# `.htaccess` that tren 171-96, va khoa Redis that sau khi deploy `1dc6b12`:
+#   <Files *>
+#   SetHandler none
+#   SetHandler default-handler
+#   RemoveHandler .php .php3 .php4 .php5 .phtml .pl .py .pyc .pyo .cgi
+#   RemoveType    .php .php3 .php4 .php5 .phtml .pl .py .pyc .pyo .cgi
+#   </Files>
+#   -> v2,@sh-,h0:cgi,...,h0:pyo,t0:cgi,...,t0:pyo   (21 token)
+#
+# BA dieu ca nay ghim, va ca ba deu la quyet dinh co the bi doi nguoc ve sau:
+#
+#  1. `@sh-` chu khong `@sh0`: tep co HAI dong `SetHandler`, va last-wins trong cung
+#     pham vi nen `default-handler` (explicit-safe) thang `none` (reset). Mot ban doc
+#     dong DAU se cho `@sh0` — yeu hon, vi `@sh0` CHO roi xuong truc duoi.
+#  2. `<Files *>` duoc nhan la KHOP-TAT-CA nen phat bieu cho CA thu muc. Coi no la
+#     container hep lam khoa nay BIEN MAT (do 03-10: 21 token -> rong), tuc mat mot cau
+#     hinh dang CHAN thuc thi o thu muc upload cua plugin form.
+#  3. `h0`/`t0` chu khong `h-`/`t-`: `Remove*` la RESET.
+cc "THAT wpforms: hai dong SetHandler -> @sh- (last-wins)" \
+   "/con/a.php" "nil" "nil" \
+   'AddHandler application/x-httpd-php .php\n' \
+   '<Files *>\nSetHandler none\nSetHandler default-handler\nRemoveHandler .php .cgi\nRemoveType .php .cgi\n</Files>\n'
+
+# Huong NGUOC: neu CHI co `SetHandler none` (reset, khong co dong lanh sau) thi phai
+# ROI XUONG va `AddHandler` cua cha VAN ap.
+cc "THAT wpforms: chi SetHandler none -> @sh0, roi xuong, cha THANG" \
+   "/con/a.php" "handler_ext" "handler_ext" \
+   'AddHandler application/x-httpd-php .php\n' \
+   '<Files *>\nSetHandler none\n</Files>\n'
+
 cc "dc THAT: cgi-bin cua fleet, chi AddHandler -> handler theo DUOI" \
    "/con/x.cgi" "handler_ext" "handler_ext" \
    '# khong gi\n' 'AddHandler cgi-script .cgi .pl\n' 0
