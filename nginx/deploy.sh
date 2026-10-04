@@ -660,10 +660,29 @@ if [ -e "$_pw" ]; then
         echo "        chmod 640 $_pw && chown root:$NGX_USER $_pw"
     fi
     # Kiem THUC TE worker co doc duoc khong, khong doan tu che do.
+    #
+    # Che do cua TEP khong du: quyen doc mot tep con can bit `x` tren MOI thu muc
+    # tren duong dan. Do 04-10 tren cloud171-96: tep da la `640 root:nginx` ma
+    # `nginx` VAN bi `Permission denied`, vi `/etc/antibot` la `700 root:root` —
+    # thu muc 700 chi cho root di xuyen qua. Ban truoc chi bao `chown`/`chmod`
+    # TEP, nen nguoi doc sua tep roi tuong xong trong khi van hong.
     if ! su -s /bin/sh -c "head -1 '$_pw' >/dev/null 2>&1" "$NGX_USER" 2>/dev/null; then
         echo "    *** $NGX_USER KHONG doc duoc $_pw ***"
-        echo "        Worker se doc ra chuoi rong -> khong gui AUTH -> MOI phep Redis"
-        echo "        that bai IM LANG. Sua: chown root:$NGX_USER $_pw && chmod 640 $_pw"
+        echo "        Worker doc ra chuoi rong -> khong gui AUTH -> MOI phep Redis cua"
+        echo "        WAF that bai IM LANG (fail-open, site van tra 200)."
+        # Chi ra CHINH xac khau nao chan: tep hay mot thu muc tren duong dan.
+        _d=${_pw%/*}; [ -n "$_d" ] || _d=/
+        while [ -n "$_d" ]; do
+            if ! su -s /bin/sh -c "test -x '$_d'" "$NGX_USER" 2>/dev/null; then
+                echo "        chan tai THU MUC $_d ($(stat -c '%a %U:%G' "$_d" 2>/dev/null))"
+                echo "          sua: chown root:$NGX_USER $_d && chmod 750 $_d"
+            fi
+            [ "$_d" = "/" ] && break
+            _d=${_d%/*}; [ -n "$_d" ] || _d=/
+        done
+        if ! su -s /bin/sh -c "test -r '$_pw'" "$NGX_USER" 2>/dev/null; then
+            echo "        va/hoac tai TEP: chown root:$NGX_USER $_pw && chmod 640 $_pw"
+        fi
     else
         echo "    redis.pass: $_pm root:$_pg — $NGX_USER doc duoc, ok"
     fi
