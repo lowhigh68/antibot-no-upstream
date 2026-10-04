@@ -509,6 +509,24 @@ fi
 # request bi cham diem khac han nhau tuy may nao nhan, ma `asn_rep` nang 35 —
 # cao thu nhi trong bang. Nay script di theo rsync; buoc nay bao cron va du lieu
 # co theo kip khong.
+# ── AUTH cho cac phep do Redis PRODUCTION o duoi ─────────────────────
+#
+# Cac buoc [8]+ doc Redis THAT (cong 6379), khac han Redis tam o 6399 cua buoc
+# [3b]. Tu khi bat `requirepass` (04-10), `redis-cli --scan` khong auth tra RONG
+# — va buoc [8] doc cai rong do thanh "0 khoa" roi in
+#     *** 0 khoa — asn_rep dung 0: mot tin hieu 35 diem DANG CHET ***
+# tren mot Redis co day du khoa. Mot BAO DONG GIA, va dung lop "lenh do hong tra
+# so trong-co-ly" — nguy hon im lang vi no lam nguoi doc di sua cai khong hong.
+#
+# Mat khau: bien moi truong truoc, roi tep (deploy chay bang root nen doc duoc).
+_DPW="${ANTIBOT_REDIS_PASS:-}"
+if [ -z "$_DPW" ]; then
+    _dpwf="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}"
+    [ -r "$_dpwf" ] && _DPW="$(head -1 "$_dpwf" 2>/dev/null | tr -d '\r\n')"
+fi
+RCLI_P=(redis-cli)
+[ -n "$_DPW" ] && RCLI_P=(redis-cli --no-auth-warning -a "$_DPW")
+
 echo "[8] Trang thai nguon cap ASN..."
 TFS="$TARGET_DIR/intelligence/threat/scripts/threat_feed_sync.sh"
 [ -x "$TFS" ] || echo "    *** $TFS thieu bit thuc thi — cron se chet cam ***"
@@ -521,13 +539,63 @@ if [ -z "$tfs_all" ]; then
 else
     printf '%s\n' "$tfs_all" | sed 's/^/      | /'
 fi
-tfs_stale=$( printf '%s\n' "$tfs_all" | grep -c 'nginx/scripts/threat_feed_sync' || : )
-if [ "${tfs_stale:-0}" -gt 0 ]; then
-    echo "    *** $tfs_stale dong cron tro vao duong dan CU nginx/scripts/ ***"
-    echo "    Duong do da hong tu luc file doi cho. Sua sang: $TFS"
+# ── DO BANG "CO TRO DUNG CHO KHONG", khong phai "co trung mot duong SAI da biet" ──
+#
+# Ban truoc chi dem duong cu `nginx/scripts/`. Do 04-10 tren cloud171-96: cron that
+# tro vao `/usr/local/openresty/nginx/conf/scripts/threat_feed_sync.sh` — mot duong
+# thu BA, khong phai `nginx/scripts/` cung khong phai duong dung. `grep -c` tra 0,
+# buoc [8] bao im lang, va cron do da chet cam (khong co tep o day) trong khi
+# `asn_rep` nang 35 diem.
+#
+# Liet ke duong SAI thi luon thieu mot duong. Nen dao nguoc phep do: dem dong cron
+# KHONG tro dung `$TFS`. Bat ky duong nao khac dung deu la sai, ke ca duong chua ai
+# nghi ra.
+tfs_stale=0
+if [ -n "$tfs_all" ]; then
+    while IFS= read -r _l; do
+        [ -n "$_l" ] || continue
+        case "$_l" in
+            *"$TFS"*) ;;
+            *) tfs_stale=$((tfs_stale + 1)) ;;
+        esac
+    done <<< "$tfs_all"
 fi
+if [ "$tfs_stale" -gt 0 ]; then
+    echo "    *** $tfs_stale dong cron KHONG tro vao duong dung ***"
+    echo "    Duong dung: $TFS"
+    echo "    Cron tro vao cho khac = script khong bao gio chay = asn_rep (35 diem) dung 0."
+fi
+# ── DEM KHOA: loai dong LOI ra khoi phep dem ─────────────────────────
+#
+# `redis-cli --scan` in loi ra STDOUT, khong phai STDERR. Nen khi khong auth duoc,
+# `--scan | wc -l` dem chinh dong `ERROR: NOAUTH Authentication required.` va tra
+# **1**, khong phai 0 — do duoc 04-10 tren mot Redis co 3 khoa that.
+#
+# Cai nay nguy hon tra 0: `1` loai het CA HAI nhanh bao dong (`-eq 0` va `-gt
+# 20000`), nen buoc [8] in `rep:asn: 1 khoa` va im lang. Mot con so TRONG-CO-LY cho
+# mot phep do da chet.
+#
+# `dem_khoa <mau>` -> so khoa THAT, hoac `LOI` neu khong do duoc. Ben goi phai
+# phan biet "0 khoa" voi "khong do duoc" — gop hai cai la lop loi da bat nhieu lan
+# trong tep nay.
+dem_khoa() {
+    local out
+    out=$("${RCLI_P[@]}" --scan --pattern "$1" 2>&1) || { printf 'LOI'; return 0; }
+    case "$out" in
+        ERROR:*|NOAUTH*|*"Authentication required"*|*"Connection refused"*)
+            printf 'LOI'; return 0 ;;
+    esac
+    [ -z "$out" ] && { printf '0'; return 0; }
+    printf '%s' "$out" | grep -c . 
+}
+
 if command -v redis-cli >/dev/null 2>&1; then
-    n_rep=$(redis-cli --scan --pattern 'rep:asn:*' 2>/dev/null | wc -l)
+    n_rep=$(dem_khoa 'rep:asn:*')
+    if [ "$n_rep" = "LOI" ]; then
+        # KHONG DO DUOC khac han "0 khoa". Bao dung cai da xay ra.
+        echo "    *** rep:asn: KHONG DO DUOC (Redis tu choi hoac khong ket noi) ***"
+        echo "    Kiem: mat khau o /etc/antibot/redis.pass co khop requirepass khong."
+    else
     echo "    rep:asn: $n_rep khoa"
     # Ban da va cho ~800-1000 muc. 0 = chua tung chay. Hang chuc nghin = nguon
     # doi dinh dang va dang ghi rac (xem chu thich ASN_MAX trong chinh script):
@@ -537,6 +605,7 @@ if command -v redis-cli >/dev/null 2>&1; then
     elif [ "$n_rep" -gt 20000 ]; then
         echo "    *** $n_rep khoa la QUA NHIEU — nguon dang ghi rac (ban da va ~800) ***"
         echo "    Chay tay mot lan de thay the: $TFS"
+    fi
     fi
 fi
 
@@ -551,7 +620,7 @@ fi
 
 if [ $DO_FLEET -eq 1 ]; then
     echo "[bao tri] Xoa fl:dyn:* ..."
-    n=$(redis-cli --scan --pattern 'fl:dyn:*' | tee "$TMPD/fl_dyn.txt" | wc -l)
+    n=$("${RCLI_P[@]}" --scan --pattern 'fl:dyn:*' | tee "$TMPD/fl_dyn.txt" | wc -l)
     # Phai dung if chu khong dung `[ ] && cmd`: duoi set -e, mot danh sach && ma
     # ve trai sai se lam ca script thoat khi n=0.
     if [ "$n" -gt 0 ]; then
@@ -583,7 +652,7 @@ if [ $DO_CRAWLER -eq 1 ]; then
     # Phan lon truong hop nhanh nay KHONG can thiet: l7/ban/ip_ban_check hoan
     # thi hanh cho moi UA chua bot/spider/crawler, nen an len crawler von da
     # TRO. Giu lai de don rac va cho truong hop UA khong co token bot.
-    redis-cli --scan --pattern 'ban:*' \
+    "${RCLI_P[@]}" --scan --pattern 'ban:*' \
       | grep -oP '^ban:\K(\d{1,3}\.){3}\d{1,3}$' | sort -u \
       | while read -r ip; do
           p=$(dig +short -x "$ip" 2>/dev/null | head -1)
