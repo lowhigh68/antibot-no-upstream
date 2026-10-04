@@ -543,7 +543,7 @@ mkdir -p "$HW/wp-includes/blocks" "$HW/wp-content/mu-plugins/deep/deeper" "$HW/v
          "$HW/libraries/joomla" "$HW/includes/sub" "$HW/ajax" "$HW/node_modules/m"
 : > "$HW/index.php"                        # d1 generic          CO
 : > "$HW/.htaccess"                        # d1 generic          CO
-: > "$HW/wp-includes/load.php"             # d2 PRUNE            khong
+: > "$HW/wp-includes/load.php"             # d2 NHANH RIENG      CO
 : > "$HW/wp-includes/blocks/b.php"         # d3 PRUNE            khong
 : > "$HW/vendor/autoload.php"              # d2 PRUNE            khong
 : > "$HW/node_modules/m/x.php"             # d3 PRUNE            khong
@@ -576,15 +576,20 @@ hot_has() {
     if grep -q "^$HW/$1|" "$HSTATE/manifest.hot.txt" 2>/dev/null; then echo yes
     else echo no; fi
 }
-# DAP AN TINH TAY: 9 tep (dem tay tu bang tren, khong lay tu output).
-want "7 tang nong: dung 11 tep" "$(wc -l < "$HSTATE/manifest.hot.txt")" "11"
+# DAP AN TINH TAY: 12 tep (dem tay tu bang tren, khong lay tu output).
+# 11 -> 12 o ban 04-10-2026: `wp-includes/load.php` chuyen tu PRUNE sang CO, vi
+# nhanh rieng `$ROOTS/wp-includes -maxdepth 1` duoc them vao `scan_hot`. Xem
+# nhom 35 va chu thich tai nhanh do trong fim.sh.
+want "7 tang nong: dung 12 tep" "$(wc -l < "$HSTATE/manifest.hot.txt")" "12"
 # Thu muc GENERIC — day la phan ban nay them vao.
 want "7 generic: libraries/ do sau 2" "$(hot_has 'libraries/lib.php')"      "yes"
 want "7 generic: libraries/ do sau 3" "$(hot_has 'libraries/joomla/j.php')" "yes"
 want "7 generic: includes/ do sau 3"  "$(hot_has 'includes/sub/deep.php')"  "yes"
 want "7 generic: ajax/"               "$(hot_has 'ajax/handler.php')"       "yes"
 # PRUNE — thu vien/core KHONG vao tang nong (tang day du van phu chung).
-want "7 prune: wp-includes do sau 2"  "$(hot_has 'wp-includes/load.php')"      "no"
+# `wp-includes/*.php` do sau 1 (tuc d2 tu $ROOTS): CO, qua nhanh rieng — day la
+# lo da do thay tren cloud171-96 04-10-2026 (hot thay 0, full/hash thay 9.604).
+want "7 wp-includes do sau 1: CO (nhanh rieng)" "$(hot_has 'wp-includes/load.php')" "yes"
 want "7 prune: wp-includes do sau 3"  "$(hot_has 'wp-includes/blocks/b.php')"  "no"
 want "7 prune: vendor"                "$(hot_has 'vendor/autoload.php')"       "no"
 want "7 prune: node_modules"          "$(hot_has 'node_modules/m/x.php')"      "no"
@@ -2472,6 +2477,88 @@ case "$out34b" in
     *)               want "34 tang METADATA mu truoc ca nay" "mu" "mu" ;;
 esac
 
+
+# ── Nhom 35: QUAN HE BA TIER — hot/hash phai la TAP CON cua full ─────
+#
+# VI SAO CO NHOM NAY. Cau hoi "cung mot may co tan 3 loi goi fim.sh, xem lai?"
+# (04-10-2026) la cau hoi dung, va truoc nhom nay KHONG mot test nao do quan he
+# giua ba tier — moi nhom chi do mot tier mot. Hau qua do duoc tren
+# cloud171-96 cung ngay: tang NONG thay 0 file `/wp-includes/[^/]*\.php`, trong
+# khi tang day du va tang bam deu thay 9.604. Tuc `hash \ hot` = TOAN BO
+# `wp-includes`, va mot dong chen vao `wp-includes/load.php` — file WordPress
+# `require` o moi request, khong co HTTP request nao de WAF chan — co chu ky
+# phat hien 30 PHUT chu khong phai 5 phut.
+#
+# Nguyen nhan: nhanh generic cua `scan_hot` `prune` thu muc `wp-includes`, va
+# khoi chu thich bien ho cho `wp-includes/*.php` do sau 1 van con do nhung
+# nhanh `$ROOTS/*` tung bat chung DA bi go tu truoc. Chu thich mo ta mot ban
+# code khong con ton tai — xem [[feedback-read-code-not-comments]].
+#
+# BA BAT BIEN duoc do o day, khong phai dem file:
+#   1. `hot  \ full` = RONG   (full la tap cha; neu khong thi `check` 30 phut
+#                              bo sot cai `--hot` 5 phut thay, tuc hai manifest
+#                              noi ve hai the gioi khac nhau)
+#   2. `hash \ full` = RONG   (cung ly do)
+#   3. hot CO `wp-includes/*.php` do sau 1  (cai bat bien "chay duoc ma khong
+#                              can mot HTTP request nao" doi phai co)
+S35="$S/g35"; W35="$S35/home/u/domains/d.test/public_html"
+mkdir -p "$W35/wp-includes/rest-api" "$W35/wp-content/mu-plugins" \
+         "$W35/wp-content/plugins/p/inc" "$W35/wp-admin" "$W35/vendor/lib" \
+         "$W35/sub/wp-content/mu-plugins" "$W35/includes"
+for f in index.php wp-config.php wp-load.php wp-settings.php .htaccess .user.ini; do
+    printf '<?php x' > "$W35/$f"
+done
+printf '<?php x' > "$W35/wp-includes/load.php"
+printf '<?php x' > "$W35/wp-includes/functions.php"
+printf '<?php x' > "$W35/wp-includes/rest-api/server.php"
+printf '<?php x' > "$W35/wp-admin/admin.php"
+printf '<?php x' > "$W35/wp-content/object-cache.php"
+printf '<?php x' > "$W35/wp-content/mu-plugins/a.php"
+printf '<?php x' > "$W35/wp-content/plugins/p/p.php"
+printf '<?php x' > "$W35/wp-content/plugins/p/inc/d.php"
+printf '<?php x' > "$W35/vendor/lib/v.php"
+printf '<?php x' > "$W35/sub/wp-content/mu-plugins/s.php"
+printf '<?php x' > "$W35/includes/boot.php"
+
+e35() {
+    env FIM_ROOTS="$S35/home/*/domains/*/public_html" FIM_STATE="$S35/st" \
+        FIM_HOME="$S35/home" FIM_LOG="$S35/f.log" FIM_CRITLOG="$S35/c.log" \
+        FIM_REDIS_CLI="$R/bin/rcli" ANTIBOT_REDIS_PASS_FILE="$S35/nopass" \
+        bash "$HERE/fim.sh" "$@" 2>&1
+}
+# Moi tier mot manifest rieng, nen baseline ca ba roi doc ra tap duong dan.
+e35 baseline        >/dev/null 2>&1
+e35 baseline --hot  >/dev/null 2>&1
+e35 baseline --hash >/dev/null 2>&1
+for t in full hot hash; do
+    cut -d'|' -f1 "$S35/st/manifest.$t.txt" 2>/dev/null | sort -u > "$S35/$t.p"
+done
+# Tien de: ca ba manifest phai co noi dung, neu khong thi ba phep `comm` duoi
+# deu RONG va ba bat bien tren deu "qua" ma khong do gi — day la lop loi
+# "0/rong trong nhu dung" trong [[feedback-read-log-schema-first]].
+for t in full hot hash; do
+    want "35 manifest.$t co noi dung (tien de)" \
+         "$([ -s "$S35/$t.p" ] && echo co || echo RONG)" "co"
+done
+want "35 hot \ full = RONG (full la tap cha)" \
+     "$(comm -23 "$S35/hot.p" "$S35/full.p" | grep -c . )" "0"
+want "35 hash \ full = RONG (full la tap cha)" \
+     "$(comm -23 "$S35/hash.p" "$S35/full.p" | grep -c . )" "0"
+# Bat bien 3 — chinh la lo da do thay tren may that.
+want "35 hot CO wp-includes do sau 1" \
+     "$(grep -c '/wp-includes/[^/]*\.php$' "$S35/hot.p")" "2"
+# Doi chieu: tang bam thay dung hai file do, nen neu hot = 0 thi `hash \ hot`
+# bang ca hai — do la hinh dang cua lo cu, giu lai de phep do o tren co nghia.
+want "35 hash CO wp-includes do sau 1" \
+     "$(grep -c '/wp-includes/[^/]*\.php$' "$S35/hash.p")" "2"
+# GIOI HAN CO Y, do luon de ai noi rong `-maxdepth` thi test bao:
+# do sau 2+ chi o tang day du.
+want "35 rest-api (do sau 2) CHI o full" \
+     "$(grep -c 'rest-api/server\.php$' "$S35/full.p")$(grep -c 'rest-api/server\.php$' "$S35/hot.p")" "10"
+# Va tang nong KHONG duoc phinh thanh tang day du — neu bang nhau thi viec tach
+# tier mat y nghia (full = 317.343 file / 27 giay tren may that).
+want "35 hot NHO HON full (tach tier con y nghia)" \
+     "$([ "$(grep -c . "$S35/hot.p")" -lt "$(grep -c . "$S35/full.p")" ] && echo dung || echo "hot=$(grep -c . "$S35/hot.p") full=$(grep -c . "$S35/full.p")")" "dung"
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

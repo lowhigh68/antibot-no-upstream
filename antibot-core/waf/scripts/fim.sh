@@ -958,6 +958,32 @@ scan_hot() {
         find $ROOTS               -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
         find $ROOTS/wp-content    -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
         find $ROOTS/wp-content/mu-plugins     "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
+        # `wp-includes/*.php` DO SAU 1 — nhanh RIENG, vi nhanh generic ben duoi
+        # `prune` ca thu muc `wp-includes` nen KHONG MOT file nao o day den duoc
+        # tang nong qua duong do.
+        #
+        # Do tren cloud171-96 (2026-10-04, tu manifest that): tang nong thay 0
+        # file khop `/wp-includes/[^/]*\.php`, tang day du va tang bam deu thay
+        # 9.604 (42 site x ~229 file core), va `hash \ hot` = 9.604 — TOAN BO
+        # `wp-includes` cua tang bam nam NGOAI tang nong. Truoc ban nay, mot dong
+        # chen vao `wp-includes/load.php` co chu ky phat hien 30 PHUT (tang day
+        # du), khong phai 5 phut.
+        #
+        # Day dung la lo ma chinh tieu chi cua tang nong doi phai bit:
+        # `wp-includes/{functions,load,plugin,formatting}.php` la nhung file
+        # WordPress `require` LUC KHOI DONG, nen mot dong chen vao do chay tren
+        # MOI request va KHONG co request HTTP nao go vao duong dan do de WAF
+        # chan. Luat `wp_includes_exec` chan viec GO THANG `/wp-includes/xxx.php`
+        # — chuyen khac han.
+        #
+        # Chi phi: 9.618 file / 0,127 giay (cay mo phong cung hinh dang), nen
+        # tang nong van duoi 0,5 giay, tuc van la tang 5 phut THAT.
+        #
+        # `-maxdepth 1` la gioi han CO Y: `rest-api/`, `blocks/` (do sau 2+) chi
+        # do o tang day du. Do o tren: bo `-maxdepth` thi 9.618 -> 15.918 file.
+        # Chung cung duoc core require, nhung tang day du 30 phut da du — doi lay
+        # gan gap doi so lan `stat` moi 5 phut thi khong.
+        find $ROOTS/wp-includes   -maxdepth 1 "${NAMES[@]}" -type f -printf '%p|%s|%T@\n' || :
         # THEM MOT TANG: WordPress cai trong thu muc con cua public_html. Rat pho
         # bien tren may nay vi `da_to_openresty.sh:271` cho SUBDOMAIN mot webroot
         # dang <public_html>/<sub_name> — nen mu-plugins cua moi subdomain nam o
@@ -969,18 +995,13 @@ scan_hot() {
         # id 17, libraries 5, cli 4). Nhin qua thi day la phinh — no KHONG phai,
         # va lan review dau tien cua chinh nguoi viet dong nay da suyt cat nham.
         #
-        # Ly do giu y het ly do mu-plugins co mat: `wp-includes/*.php` do sau 1
-        # (functions.php, load.php, plugin.php, formatting.php…) la nhung file
-        # WordPress `require` luc khoi dong. Backdoor that hiem khi la FILE MOI —
-        # no la dong CHEN VAO mot file core co san, roi chay tren MOI request.
-        # Khong co request HTTP nao go vao duong dan do de WAF chan. Luat
-        # `wp_includes_exec` chan viec GO THANG /wp-includes/xxx.php — chuyen
-        # khac han.
-        #
-        # GIOI HAN da biet, chap nhan: `-maxdepth 1` nen file core o do sau 2+
-        # (wp-includes/rest-api/…, wp-includes/blocks/…) KHONG nam trong tang
-        # nong, du chung cung duoc core require. Chung van duoc TANG DAY phu,
-        # chi la mot ngay mot lan thay vi 15 phut.
+        # CHU Y — khoi 93,7% o tren NOI VE nhanh subdomain mu-plugins, KHONG noi
+        # ve `wp-includes`. Ban truoc o day co mot khoi bien ho `wp-includes/*.php`
+        # do sau 1, nhung nhanh `$ROOTS/*` tung bat chung DA KHONG CON. Thuc do
+        # tren cloud171-96 (04-10-2026, tu manifest that) cho thay tang nong thay
+        # 0 file khop `/wp-includes/[^/]*\.php`. Nhanh rieng dat o TREN hai dong
+        # `mu-plugins` moi la cho bit lo do; con so 93,7% giu lai chi de giai
+        # thich VI SAO khong duoc cat nhanh subdomain.
         # Van la glob co dich chu khong phai traversal, nen chi phi gan nhu khong doi.
         # ── NHANH GENERIC: do sau 3, TRU thu muc thu vien/core ────────────
         #
@@ -989,7 +1010,7 @@ scan_hot() {
         # (`$ROOTS -maxdepth 1`) la generic. Nen tren mot may code tay, tang nong
         # chi thay web root do sau 1 — mot webshell tha vao `/includes/`,
         # `/libraries/`, `/ajax/` cua site tu viet chi duoc TANG DAY DU thay, tuc
-        # mot ngay mot lan thay vi 5 phut.
+        # moi 30 phut thay vi 5 phut (cron tier day la `*/30`, khong phai hang ngay).
         #
         # Tieu chi chon nhanh KHONG doi: "chay duoc ma khong can mot HTTP request
         # nao". Do la bat bien GENERIC — `mu-plugins` chi la MOT hien thuc cua no.

@@ -603,8 +603,6 @@ fi
 HASH_CRON=/etc/cron.d/antibot-fim-hash
 if [ -d /etc/cron.d ]; then
     _hc_want="0 4 * * 0 root $FIM_SH check --hash >/dev/null 2>&1"
-    # thu ma mot phep do khac co the dang dung lam moc).
-    # thu ma mot phep do khac co the dang dung lam moc).
     # So sanh DUNG DONG LICH, khong so ca tep: tep con `SHELL=`/`PATH=` nen mot
     # phep loc chi bo `^#` va `^$` se LUON thay khac -> ghi lai moi lan deploy.
     # Do 04-10: lan hai van bao "da dat lich". Mot buoc "chi ghi khi khac" ma

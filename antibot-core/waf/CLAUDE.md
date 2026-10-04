@@ -233,22 +233,32 @@ Hai giới hạn đã biết, **chấp nhận** thay vì viết thêm mã:
 
 Cộng thêm một cái thứ tư mà chỉ FIM thấy: **dòng chèn vào file core có sẵn**. Backdoor thật hiếm khi là file mới — nó sửa `wp-includes/functions.php`, rồi chạy trên mọi request mà không có URI nào để chặn.
 
-### Hai tầng, và tiêu chí chọn
+### Ba tầng, và tiêu chí chọn
 
 Tiêu chí **không phải** là rẻ, mà là: **WAF có thấy được không.**
 
-| Tầng | Phạm vi | Đo trên cloud168-101 (2026-09-02) | Cron |
-|---|---|---|---|
-| nóng (`--hot`) | Chạy được **không cần một HTTP request nào** | 15.770 file / **0,474s** | `*/5` |
-| đầy | Tất cả | 317.343 file / **27s** | `17 3 * * *` |
+| Tầng | Phạm vi | Phép so | Đo trên máy thật | Cron |
+|---|---|---|---|---|
+| nóng (`--hot`) | Chạy được **không cần một HTTP request nào** | `path\|size\|mtime` | 15.770 file / **0,474s** (168-101, 02-09) | `*/5` |
+| đầy (không cờ) | Tất cả | `path\|size\|mtime` | 317.343 file / **27s** (168-101, 02-09) | `*/30` |
+| băm (`--hash`) | Chỉ cấu hình + core vào + `wp-includes/*.php` độ sâu 1 | `path\|hash` (sha256) | 9.604 file (171-96, 04-10) | `0 4 * * 0` |
 
-Tầng nóng gồm: web root, `wp-content/` độ sâu 1 (drop-in: `advanced-cache.php`, `object-cache.php`, `db.php`, `sunrise.php`), `mu-plugins/`, WordPress trong thư mục con — **và**, do glob `$ROOTS/*`, cả `wp-includes/` + `wp-admin/` độ sâu 1, chiếm **93,7%** số file.
+**Quan hệ ba tầng — đo 04-10-2026, không suy từ chú thích:** `nóng ⊂ đầy` và `băm ⊂ đầy`. Ba tier **không** quét ba vùng rời nhau; chúng quét cùng vùng với *tần suất* và *phép so* khác nhau. Gộp lại thì mất một trong hai trục:
 
-**Đừng cắt `$ROOTS/*` dù nó trông như nhiễu.** Lý do giữ y hệt lý do mu-plugins có mặt: `wp-includes/*.php` độ sâu 1 là những file core `require` lúc khởi động. Luật `wp_includes_exec` chặn việc **gõ thẳng** `/wp-includes/xxx.php` — chuyện khác hẳn. Chính người viết dòng này đã suýt cắt nhầm ở lần review đầu.
+- **tần suất** là lý do có nóng/đầy. Đầy mỗi 5 phút = 27s × 288 lượt ≈ **2,2 giờ CPU/ngày**, và đó mới là máy nhỏ.
+- **phép so** là lý do có băm. Nó là tier **duy nhất** bắt được "sửa nội dung → `touch -r` trả lại mtime → đệm cho đúng số byte cũ". Cả hai việc đều một dòng lệnh, và hai tier metadata **mù hoàn toàn** trước nó (nhóm 34 của `fim_test.sh` đo cả hướng ngược để chứng minh điều đó).
+
+Khoá chống chạy chồng là `$STATE/.lock.<tier>` — **per-tier**, nên ở phút 0/30 `--hot` và `check` chạy **song song** một cách có chủ ý: hai manifest khác nhau, không tranh ghi.
+
+Tầng nóng gồm: web root độ sâu 1, `wp-content/` độ sâu 1 (drop-in: `advanced-cache.php`, `object-cache.php`, `db.php`, `sunrise.php`), `mu-plugins/` **không giới hạn độ sâu**, `wp-includes/*.php` **độ sâu 1**, nhánh generic độ sâu 3 có prune, và `mu-plugins` của WordPress cài trong thư mục con.
+
+**`wp-includes/*.php` độ sâu 1 phải là nhánh RIÊNG.** Nhánh generic `prune` chính thư mục `wp-includes` (prune cắt 88,8%, không được bỏ), nên không file nào ở đó đến được tầng nóng qua đường generic. Đo trên cloud171-96 04-10-2026 từ manifest thật: tầng nóng thấy **0** file khớp `/wp-includes/[^/]*\.php`, tầng đầy và tầng băm đều thấy **9.604** — tức `băm \ nóng` = *toàn bộ* `wp-includes`. Hậu quả: một dòng chèn vào `wp-includes/load.php` — file WordPress `require` ở **mọi** request, không có HTTP request nào để WAF chặn — có chu kỳ phát hiện **30 phút** chứ không phải 5 phút. Chi phí bịt: 9.618 file / **0,127s**, tầng nóng vẫn dưới 0,5s.
+
+Lỗ này sống sót vì **chú thích mô tả một bản code đã mất**: khối biện hộ cho `wp-includes/*.php` độ sâu 1 (kèm số 93,7%) nói về một nhánh `$ROOTS/*` **đã bị gỡ từ trước**; nhánh `$ROOTS/*` duy nhất còn lại là `$ROOTS/*/wp-content/mu-plugins`, không chạm `wp-includes`. Con số 93,7% giờ chỉ còn giá trị giải thích **vì sao không được cắt nhánh subdomain**. Đúng lớp lỗi của `feedback_read_code_not_comments`; nhóm 35 của `fim_test.sh` giờ đo *quan hệ giữa các tier* nên chú thích không còn là chỗ duy nhất giữ bất biến này.
 
 `uploads/` **cố ý** không ở tầng nóng: webshell trong đó phải có HTTP request mới chạy, và `wp_upload_exec` chặn thẳng. Tầng đầy vẫn phủ.
 
-**Giới hạn đã biết:** `-maxdepth 1` nên file core độ sâu 2+ (`wp-includes/rest-api/`, `blocks/`) không ở tầng nóng dù cũng được require — tầng đầy phủ, một ngày một lần.
+**Giới hạn đã biết, có chủ ý:** `-maxdepth 1` nên file core độ sâu 2+ (`wp-includes/rest-api/`, `blocks/`) không ở tầng nóng dù cũng được require — tầng đầy phủ, mỗi 30 phút. Bỏ `-maxdepth` thì 9.618 → 15.918 file; gần gấp đôi số lần `stat` mỗi 5 phút để lấy cái tầng đầy đã có. Tầng băm cũng dừng ở độ sâu 1, vì nó phải **đọc hết mọi byte**.
 
 ### Đường phản hồi vào WAF
 
@@ -278,11 +288,11 @@ Một lượt Redis GET **cho mỗi lần luật bắn** (~4.300/ngày), không 
 ### Vận hành FIM
 
 ```bash
-fim.sh baseline [--hot]                 # manifest đầu tiên, không báo cáo gì
-fim.sh check    [--hot] [--dry] [-v]
+fim.sh baseline [--hot|--hash]          # manifest đầu tiên, không báo cáo gì
+fim.sh check    [--hot|--hash] [--dry] [-v]
 ```
 
-- Manifest **riêng cho từng tier** (`manifest.hot.txt` / `manifest.full.txt`). Bắt buộc: đối chiếu tập con với manifest đầy sẽ báo mọi file không được phủ là DEL, biến manifest đầy thành rác và nuốt mọi thay đổi về sau.
+- Manifest **riêng cho từng tier** (`manifest.hot.txt` / `manifest.full.txt` / `manifest.hash.txt`). Bắt buộc: đối chiếu tập con với manifest đầy sẽ báo mọi file không được phủ là DEL, biến manifest đầy thành rác và nuốt mọi thay đổi về sau.
 - Manifest ở `/var/lib/antibot/fim/`, **ngoài cây deploy** — `./deploy.sh` không đụng tới, không cần dựng lại baseline sau mỗi lần deploy.
 - Im lặng khi không có gì (cron gửi mail theo **bất kỳ** dòng stdout nào). `-v` để ép in.
 - Mã thoát 1 = có CRITICAL.
