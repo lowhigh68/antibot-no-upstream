@@ -2887,43 +2887,66 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
 
 
     if [ -s "$dirtydirs" ]; then
-        chgdirs=$(mktemp) || exit 2
+        # ── KHONG CON RECORD `<value>|<path>` ───────────────────────
+        #
+        # Ban truoc ghi `<toks>|<thu-muc>/` vao mot tep tam roi `gen_resp` tach lai bang
+        # `index($0, "|")` — dau `|` DAU TIEN. Nhung `|` la ky tu HOP LE trong ten tep
+        # Unix va trong doi so `AddHandler`, nen
+        #     AddHandler application/x-httpd-php .jpg|evil
+        # cho `v2,h+:jpg|evil`, va record thanh
+        #     v2,h+:jpg|evil|/home/u/domains/d/public_html/
+        # `gen_resp` doc value = `v2,h+:jpg` va path = `evil|/home/u/...` -> ghi mot khoa
+        # Redis SAI TEN. Do 04-10. Nang hon: `count_live` xac minh chinh khoa sai do nen
+        # KHONG bao loi, va `state_marks` bo qua thu muc dirty trong cung lot — nen khoa
+        # DUNG chi co co hoi quay lai o lot full sau.
+        #
+        # Sua goc chu khong thoat them mot ky tu: dung `redis_resp` TRUC TIEP, cung
+        # primitive ma `state_marks` dung. RESP dong goi tung doi so theo DO DAI BYTE nen
+        # khong con ranh gioi nao de pha — `,`, `|`, khoang trang, newline deu mat het y
+        # nghia cu phap. Thoat tung ky tu la mot cuoc dua khong thang duoc: lan sau se la
+        # mot ky tu khac.
+        chgrespf=$(mktemp) || exit 2
+        chgkeyf=$(mktemp)  || exit 2
         setcmds=""
         delkeys=""
+        marked_chg=0
+        chgprobe=""
+        chgwant=""
         while IFS= read -r d; do
             [ -n "$d" ] || continue
             # `$chgdirs.del` giu KHOA THUAN, mot khoa mot dong — khong phai dong lenh.
             # Ban truoc giu `DEL <khoa>` roi tach lai bang `awk '{print $2}'`, tuc phep
-            # tach GIA DINH khoa khong co khoang trang. Giu khoa thuan thi `redis_resp`
-            # dong goi theo do dai byte va phan xac minh doc dung khoa (xem `redis_resp`).
+            # tach GIA DINH khoa khong co khoang trang.
             # XOA CA HAI tien to trong giai doan di tru: khoa `fimchg:` cu con song het
-            # TTL 7 ngay, va bo qua no thi mot thu muc DA XOA van co khoa cu bao "dang
-            # nguy hiem" tới 09-10-2026. HAN CHOT 09-10-2026: bo dong `fimchg:`.
+            # TTL 7 ngay. HAN CHOT 09-10-2026: bo dong `fimchg:`.
             if [ ! -d "$d" ]; then
-                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgdirs.del"
-                printf 'waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
+                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgrespf.del"
+                printf 'waf:fimchg:%s/\n' "$d" >> "$chgrespf.del"
                 continue
             fi
             toks=$(dir_tokens "$d")
             if [ -n "$toks" ]; then
-                printf '%s|%s/\n' "$toks" "$d" >> "$chgdirs"
+                redis_resp SETEX "waf:fimcfg:$d/" "$MARK_TTL" "$toks" >> "$chgrespf"
+                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgkeyf"
+                # Mau DAU TIEN, de phan xac minh doc nguoc mot khoa cu the.
+                if [ -z "$chgprobe" ]; then
+                    chgprobe="waf:fimcfg:$d/"
+                    chgwant="$toks"
+                fi
+                marked_chg=$((marked_chg + 1))
             else
                 # Thu muc VUA DOI ma het token -> `DEL`: no co the DA co khoa, va khoa
                 # do nay sai. Khac nguon TRANG THAI (`state_marks`), noi mot thu muc
                 # khong co token la binh thuong va KHONG bao gio `DEL` — ~1.064/1.075
                 # thu muc cau hinh khong co token, `DEL` chung la 1.064 lenh cong
                 # 1.064 lan `redis_absent` round-trip moi lot, cho khoa chua tung co.
-                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgdirs.del"
-                printf 'waf:fimchg:%s/\n' "$d" >> "$chgdirs.del"
+                printf 'waf:fimcfg:%s/\n' "$d" >> "$chgrespf.del"
+                printf 'waf:fimchg:%s/\n' "$d" >> "$chgrespf.del"
             fi
         done < <(sort -u "$dirtydirs")
 
-        chgrespf=$(mktemp) || exit 2
-        chgprobef=$(mktemp) || exit 2
-        chgkeyf=$(mktemp) || exit 2
-        marked_chg=$(gen_resp "$chgdirs" "waf:fimcfg:" "$chgrespf" "$chgprobef" "" "$chgkeyf")
-        [ -f "$chgdirs.del" ] && delkeys=$(sort -u "$chgdirs.del")
-        rm -f "$chgdirs" "$chgdirs.del"
+        [ -f "$chgrespf.del" ] && delkeys=$(sort -u "$chgrespf.del")
+        rm -f "$chgrespf.del"
 
         # SETEX truoc, DEL sau la DUNG o day va KHAC han ban truoc: mot thu muc chi
         # xuat hien o MOT trong hai tap (tinh lai tu dia thi no hoac con thu nguy
@@ -2948,16 +2971,18 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             if [ -z "$mark_err" ] && ! count_live "$chgkeyf" "$marked_chg"; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): $REDIS_ERR."
             fi
-            cprobe=$(sed -n 1p "$chgprobef")
-            cwant=$(sed -n 2p "$chgprobef")
-            if [ -z "$mark_err" ] && \
-               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$cprobe" 2>>"$LOG" </dev/null)" != "$cwant" ]; then
+            # `$chgprobe`/`$chgwant` dat TRONG vong, khong doc lai tu tep: ban truoc giu
+            # mau trong `$chgprobef` hai dong (khoa, gia tri) va `sed -n 1p/2p` — mot
+            # phep doc GIA DINH ca khoa lan gia tri khong co newline. Gio chung la bien
+            # thuong nen khong con gia dinh nao.
+            if [ -z "$mark_err" ] && [ -n "$chgprobe" ] && \
+               [ "$("$REDIS_CLI" -n "$REDIS_DB" GET "$chgprobe" 2>>"$LOG" </dev/null)" != "$chgwant" ]; then
                 mark_err="KHONG XAC MINH DUOC (fimchg): da ghi $marked_chg key nhung doc nguoc that bai."
                 mark_err="$mark_err Kiem FIM_REDIS_DB=$REDIS_DB co khop _M.redis.db trong core/config.lua khong."
             fi
             fi
         fi
-        rm -f "$chgrespf" "$chgprobef" "$chgkeyf"
+        rm -f "$chgrespf" "$chgkeyf"
         # DEL phai FAIL-VISIBLE, y nhu nhom SETEX (nguoi dung bat 28-09). Ban truoc
         # nuot moi loi bang `|| :` va KHONG doc nguoc — nen mot DEL that bai de lai
         # dau CU, tuc mot duong tinh gia song tới het TTL 7 ngay ma khong ai biet.

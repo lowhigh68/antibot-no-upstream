@@ -923,11 +923,24 @@ local function fim_config_active(uri, rt)
 
     -- `trang_thai_phai_sang_trai`: duyet `sufs` tu PHAI sang TRAI, lay phat bieu DAU
     -- TIEN gap tren truc do. `nil` = truc nay khong noi gi ve bat ky duoi nao cua tep.
+    -- `duoi_hieu_luc`: duyet `sufs` tu PHAI sang TRAI, lay phat bieu dau tien gap tren
+    -- truc do.
+    --
+    -- `"reset"` KHONG dung lai o day — no BO QUA duoi do va di tiep sang duoi BEN TRAI
+    -- trong CUNG truc. `RemoveHandler .jpg` noi "duoi .jpg khong con handler mapping";
+    -- no khong noi gi ve `.php`, nen mot `AddHandler php .php` con hieu luc VAN lam
+    -- `shell.php.jpg` chay. Do 04-10:
+    --     h+:php + h0:jpg, shell.php.jpg -> `nil`   (dung phai `handler_ext`)
+    -- Ban truoc `return s` ke ca khi `s == "reset"`, nen reducer roi xuong truc TYPE
+    -- thay vi tim tiep trong truc HANDLER. FN, va ten tep do nguoi gui quyet dinh.
+    --
+    -- Chi khi het suffix ma chua gap `true`/`false` thi moi roi xuong truc thap hon —
+    -- va luc do `nil` tra ve chinh la tin hieu "truc nay khong noi gi".
     local function duoi_hieu_luc(bang)
         if not bang or not sufs then return nil end
         for i = #sufs, 1, -1 do
             local s = bang[sufs[i]]
-            if s ~= nil then return s end
+            if s ~= nil and s ~= "reset" then return s end
         end
         return nil
     end

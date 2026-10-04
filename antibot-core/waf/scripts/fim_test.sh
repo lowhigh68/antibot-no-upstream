@@ -1176,6 +1176,36 @@ want "23 mot lenh bi TU CHOI -> fim bao loi (khong im lang)" \
 want "23 va ma thoat KHONG phai 0" \
      "$([ "$rc23" -ne 0 ] && echo khac0 || echo 0)" "khac0"
 
+# ── DAU `|` trong TEN DUOI: nhanh dirty phai ghi khoa DUNG TEN ───────
+#
+# `|` la ky tu HOP LE trong ten tep Unix va trong doi so `AddHandler`. Ban truoc nhanh
+# dirty ghi record `<toks>|<thu-muc>/` vao tep tam roi `gen_resp` tach bang `index($0,
+# "|")` — dau `|` DAU TIEN. Nen
+#     AddHandler application/x-httpd-php .jpg|evil
+# cho `v2,h+:jpg|evil` va record thanh `v2,h+:jpg|evil|/duong/dan/`, doc ra
+#     value = v2,h+:jpg          path = evil|/duong/dan/
+# -> ghi mot khoa Redis SAI TEN. Nang hon: `count_live` xac minh chinh khoa sai do nen
+# KHONG bao loi, va `state_marks` bo qua thu muc dirty trong cung lot — khoa DUNG chi
+# co co hoi quay lai o lot full sau. Cua so FN chu dong, dung luc cau hinh vua bi sua.
+#
+# Nay nhanh dirty dung `redis_resp` TRUC TIEP (cung primitive voi `state_marks`), nen
+# khong con ranh gioi nao de pha. Ca nay kiem TEN KHOA THAT, khong chi so lenh.
+mkdir -p "$W23/pipe"
+printf 'AddHandler application/x-httpd-php .jpg|evil\n' > "$W23/pipe/.htaccess"
+r23 baseline
+# SUA tep -> thu muc thanh dirty -> di qua nhanh dirty (khong phai `state_marks`).
+sleep 0.02
+printf 'AddHandler application/x-httpd-php .jpg|evil\n# doi\n' > "$W23/pipe/.htaccess"
+: > "$S23/rcli.txt"; r23 check
+want "23 dau | : khoa mang DUNG duong dan (khong bi cat o |)" \
+     "$(grep -cP "^SETEX\twaf:fimcfg:\Q$W23/pipe/\E\t" "$S23/rcli.txt")" "1"
+# KHONG duoc co khoa nao mang `evil|` lam duong dan.
+want "23 dau | : KHONG co khoa rac mang 'evil|'" \
+     "$(grep -c 'waf:fimcfg:evil|' "$S23/rcli.txt")" "0"
+# Gia tri phai nguyen ven, ke ca dau `|`.
+want "23 dau | : gia tri nguyen ven" \
+     "$(v23 "$W23/pipe/")" "h+:jpg|evil"
+
 # Bat bien 3: generation KHONG chuyen khi co lenh bi tu choi.
 : > "$S23/rcli.txt"; r23 check || true          # lot sach -> generation hop le
 sk23_truoc=$(cat "$S23/state/statekeys.full.txt" 2>/dev/null)
@@ -1844,6 +1874,43 @@ mv "safe: cha h+:jpg + con @sh- -> DUNG" \
    "/con/a.jpg" "nil" "v2,@sh-" "v2,h+:jpg"
 mv "safe: cha t+:jpg + con @ft- -> DUNG" \
    "/con/a.jpg" "nil" "v2,@ft-" "v2,t+:jpg"
+
+# ── GIAO DIEM `reset` × NHIEU DUOI (review 3 diem 1) ─────────────────
+#
+# Suite da kiem RIENG `reset` (roi xuong truc duoi) va RIENG rightmost (duoi ben phai
+# thang), nhung chua kiem GIAO DIEM. Dot bien "bo dieu kien `s ~= reset` trong
+# `duoi_hieu_luc`" bat 0 ca — suite xanh cho mot ban co FN that.
+#
+# `RemoveHandler .jpg` noi "duoi .jpg khong con handler mapping". No KHONG noi gi ve
+# `.php`, nen mot `AddHandler php .php` con hieu luc VAN lam `shell.php.jpg` chay. Do
+# 04-10 TRUOC khi sua:
+#     h+:php + h0:jpg, shell.php.jpg -> `nil`   (dung phai `handler_ext`)
+#
+# Quy tac trong `duoi_hieu_luc`:
+#   `true`/`false` -> mapping hieu luc DAU TIEN, dung
+#   `"reset"`      -> duoi nay khong co mapping, DI TIEP sang duoi ben trai CUNG truc
+#   het suffix     -> luc do moi roi xuong truc uu tien thap hon
+mv "giao: h+:php + h0:jpg, shell.php.jpg -> .php con mapping" \
+   "/shell.php.jpg" "handler_ext" "v2,h+:php,h0:jpg"
+mv "giao: t+:php + t0:jpg, shell.php.jpg -> cung truc TYPE" \
+   "/shell.php.jpg" "handler_ext" "v2,t+:php,t0:jpg"
+# Dao thu tu duoi trong TEN TEP: khong doi ket qua, vi `.jpg` chi la `reset`.
+mv "giao: h+:php + h0:jpg, shell.jpg.php" \
+   "/shell.jpg.php" "handler_ext" "v2,h+:php,h0:jpg"
+
+# Huong NGUOC — ba ca chan phep sua di qua xa:
+# 1. `false` (explicit-safe) o duoi PHAI VAN phai dung, khong duoc di tiep.
+mv "giao: h+:php + h-:jpg, shell.php.jpg -> safe o phai DUNG" \
+   "/shell.php.jpg" "nil" "v2,h+:php,h-:jpg"
+# 2. `reset` mot minh (khong co mapping nao ben trai) -> truc nay khong noi gi.
+mv "giao: chi h0:jpg, /a.jpg -> khong noi gi" \
+   "/a.jpg" "nil" "v2,h0:jpg"
+# 3. Va luc do PHAI roi xuong truc TYPE cua tang xa hon.
+mv "giao: con h0:jpg + cha t+:jpg -> roi xuong type" \
+   "/con/a.jpg" "handler_ext" "v2,h0:jpg" "v2,t+:jpg"
+# 4. `h-` o duoi TRAI + `h0` o duoi phai -> di tiep gap `h-`, DUNG o do.
+mv "giao: h-:php + h0:jpg, shell.php.jpg -> gap safe o trai" \
+   "/shell.php.jpg" "nil" "v2,h-:php,h0:jpg"
 
 # ── PATH_INFO cho MOI duoi, khong chi duoi PHP ───────────────────────
 #
