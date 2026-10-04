@@ -86,18 +86,34 @@ REDIS_PORT="${SEC_REDIS_PORT:-6379}"
 HOME_BASE="${SEC_HOME:-/home}"
 DA_USERS="${SEC_DA_USERS:-/usr/local/directadmin/data/users}"
 
-# ── CHON TENANT: mot user THAT, khong phai user he thong ─────────────
+# ── CHON TENANT: phai la KHACH, khong phai tai khoan quan tri ────────
 #
-# Phai la user co domain duoi DirectAdmin, vi UID cua chinh no la cai ma luat
-# firewall/permission phan biet. Lay user DAU TIEN co `domains/` that tren dia:
-# khong doc gi trong do, chi can mot UID hop le de mang di do.
+# Ban dau lay thu muc DAU TIEN trong `/home/*/domains` va bo loc `uid >= 500`. Do
+# 04-10 tren cloud171-96: no chon `admin` (uid 1000) — tai khoan QUAN TRI cua
+# DirectAdmin, `usertype=admin`, `creator=root`, `domains.list` RONG. Glob tra
+# `admin` truoc vi thu tu ASCII, nen no LUON bi chon.
+#
+# Hau qua: ca bon muc con lai do bang quyen cua mot tai khoan duoc phep nhieu hon
+# tenant, nen FAIL/PASS cua chung khong tra loi dung cau hoi. `admin` doc duoc
+# `config.lua` co the la HOP LE; mot tenant khach doc duoc thi la LO THAT.
+#
+# Nay loc bang BANG CHUNG cua DirectAdmin chu khong bang UID:
+#   · `usertype=admin`/`reseller` -> KHONG phai tenant khach
+#   · `domains.list` rong         -> khong co site, khong dai dien cho tenant
+# Do duoc tren fleet: 73 user co `domains/` va 73 muc trong `data/users` -> KHOP,
+# nen `data/users` la nguon dung de hoi "ai la user".
 pick_tenant() {
-    local d u
+    local d u ut
     for d in "$HOME_BASE"/*/domains; do
         [ -d "$d" ] || continue
         u=${d%/domains}; u=${u##*/}
         id "$u" >/dev/null 2>&1 || continue
         [ "$(id -u "$u")" -ge 500 ] 2>/dev/null || continue
+        # Loai admin/reseller theo khai bao cua chinh DirectAdmin.
+        ut=$(sed -n 's/^usertype=//p' "$DA_USERS/$u/user.conf" 2>/dev/null)
+        case "$ut" in admin|reseller) continue ;; esac
+        # Phai co it nhat mot domain THAT tren dia.
+        [ -n "$(ls -1 "$d" 2>/dev/null | head -1)" ] || continue
         printf '%s' "$u"; return 0
     done
     return 1
@@ -129,6 +145,24 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
         echo "=> rc=2 (khong do duoc)"
         exit 2
     fi
+    # Danh sach tenant KHAC, do root lap (tenant khong doc duoc `$DA_USERS`).
+    # Cat 40 ten de dong `su -c` khong phinh vo han; 40 du de ket luan "tat ca bi
+    # tu choi" hay "co cho mo duoc".
+    OTHERS=""
+    n_oth=0
+    for _ud in "$DA_USERS"/*; do
+        [ -d "$_ud" ] || continue
+        _u=${_ud##*/}
+        [ "$_u" = "$TEN" ] && continue
+        case "$(sed -n 's/^usertype=//p' "$_ud/user.conf" 2>/dev/null)" in
+            admin|reseller) continue ;;
+        esac
+        OTHERS="$OTHERS $_u"
+        n_oth=$((n_oth + 1))
+        [ "$n_oth" -ge 40 ] && break
+    done
+    printf '  tenant khac se do: %s\n' "$n_oth"
+
     echo "Ha quyen sang tenant '$TEN' (uid $(id -u "$TEN")) roi chay lai..."
     echo
     # `su - <user> -c` chay lai CHINH script nay. Truyen trang thai song qua bien
@@ -138,6 +172,7 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
         SEC_LIVE_DA=$LIVE_DA \
         SEC_APACHE_HTTP='$APACHE_HTTP_PORT' SEC_APACHE_HTTPS='$APACHE_HTTPS_PORT' \
         SEC_REDIS_PORT='$REDIS_PORT' SEC_HOME='$HOME_BASE' SEC_DA_USERS='$DA_USERS' \
+        SEC_OTHERS='$OTHERS' \
         bash '$(readlink -f "$0")'"
 fi
 
@@ -201,14 +236,33 @@ echo "--- 4. Cach ly giua tenant (Review 4, 4.3) ---"
 # `-r` chay bang UID tenant nen tra loi dung cau hoi cua kernel. Luu y gioi han:
 # `-r` dung cho DAC QUYEN UID, con `open_basedir` la rao cua PHP va KHONG hien ra
 # o day -- do la ly do muc nay do bang UID that chu khong do bang PHP.
+# ── `-d` THAT BAI LA BANG CHUNG, KHONG PHAI "KHONG CO GI DE SO" ──────
+#
+# Ban truoc `continue` khi `[ -d "$d" ]` false. Nhung phep do nay chay bang UID
+# TENANT, va `/home/<user>` o DirectAdmin la `711`/`750` — nen tenant KHONG stat
+# duoc `/home/khac/domains` va `-d` tra false. Ket qua: dem ra 0, roi bao
+#     "chi co 1 tenant duoi /home -> khong co gi de so"
+# trong khi tren may co 73 tenant va `-d` false CHINH LA cach ly dang hoat dong.
+# Mot bang chung PASS bi dich thanh "khong do duoc" (do 04-10, cloud171-96).
+#
+# Nen danh sach tenant lay tu `DA_USERS` (root tao, tenant khong can stat `/home`
+# cua nguoi khac), con `-r`/`-w` moi la phep do. Ba trang thai:
+#   doc duoc        -> FAIL (ho ca ly)
+#   khong doc duoc  -> PASS (ke ca khi `-d` false: khong voi tay toi duoc)
+#   khong co ai khac -> BO QUA
 ME="${SEC_TENANT:-$(id -un)}"
 nkhac=0; ndoc=0; nghi=0
-for d in "$HOME_BASE"/*/domains; do
-    u=${d%/domains}; u=${u##*/}
+# Danh sach tenant do ROOT lap o muc 0 roi truyen xuong qua `SEC_OTHERS`.
+#
+# KHONG liet ke `$DA_USERS` o day: thu muc do la `700 diradmin` nen tenant khong
+# doc duoc, va vong `for` se khong khop gi -> `nkhac=0` -> lai roi vao dung cai
+# "BO QUA" ma sua nay dang go. Cung ho voi `-d` false o ban truoc: dung mot phep
+# BI CHAN lam nguon danh sach thi mat luon kha nang do.
+for u in ${SEC_OTHERS:-}; do
     [ "$u" = "$ME" ] && continue
-    [ -d "$d" ] || continue
+    d="$HOME_BASE/$u/domains"
     nkhac=$((nkhac+1))
-    # Chi hoi quyen tren THU MUC, khong liet ke, khong doc tep ben trong.
+    # Chi hoi quyen, khong liet ke, khong doc tep ben trong cua khach.
     [ -r "$d" ] && ndoc=$((ndoc+1))
     [ -w "$d" ] && nghi=$((nghi+1))
 done
@@ -227,15 +281,26 @@ echo "--- 5. Secret cua WAF/OpenResty (Review 4, 4.3 muc cuoi) ---"
 # Tenant doc duoc mot trong hai la doc duoc bi mat ky challenge -> tu sinh cookie
 # `verified:*` hop le va di qua toan bo lop cham diem.
 A="${SEC_ANTIBOT:-/usr/local/openresty/nginx/conf/antibot}"
+# In them CHE DO BAT PHAN: `-r` chi tra loi "tenant nay doc duoc khong", con cai
+# sua duoc la "tep co world-readable khong". Do 04-10: ca hai tep la `644
+# root:root`, tuc MOI user tren may doc duoc — khong rieng gi tenant nao. Thieu cot
+# nay thi nguoi doc khong biet phai `chmod` cai gi.
 for f in "$A/core/config.lua" "$A/admin/init.lua"; do
     if [ ! -e "$f" ]; then skip "$f" "khong ton tai"
-    elif [ -r "$f" ]; then bad "$f -- tenant DOC duoc (bi mat challenge/admin lo)"
+    elif [ -r "$f" ]; then
+        bad "$f -- tenant DOC duoc (che do $(stat -c '%a %U:%G' "$f" 2>/dev/null))"
     else ok "$f -- tenant khong doc duoc"; fi
 done
+# `waf.log` chi sinh ra khi co luot WAF ghi, nen "khong ton tai" o day la BO QUA
+# dung nghia. `antibot.log` thi phai co: thu muc la `750 nginx:nginx` nen tenant
+# khong stat duoc -> `-e` false -> BO QUA "khong ton tai". Do la KET LUAN SAI ve
+# mot tep CO THAT (do 04-10: 51 MB, `640 nginx:nginx`). Phan biet hai ca bang
+# cach hoi thu muc cha.
 for f in /var/log/antibot/antibot.log /var/log/antibot/waf.log; do
-    if [ ! -e "$f" ]; then skip "$f" "khong ton tai"
-    elif [ -r "$f" ]; then bad "$f -- tenant DOC duoc log cua he thong"
-    else ok "$f -- tenant khong doc duoc"; fi
+    if [ -r "$f" ]; then bad "$f -- tenant DOC duoc log cua he thong"
+    elif [ -e "$f" ]; then ok "$f -- co that, tenant khong doc duoc"
+    elif [ -r "${f%/*}" ]; then skip "$f" "thu muc doc duoc nhung tep khong ton tai"
+    else ok "$f -- tenant khong voi tay toi duoc (ke ca thu muc cha)"; fi
 done
 echo
 echo "=== TONG ==="
