@@ -2223,9 +2223,9 @@ do
         local p_po = ini:find("layer%s*=%s*proxy_origin")
         local p_bc = ini:find("layer%s*=%s*ip_ban_check")
         if not p_po or not p_bc then
-            bad("  SAI  khong tim thay proxy_origin hoac ip_ban_check trong STEPS_COMMON\n")
+            bad("  SAI  khong tim thay proxy_origin hoac ip_ban_check trong pipeline STEPS_*\n")
         elseif p_po > p_bc then
-            bad("  SAI  proxy_origin dung SAU ip_ban_check trong STEPS_COMMON =>\n" ..
+            bad("  SAI  proxy_origin dung SAU ip_ban_check trong pipeline STEPS_* =>\n" ..
                 "       ctx.behind_proxy con false o moi tang khoa theo IP. Dung ho\n" ..
                 "       loi da lam Fix B thanh code chet (doc buoc 6, ghi buoc 10).\n")
         else pass = pass + 1 end
@@ -2308,18 +2308,29 @@ do
             var2file[v] = mod:gsub("%.", "/") .. ".lua"
         end
 
-        -- 2) thu tu buoc trong STEPS_COMMON (cac bang khac chay SAU no)
+        -- 2) thu tu pipeline: ADMISSION chay truoc COMMON. Tu 04-10-2026,
+        -- proxy_origin + ip_ban_check nam trong ADMISSION de moi fast-path
+        -- (verified/resource) deu di qua hai cong nay.
         local order, n = {}, 0
-        local common = ini:match("local STEPS_COMMON%s*=%s*{(.-)\n}")
-        if common then
-            for v in common:gmatch("layer%s*=%s*([%w_]+)") do
+        local function append_steps(tbl)
+            local body = ini:match("local " .. tbl .. "%s*=%s*{(.-)\n}")
+            if not body then return false end
+            for v in body:gmatch("layer%s*=%s*([%w_]+)") do
                 n = n + 1
                 if not order[v] then order[v] = n end
             end
+            return true
         end
+
+        append_steps("STEPS_ADMISSION")
+        local has_common = append_steps("STEPS_COMMON")
+
         -- Cac bang sau COMMON: gan vi tri > moi buoc cua COMMON.
         local after = n
-        for _, tbl in ipairs({ "STEPS_FULL_DETECTION", "STEPS_INTERACTION", "STEPS_RESOURCE" }) do
+        for _, tbl in ipairs({
+            "STEPS_FULL_DETECTION", "STEPS_INTERACTION",
+            "STEPS_RESOURCE_PRE", "STEPS_RESOURCE_FINAL",
+        }) do
             local body = ini:match("local " .. tbl .. "%s*=%s*{(.-)\n}")
             if body then
                 for v in body:gmatch("layer%s*=%s*([%w_]+)") do
@@ -2329,7 +2340,7 @@ do
             end
         end
 
-        if n == 0 then
+        if not has_common then
             bad("  SAI  khong trich duoc STEPS_COMMON tu init.lua\n")
         else
             -- 3) canh gac: co -> { noi GHI (bien layer), cac noi DOC }

@@ -552,6 +552,25 @@ function _M.run(ctx)
             tostring(ctx.xf_over or false))
     end
 
+    -- Local admission telemetry. Chi append khi request la resource candidate,
+    -- di endpoint noi bo, hoac thuc su bi throttle de khong lam phong
+    -- moi dong dynamic thong thuong. `adm=` la capacity verdict, KHONG phai bot
+    -- verdict; dashboard/phan tich khong duoc dua no vao reputation.
+    local admission_str = ""
+    if ctx.admission_limited or ctx.resource_candidate or ctx.backend_class then
+        admission_str = string.format(
+            " adm=%s adm_n=%s adm_lim=%s adm_win=%s adm_grp=%s adm_route=%s backend=%s rcand=%s ractual=%s",
+            tostring(ctx.admission_reason or "-"),
+            tostring(ctx.admission_count or "-"),
+            tostring(ctx.admission_limit or "-"),
+            tostring(ctx.admission_window or "-"),
+            tostring(ctx.admission_group or "-"),
+            tostring(ctx.admission_route_shard or "-"),
+            tostring(ctx.backend_class or "-"),
+            tostring(ctx.resource_candidate or false),
+            (ctx.resource_actual == nil) and "-" or tostring(ctx.resource_actual))
+    end
+
     -- mismatch telemetry (intelligence/correlation/consistency_check.lua).
     -- mm     = danh sách NHÁNH đã bắn; mm_raw = tổng TRƯỚC khi chặn trần 1.0
     -- (mm_raw > 1.0 = bão hoà, mismatch phẳng 55 điểm, mất khả năng phân biệt);
@@ -606,7 +625,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -717,7 +736,8 @@ function _M.run(ctx)
         xf_str,
         sc_str,
         mm_str,
-        waf_str
+        waf_str,
+        admission_str
     )
 
     write_log_line(line)

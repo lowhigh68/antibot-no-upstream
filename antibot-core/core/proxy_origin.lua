@@ -26,8 +26,8 @@
 --   `ctx.behind_proxy` (duoc giam trong so) den TU DAI IP da xac minh, khong tu
 --   header. Con header ma MAU THUAN voi dai IP thi thanh tin hieu XAU.
 --
--- Vi tri: PHAI truoc `l7.ban.ip_ban_check` (buoc 6 cua STEPS_COMMON) de moi
--- tang khoa theo IP doc duoc co. Hau qua: o day KHONG CO tin hieu transport
+-- Vi tri: PHAI truoc local admission va `l7.ban.ip_ban_check` trong
+-- STEPS_ADMISSION de moi tang khoa theo IP doc duoc co. Hau qua: o day KHONG CO tin hieu transport
 -- (`ja3` / `tls13` / `h2` nam o buoc 11) — dung dua thiet ke nao vao chung.
 -- Xem `memory/feedback_flag_read_before_write.md`.
 

@@ -1,56 +1,81 @@
 # l7/
 
-Layer 7 traffic shaping: rate limit, burst, slow-loris, IP/identity ban. Runs early in pipeline (`STEPS_COMMON` for ban_check, `STEPS_FULL_DETECTION` for rate/burst/slow).
+Layer 7 traffic shaping: local admission, Redis rate/burst signals, expensive
+resource guard, and IP/identity ban. Local admission runs before WAF body scan,
+verified/whitelist exits, Redis ban lookup, and class dispatch.
 
 ## Purpose
-Catch volumetric/protocol attacks BEFORE expensive detection layers. Reject banned identities immediately.
+Keep OpenResty/Apache/PHP alive independently of bot classification, then add
+security signals and reject identities that already have a supported ban.
 
 ## Files
 
 | File | Role | Phase |
 |---|---|---|
-| `init.lua` | Orchestrator: `ip_ban_check` (in COMMON) + `ban_store` (per-class), `rate.counter`, `burst.burst_counter`, `burst.burst_decision`, `slow.slow_detect` |
-| `ban/ip_ban_check.lua` | Read `banned:ip:<ip>` from Redis. Hit → set `ctx.action="block"`, `ctx.action_reason="banned_ip"`, `ngx.exit(403)` |
-| `ban/ban_store.lua` | Read `ban:<identity>`. Hit → escalate viol (rate-limited 1/60s, after grace 5min), extend ban TTL via `cfg.ttl.ban_steps`. Sets `action_reason="banned_id"`, exits 403. Defers when UA claims good bot (DNS verify in detection/bot decides) |
-| `rate/counter.lua` | `rl:<ip>` and `rl:<id>` incr by `rate_weight` (class-dependent). Sets `ctx.rate`, `ctx.ip_rate`, `ctx.burst` (rate/TTL > burst_threshold/60). **Retry-aware**: same URI from same identity within 3s gets 0.3× weight. Also SADD `rate:ids:<ip>` per request (TTL = `cfg.ttl.rate`) for adaptive_limit's distinct-identity check |
-| `rate/res_ip_counter.lua` | INCR `res_ip:<ip>` (TTL = `cfg.ttl.rate` = 60s) for resource class only. Runs in `STEPS_RESOURCE` (NOT in `l7_layer.run` because resource class skips l7). Feeds `detection/session/session_store.lua` resource_starved gating — IP-level browser activity check |
-| `rate/adaptive_limit.lua` | Hybrid ip_surge: Tier 1 sets `ctx.ip_surge` signal when `ip_rate > cfg.rate.ip_surge_threshold` (1500/60s ≈ 25 req/s) → scoring decides. Tier 2 hard-bans IP only when `ip_rate > cfg.rate.ip_surge_extreme` (5000/60s ≈ 83 req/s) AND distinct identities `< cfg.rate.ip_surge_distinct_min` (3). Short TTL `cfg.rate.ip_surge_ban_ttl` (300s). Also increments `viol:<id>` async when per-identity rate exceeds adaptive threshold |
-| `burst/burst_counter.lua` | `burst:<id>` incr. Sets `ctx.burst`. Grace: trusted session (sess_len ≥ 5, sess_flag < 0.4) → burst=0 |
-| `burst/burst_decision.lua` | `ctx.burst_flag = ctx.burst > cfg.rate.burst_threshold` |
-| `slow/slow_detect.lua` | `ctx.slow = request_time > effective_threshold`. **Device-aware**: mobile×2.5, trusted×1.5 |
-| `expensive_filter_guard.lua` | **RESOURCE-keyed** combinatorial-filter-crawl guard. Runs in `STEPS_COMMON` (after `ip_tour`, before short-circuit → sees every caller incl. verified). Detects faceted-filter signature generically (≥`min_values` comma/dot-separated values in one path-segment OR query-param — no param-name enumeration), keys on `base` listing path (strip query + comma-segments), meters DISTINCT combos per base via HLL `xf:combos:<host>:<base>:<bucket>`. `mode=shadow` appends `xf_base/xf_combos/xf_hits/xf_over` to the antibot.log line (via `async/logger.lua`, correlate with richness/class/ip); `enforce` → 429 `action_reason=expensive_filter` when combos > `combos_threshold`. Config `cfg.expensive_filter` |
+| `admission.lua` | Mandatory local fixed-bucket budgets: global, host, host-group, route-shard and IP. Reuses the existing `antibot_cache`; internal endpoint handlers call it directly. Returns 429 only, never writes reputation/ban. **Static MISS is charged to the `dynamic` budget, not `resource`** — it probes `document_root .. uri` on disk (cached, short TTL) because `try_files` sends a miss to `@static_backend` → Apache/PHP, which is dynamic load whatever the extension says |
+| `init.lua` | Per-class Redis L7 orchestrator: `ban_store`, `rate.counter`, `adaptive_limit`, `burst_counter`, `burst_decision` |
+| `ban/ip_ban_check.lua` | Read `ban:<ip>` from Redis. Hit → set `ctx.action="block"`, `ctx.action_reason="banned_ip"`, `ngx.exit(403)` |
+| `ban/ban_store.lua` | Read `ban:<identity>`, escalate repeat hits and exit 403. Good-bot defer requires cached positive crawler proof; shared-identity lift requires a known first-party cookie plus request-own richness |
+| `rate/counter.lua` | Approximate sliding window from current/previous `rl:ip:*:<bucket>` and `rl:id:*:<bucket>`. No unlimited same-URI retry discount; Redis failure marks degraded while local admission remains active |
+| `rate/res_ip_counter.lua` | Fixed bucket `res_ip:<ip>:<bucket>` for resource activity used by `session_store.lua` |
+| `rate/adaptive_limit.lua` | Soft rate/IP-surge signals plus immediate short hard-ban for extreme IP rate. Hard-ban immunity requires `ip_shared_verified` or a verified reverse-proxy origin, never raw UA cardinality |
+| `burst/burst_counter.lua` | Fixed one-second `burst:<id>:<bucket>` counter; session length no longer disables measurement |
+| `burst/burst_decision.lua` | Sets `burst_flag`; any threshold lift uses request-own richness from a known first-party cookie |
+| `expensive_filter_guard.lua` | Resource-keyed distinct-combination guard. Verified fast-path calls it directly; other traffic calls it in COMMON. Self-declared crawler UA is exempt only with cached positive crawler proof |
 
 ## Identity hash discipline
 `ban_store.lua` and `ban_store_write.lua` MUST read/write key with same `id` source (`ctx.identity || ctx.fp_light`). Order matters — identity = md5(ip+ua_norm), fp_light = md5(ip+ua+asn+ja3) (h2_sig removed in 73b413d — it was a REQUEST fingerprint, see `core/CLAUDE.md` 2026-09-07). If write key X read key Y → ban exists in Redis but never matched → bot loops forever.
 
 ## ctx fields written
-`banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `slow`, `is_retry`, `ip_surge`, `rate_flag` (also `action`, `action_reason` before `ngx.exit`)
+`admission_limited`, `admission_reason/count/limit/window/group/route_shard`,
+`backend_class`, `banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `ip_surge`,
+`rate_flag` (also `action`, `action_reason` before `ngx.exit`).
 
 ## ctx fields read
-`ip`, `identity`, `fp_light`, `ua`, `req.uri`, `req_class`, `rate_weight`, `score_multiplier`, `sess_len`, `session_flag`, `device_is_mobile`, `device_type`, `skip_layers`, `skip_rate`
+`ip`, `identity`, `fp_light`, `ua`, `req.uri`, `req_class`, `rate_weight`,
+`score_multiplier`, `session_richness_own`, `session_cookie_known`,
+`ip_shared_verified`, `behind_proxy`, `skip_layers`, `skip_rate`.
 
 ## Flow
 ```
-COMMON  → ip_ban_check          → exit 403 if IP banned
+ADMISSION → ctx + fast class + proxy origin
+          → local admission      → immediate 429 on capacity budget
+          → ip_ban_check         → 403 if IP banned
+          → WAF pre-scan
+          → verified fast path still crosses expensive-filter guard
             ↓
-class dispatch
+COMMON / class dispatch
             ↓
-FULL/INT → ban_store             → exit 403 if identity banned (defer if good_bot UA)
-         → rate.counter          → ctx.rate, ctx.ip_rate, ctx.burst (with retry discount)
-         → burst.burst_counter   → ctx.burst (per-id)
-         → burst.burst_decision  → ctx.burst_flag
-         → slow.slow_detect      → ctx.slow (device-aware)
+FULL/INT → ban_store             → 403 if identity ban is enforceable
+         → rate.counter          → approximate sliding rate signals
+         → adaptive_limit        → signal or immediate extreme-rate block
+         → burst_counter         → fixed one-second count
+         → burst_decision        → burst signal
+RESOURCE → resource counter + lite crawler verification
+         → failed proof escalates to FULL; proved crawler stays lightweight
 ```
 
 ## Related
 - Upstream: `core/ctx`, `core/req_classifier`, `core/fingerprint/identity`, `core/redis_pool`
 - Downstream: `intelligence/scoring/compute.lua` reads `ip_rate`, `burst`, `slow`, `burst_flag`, `ip_surge`, `rate_flag` as signals
-- Related ban writes: `enforcement/ban/ban_store_write.lua` writes `ban:<id>`. l7 only WRITES `ban:<ip>` via `adaptive_limit.lua` Tier 2 (hard-ban path, gated by extreme rate + low distinct identities)
+- Related ban writes: `enforcement/ban/ban_store_write.lua` writes `ban:<id>`.
+  L7 writes `ban:<ip>` only for extreme rate or configured per-IP faceted crawl.
 
 ## Important rules
 - Any `ngx.exit(...)` MUST set `ctx.action` AND `ctx.action_reason` first — log_by_lua produces `reason=-` otherwise (already done in ban_store.lua banned_id, ip_ban_check.lua banned_ip)
-- Defer ban for `ua_claims_good_bot()` UA — let detection/bot DNS verify decide
-- Retry detection key `retry:<id>:<md5(uri)>` TTL 5s — short, no Redis pressure
+- UA text alone never bypasses an existing ban/guard; defer only with cached
+  positive crawler proof.
+- Capacity throttle (429) is not bot evidence and must not raise risk or ban TTL.
+- L7 integration is Lua-only: do not add admission directives/shared dictionaries
+  to `nginx.conf` or `da_to_openresty.sh`. There is no post-`try_files` fallback
+  location hook — instead `admission.lua` probes `document_root .. uri` on disk
+  (result cached, short TTL) so a static **miss** is charged to the `dynamic`
+  budget. Measured 2026-10-04 before that split: 2000 IPs × 2 req/s of
+  nonexistent `.jpg`, sustained 60s → **3200 req/s reached Apache (80% passed)**,
+  because `host_group.resource.short` is 4000 while the same traffic as `.php`
+  only passed 350 req/s. After the split: 100 req/s. A probe that cannot
+  measure (empty `document_root`, dict error) **fails open to `resource`** — an
+  uncertain measurement must never become a 429 for a real visitor.
 - Ban grace `ban:age:<id>` TTL 24h — first-time ban hit doesn't escalate
 
 ## Update log

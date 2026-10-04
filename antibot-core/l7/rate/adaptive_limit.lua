@@ -11,15 +11,11 @@ local cfg  = require "antibot.core.config"
 --   their clean browser fingerprint keeps total score below action threshold.
 --
 -- Tier 2 (HARD BAN): ip_rate > cfg.rate.ip_surge_extreme (~83 req/s)
---   AND distinct identities seen from this IP < cfg.rate.ip_surge_distinct_min.
---   Implausible rate for a single host of legitimate browsing, gated by NAT
---   sanity check — CGNAT/office shared IP carries many distinct identities
---   so escapes the hard-ban path.
+--   AND IP khong co Tier-2 shared proof (`ctx.ip_shared_verified`). Raw UA
+--   diversity khong duoc dung: attacker tu xoay UA tao identity gia rat de.
 --
 -- TTL for hard ban is short (cfg.rate.ip_surge_ban_ttl, default 300s) so a
 -- mis-tune auto-recovers; repeat surge re-bans naturally.
---
--- Identity tracking is fed by counter.lua (SADD rate:ids:<ip> per request).
 --
 -- Previous version (pre-hybrid) hard-banned on ip_surge_threshold alone with
 -- 1800s TTL. False-positive on:
@@ -37,7 +33,10 @@ function _M.run(ctx)
     -- theo session_richness (logged-in user). KHÔNG apply richness vào ip_rate
     -- threshold (ip_surge/extreme) vì 1 IP có nhiều session — richness của
     -- request hiện tại không đại diện toàn IP.
-    local r            = ctx.session_richness or 0
+    local r = 0
+    if ctx.session_cookie_known == true then
+        r = ctx.session_richness_own or 0
+    end
     local risk_thresh  = base * (1.0 - risk * cfg.rate.risk_factor)
     local session_lift = 1.0 + r * 2.0
     local thresh       = math.floor(risk_thresh * session_lift)
@@ -76,19 +75,17 @@ function _M.run(ctx)
             " (shared IP, identity rate ok)")
     end
 
-    -- Tier 2 hard-ban: only when extreme rate AND single-source surge.
-    -- Both gates must trip together — extreme rate alone could be CGNAT
-    -- aggregate, low diversity alone is normal for single-user.
+    -- Tier 2 hard-ban: UA/identity cardinality KHONG phai bang chung CGNAT;
+    -- attacker chi can xoay 3 UA la vo hieu hoa ban. Chi Tier-2 shared-IP da
+    -- chung minh co real cookie users moi duoc mien ban tap the.
     if ctx.ip_surge
        and ctx.ip and ctx.ip ~= ""
        and ip_rate > (cfg.rate.ip_surge_extreme or 5000)
     then
-        local distinct = pool.safe_scard("rate:ids:" .. ctx.ip) or 0
-        local distinct_min = cfg.rate.ip_surge_distinct_min or 3
         -- `not ctx.behind_proxy`: mot edge reverse proxy tap hop luu luong cua
         -- rat nhieu khach, nen `ip_rate` cao o day la binh thuong va `ban:<ip>`
         -- la ban tap the. Xem `enforcement/ban/ban_store_write.lua`.
-        if distinct < distinct_min and not ctx.behind_proxy then
+        if not ctx.ip_shared_verified and not ctx.behind_proxy then
             local ttl = cfg.rate.ip_surge_ban_ttl or 300
             pool.safe_set("ban:" .. ctx.ip, "1", ttl)
             pool.safe_set("ban:hit:" .. ctx.ip, tostring(ngx.time()), 300)
@@ -97,18 +94,27 @@ function _M.run(ctx)
                 " ip=", ctx.ip,
                 " ip_rate=", ip_rate,
                 " extreme_thresh=", cfg.rate.ip_surge_extreme,
-                " distinct=", distinct,
-                " distinct_min=", distinct_min,
+                " shared_verified=0",
                 " ttl=", ttl, "s")
+            ctx.banned        = true
+            ctx.action        = "block"
+            ctx.action_reason = "ip_surge_extreme"
+            ngx.status = 403
+            ngx.header["Content-Type"] = "text/plain"
+            ngx.say("Access denied.")
+            ngx.exit(403)
+            return true, true
         else
             ngx.log(ngx.WARN,
                 "[rate] ip_surge_extreme suppressed (NAT diversity)",
                 " ip=", ctx.ip,
                 " ip_rate=", ip_rate,
-                " distinct=", distinct,
-                " distinct_min=", distinct_min)
+                " shared_verified=", tostring(ctx.ip_shared_verified),
+                " behind_proxy=", tostring(ctx.behind_proxy))
         end
     end
+
+    return true, false
 end
 
 return _M

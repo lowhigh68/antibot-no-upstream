@@ -17,6 +17,7 @@ local access_layer       = require "antibot.core.access"
 local fingerprint_layer  = require "antibot.core.fingerprint"
 local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
+local l7_admission       = require "antibot.l7.admission"
 local detection_layer    = require "antibot.detection"
 local bot_lite_verify    = require "antibot.detection.bot.lite_verify"
 local res_ip_counter     = require "antibot.l7.rate.res_ip_counter"
@@ -29,8 +30,19 @@ local waf_layer          = require "antibot.waf"
 local waf_logger         = require "antibot.async.waf_logger"
 local pool               = require "antibot.core.redis_pool"
 
-local STEPS_COMMON = {
+-- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
+-- Chi dung local shared dict + IP ban; khong chay detection/Redis rate pipeline.
+local STEPS_ADMISSION = {
     { layer = ctx_layer,         fn = "init"          },
+    { layer = classifier,        fn = "run_fast"      },
+    { layer = proxy_origin,      fn = "run"           },
+    { layer = l7_admission,      fn = "run"           },
+    -- Redis ban lookup dung SAU local budget: flood tu mot IP da ban khong duoc
+    -- phep bien thanh unlimited Redis traffic.
+    { layer = ip_ban_check,      fn = "run"           },
+}
+
+local STEPS_COMMON = {
     -- asn: resolve ctx.asn (mmdb lookup, local, cheap) BEFORE the fleet
     -- aggregator so fleet's good-crawler exemption (trusted.is_good_crawler)
     -- can read the ASN. Previously asn.run ran only in the fingerprint layer
@@ -59,14 +71,8 @@ local STEPS_COMMON = {
     -- payload + auth header. Generic trust proxy (không phụ thuộc CMS).
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
     { layer = session_richness,  fn = "run"           },
-    -- proxy_origin: dat ctx.behind_proxy tu DAI IP da xac minh (Cloudflare) hoac
-    -- khai bao operator (`SADD waf:proxyhosts <host>`). PHAI dung TRUOC ip_ban_check va
-    -- moi tang khoa theo IP, vi voi domain sau proxy thi `ctx.ip` la dia chi EDGE:
-    -- do 19-09 tren in3mien.com thay 431 IP edge phuc vu 456 identity, trong do
-    -- 218 luot co cookie that. Tang nay KHONG doc gia tri header nao — header chi
-    -- dung de phat hien MAO DANH (ctx.proxy_spoof), va chi lam TANG diem.
-    { layer = proxy_origin,      fn = "run"           },
-    { layer = ip_ban_check,      fn = "run"           },
+    -- proxy_origin + ip_ban_check da chay trong STEPS_ADMISSION, truoc moi
+    -- fast-path. Vi vay ctx.ip/behind_proxy o day da la ket qua da sanitize.
     -- iprep: cross-server IP reputation check (Central Redis, 1h local cache).
     -- Runs after ip_ban_check so locally-banned IPs exit before reaching this.
     -- Sets ctx.ext_rep ∈ [0,1]; fails open (ext_rep=0) if Central Redis down.
@@ -79,9 +85,9 @@ local STEPS_COMMON = {
     -- to challenge after the good_bot_verified short-circuit (verified crawlers
     -- exempt). Strike counter here escalates repeat offenders to a direct ban.
     { layer = ip_tour,           fn = "run"           },
-    -- expensive_filter_guard: RESOURCE-keyed combinatorial-crawl meter. Runs
-    -- here so it sees EVERY caller (before the good_bot/verified short-circuit
-    -- after COMMON) and after session_richness/access (richness+whitelist known).
+    -- expensive_filter_guard: RESOURCE-keyed combinatorial-crawl meter. Nhanh
+    -- verified cung goi guard truoc khi thoat (khong co session lift); nhanh nay
+    -- chay sau session_richness/access nen co them first-party FP protection.
     -- mode=shadow by default (đo+log, chưa chặn) — tune combos_threshold rồi bật
     -- enforce. Complements ip_tour (per-IP) + distributed_swarm (per-/24): the
     -- first axis keyed purely on the target resource, immune to IP/UA rotation.
@@ -105,7 +111,7 @@ local STEPS_INTERACTION = {
     { layer = enforcement_layer,  fn = "run"               },
 }
 
-local STEPS_RESOURCE = {
+local STEPS_RESOURCE_PRE = {
     -- res_ip_counter ĐẦU TIÊN: tăng res_ip:<ip> để session_store.lua
     -- (chạy ở các class khác) đọc và verify IP có resource activity
     -- trước khi fire resource_starved. Không phụ thuộc identity (resource
@@ -116,6 +122,9 @@ local STEPS_RESOURCE = {
     -- fetch image → engine bypass scoring → không bị kill_block FP. Skip
     -- DNS reverse (đắt) — ASN match đủ tin vì RIR delegation chỉ cho IP owner.
     { layer = bot_lite_verify,    fn = "run" },
+}
+
+local STEPS_RESOURCE_FINAL = {
     { layer = intelligence_layer, fn = "run" },
     { layer = enforcement_layer,  fn = "run" },
 }
@@ -123,13 +132,14 @@ local STEPS_RESOURCE = {
 local function run_steps(steps, ctx)
     for i, step in ipairs(steps) do
         local ok, exit = step.layer[step.fn](ctx)
-        if exit == true then return end
+        if exit == true then return true end
         if ok == false and step.fatal then
             ngx.log(ngx.ERR, "[antibot] fatal error at step ", i)
             ngx.exit(500)
-            return
+            return true
         end
     end
+    return false
 end
 
 local function check_verified_cookie(ctx)
@@ -145,8 +155,9 @@ local function check_verified_cookie(ctx)
         -- a verified observation (raises verified_count in the /24 bucket,
         -- which lowers cookie_vacuum → keeps real-user subnets below the
         -- fleet trigger threshold).
-        ctx.ip = ngx.var.remote_addr
-        ctx.ua = ngx.var.http_user_agent or ""
+        -- ctx da duoc khoi tao boi STEPS_ADMISSION; khong ghi de IP da sanitize.
+        ctx.ip = ctx.ip or ngx.var.remote_addr
+        ctx.ua = ctx.ua or ngx.var.http_user_agent or ""
         ctx.req = ctx.req or { uri = ngx.var.uri or "" }
         fleet.aggregate(ctx)
         ngx.log(ngx.DEBUG, "[antibot] cookie_fast_path id=", cookie)
@@ -193,6 +204,11 @@ function _M.run()
     local ctx = ngx.ctx.antibot or {}
     ngx.ctx.antibot = ctx
 
+    -- Phanh cuc bo chay truoc body scan/Redis-heavy pipeline. Neu dat WAF truoc,
+    -- flood POST lon van doc/scan body xong roi moi bi 429 — dung nguoc muc tieu
+    -- capacity protection. WAF van o truoc moi trust exit ben duoi.
+    if run_steps(STEPS_ADMISSION, ctx) then return end
+
     -- WAF chạy TRƯỚC cả hai cửa thoát tin cậy bên dưới, không phải sau.
     -- Cookie `antibot_fp` còn hạn là thoát sạch pipeline trong 7200s; với quản
     -- lý bot đó là đúng, với WAF thì đó là 2 giờ upload không ai soi. Lý do đầy
@@ -217,10 +233,19 @@ function _M.run()
     -- chỉ phải sửa MỘT chỗ, chứ không phải nhớ ra hai cửa thoát nằm cách nhau
     -- 15 dòng. `f9124a3` đã quên đúng chuyện đó với `waf_arg`.
     local verified = check_verified_cookie(ctx)
-    if verified and not waf_signal(ctx) then return end
+    if verified and not waf_signal(ctx) then
+        -- Verification khong phai quyen enumerate vo han mot faceted endpoint.
+        -- Guard tu tra ngay, khong cham Redis, neu URL khong co multi-value
+        -- signature; do do van giu duoc fast-path cho traffic thong thuong.
+        local _, xf_exit = xfilter_guard.run(ctx)
+        if xf_exit then return end
+        return
+    end
 
+    -- Full classifier co the doc body form-urlencoded de tim auth semantic.
+    -- Chi request khong thoat verified moi tra chi phi nay.
     classifier.run(ctx)
-    run_steps(STEPS_COMMON, ctx)
+    if run_steps(STEPS_COMMON, ctx) then return end
 
     -- Short-circuit cho cả verified (PoW) và whitelisted (admin rule, LAN,
     -- loopback, url/ip whitelist…). Trước đây chỉ check verified → các
@@ -237,7 +262,14 @@ function _M.run()
     local class = ctx.req_class or "unknown"
 
     if class == "resource" then
-        run_steps(STEPS_RESOURCE, ctx)
+        if run_steps(STEPS_RESOURCE_PRE, ctx) then return end
+        -- Claimed crawler ma lite ASN khong xac minh duoc phai di full lane.
+        -- Khong duoc giu bot_score=0 roi vao thang resource enforcement.
+        if ctx.bot_lite_needs_full then
+            run_steps(STEPS_FULL_DETECTION, ctx)
+        else
+            run_steps(STEPS_RESOURCE_FINAL, ctx)
+        end
     elseif class == "interaction" then
         run_steps(STEPS_INTERACTION, ctx)
     else

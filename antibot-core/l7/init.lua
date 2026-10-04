@@ -18,7 +18,8 @@ function _M.run(ctx)
     if exit then return true, true end
 
     counter.run(ctx)
-    adaptive.run(ctx)
+    local _, adaptive_exit = adaptive.run(ctx)
+    if adaptive_exit then return true, true end
 
     burst_ctr.run(ctx)
     burst_dec.run(ctx)

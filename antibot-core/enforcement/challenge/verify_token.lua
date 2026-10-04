@@ -2,6 +2,7 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local identity_mod = require "antibot.core.fingerprint.identity"
+local admission = require "antibot.l7.admission"
 
 local ffi = require "ffi"
 local C   = ffi.C
@@ -483,6 +484,8 @@ function _M.handle()
     local ctx = ngx.ctx.antibot or {}
     ngx.ctx.antibot = ctx
     ctx.ip = ngx.var.remote_addr
+    local _, limited = admission.run_endpoint("verify")
+    if limited then return end
     _M.run(ctx)
 end
 

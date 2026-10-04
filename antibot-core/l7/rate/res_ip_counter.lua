@@ -13,8 +13,8 @@
 --
 -- Tại sao tách module riêng:
 --   - counter.lua chạy trong l7_layer, l7 SKIP cho resource class.
---   - res_ip_counter chạy trong STEPS_RESOURCE (lightweight, 1 INCR).
---   - Không trộn concern với bot_lite_verify (đang chạy đầu STEPS_RESOURCE).
+--   - res_ip_counter chạy trong STEPS_RESOURCE_PRE (lightweight, 1 INCR).
+--   - Không trộn concern với bot_lite_verify (cùng chạy ở RESOURCE_PRE).
 
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
@@ -26,8 +26,10 @@ function _M.run(ctx)
     local ip = ctx.ip
     if not ip or ip == "" then return true, false end
 
-    -- INCR + EXPIRE atomic via safe_incr (đã có sẵn pipeline).
-    local _, err = pool.safe_incr("res_ip:" .. ip, TTL)
+    local t = ngx.now and ngx.now() or ngx.time()
+    local bucket = math.floor(t / TTL)
+    -- Bucket trong key: request moi khong gia han lich su resource cu.
+    local _, err = pool.safe_incr("res_ip:" .. ip .. ":" .. bucket, TTL * 2 + 2)
     if err then
         ngx.log(ngx.WARN, "[res_ip_counter] incr err: ", err)
     end

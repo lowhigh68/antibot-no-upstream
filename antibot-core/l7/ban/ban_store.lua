@@ -18,6 +18,7 @@ local SHARED_ID_RICHNESS = 0.5
 -- Phán quyết "UA khai good bot nhưng xác minh DNS/attest TRƯỢT".
 -- GHI bởi detection/bot/init.lua, ĐỌC ở đây. Giữ đồng bộ tên tiền tố hai file.
 local FAKE_VERDICT_PREFIX = "botverdict:fake:"
+local CRAWLER_PREFIX      = "crawler:"
 
 function _M.run(ctx)
     -- PHẢI cùng order với enforcement/ban/ban_store_write.lua (identity trước
@@ -73,6 +74,7 @@ function _M.run(ctx)
         -- thao tác tay. Chi phí giảm từ "mỗi request một DNS" xuống "30 phút một DNS".
         local ua = ctx.ua or ngx.var.http_user_agent or ""
         if ua_claim.claims_good_bot(ua)
+           and ctx.ip and pool.safe_get(CRAWLER_PREFIX .. ctx.ip) == "1"
            and pool.safe_get(FAKE_VERDICT_PREFIX .. id) ~= "1" then
             ngx.log(ngx.INFO,
                 "[ban_store] defer good_bot_claim id=", id:sub(1, 8),
@@ -92,14 +94,17 @@ function _M.run(ctx)
         -- per-(IP, browser-major) → một ban khóa cả văn phòng, và mỗi F5 của mọi
         -- người còn escalate ban tới permanent. Hai lối thoát cho NGƯỜI THẬT,
         -- giữ nguyên seal cho bot (richness~0, không giải nổi PoW):
-        local richness = ctx.session_richness or 0
+        -- Chi state cua CHINH request + cookie da biet la first-party moi duoc
+        -- no seal shared-identity. Cookie rac/di san Redis khong phai auth.
+        local richness = ctx.session_richness_own or 0
 
         -- Fix A — phiên đã đăng nhập. session_richness tính PER-REQUEST từ
         -- cookie/auth của CHÍNH request → phân biệt được từng người trong cùng
         -- identity hash bị collapse. Bỏ seal + KHÔNG escalate, trả về pipeline
         -- cho scoring phán LIVE (score~0 → allow). Nhất quán auth_session_cap
         -- (engine) nhưng áp ở ĐÚNG tầng — ban read seal TRƯỚC khi engine chạy.
-        if richness >= SHARED_ID_RICHNESS then
+        if richness >= SHARED_ID_RICHNESS
+           and ctx.session_cookie_known == true then
             ngx.log(ngx.INFO, "[ban_store] richness_bypass id=", id:sub(1, 8),
                 " r=", string.format("%.2f", richness))
             ctx.banned = false

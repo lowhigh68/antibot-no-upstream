@@ -1,11 +1,15 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local admission = require "antibot.l7.admission"
 
 -- Accept beacons within ±60s of server time.
 -- Wider than typical replay windows to accommodate client clock drift.
 local REPLAY_WINDOW_MS = 60000
 
 function _M.handle()
+    local _, limited = admission.run_endpoint("beacon")
+    if limited then return end
+
     if ngx.var.request_method ~= "POST" then
         ngx.exit(405); return
     end

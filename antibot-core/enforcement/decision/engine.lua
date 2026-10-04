@@ -569,6 +569,17 @@ function _M.run(ctx)
         action = "allow"
     end
 
+    -- UA tu khai mot crawler da dang ky nhung ca DNS/ASN deu phan doi la bang
+    -- chung truc tiep ve CHINH request. Truoc day bot_score=0.85 chi tao 38.25
+    -- raw point; o resource class con bi nhan 0.2 nen fake Googlebot duoc allow.
+    -- Khong de class multiplier hay session trust ha verdict nay.
+    if ctx.good_bot_claimed == true
+       and ctx.good_bot_verified == false
+       and ctx.bot_ua == "fake_good_bot" then
+        action            = "block"
+        ctx.action_reason = "fake_good_bot"
+    end
+
     -- IP-tour: single source touring many distinct tenant domains on shared
     -- hosting (detection/ip_tour.lua). good_bot_verified already returned above,
     -- so verified crawlers that legitimately crawl every domain are exempt.

@@ -2,6 +2,19 @@ local _M = {}
 
 local ua_check = require "antibot.detection.bot.ua_check"
 local asn_mod  = require "antibot.core.fingerprint.asn"
+local pool     = require "antibot.core.redis_pool"
+
+local CRAWLER_PREFIX = "crawler:"
+local CRAWLER_TTL    = 3600
+
+local function require_full(ctx, reason)
+    ctx.bot_lite_needs_full = true
+    ctx.bot_ua              = reason
+    -- Khong giu so 0 ma ua_check vua cap cho mot CLAIM chua duoc chung minh.
+    -- Full bot lane co the ha lai ve 0 neu DNS/ASN xac minh thanh cong.
+    ctx.bot_score = math.max(ctx.bot_score or 0, 0.85)
+    return true, false
+end
 
 -- Lite bot verification cho resource class (image, font, css, …).
 --
@@ -33,12 +46,12 @@ function _M.run(ctx)
     -- Cần ASN list expected để match
     local expected = ctx.good_bot_asns
     if not expected or #expected == 0 then
-        return true, false
+        return require_full(ctx, "good_bot_lite_no_registry")
     end
 
     local actual = ctx.asn and ctx.asn.asn_number
     if not actual then
-        return true, false
+        return require_full(ctx, "good_bot_lite_no_asn")
     end
 
     for _, asn in ipairs(expected) do
@@ -49,6 +62,9 @@ function _M.run(ctx)
             -- Distinct reason để antibot.log grep được — engine.run sẽ giữ
             -- nguyên (đã sửa thành action_reason or "good_bot_verified").
             ctx.action_reason     = "good_bot_asn_lite"
+            if ctx.ip and ctx.ip ~= "" then
+                pool.safe_set(CRAWLER_PREFIX .. ctx.ip, "1", CRAWLER_TTL)
+            end
             -- WARN để xuất hiện trong default error log (INFO bị filter).
             ngx.log(ngx.WARN,
                 "[bot_lite] VERIFIED bot=", ctx.good_bot_name or "?",
@@ -58,16 +74,15 @@ function _M.run(ctx)
         end
     end
 
-    -- ASN không match: UA là good bot nhưng IP không thuộc owner thật.
-    -- Đây là fake_good_bot (UA spoof). Bot_score sẽ được set qua scoring
-    -- bình thường. KHÔNG set good_bot_verified=true ở đây — kill_block
-    -- sẽ catch attempt scrape giả Googlebot từ datacenter vô danh.
+    -- ASN khong match: khong duoc roi thang vao resource scoring voi
+    -- bot_score=0. Chuyen sang full lane de DNS co co hoi cuu crawler that;
+    -- neu cung that bai, bot/init + engine se seal fake_good_bot.
     ngx.log(ngx.WARN,
         "[bot_lite] asn_mismatch bot=", ctx.good_bot_name or "?",
         " ip=", ctx.ip or "?", " actual=AS", actual,
         " expected=AS", table.concat(expected, ",AS"))
 
-    return true, false
+    return require_full(ctx, "good_bot_lite_asn_mismatch")
 end
 
 return _M

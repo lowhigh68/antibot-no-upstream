@@ -7,10 +7,9 @@ local cfg = require "antibot.core.config"
 --      Loại request này tự nhiên burst nhiều hay ít? Nav class human-realistic
 --      max ~20/s; interaction class SPA frontend có thể 45/s legitimately.
 --
---   2. Client session state (ctx.session_richness ∈ [0,1])
---      Client có state với server chưa? Logged-in admin (richness ~0.9) được
---      lift threshold 2.8x, anonymous (richness 0) giữ baseline. Soft trust,
---      không bypass — bot fake cookie vẫn phải qua signal khác.
+--   2. First-party state cua CHINH request
+--      Chi `session_richness_own` khi `session_cookie_known == true` moi duoc
+--      lift. Cookie rac hoac richness ke thua khong co quyen noi threshold.
 --
 -- effective_threshold = base × class_factor × (1 + richness × 2)
 --
@@ -25,7 +24,11 @@ function _M.run(ctx)
     local base   = cfg.rate.burst_threshold
     local class  = ctx.req_class or "unknown"
     local factor = (cfg.rate.class_burst_factor or {})[class] or 1.0
-    local r      = ctx.session_richness or 0
+    -- Chi first-party state cua CHINH request moi duoc lift threshold.
+    local r = 0
+    if ctx.session_cookie_known == true then
+        r = ctx.session_richness_own or 0
+    end
     local lift   = 1.0 + r * 2.0
 
     local effective = base * factor * lift

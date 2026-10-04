@@ -2,6 +2,8 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 
+local CRAWLER_PREFIX = "crawler:"
+
 -- Substring token trong UA để nhận diện claim "good bot".
 -- Match ở đây CHỈ để defer, không để allow. DNS verify ở
 -- detection/bot sẽ là người quyết định cuối cùng.
@@ -13,14 +15,15 @@ function _M.run(ctx)
 
     local banned = pool.safe_get("ban:" .. ip)
     if banned == "1" then
-        -- Defer nếu UA claim good bot — để DNS verify ở detection/bot quyết định.
-        -- Bot thật (IP thuộc Google/Bing/FB) → pass good_bot_verified → allow.
-        -- UA spoof từ IP không phải crawler → DNS verify fail → scoring re-block.
-        -- Tránh stale ban (từ trước khi có engine short-circuit) chặn oan good bot.
+        -- Chi defer khi IP DA co positive verdict do lan xac minh truoc ghi.
+        -- Self-claim khong phai bang chung: neu chi kiem UA, fake Googlebot mo
+        -- duoc seal IP ban va bat he thong tra DNS/full pipeline moi request.
         local ua = ngx.var.http_user_agent or ""
-        if ua_claim.claims_good_bot(ua) then
+        local crawler_verified = ua_claim.claims_good_bot(ua)
+            and pool.safe_get(CRAWLER_PREFIX .. ip) == "1"
+        if crawler_verified then
             ngx.log(ngx.INFO,
-                "[ip_ban] defer good_bot_claim ip=", ip,
+                "[ip_ban] defer cached_verified_crawler ip=", ip,
                 " ua=", ua:sub(1, 60))
             return true, false
         end

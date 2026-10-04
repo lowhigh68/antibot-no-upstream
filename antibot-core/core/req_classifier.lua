@@ -78,9 +78,12 @@ _M.CLASS_CONFIG = {
 }
 
 local RESOURCE_EXT = {
+    js=1, css=1, map=1,
     png=1, jpg=1, jpeg=1, gif=1, webp=1,
     ico=1, svg=1,
-    woff=1, woff2=1, ttf=1, eot=1,
+    woff=1, woff2=1, ttf=1, eot=1, otf=1,
+    mp4=1, webm=1, mp3=1, ogg=1, ogv=1, m4a=1, m4v=1,
+    pdf=1, zip=1, ["7z"]=1, rar=1, tgz=1, gz=1, htc=1,
 }
 
 -- Auth endpoint detection — generic semantic vocabulary, KHÔNG framework
@@ -270,7 +273,7 @@ end
 --   body           = form-urlencoded body có credential marker (generic, no path)
 -- Cheap checks (kw/legacy/qs) đánh giá độc lập, không short-circuit, để đo
 -- provenance chính xác; body giữ nguyên chỉ chạy khi cheap-checks miss.
-local function is_auth_endpoint(method, uri, args, ct)
+local function is_auth_endpoint(method, uri, args, ct, allow_body)
     if method ~= "POST" then return false end
 
     local lower_uri = uri:lower()
@@ -289,7 +292,7 @@ local function is_auth_endpoint(method, uri, args, ct)
 
     -- SLOW PATH: form-urlencoded body credential scan (chỉ chạy khi cheap miss).
     -- REST/JSON/multipart → zero overhead (CT guard returns false immediately).
-    if body_contains_auth_marker(ct) then
+    if allow_body ~= false and body_contains_auth_marker(ct) then
         return true, "body", nil
     end
     return false
@@ -411,7 +414,7 @@ local function detect_inapp(ua)
     return likeness >= INAPP_CLASS_THRESHOLD, likeness
 end
 
-local function classify(ctx)
+local function classify(ctx, allow_body)
     local uri    = ngx.var.uri                or ""
     local args   = ngx.var.args               or ""
     local method = ngx.var.request_method     or "GET"
@@ -423,9 +426,19 @@ local function classify(ctx)
     local sec_fetch_site = ngx.var.http_sec_fetch_site or ""
     local ua     = ngx.var.http_user_agent    or ""
 
-    -- Resource: static files by extension
+    -- Resource CHI la static CANDIDATE do server suy ra tu GET/HEAD + extension.
+    -- Sec-Fetch-* la header client tu khai, khong duoc tu minh chon lane nhe.
+    -- Static MISS (`try_files` khong thay tep -> `@static_backend` -> Apache/PHP)
+    -- KHONG duoc dem o day. `l7/admission.lua` moi la noi phan biet: no kiem
+    -- `document_root .. uri` tren dia (co cache TTL ngan) va dua static miss vao
+    -- ngan sach `dynamic`. Ban truoc cua chu thich nay noi "se bi @static_backend
+    -- admission guard dem lai" — guard do DA BI THU HOI (review 3, rang buoc
+    -- Lua-only), va `da_to_openresty.sh` dat `access_by_lua_block { return; }`
+    -- trong named location, tuc TAT han Lua o do.
     local ext = uri:match("%.([%a%d]+)$")
-    if ext and RESOURCE_EXT[ext:lower()] then
+    if (method == "GET" or method == "HEAD")
+       and ext and RESOURCE_EXT[ext:lower()] then
+        ctx.resource_candidate = true
         return "resource"
     end
 
@@ -441,12 +454,14 @@ local function classify(ctx)
         return "feed_or_meta"
     end
 
-    -- Resource: browser-declared sub-resource fetch
+    -- Browser-declared sub-resource fetch chi la telemetry. Truoc day nhanh nay
+    -- `return resource` TRUOC auth detection: bot chi can gui
+    -- `Sec-Fetch-Dest: image` la POST /wp-login.php bo qua toan bo l7_layer.
     if sec_fetch_dest == "image"  or
        sec_fetch_dest == "script" or
        sec_fetch_dest == "style"  or
        sec_fetch_dest == "font"   then
-        return "resource"
+        ctx.resource_declared = true
     end
 
     -- Auth endpoint — PHẢI check TRƯỚC interaction JSON.
@@ -455,7 +470,8 @@ local function classify(ctx)
     -- amplified mult 1.5. Đặt sớm để mọi auth POST đi đúng class
     -- bất kể content-type. Generic patterns cover WP/Joomla/Drupal/
     -- Magento/OAuth/2FA — xem AUTH_PATH_PATTERNS ở đầu file.
-    local is_auth, auth_prov, auth_legacy = is_auth_endpoint(method, uri, args, ct)
+    local is_auth, auth_prov, auth_legacy =
+        is_auth_endpoint(method, uri, args, ct, allow_body)
     if is_auth then
         ctx.auth_prov   = auth_prov     -- measurement provenance (bước 1)
         ctx.auth_legacy = auth_legacy    -- pattern nếu legacy khớp, nil nếu không
@@ -526,8 +542,8 @@ local function classify(ctx)
     return "unknown"
 end
 
-function _M.run(ctx)
-    local class  = classify(ctx)
+local function apply_class(ctx, allow_body)
+    local class  = classify(ctx, allow_body)
     local config = _M.CLASS_CONFIG[class]
 
     ctx.req_class        = class
@@ -575,6 +591,16 @@ function _M.run(ctx)
         " uri=", ngx.var.uri or "?")
 
     return true, false
+end
+
+-- Fast pass truoc verified-cookie exit: khong doc body, chi can class du de
+-- admission tach resource candidate / dynamic / auth path ro rang.
+function _M.run_fast(ctx)
+    return apply_class(ctx, false)
+end
+
+function _M.run(ctx)
+    return apply_class(ctx, true)
 end
 
 return _M

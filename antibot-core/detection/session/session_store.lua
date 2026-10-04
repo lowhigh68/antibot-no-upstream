@@ -150,8 +150,17 @@ function _M.run(ctx)
             local ip = ctx.ip
             local res_ip = 0
             if ip and ip ~= "" then
-                local rv = pool.safe_get("res_ip:" .. ip)
-                res_ip = tonumber(rv) or 0
+                local now = ngx.now and ngx.now() or ngx.time()
+                local rate_window = cfg.ttl.rate or 60
+                local bucket = math.floor(now / rate_window)
+                local keys = {
+                    "res_ip:" .. ip .. ":" .. bucket,
+                    "res_ip:" .. ip .. ":" .. (bucket - 1),
+                }
+                local rv = pool.safe_mget(keys, 2)
+                if type(rv) == "table" then
+                    res_ip = (tonumber(rv[1]) or 0) + (tonumber(rv[2]) or 0)
+                end
             end
 
             if res_ip >= RES_IP_MIN_HITS then

@@ -198,15 +198,9 @@ _M.rate = {
     ip_surge_threshold    = 1500,
     -- ip_surge_extreme: HARD-BAN trigger (~83 req/s sustained over 60s window).
     -- This rate is implausible for human + browser even with aggressive
-    -- extension/multi-tab activity. Gated additionally by distinct-identity
-    -- count to protect CGNAT (Vietnam carriers, office NAT). Pairs with
-    -- ip_surge_distinct_min and ip_surge_ban_ttl below.
+    -- extension/multi-tab activity. IP ban immunity comes only from
+    -- ctx.ip_shared_verified (real first-party-cookie users), not raw UA count.
     ip_surge_extreme      = 5000,
-    -- ip_surge_distinct_min: minimum distinct identities seen from this IP in
-    -- the current rate window. ≥ this → CGNAT/shared infra (multiple users
-    -- behind 1 IP), do NOT hard-ban regardless of aggregate rate. < this →
-    -- single-source surge (single host hammering), hard-ban applies.
-    ip_surge_distinct_min = 3,
     -- ip_surge_ban_ttl: hard-ban duration when extreme path fires. Shortened
     -- from legacy 1800s to 300s — auto-recovery after 5 min, repeat surges
     -- re-ban naturally. Reduces blast radius if extreme threshold is mis-tuned.
@@ -223,8 +217,8 @@ _M.rate = {
     -- Calibration:
     --   navigation 0.67   → 20/s. Human khó burst > 20 nav/s ngay cả khi
     --                       F5 storm hoặc multi-tab bookmark "Open All".
-    --                       Retry discount (counter.lua) đã xử lý same-URI
-    --                       F5 ở rate layer. Tighten đây bắt nav-crawl bot.
+    --                       Rate layer khong discount same-URI stream: mot
+    --                       endpoint bi hammer la tai that, khong phai retry vo han.
     --   interaction 1.5  → 45/s. SPA frontend (Magento Luma, Shopify,
     --                       headless Next.js) fire 30-50 XHR đồng thời on
     --                       page load. Đây là vùng FP cao nhất.
@@ -365,6 +359,89 @@ _M.rate = {
         promotion_threshold_1 = 10,   -- score >= 10  -> +1 tier
         promotion_threshold_2 = 30,   -- score >= 30  -> +2 tier
         retry_after           = 60,   -- 429 Retry-After header value
+    },
+}
+
+-- L7 admission control — phanh tai nguyen cuc bo, DOC LAP voi bot scoring.
+--
+-- Tat ca request (ke ca verified/resource/whitelist) di qua lop nay truoc khi
+-- duoc phep fast-path. Counter tai su dung `antibot_cache` da co trong cau hinh
+-- hien tai, khong doi nginx.conf va khong phu thuoc Redis.
+--
+-- Hai cua so la fixed buckets. `long` chan luong duy tri, `short` chan spike.
+-- Cac nguong mac dinh co y dat cao de rollout an toan tren shared hosting;
+-- phai hieu chinh theo capacity/log that cua tung cum may.
+_M.l7_admission = {
+    enabled       = true,
+    mode          = "enforce", -- shadow | enforce | off
+    status        = 429,
+    retry_after   = 2,
+    route_shards  = 64,        -- cardinality co dinh / host, chong key-flood
+
+    -- Static MISS dung ngan sach `dynamic`, khong phai `resource`.
+    --
+    -- `req_classifier` chi biet "GET/HEAD + duoi tinh" = static CANDIDATE. Tep
+    -- co that thi Nginx phuc vu truc tiep (re thuc su); tep thieu thi
+    -- `try_files` -> `@static_backend` -> Apache/PHP, va voi WordPress thi
+    -- `.htaccess` rewrite thanh `index.php`. Do la tai dynamic du duoi la `.jpg`.
+    --
+    -- Do duoc truoc khi co co nay (1 host, 2000 IP, `.jpg` khong ton tai):
+    -- 2000 IP x 2 req/s ben vung 60s -> 3.200 req/s lot toi Apache (80%). Cung
+    -- luu luong do voi `.php` chi 350 req/s lot.
+    --
+    -- `static_probe = false` tat phep do (moi resource lai dung ngan sach
+    -- resource nhu truoc). Giu lai de co duong lui nhanh neu `io.open` gay van
+    -- de hieu nang tren may cu — nhung ket qua da duoc cache nen mot flood vao
+    -- cung duong dan chi ton MOT `io.open` moi `static_probe_ttl` giay.
+    static_probe     = true,
+    static_probe_ttl = 30,     -- giay; ngan de upload tep moi khong bi hieu sai lau
+    windows = {
+        short = 1,
+        long  = 10,
+    },
+    limits = {
+        -- Toan bo OpenResty instance / mot virtual host, moi request deu tinh.
+        global = { short = 20000, long = 160000 },
+        host   = { short = 5000,  long = 40000  },
+
+        -- Tach resource candidate va dynamic. Lua access phase khong biet ket
+        -- qua `try_files`, nen khong co budget static-miss rieng neu khong sua
+        -- Nginx; resource candidate van chiu host/route/IP budget o day.
+        host_group = {
+            resource = { short = 4000, long = 32000 },
+            dynamic  = { short = 500,  long = 3500  },
+        },
+        route_group = {
+            resource = { short = 1200, long = 9000 },
+            dynamic  = { short = 150,  long = 1000 },
+        },
+
+        -- Per-IP short ceiling. IP sau reverse proxy da xac minh bo qua truc
+        -- nay; host/global/route budgets van con nguyen.
+        ip = {
+            resource      = { short = 250, long = 1800 },
+            navigation    = { short = 80,  long = 500  },
+            interaction   = { short = 120, long = 800  },
+            api_callback  = { short = 100, long = 700  },
+            auth_endpoint = { short = 30,  long = 180  },
+            feed_or_meta  = { short = 60,  long = 400  },
+            inapp_browser = { short = 80,  long = 500  },
+            unknown       = { short = 80,  long = 500  },
+            default       = { short = 80,  long = 500  },
+        },
+
+        -- Endpoint noi bo goi admission ngay trong Lua content handler; khong
+        -- can sua location trong file Nginx da generate.
+        endpoints = {
+            verify = {
+                host = { short = 250, long = 1600 },
+                ip   = { short = 20,  long = 120  },
+            },
+            beacon = {
+                host = { short = 1000, long = 7500 },
+                ip   = { short = 80,   long = 500  },
+            },
+        },
     },
 }
 

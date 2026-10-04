@@ -3,6 +3,8 @@ local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 
+local CRAWLER_PREFIX = "crawler:"
+
 -- Expensive faceted-filter guard — RESOURCE-keyed, not caller-keyed.
 --
 -- Vấn đề: cả (a) verified bot (Meta) cào filter dạng PATH `/loc-a,b,c.html` lẫn
@@ -17,7 +19,8 @@ local ua_claim = require "antibot.detection.bot.ua_claim"
 -- Bất biến DUY NHẤT = tài nguyên đích (base listing path). Guard này đếm áp lực
 -- combinatorial PER-BASE-PATH, gộp MỌI kẻ gọi — bất biến với IP, UA, verified.
 -- Phân tán IP/UA KHÔNG giúp né: 1000 IP → 1000 đóng góp vào MỘT counter, càng
--- đông càng trip nhanh. Đặt trong STEPS_COMMON (trước ngã rẽ good_bot/verified).
+-- đông càng trip nhanh. Request verified gọi guard ngay trước fast-path exit;
+-- request còn lại gọi trong STEPS_COMMON.
 --
 -- Discriminator người-vs-crawler = ĐỘ ĐA DẠNG tổ hợp (distinct combos), KHÔNG
 -- phải rate: người thật lọc vài tổ hợp; crawler enumerate hàng trăm. Flash-crowd
@@ -95,13 +98,13 @@ function _M.run(ctx)
     -- giảm overhead. ctx.req_class đã set (classifier.run chạy trước STEPS_COMMON).
     if ctx.req_class == "resource" then return true, false end
 
-    -- Self-declared good bot (Googlebot/Bing/Meta): loại khỏi CẢ meter lẫn enforce.
-    -- Chúng đi lane DNS/ASN registry (bằng chứng hạ tầng KHÔNG giả được — khác
-    -- IP/UA/canvas) và đã bị siết bởi good_bot rate ceiling (lane riêng). Loại
-    -- khỏi PHÉP ĐO để crawl hợp pháp của chúng (Googlebot ~109 combos) KHÔNG thổi
-    -- phồng base counter → tránh collateral 429 cho người thật đến sau. Bot giả
-    -- UA good-bot → fail DNS/ASN verify ở detection → bị scoring xử lý.
-    if ua_claim.claims_good_bot(ctx.ua or "") then return true, false end
+    -- Chi crawler co POSITIVE verdict cache moi duoc loai khoi meter. UA tu khai
+    -- khong co quyen mien: fake Googlebot truoc day ne ca guard truoc khi DNS/ASN
+    -- kip phan xu. Dau crawler:<ip> do full/lite verifier ghi TTL 1h.
+    if ua_claim.claims_good_bot(ctx.ua or "")
+       and ctx.ip and pool.safe_get(CRAWLER_PREFIX .. ctx.ip) == "1" then
+        return true, false
+    end
 
     local uri  = ngx.var.uri  or ""
     local args = ngx.var.args or ""
@@ -199,7 +202,9 @@ function _M.run(ctx)
     -- MIỄN 429 (FP protection) nhưng VẪN được đếm ở trên (để lộ nếu bot gaming
     -- cookie đạt richness cao — sẽ thấy trong xf log). Chỉ traffic KHÔNG tin cậy
     -- (richness thấp, không good-bot) mới bị chặn khi base vượt budget.
-    local human_exempt = (ctx.session_richness or 0) >= (gc.exempt_richness or 0.5)
+    local human_exempt = (ctx.session_richness_own or 0) >=
+                             (gc.exempt_richness or 0.5)
+                         and ctx.session_cookie_known == true
 
     -- 5a. BAN 24h — CHỈ theo bằng chứng PER-IP (ip_combos), TÁCH RỜI khỏi `over`.
     --     Một IP tự nó cào >= ban_ip_combos tổ hợp filter nặng trong 1 window =
