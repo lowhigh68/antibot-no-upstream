@@ -212,6 +212,10 @@ export FIM_LOG="$R/fim.log"
 export FIM_CRITLOG="$R/crit.log"
 export FIM_REDIS_CLI="$R/bin/rcli"
 export FIM_DA_DATA="$DA"
+# Cach ly khoi `/etc/antibot/redis.pass` cua may that: khong tro di thi moi ca o
+# day gui mat khau THAT vao ban `rcli` gia (xem giai thich day du o `fim_test.sh`).
+export ANTIBOT_REDIS_PASS_FILE="$R/khong-co-tep-mat-khau"
+unset ANTIBOT_REDIS_PASS FIM_REDIS_PASS
 # KHONG export `FIM_WPINV_TTL`: phep kiem TTL phai kiem GIA TRI MAC DINH cua
 # `fim.sh` (no phai khop `WP_HOST_TTL_REDIS` trong paths.lua). Dat bien o day la
 # ghi de mac dinh, va khi do phep kiem TTL khong kiem gi — dot bien "doi mac dinh

@@ -32,6 +32,25 @@ export FIM_CRITLOG="$R/fim_crit.log"
 export FIM_REDIS_CLI="$R/bin/rcli"
 export FIM_MARK_TTL=604800
 
+# ── CACH LY BO TEST KHOI TRANG THAI PRODUCTION ───────────────────────
+#
+# `fim.sh` doc mat khau Redis tu `/etc/antibot/redis.pass` khi khong co bien moi
+# truong (vi cron khong doc `/etc/environment`). Tren MAY THAT tep do TON TAI, nen
+# neu khong tro duong dan sang cho khac thi MOI ca test se nhan mat khau THAT roi
+# gui `-a <mat-khau-that>` vao ban `rcli` GIA.
+#
+# Hau qua do duoc 04-10 tren server: nhom 33 ("khong mat khau -> KHONG gui -a")
+# HONG, va cac ca `--pipe` TREO 30 giay cho `redis-cli` tra loi. Bo test xanh o may
+# dev (khong co tep) va hong o may that — dung lop loi "do sai doi tuong vi moi
+# truong khac nhau".
+#
+# Tro sang mot duong dan KHONG TON TAI trong `$R`: bo test phai tu quyet dinh mat
+# khau cua tung ca, khong duoc thua tu dia.
+export ANTIBOT_REDIS_PASS_FILE="$R/khong-co-tep-mat-khau"
+# Va go han hai bien nay khoi moi truong ke thua, vi mot shell co `export` chung se
+# lam dung cai viec tep vua bi chan.
+unset ANTIBOT_REDIS_PASS FIM_REDIS_PASS
+
 # `redis-cli` GIA: doc lenh tu STDIN, ghi ra file de doi chieu. Tra ve dung gia tri
 # cho `GET`/`EXISTS` de vong XAC MINH VONG TRON cua fim.sh di qua — neu khong, no
 # bao "KHONG XAC MINH DUOC" va che mat cai dang kiem.
