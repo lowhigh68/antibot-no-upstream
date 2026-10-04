@@ -709,14 +709,43 @@ if [ -e "$_pw" ]; then
         echo "      <mot request>; redis-cli ... INFO commandstats | grep cmdstat_auth"
     fi
 else
-    echo "    redis.pass: khong co — Redis dang khong dung mat khau."
-    echo "    Bat (CA HAI phia trong CUNG mot lan, lech chieu nao cung fail-open im lang):"
+    # Do TRANG THAI THAT cua Redis, khong chi noi "khong co tep". Ba to hop, va
+    # chi mot la hop le:
+    #   tep KHONG + Redis KHONG mat khau -> chua lam, binh thuong
+    #   tep KHONG + Redis CO mat khau    -> WAF dang fail-open IM LANG ngay luc nay
+    #   tep CO    + Redis KHONG mat khau -> client gui AUTH, Redis tu choi
+    # To hop thu hai la su co dang dien ra, phai bao khac han "chua lam".
+    _rping=$(redis-cli -p 6379 PING 2>&1 | head -1)
+    case "$_rping" in
+        *NOAUTH*|*"Authentication required"*)
+            echo "    *** Redis DANG DOI MAT KHAU ma $_pw KHONG CO ***"
+            echo "    WAF dang fail-open NGAY LUC NAY: worker doc ra chuoi rong, khong gui"
+            echo "    AUTH, moi phep Redis that bai im lang. Lay lai mat khau roi ghi vao"
+            echo "    $_pw (chown root:$NGX_USER, chmod 640), hoac tat requirepass." ;;
+        *)
+    echo "    redis.pass: khong co -- Redis cung khong dung mat khau (chua lam)."
+    echo "    Day la P0 cua Review 4 muc 4.2: Redis giu verified:*/whitelist/ban/khoa"
+    echo "    FIM, nen ai ghi duoc la tu cap cho minh ve di qua lop cham diem."
+    echo "    DAN NGUYEN KHOI DUOI (ca hai phia trong CUNG mot lan — lech chieu nao"
+    echo "    cung lam moi phep Redis that bai IM LANG, va khi do error.log KHONG co"
+    echo "    dong NOAUTH nao, site van tra 200):"
+    echo
     echo "      install -d -m 750 -o root -g $NGX_USER /etc/antibot"
     echo "      openssl rand -base64 36 | tr -d '/+=' | head -c 32 > $_pw"
     echo "      chown root:$NGX_USER $_pw && chmod 640 $_pw"
     echo "      redis-cli CONFIG SET requirepass \"\$(cat $_pw)\""
     echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" CONFIG REWRITE"
-    echo "      $(dirname "$TARGET_DIR")/../sbin/nginx -s reload"
+    echo "      $NGINX -t && $NGINX -s reload"
+    echo
+    echo "    CHI SAU KHI khoi tren xong moi nghiem thu (chay som thi chinh phep do"
+    echo "    bao AUTH failed, vi Redis chua co mat khau nao de nhan):"
+    echo "      PW=\$(cat $_pw)"
+    echo "      redis-cli --no-auth-warning -a \"\$PW\" CONFIG RESETSTAT"
+    echo "      <mot request vao site bat ky>"
+    echo "      redis-cli --no-auth-warning -a \"\$PW\" INFO commandstats | grep cmdstat_auth"
+    echo "    Mong: calls>=1 va failed_calls=0. failed_calls>0 = mat khau hai ben LECH."
+            ;;
+    esac
 fi
 
 # ---------------------------------------------------------------------------
