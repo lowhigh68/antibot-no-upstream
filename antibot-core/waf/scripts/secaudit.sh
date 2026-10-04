@@ -38,6 +38,22 @@ NPASS=0; NFAIL=0; NSKIP=0
 
 ok()   { printf '  PASS   %s\n' "$1"; NPASS=$((NPASS+1)); }
 bad()  { printf '  FAIL   %s\n' "$1"; NFAIL=$((NFAIL+1)); }
+# ── TRANG THAI THU TU: NGOAI PHAM VI ────────────────────────────────
+#
+# Khac han `BO QUA`. `BO QUA` = chua do duoc, van la cau hoi mo. `NGOAI` = da do,
+# ket qua co the la SAI, nhung viec sua KHONG thuoc nginx+lua nen DA QUYET DINH
+# khong lam (nguoi dung chot 04-10: "cai nao khong thuoc pham vi cua nginx+lua thi
+# bo").
+#
+# Vi sao khong de nguyen FAIL: bon cong nay se FAIL VINH VIEN. Mot bao cao luon do
+# la bao cao nhieu — no se bi lo di, va roi che mat mot FAIL THAT. Day dung bai hoc
+# "canh bao dung ma khong ai mo".
+#
+# Vi sao khong xoa han phep do: ket qua van la su that ve ranh gioi may, va neu mai
+# co nguoi dat nftables thi dong nay tu doi sang PASS ma khong phai sua script.
+NOOS=0
+oos() { printf '  NGOAI  %s -- %s\n' "$1" "$2"; NOOS=$((NOOS+1)); }
+
 skip() { printf '  BO QUA %s -- %s\n' "$1" "$2"; NSKIP=$((NSKIP+1)); }
 
 # ── TCP PROBE: BA ket qua, khong phai hai ────────────────────────────
@@ -65,13 +81,20 @@ tcp_probe() {
 }
 
 # Mot cong backend/control-plane PHAI khong voi tay toi duoc tu tenant.
-# `OPEN` la FAIL. `REFUSED`/`DENIED` la PASS *chi khi* cong do that su song.
-# `TIMEOUT` khong bao gio la PASS.
+#
+# Tham so 5 `ngoai=1` nghia la: sua duoc cho nay la `nftables`/Unix socket, tuc
+# KHONG thuoc nginx+lua -> `OPEN` bao `NGOAI` chu khong bao `FAIL`. Phep do van
+# chay y nguyen, nen neu mai co nguoi dat luat thi dong nay tu doi sang PASS.
 must_blocked() {
-    local nhan="$1" host="$2" port="$3" live="$4" r
+    local nhan="$1" host="$2" port="$3" live="$4" ngoai="${5:-0}" r
     r=$(tcp_probe "$host" "$port")
     case "$r" in
-        OPEN)             bad "$nhan -- tenant MO duoc $host:$port ($r)" ;;
+        OPEN)
+            if [ "$ngoai" = "1" ]; then
+                oos "$nhan" "tenant MO duoc $host:$port — sua bang nftables/Unix socket, ngoai nginx+lua"
+            else
+                bad "$nhan -- tenant MO duoc $host:$port ($r)"
+            fi ;;
         TIMEOUT)          skip "$nhan" "goi tin bi DROP, khong phan biet duoc chan hay dich chet ($r)" ;;
         REFUSED|DENIED)
             if [ "$live" = "1" ]; then ok "$nhan -- $r (cong dang song voi root)"
@@ -179,8 +202,8 @@ fi
 echo "=== NGHIEM THU RANH GIOI -- chay bang uid $(id -u) ($(id -un)) ==="
 echo
 echo "--- 1. Apache backend: tenant khong duoc di vong qua OpenResty (Review 4, 4.1) ---"
-must_blocked "apache http  :$APACHE_HTTP_PORT"  127.0.0.1 "$APACHE_HTTP_PORT"  "${SEC_LIVE_HTTP:-0}"
-must_blocked "apache https :$APACHE_HTTPS_PORT" 127.0.0.1 "$APACHE_HTTPS_PORT" "${SEC_LIVE_HTTPS:-0}"
+must_blocked "apache http  :$APACHE_HTTP_PORT"  127.0.0.1 "$APACHE_HTTP_PORT"  "${SEC_LIVE_HTTP:-0}"  1
+must_blocked "apache https :$APACHE_HTTPS_PORT" 127.0.0.1 "$APACHE_HTTPS_PORT" "${SEC_LIVE_HTTPS:-0}" 1
 echo
 
 echo "--- 2. Redis la control plane cua WAF (Review 4, 4.2) ---"
@@ -192,7 +215,10 @@ echo "--- 2. Redis la control plane cua WAF (Review 4, 4.2) ---"
 rr=$(tcp_probe 127.0.0.1 "$REDIS_PORT")
 case "$rr" in
     OPEN)
-        bad "redis :$REDIS_PORT -- tenant MO duoc socket"
+        # SOCKET mo duoc = `nftables`/Unix socket -> NGOAI pham vi nginx+lua.
+        # Nhung AUTH (ngay duoi) thi CHINH LA nginx+lua, nen no van la PASS/FAIL
+        # thuc su: `requirepass` chan LENH, con cong thi khong chan duoc tu Lua.
+        oos "redis :$REDIS_PORT (socket)" "tenant mo duoc cong — sua bang nftables/Unix socket, ngoai nginx+lua"
         # Da mo duoc thi do tiep: khong AUTH ma PING duoc la khong co ACL.
         # `read -t` MOT DONG, khong `head -c N`. Redis tra dung `+PONG\r\n` = 7 byte,
         # nen `head -c 64` CHO du 64 byte, bi `timeout` giet, va tra ve RONG -> phep do
@@ -223,7 +249,7 @@ for s in /var/run/docker.sock /usr/local/directadmin/data/task.queue; do
     elif [ -r "$s" ]; then bad "$s -- tenant DOC duoc"
     else ok "$s -- tenant khong doc duoc"; fi
 done
-must_blocked "directadmin :2222" 127.0.0.1 2222 "${SEC_LIVE_DA:-0}"
+must_blocked "directadmin :2222" 127.0.0.1 2222 "${SEC_LIVE_DA:-0}" 1
 echo
 echo "--- 4. Cach ly giua tenant (Review 4, 4.3) ---"
 # ── KHONG DOC DU LIEU KHACH ──────────────────────────────────────────
@@ -304,12 +330,18 @@ for f in /var/log/antibot/antibot.log /var/log/antibot/waf.log; do
 done
 echo
 echo "=== TONG ==="
-printf '  PASS   %d\n  FAIL   %d\n  BO QUA %d\n' "$NPASS" "$NFAIL" "$NSKIP"
+printf '  PASS   %d\n  FAIL   %d\n  BO QUA %d\n  NGOAI  %d\n' \
+       "$NPASS" "$NFAIL" "$NSKIP" "$NOOS"
 echo
-# `BO QUA` KHONG lam rc khac 0: no khong phai that bai, no la mot cau hoi CHUA CO
-# CAU TRA LOI. Nhung cung KHONG duoc im: in ra de nguoi van hanh thay lo trong.
+# BON trang thai, va chi `FAIL` lam rc khac 0:
+#   PASS   da do, dung
+#   FAIL   da do, SAI, va sua duoc trong nginx+lua -> phai hanh dong
+#   BO QUA chua do duoc -> mot cau hoi mo, KHONG duoc doc thanh "an toan"
+#   NGOAI  da do, co the sai, nhung sua bang nftables/php-fpm/systemd — DA QUYET
+#          DINH khong lam (nguoi dung chot 04-10). Khong lam rc khac 0, nhung van
+#          in ra: mot lo trong da biet van la lo trong.
 if [ "$NFAIL" -gt 0 ]; then
-    echo "=> rc=1: co ranh gioi DA DO va SAI. Day la duong di vong thuc te, khong phai edge case."
+    echo "=> rc=1: co ranh gioi DA DO va SAI trong pham vi nginx+lua. Phai hanh dong."
     exit 1
 fi
 if [ "$NPASS" -eq 0 ]; then
@@ -317,5 +349,6 @@ if [ "$NPASS" -eq 0 ]; then
     exit 2
 fi
 [ "$NSKIP" -gt 0 ] && echo "LUU Y: $NSKIP muc KHONG DO DUOC -- chua phai la 'an toan'."
-echo "=> rc=0: moi muc do duoc deu dat."
+[ "$NOOS"  -gt 0 ] && echo "LUU Y: $NOOS muc NGOAI pham vi nginx+lua -- lo trong DA BIET, khong phai da dong."
+echo "=> rc=0: moi muc trong pham vi nginx+lua deu dat."
 exit 0
