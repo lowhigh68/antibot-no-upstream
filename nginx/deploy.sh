@@ -580,6 +580,59 @@ else
         echo "    *** $stale dong cron tro vao duong dan CU nginx/scripts/fim.sh — da hong, nen xoa ***"
 fi
 
+# ── [7b] TANG BAM: TU dat lich, nhung KHONG tu baseline ─────────────
+#
+# Ranh gioi "tu lam / khong tu lam" o day khong phai tuy y:
+#
+#   `baseline --hash`  KHONG tu chay. No cong nhan moi file HIEN CO la dang tin;
+#                      tren may da bi xam nhap, baseline im lang la hop thuc hoa
+#                      ma doc. Phai la hanh dong co y cua nguoi van hanh.
+#   dong cron          TU dat. `check --hash` chi DOC va SO SANH — no khong cong
+#                      nhan gi, khong ghi manifest, khong sua tep nao. Giu no o
+#                      dang "mot dong de nguoi dung tu dan" la cach chac chan de
+#                      sau may thi vai may khong co — dung lop loi
+#                      `threat_feed_sync` da mac (cron tro sai duong, bao im lang,
+#                      `asn_rep` trong so 35 dung 0 nhieu thang).
+#
+# Dung `/etc/cron.d` chu khong `crontab -`: `crontab - ` GHI DE toan bo crontab
+# cua root, va tren may nay crontab do dang giu ba dong (`threat_feed_sync`,
+# `fim.sh check --hot`, `fim.sh check`). Mot lan ghi de sai la mat ca ba.
+#
+# `0 4 * * 0` = 4h sang Chu nhat. Thua co y: tang nay doc het moi byte cua tap
+# duoc chon, khac han hai tang kia chi `stat`.
+HASH_CRON=/etc/cron.d/antibot-fim-hash
+if [ -d /etc/cron.d ]; then
+    _hc_want="0 4 * * 0 root $FIM_SH check --hash >/dev/null 2>&1"
+    # thu ma mot phep do khac co the dang dung lam moc).
+    # thu ma mot phep do khac co the dang dung lam moc).
+    # So sanh DUNG DONG LICH, khong so ca tep: tep con `SHELL=`/`PATH=` nen mot
+    # phep loc chi bo `^#` va `^$` se LUON thay khac -> ghi lai moi lan deploy.
+    # Do 04-10: lan hai van bao "da dat lich". Mot buoc "chi ghi khi khac" ma
+    # thuc te ghi moi lan thi khong con la "chi ghi khi khac".
+    _hc_cur=$(grep -E '^[0-9*]' "$HASH_CRON" 2>/dev/null | head -1 || :)
+    if [ "$_hc_cur" != "$_hc_want" ]; then
+        {
+            echo "# antibot FIM tang BAM (P1-5). Tu dat boi nginx/deploy.sh."
+            echo "# Bat ca sua noi dung giu nguyen size+mtime — hai tang metadata mu truoc ca do."
+            echo "# 'baseline --hash' KHONG tu chay: do la quyet dinh an ninh."
+            echo "SHELL=/bin/bash"
+            echo "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin"
+            echo "$_hc_want"
+        } > "$HASH_CRON"
+        chmod 0644 "$HASH_CRON"
+        echo "    da dat lich tang bam: $HASH_CRON (0 4 * * 0)"
+    else
+        echo "    lich tang bam: da co, dung noi dung"
+    fi
+    if [ ! -s "$FIM_STATE_DIR/manifest.hash.txt" ]; then
+        echo "    *** tang bam CHUA co baseline — lich da dat nhung se khong do duoc gi ***"
+        echo "    Doc ky truoc khi chay (cong nhan moi file HIEN CO la dang tin):"
+        echo "      $FIM_SH baseline --hash"
+    fi
+else
+    echo "    khong co /etc/cron.d — dat tay: 0 4 * * 0 $FIM_SH check --hash"
+fi
+
 # ---------------------------------------------------------------------------
 # VI SAO CO BUOC NAY. `threat_feed_sync.sh` truoc nam o `nginx/scripts/`, ma
 # deploy.sh chi rsync `antibot-core/` — nen no KHONG BAO GIO tu toi may chu.
