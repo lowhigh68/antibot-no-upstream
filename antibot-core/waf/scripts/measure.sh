@@ -47,7 +47,13 @@ RCLI=${RCLI:-redis-cli}
 # gop doi so xac thuc thang vao bien — khong can mang rieng. Rong = khong gui AUTH.
 # Lech voi `requirepass` thi cac phep dem o day tra 0 va trong nhu "khong co du
 # lieu", nen doi so nay phai khop `core/config.lua`.
-[ -n "${ANTIBOT_REDIS_PASS:-}" ] && RCLI="$RCLI --no-auth-warning -a $ANTIBOT_REDIS_PASS"
+# Mat khau: bien moi truong TRUOC, roi TEP. Cron/root khong doc `/etc/environment`.
+_RPW="${ANTIBOT_REDIS_PASS:-}"
+if [ -z "$_RPW" ]; then
+    _pwf="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}"
+    [ -r "$_pwf" ] && _RPW="$(head -1 "$_pwf" 2>/dev/null | tr -d '\r\n')"
+fi
+[ -n "$_RPW" ] && RCLI="$RCLI --no-auth-warning -a $_RPW"
 
 usage() { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; }
 

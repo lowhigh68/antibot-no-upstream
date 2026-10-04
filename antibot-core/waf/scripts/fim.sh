@@ -346,7 +346,36 @@ REDIS_DB="${FIM_REDIS_DB:-0}"
 # `ANTIBOT_REDIS_PASS` — cung mot ten voi bon script con lai (`threat_feed_sync`,
 # `measure`, `postdeploy`, `monitor_ip_sync`). Hai ten bien cho cung mot bi mat la
 # cach chac chan de quen mot cho khi doi mat khau.
-REDIS_PASS="${FIM_REDIS_PASS:-${ANTIBOT_REDIS_PASS:-}}"
+# ── DOC MAT KHAU: TEP TRUOC, BIEN MOI TRUONG SAU ─────────────────────
+#
+# `fim.sh` chay tu CRON bang root, va **cron KHONG doc `/etc/environment`**. Nen
+# mot ban chi doc `$ANTIBOT_REDIS_PASS` se chay voi mat khau RONG trong cron, mat
+# toan bo quyen ghi Redis, va mat IM LANG — WAF don gian khong con nhan tin hieu
+# FIM nao. Da xay ra that 04-10 ngay sau khi bat `requirepass` (ba dong crontab
+# `*/5`, `*/30` va `threat_feed_sync` cung hong mot luc).
+#
+# Vi vay CO duong doc TEP, giong het ben Lua (`core/config.lua:doc_mat_khau`): root
+# doc duoc `/etc/antibot/redis.pass` nen cron khong can ai truyen gi qua moi truong.
+# Bien moi truong van thang (nguoi goi phat bieu tuong minh), tep la mac dinh.
+#
+# Khong co tep va khong co bien -> rong -> khong gui AUTH -> hanh vi ban cu.
+doc_mat_khau_redis() {
+    # THU TU: bien moi truong TRUOC, tep SAU.
+    #
+    # Bo test dat `FIM_REDIS_PASS` de tro vao Redis rieng cua no; neu tep thang thi
+    # tren may production bo test se lay mat khau THAT va do sai doi tuong. Bien la
+    # phat bieu TUONG MINH cua nguoi goi nen phai thang mot mac dinh tren dia.
+    local v="${FIM_REDIS_PASS:-${ANTIBOT_REDIS_PASS:-}}"
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+    # Cron chay bang root nhung KHONG doc `/etc/environment`, nen day la duong ma
+    # ba dong crontab thuc su di qua.
+    local p="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}"
+    # `head -1` roi bo `\r`: tep tao bang `echo` co `\n`, sua tay tu Windows co the
+    # co `\r` — mot `\r` dinh vao mat khau lam AUTH that bai voi mot thong bao khong
+    # he nhac den `\r`.
+    [ -r "$p" ] && head -1 "$p" 2>/dev/null | tr -d '\r\n'
+}
+REDIS_PASS="$(doc_mat_khau_redis)"
 RARGS=(-n "$REDIS_DB")
 [ -n "$REDIS_PASS" ] && RARGS+=(--no-auth-warning -a "$REDIS_PASS")
 

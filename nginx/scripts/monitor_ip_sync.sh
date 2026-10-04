@@ -87,7 +87,14 @@ ts()    { date '+%Y-%m-%d %H:%M:%S'; }
 # chieu nao cung lam MOI phep Redis that bai trong IM LANG.
 # `--no-auth-warning`: `redis-cli` in canh bao ra STDERR, va nhieu cho o day gom
 # STDERR lai de ket luan "co loi khong".
+# Mat khau: bien moi truong TRUOC (nguoi goi phat bieu tuong minh), roi TEP.
+# Cron chay bang root nhung KHONG doc `/etc/environment` — day la duong ma dong
+# crontab thuc su di qua. Khong co ca hai -> rong -> khong gui AUTH (hanh vi cu).
 REDIS_PASS="${ANTIBOT_REDIS_PASS:-}"
+if [ -z "$REDIS_PASS" ]; then
+    _pwf="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}"
+    [ -r "$_pwf" ] && REDIS_PASS="$(head -1 "$_pwf" 2>/dev/null | tr -d '\r\n')"
+fi
 RAUTH=()
 [ -n "$REDIS_PASS" ] && RAUTH=(--no-auth-warning -a "$REDIS_PASS")
 

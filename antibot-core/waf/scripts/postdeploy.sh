@@ -559,8 +559,14 @@ RCLI="${POSTDEPLOY_REDIS_CLI:-redis-cli}"
 RDB="${POSTDEPLOY_REDIS_DB:-0}"
 # Rong = khong gui AUTH. Phai khop `requirepass` cua Redis; lech thi muc 18 bao
 # "0 khoa" tren mot Redis day khoa — tuc mot bao cao SAI, khong phai mot loi.
+# Mat khau: bien moi truong TRUOC, roi TEP. Cron/root khong doc `/etc/environment`.
+_RPW="${ANTIBOT_REDIS_PASS:-}"
+if [ -z "$_RPW" ]; then
+    _pwf="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}"
+    [ -r "$_pwf" ] && _RPW="$(head -1 "$_pwf" 2>/dev/null | tr -d '\r\n')"
+fi
 RAUTH=()
-[ -n "${ANTIBOT_REDIS_PASS:-}" ] && RAUTH=(--no-auth-warning -a "$ANTIBOT_REDIS_PASS")
+[ -n "$_RPW" ] && RAUTH=(--no-auth-warning -a "$_RPW")
 if ! command -v "$RCLI" >/dev/null 2>&1; then
     echo "  thieu '$RCLI' — khong doc duoc khoa"
 else
