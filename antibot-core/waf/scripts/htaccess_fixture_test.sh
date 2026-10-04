@@ -94,6 +94,15 @@ while IFS=$'\t' read -r want rule; do
         # co che binh thuong ap tro lai. Lop RIENG — gop vao OFFALL se pin dung cai
         # nhap hai thu do lam mot (review 2 diem 2).
         "@sh0"|"@ft0")         got=RESET ;;
+        # Mot token `h-`/`t-`/`h0`/`t0` DON LE la phat bieu LANH hoac RESET cho mot
+        # duoi, khong phai "co handler nguy hiem". Gop chung vao `HANDLER` lam bon ca
+        # `AddType` lanh doi tu `NONE` sang `HANDLER` khi `AddType` lanh bat dau phat
+        # `t-` (04-10) — tuc nhan sai lop, khong phai loi parser.
+        h-:*|t-:*|h0:*|t0:*)
+            case "$out" in
+                *h+:*|*t+:*|*@sh+*|*@ft+*|*@exec+*) got=HANDLER ;;
+                *)                                  got=SAFE ;;
+            esac ;;
         "@exec-"|"-@execcgi")   got=OFFEXEC ;;
         *)                      got=HANDLER ;;
     esac
@@ -168,7 +177,7 @@ while IFS=$'\t' read -r want rule; do
     # UPLOAD nen no khong thay gi dang chu y -> `NONE`. Gop chung vao nhanh `HANDLER`
     # se doi Lua bao `handler=co` cho mot dong TAT — nguoc han.
     case "$want" in
-        NONE|OFFEXEC|OFFALL|RESET) exp_lua=NONE ;;
+        NONE|OFFEXEC|OFFALL|RESET|SAFE) exp_lua=NONE ;;
         *)                   exp_lua=HANDLER ;;
     esac
     want "$rule" "lua(co/khong)" "$lua_got" "$exp_lua"
@@ -316,7 +325,8 @@ h0:png" 'AddHandler application/x-httpd-php .jpg\nRemoveHandler .png\n'
 hta_raw "rm: RemoveHandler nhieu duoi"    "h0:cgi
 h0:pl" 'RemoveHandler .cgi .pl\n'
 # Huong NGUOC: `Add*` khong-PHP van bi bo qua, va `Remove*` khong duoc lam no xuat hien.
-hta_raw "rm: AddType text/plain roi Remove" "h0:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
+hta_raw "rm: AddType text/plain roi Remove" "h0:jpg
+t-:jpg" 'AddType text/plain .jpg\nRemoveHandler .jpg\n'
 
 # ── NHOM 24: HAI TRUC doc lap — handler vs media type ─────────────────
 #
@@ -337,11 +347,22 @@ t+:jpg" 'AddType application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
 hta_raw "truc: cung truc handler -> TAT"     "h0:jpg"  'AddHandler application/x-httpd-php .jpg\nRemoveHandler .jpg\n'
 hta_raw "truc: cung truc type -> TAT"        "t0:jpg"  'AddType application/x-httpd-php .jpg\nRemoveType .jpg\n'
 hta_raw "truc: ghi de bang handler LANH -> TAT" "h-:jpg" 'AddHandler application/x-httpd-php .jpg\nAddHandler default-handler .jpg\n'
-hta_raw "truc: type lanh KHONG tat handler nguy" "h+:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
-# Huong NGUOC — quan trong nhat: mot `AddType` LANH don thuan KHONG phu dinh gi. In
-# `rm:css` o day lam ben doc hieu "duoi nay bi TAT", mot cau sai (bo test bat 8 ca).
-hta_raw "truc: AddType lanh KHONG sinh rm:"  ""        'AddType text/css .css\n'
-hta_raw "truc: AddType lanh cho .jpg van im" ""        'AddType image/jpeg .jpg\n'
+# HAI token, hai truc: `h+:jpg` (nguy) va `t-:jpg` (type lanh). Reducer lay handler
+# TRUOC type, nen ket qua la `handler_ext` — type lanh KHONG tat duoc handler nguy.
+hta_raw "truc: type lanh KHONG tat handler nguy" "h+:jpg
+t-:jpg" 'AddHandler application/x-httpd-php .jpg\nAddType image/jpeg .jpg\n'
+# Huong NGUOC: mot `AddType` LANH la PHAT BIEU ve truc TYPE, nen no phat `t-`.
+#
+# Ban truoc hai ca nay ghim `""` (khong phat gi), va lo hong do gay FP: mot tep CON chi
+# co `AddType image/jpeg .jpg` khong noi gi, nen `AddType php .jpg` o CHA van thang —
+# trong khi Apache lay anh xa cua tang GAN hon. Do 04-10:
+#     cha t+:jpg + con (AddType image/jpeg .jpg) -> `handler_ext`, dung phai `nil`
+#
+# Ly do cu ("in `rm:css` lam ben doc hieu duoi nay bi TAT") dung voi hop dong KHI DO —
+# `rm:` gop hai truc. Gio co BA trang thai nen `t-:css` noi dung su that, va `init.lua`
+# dung o muc 4 cua thang precedence chu khong lan sang truc handler.
+hta_raw "truc: AddType lanh -> t- (la phat bieu)"  "t-:css" 'AddType text/css .css\n'
+hta_raw "truc: AddType lanh cho .jpg -> t-:jpg"    "t-:jpg" 'AddType image/jpeg .jpg\n'
 ini_raw "CRLF: none = TAT"            "khong"    'auto_prepend_file=none\r\n'
 ini_raw "CRLF: gia tri rong = TAT"    "khong"    'auto_prepend_file=\r\n'
 ini_raw "CRLF: co gia tri = BAT"      "co"       'auto_prepend_file=/tmp/x.php\r\n'

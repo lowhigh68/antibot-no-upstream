@@ -293,17 +293,24 @@ want "2 gia tri la duoi bi anh xa" \
 want "2 TTL dung" \
      "$(kttl "waf:fimcfg:$WEB/")" "604800"
 
-# Nhieu duoi, va CHI duoi cua directive ANH XA duoc tinh: `AddType text/plain .txt`
-# khong duoc vao danh sach (do la FP loi 6 da sua o `upload_content.lua`).
+# Nhieu duoi, va duoi cua directive LANH phat `t-` chu khong bi bo han: `AddType
+# text/plain .txt` la mot PHAT BIEU ve truc type cho `.txt`, va no can thiet de mot tep
+# CON ghi de duoc type nguy hiem cua CHA (sua FP 04-10, review 3 muc trung binh 1).
+#
+# Rang buoc GOC van giu — ve HANH VI, khong ve token. Do duoc:
+#     khoa t+:jpg,t+:png,t-:txt + /a.txt -> nil           (khong bao oan)
+#     khoa t+:jpg,t+:png,t-:txt + /a.jpg -> handler_ext
+#     cha t+:txt + con t-:txt   + /a.txt -> nil           (con ghi de duoc)
 : > "$RCLI_OUT"
 sleep 0.02
 printf 'AddType application/x-httpd-lsphp .jpg .png\nAddType text/plain .txt\n' \
     > "$WEB/.htaccess"
 bash "$HERE/fim.sh" check >/dev/null 2>&1 || true
 got=$(kval "waf:fimcfg:$WEB/")
-want "2b hai duoi duoc anh xa" "$got" "t+:jpg,t+:png"
-case "$got" in *txt*) want "2b .txt KHONG duoc tinh" "co-txt" "khong-txt" ;;
-               *)     want "2b .txt KHONG duoc tinh" "khong-txt" "khong-txt" ;; esac
+want "2b hai duoi duoc anh xa" "$got" "t+:jpg,t+:png,t-:txt"
+# `.txt` phai la `t-` (LANH), KHONG duoc la `t+`.
+case "$got" in *t+:txt*) want "2b .txt KHONG duoc la t+" "co-t+txt" "khong-t+txt" ;;
+               *)        want "2b .txt KHONG duoc la t+" "khong-t+txt" "khong-t+txt" ;; esac
 
 
 # ══ 2c. TEN TEP khong duoc thanh CO — va cham khong gian ten ════════════════
@@ -363,7 +370,7 @@ want "3 fimnew co shell.php" "$(haskey "waf:fimnew:$WEB/shell.php")" "yes"
 # Dieu ca nay THAT SU phai bao ve van nguyen: hai nhom DOC LAP. `shell.php` moi phai
 # vao `fimnew`, va KHONG duoc lam token cua `fimchg` doi. Nen kiem dung do.
 want "3 fimchg KHONG bi shell.php moi lam doi" \
-     "$(kval "waf:fimcfg:$WEB/")" "t+:jpg,t+:png"
+     "$(kval "waf:fimcfg:$WEB/")" "t+:jpg,t+:png,t-:txt"
 
 # ══ 4. `.user.ini` bi sua -> fimchg ═════════════════════════════════════════
 : > "$RCLI_OUT"
@@ -391,7 +398,7 @@ want "4 va KHONG fimnew"         "$(keys 'waf:fimnew:')" "0"
 # `.htaccess` tu buoc 2b van con tren dia nen `jpg,png` van co mat. Do la DUNG —
 # khoa mo ta THU MUC, va day la chinh loi da duoc sua.
 want "4 gia tri co @php (het dau * ba nghia)" \
-     "$(kval "waf:fimcfg:$WEB/")" "t+:jpg,t+:png,@php"
+     "$(kval "waf:fimcfg:$WEB/")" "t+:jpg,t+:png,t-:txt,@php"
 
 # Chong FP: mot `.user.ini` bi sua ma KHONG co autoload -> khong duoc bao.
 : > "$RCLI_OUT"
@@ -1911,6 +1918,22 @@ mv "giao: con h0:jpg + cha t+:jpg -> roi xuong type" \
 # 4. `h-` o duoi TRAI + `h0` o duoi phai -> di tiep gap `h-`, DUNG o do.
 mv "giao: h-:php + h0:jpg, shell.php.jpg -> gap safe o trai" \
    "/shell.php.jpg" "nil" "v2,h-:php,h0:jpg"
+
+# ── `AddType` LANH o con GHI DE type cua cha (review 3, muc trung binh 1) ──
+#
+# Day la FP, va FP la uu tien hang dau. Parser truoc chi dat `tneg` khi CHINH TEP NAY da
+# thay mot `t+` o dong truoc — nhung moi `.htaccess` parse DOC LAP, nen mot tep con chi
+# co `AddType image/jpeg .jpg` phat `[]` va `AddType php .jpg` o CHA van thang. Do 04-10:
+#     cha t+:jpg + con (AddType image/jpeg .jpg) -> `handler_ext`, dung phai `nil`
+mv "FP: cha t+:jpg + con t-:jpg -> con GHI DE" \
+   "/con/a.jpg" "nil" "v2,t-:jpg" "v2,t+:jpg"
+
+# Huong NGUOC — hai ca chan phep sua di qua xa:
+# 1. Type lanh KHONG tat duoc HANDLER nguy (khac truc, handler nam TREN).
+mv "FP: cha h+:jpg + con t-:jpg -> handler VAN thang" \
+   "/con/a.jpg" "handler_ext" "v2,t-:jpg" "v2,h+:jpg"
+# 2. Mot duoi lanh don thuan khong bao gi.
+mv "FP: chi t-:css -> khong bao gi" "/a.css" "nil" "v2,t-:css"
 
 # ── PATH_INFO cho MOI duoi, khong chi duoi PHP ───────────────────────
 #

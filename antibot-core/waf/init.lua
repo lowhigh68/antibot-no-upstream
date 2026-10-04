@@ -648,8 +648,6 @@ local function fim_config_active(uri, rt)
             -- Bo mot tang: `/a/b/` -> `/a/`
             seg = seg:sub(1, #seg - 1):match("^(.*/)")
             -- TRAN do sau: khong de mot URI dai tuy y sinh ra mot `MGET` dai tuy y.
-            -- Do sau quan sat tren fleet la 4-7 tang, nhung do KHONG phai rang buoc an
-            -- toan — URI do nguoi gui quyet dinh.
             --
             -- GIU WEBROOT khi bi cat: `break` tran lam `/` KHONG vao `segs`, nen mot
             -- `AddHandler` o webroot bi bo HOAN TOAN. Do 03-10:
@@ -658,6 +656,23 @@ local function fim_config_active(uri, rt)
             -- Day la FN do dau vao kiem soat duoc, nen phai dat phan tu CUOI thanh `/`
             -- thay vi bo han. Ket qua: mat cac tang GIUA, giu hai dau — tang gan request
             -- nhat (quan trong nhat) va webroot (pham vi rong nhat).
+            --
+            -- ── GIOI HAN CON LAI, DA QUYET: BO QUA ──────────────────
+            --
+            -- Neu config nguy hiem DUY NHAT nam o mot tang GIUA bi bo thi ham tra `nil`
+            -- va `:cut` khong duoc phat (hau to chi them vao ket qua DA tim thay). Review
+            -- 3 diem 3 neu dung.
+            --
+            -- Nguoi dung quyet 04-10: bo qua. Ly do la cua nguoi dung va no dung —
+            -- "gio la 12 tang chu mai la 24 tang thi sao": nang tran la duoi theo mot con
+            -- so TUY Y, no khong bien FN thanh khong-FN, chi day nguong ra xa hon. Va
+            -- huong dung han (index cac thu muc CO config roi resolve tu do) la THEM MOT
+            -- NGUON DU LIEU phai dong bo — dung thu da sinh ra bug 526 dong o `ad7bb4b`,
+            -- khi `fim.sh` ghi mot khoa cho TUNG thu muc con.
+            --
+            -- Do sau quan sat tren fleet: 4 tang (do 02-10 tren 171-96, 60/78 domain co
+            -- `.htaccess` long nhau, sau nhat la `.../domains/<d>/public_html/cgi-bin`).
+            -- Nen tran 12 con thua gap ba, va `:cut` dem duoc 0 luot trong waf.log.
             if ns >= 12 then
                 segs[ns] = "/"
                 depth_cut = true

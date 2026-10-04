@@ -43,10 +43,10 @@ RESET	sethandler none
 
 # ── FP da bat va da sua (loi 6 cua nguoi dung, vong review truoc) ───
 # Token THU NHAT quyet dinh. `php` o day chi nam trong DUOI, khong trong handler.
-NONE	AddType text/plain .php
-NONE	AddType text/plain .cgi
-NONE	AddType text/css .css
-NONE	AddType image/jpeg .jpg
+SAFE	AddType text/plain .php
+SAFE	AddType text/plain .cgi
+SAFE	AddType text/css .css
+SAFE	AddType image/jpeg .jpg
 
 # ── Khong phai directive handler ────────────────────────────────────
 NONE	RewriteEngine On

@@ -284,11 +284,29 @@ BEGIN { depth = 0; ifdepth = 0; cdepth = 0; sh = -1; ft = -1; opt[0] = -1
                 # PHP. Do 03-10: parser phat `h0:jpg` cho CA thu muc, nen moi `.jpg` o
                 # con bi ket luan lanh. FN.
                 #
-                # Mot directive trong `<Files>`/`<FilesMatch>`/`<If>` KHONG phat bieu gi
-                # ve ca thu muc — ca hai chieu. Huong nay bo sot cac directive NGUY HIEM
-                # trong container (do la gioi han da biet, xem `scoped_exec_config` o
-                # cuoi tep), nhung KHONG cho mot token lanh trong container triet tieu
-                # trang thai nguy hiem toan thu muc.
+                # Mot directive trong `<Files>`/`<FilesMatch>`/`<If>` HEP KHONG phat bieu
+                # gi ve ca thu muc — ca hai chieu.
+                #
+                # ── GIOI HAN DA BIET, DA QUYET: BO QUA ───────────────
+                #
+                # Huong nay bo sot cac directive NGUY HIEM trong container hep:
+                #     <Files "evil.jpg">
+                #         SetHandler application/x-httpd-php
+                #     </Files>
+                # Apache CHAY `evil.jpg`, parser phat `[]`, khong co tin hieu nao.
+                #
+                # Ban truoc chu thich o day noi "xem `scoped_exec_config` o cuoi tep".
+                # Rule do KHONG TON TAI — khong o `registry.lua`, khong o dau trong cay.
+                # Toi viet mot con tro den mot thu minh chua lam. Review 3 bat dung.
+                #
+                # Nguoi dung quyet 04-10: BO QUA. Mot matcher la thuoc tinh cua TEP, con
+                # khoa Redis theo THU MUC, nen luu matcher nghia la khop regex do KHACH
+                # viet tren hot path — mot regex xau thanh chi phi CPU moi request trong
+                # thu muc do. Va cau hinh dang nay chua gap tren fleet.
+                #
+                # DIEU VAN DUNG: mot token lanh/reset trong container hep KHONG duoc
+                # triet tieu trang thai nguy hiem toan thu muc. Do la FN da sua (review
+                # 2 diem 3), va cac ca trong `htaccess_fixture_test.sh` ghim no.
                 if (depth == 0) {
                     if (dang == 1) h[ee] = 1
                     else         { h[ee] = 0; hneg[ee] = 1 }
@@ -307,10 +325,28 @@ BEGIN { depth = 0; ifdepth = 0; cdepth = 0; sh = -1; ft = -1; opt[0] = -1
             if (e != "") {
                 ee = tolower(e)
                 # `depth` ap cho CA HAI chieu — xem khoi ly do o `addhandler`.
+                #
+                # ── `AddType` LANH la PHAT BIEU, ke ca khi tep nay chua bat gi ──
+                #
+                # Ban truoc chi dat `tneg` khi CHINH TEP NAY da thay mot `t+` o dong
+                # truoc. Nhung moi `.htaccess` duoc parse DOC LAP, nen mot tep con chi
+                # co `AddType image/jpeg .jpg` phat `[]` — khong noi gi — va mot
+                # `AddType php .jpg` o CHA van thang. Do 04-10:
+                #     cha t+:jpg + con (AddType image/jpeg .jpg) -> `handler_ext`
+                # dung phai `nil`: Apache lay anh xa cua tang GAN hon. FP, va FP la uu
+                # tien hang dau.
+                #
+                # Lo hong cu bat 8 ca vi hop dong KHI DO gop hai truc: `rm:css` doc
+                # thanh "duoi nay bi TAT". Gio co BA trang thai, nen `t-:css` noi dung
+                # su that — "type LANH tuong minh o tang nay" — va `init.lua` DUNG o
+                # muc 4 cua thang precedence chu khong lan sang truc handler.
+                #
+                # `AddHandler php .php` + `AddType image/jpeg .jpg` cung tep VAN cho
+                # `h+:php` thang: hai truc KHAC nhau, va handler nam TREN type trong
+                # thang. Ca `truc: type lanh KHONG tat handler nguy` ghim dieu do.
                 if (depth == 0) {
-                    if (dang == 0 && (ee in t) && t[ee]) tneg[ee] = 1
                     if (dang == 1) t[ee] = 1
-                    else           t[ee] = 0
+                    else         { t[ee] = 0; tneg[ee] = 1 }
                 }
             }
         }
