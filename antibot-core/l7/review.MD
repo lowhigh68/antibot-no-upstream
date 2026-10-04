@@ -799,3 +799,65 @@ ca 2b để khoá.
    (ví dụ sau khi migrate) có thể sinh static miss hợp lệ liên tục.
 3. **Chưa có feedback từ trạng thái backend** (lần 2, mục 6). Admission vẫn là
    circuit breaker định trước, chưa phải adaptive controller.
+
+### Ba câu hỏi của operator (04-10), trả lời bằng code
+
+#### 1. Admission trước WAF có hợp lý? — Hợp lý, nhưng lý lẽ của lần 2 không phải lý lẽ đúng
+
+Lần 2 biện hộ: *"request bị quá tải bị loại trước khi đọc/scan body WAF"*. Lợi
+thế đó **nhỏ hơn nhiều** so với mô tả, vì ba điều kiểm được trong code:
+
+1. **Mọi luật `block` của WAF đều URI-only** — `dotfile_exposed`,
+   `dump_exposed`, `wellknown_exec`, `wp_upload_exec`, `wp_content_exec`,
+   `wp_includes_exec`, `wp_admin_includes_exec`. Không luật nào cần thân.
+2. **WAF tự nó đã terminate trước `body.probe`** (`waf/init.lua:1093`):
+   `policy.decide(state, false)` rồi `terminate` — chú thích tại đó nói thẳng
+   *"Hard URI invariants can terminate before reading an upload body"*.
+3. Nên lợi thế "429 trước khi đọc body" chỉ áp cho POST **không khớp luật URI
+   nào**, tức POST hợp pháp về đường dẫn.
+
+**Thứ tự vẫn đúng, vì một lý do khác và mạnh hơn:** `read_body()` ở access phase
+**thực sự** gây đọc thân. Bằng chứng: spill tồn tại thật (~283 lượt/ngày,
+`nginx.conf:50`) — nếu nginx đã đọc trọn thân trước access phase thì không có
+khái niệm spill tại thời điểm đó. Với `auth_endpoint` ngưỡng 30/s/IP, admission
+chặn ở request 31; nếu WAF đứng trước thì cả 31 POST đều bị `read_body()` +
+`core.scan()` rồi mới 429.
+
+**Giá phải trả, lần 2 không nêu:** request bị 429 **mất dòng `waf.log`** —
+`ctx.waf_hits` rỗng nên `uri_hit = false` trong `run_log`. Một flood dùng đúng
+payload mà WAF quan tâm sẽ bị throttle **và không được ghi nhận**. Điểm cứu:
+`wp_paths.needs_mark` đọc `ngx.var.uri` trực tiếp, không qua `run_pre`, nên việc
+đánh dấu host WordPress **vẫn chạy** sau 429.
+
+#### 2. Không sửa `da_to_openresty.sh` có hợp lý? — Hợp lý, và sau bản sửa static-miss thì không còn lý do để sửa
+
+Trước đó có một lý do thật: static miss không có budget riêng. Giờ
+`admission.lua` kiểm đĩa trong Lua nên **đã giải quyết bằng Lua** (3.200 → 100
+req/s). Ba chỗ `access_by_lua_block { return; }` còn lại đều không phải lỗ:
+
+| location | lý do giữ nguyên |
+|---|---|
+| `/.well-known/acme-challenge/` | đọc thẳng từ đĩa (`try_files $uri =404`), **không** tới Apache. Bỏ Lua là **bắt buộc**: ACME không có JS/JA3/cookie nên bị chấm điểm như bot → "FAILED HTTP CHECKS" hàng loạt, âm thầm |
+| `@static_backend` | admission **đã** đếm request này ở lần vào đầu (server-level `access_by_lua`), và sau bản sửa thì đếm đúng vào budget `dynamic` |
+| `/antibot/verify`, `/antibot/beacon` | tự gọi `admission.run_endpoint()` trong Lua (`verify_token.lua:487`, `beacon_handler.lua:10`) |
+
+Thêm `run_backend_fallback()` vào `@static_backend` giờ chỉ cho thêm **một** thứ
+— biết chắc đã miss thay vì suy từ `io.open` — mà đổi lại phải regenerate 73
+vhost mỗi lần thay đổi. Phép kiểm đĩa có cache chỉ sai trong cửa sổ 30 giây sau
+khi upload tệp mới, và sai **theo chiều an toàn** (tính vào `dynamic`).
+
+#### 3. `limit_conn` — ràng buộc cứng, không đề xuất lại
+
+Operator: *"nginx.conf tôi tuyệt đối không dùng limit_conn"*. Xác nhận bằng
+grep: `nginx.conf` và `da_to_openresty.sh` **không** có
+`limit_conn`/`limit_conn_zone`/`limit_req` nào. Lần 3 đã thu hồi sạch.
+
+Cái mất, phải nói thật chứ không che: admission đếm **số request**, không đếm
+**số kết nối đồng thời**. Kịch bản nó **không** che được là *ít request nhưng mỗi
+request giữ upstream rất lâu* — query DB 30 giây, hoặc slow upstream. 100 req/s
+đều đi qua budget, nhưng nếu mỗi cái chiếm một PHP worker 20 giây thì worker pool
+cạn mà **không trục nào bị vượt**.
+
+Thứ thay thế được **mà vẫn Lua-only**: đọc trạng thái backend thật (số PHP
+worker đang bận) rồi hạ budget động — đúng mục 6 "còn tồn tại" ở lần 2. Cần đo
+capacity trước; không làm trước khi có số.

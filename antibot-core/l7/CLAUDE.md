@@ -76,6 +76,20 @@ RESOURCE → resource counter + lite crawler verification
   only passed 350 req/s. After the split: 100 req/s. A probe that cannot
   measure (empty `document_root`, dict error) **fails open to `resource`** — an
   uncertain measurement must never become a 429 for a real visitor.
+- **`limit_conn` is a hard no** (operator, 2026-10-04): never add
+  `limit_conn`/`limit_conn_zone`/`limit_req` to `nginx.conf` or the vhost
+  generator, under any name. The cost, stated plainly: admission counts
+  **requests**, not **concurrent connections**, so it does not cover "few
+  requests, each holding upstream for a long time" (a 30s DB query, a slow
+  upstream). 100 req/s all pass the budget, yet if each occupies a PHP worker for
+  20s the pool drains with no axis exceeded. The Lua-only replacement is reading
+  real backend state (busy PHP workers) and lowering budgets dynamically — needs
+  measured capacity first.
+- `da_to_openresty.sh` needs no change. The three `access_by_lua_block { return; }`
+  locations are all deliberate: ACME reads straight from disk and never reaches
+  Apache (keeping Lua there breaks certs fleet-wide), `@static_backend` was already
+  counted on first entry, and the two antibot endpoints call `run_endpoint()`
+  themselves.
 - Ban grace `ban:age:<id>` TTL 24h — first-time ban hit doesn't escalate
 
 ## Update log
