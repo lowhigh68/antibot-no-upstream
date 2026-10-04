@@ -659,7 +659,7 @@ MARK_TTL="${FIM_MARK_TTL:-604800}"   # 7 ngay
 # `audit` khong nhan co nao: no khong co tier (soi mot tap co dinh — mu-plugins
 # tron do sau, uploads chi tang 1), khong ghi gi nen `--dry` vo nghia, va luon in
 # day du nen `-v` cung vay.
-usage() { echo "dung: $0 {baseline|check|audit|score|wpinv} [--hot] [--dry] [-v]" >&2; exit 2; }
+usage() { echo "dung: $0 {baseline|check|audit|score|wpinv} [--hot|--hash] [--dry] [-v]" >&2; exit 2; }
 
 # Be mat thuc thi + cau hinh. `.htaccess` va `.user.ini` co trong danh sach vi
 # chung DOI DUOC handler: tha mot `.htaccess` vao uploads la bat lai PHP o do —
@@ -1039,7 +1039,58 @@ scan_hot() {
     } 2>/dev/null | sort -u
 }
 
-scan() { if [ "$tier" = "hot" ]; then scan_hot; else scan_full; fi; }
+
+# ── TANG BAM — P1-5 Review 4: bat sua NOI DUNG giu nguyen size+mtime ─
+#
+# Chu thich dau tep nay tu noi ro lo trong va ca cach bit: "BO SOT sua noi dung
+# roi `touch -r` tra lai mtime VA chen cho dung bang kich thuoc cu. Can chan ca
+# cai do thi doi sang sha256sum va chay hang tuan thay vi hang ngay."
+#
+# Va `scan_hot` noi dung cai dang quan tam: "backdoor that hiem khi la FILE MOI —
+# no la dong CHEN VAO mot file core co san, roi chay tren MOI request". Hai tang
+# metadata deu MU truoc ca do neu ke tan cong tra lai mtime va dem cho du size —
+# ca hai viec deu mot dong lenh.
+#
+# VI SAO KHONG BAM TAT CA: do tren may that 317.343 file / 27 giay chi de `stat`.
+# `sha256sum` phai DOC HET moi byte; tren ~150k file PHP cua mot may chia se day
+# la ganh I/O that, khong phai lo ly thuyet. Nen tang nay HEP CO Y:
+#
+#   · chi `wp-config.php`, `.htaccess`, `.user.ini`, `php.ini`  (cau hinh)
+#   · chi `wp-load.php`, `wp-settings.php`, `index.php` o webroot (core vao)
+#   · chi `wp-includes/*.php` DO SAU 1 (cai WordPress `require` luc khoi dong)
+#   · KHONG di vao `wp-content/` (plugin/theme doi that su thuong xuyen -> FP)
+#
+# Tap nay vua la tap ma mot backdoor BUOC phai sua de chay tren moi request, vua
+# du nho de bam hang tuan.
+#
+# Dat lich THUA: `0 4 * * 0` (4h sang Chu nhat). Tang nay KHONG thay hai tang kia
+# — no bo sung dung mot vung mu, voi chi phi chi tra mot lan mot tuan.
+scan_hash() {
+    {
+        find $ROOTS -maxdepth 1 -type f \
+             \( -name 'wp-config.php' -o -name '.htaccess' -o -name '.user.ini' \
+                -o -name 'php.ini' -o -name 'wp-load.php' -o -name 'wp-settings.php' \
+                -o -name 'index.php' \) -print0 2>/dev/null || :
+        find $ROOTS/wp-includes -maxdepth 1 -type f -name '*.php' -print0 2>/dev/null || :
+    } | {
+        # `xargs -0` + `sha256sum`: mot lan goi cho nhieu tep, va `-0` xu ly duoc
+        # ten co khoang trang (`/home/x/domains/y/public_html/my files/`) — da gap
+        # that tren may nay.
+        xargs -0 -r sha256sum 2>/dev/null || :
+    } | awk '
+        # `sha256sum` in `<hash>  <path>`. Dao thanh `<path>|<hash>` de CUNG DANG
+        # `path|...` voi hai manifest kia, nen `diff`/`awk` doc duoc y nhau.
+        { h = $1; $1 = ""; sub(/^[ \t]+/, "", $0); print $0 "|" h }
+    ' | sort
+}
+
+scan() {
+    case "$tier" in
+        hot)  scan_hot ;;
+        hash) scan_hash ;;
+        *)    scan_full ;;
+    esac
+}
 
 mode="${1:-}"; [ -n "$mode" ] || usage
 shift
@@ -1047,6 +1098,7 @@ dry=0; verbose=0; tier=full
 for a in "$@"; do
     case "$a" in
         --hot)        tier=hot ;;
+        --hash)       tier=hash ;;
         --dry)        dry=1 ;;
         -v|--verbose) verbose=1 ;;
         *)            usage ;;

@@ -2414,6 +2414,64 @@ want "33b khong cho goi nao con dang cu '\$REDIS_CLI -n \$REDIS_DB'" "$n33c" "0"
 n33d=$(grep -cF '"$REDIS_CLI" "${RARGS[@]}"' "$HERE/fim.sh"); n33d=${n33d:-0}
 want "33b co cho goi qua \${RARGS[@]} (9 cho)" "$n33d" "9"
 
+
+# ── Nhom 34: TANG BAM (P1-5) — bat sua noi dung giu nguyen metadata ──
+#
+# Tang nay ton tai vi hai tang kia MU truoc mot ca cu the: sua noi dung roi
+# `touch -r` tra lai mtime VA chen cho dung bang so byte cu. Do duoc 04-10:
+#   size 10 -> 10 GIONG, mtime GIONG het, hash KHAC
+# Nen phep do cua nhom nay phai dung DUNG ca do, khong phai mot ca de hon.
+S34="$S/g34"; W34="$S34/home/u/domains/d.test/public_html"
+mkdir -p "$W34/wp-includes" "$W34/wp-content/plugins/p"
+printf '<?php load' > "$W34/wp-includes/load.php"
+printf '<?php cfg'  > "$W34/wp-config.php"
+printf '<?php plug' > "$W34/wp-content/plugins/p/p.php"
+
+e34() {
+    env FIM_ROOTS="$S34/home/*/domains/*/public_html" FIM_STATE="$S34/st" \
+        FIM_HOME="$S34/home" FIM_LOG="$S34/f.log" FIM_CRITLOG="$S34/c.log" \
+        FIM_REDIS_CLI="$R/bin/rcli" ANTIBOT_REDIS_PASS_FILE="$S34/nopass" \
+        bash "$HERE/fim.sh" "$@" 2>&1
+}
+
+e34 baseline --hash >/dev/null 2>&1
+m34="$S34/st/manifest.hash.txt"
+want "34 baseline --hash tao manifest RIENG" "$([ -s "$m34" ] && echo co || echo khong)" "co"
+# Tap phai HEP: cau hinh + core vao + wp-includes do sau 1. KHONG duoc co plugin.
+want "34 bam wp-config.php"       "$(grep -c 'wp-config\.php|' "$m34" 2>/dev/null)" "1"
+want "34 bam wp-includes/load.php" "$(grep -c 'wp-includes/load\.php|' "$m34" 2>/dev/null)" "1"
+want "34 KHONG bam wp-content/plugins" "$(grep -c 'plugins' "$m34" 2>/dev/null)" "0"
+# Dinh dang phai la `path|hash` de CUNG dang voi hai manifest kia.
+want "34 dinh dang path|hash (64 hex)" \
+     "$(awk -F'|' 'NR==1{print (length($2)==64 && $2 ~ /^[0-9a-f]+$/) ? "dung" : "sai:" $2}' "$m34")" "dung"
+
+# ── CA CHINH: metadata GIONG HET, noi dung KHAC ──────────────────────
+mt34=$(stat -c '%y' "$W34/wp-includes/load.php")
+sz34=$(stat -c '%s' "$W34/wp-includes/load.php")
+printf '<?php eviL' > "$W34/wp-includes/load.php"   # cung 10 byte
+touch -d "$mt34" "$W34/wp-includes/load.php"        # tra lai mtime
+want "34 size KHONG doi (tien de cua phep do)" \
+     "$(stat -c '%s' "$W34/wp-includes/load.php")" "$sz34"
+want "34 mtime KHONG doi (tien de cua phep do)" \
+     "$(stat -c '%y' "$W34/wp-includes/load.php")" "$mt34"
+out34=$(e34 check --hash)
+case "$out34" in
+    *"CHG"*load.php*) want "34 check --hash BAT duoc sua noi dung" "bat" "bat" ;;
+    *)                want "34 check --hash BAT duoc sua noi dung" "KHONG BAT: $out34" "bat" ;;
+esac
+# HUONG NGUOC: tang metadata (full) phai MU truoc dung ca nay — neu khong thi
+# tang bam khong co ly do ton tai, va phep do tren khong chung minh gi.
+rm -rf "$S34/st"
+e34 baseline >/dev/null 2>&1
+mt34b=$(stat -c '%y' "$W34/wp-config.php")
+printf '<?php cfG' > "$W34/wp-config.php"           # cung so byte
+touch -d "$mt34b" "$W34/wp-config.php"
+out34b=$(e34 check)
+case "$out34b" in
+    *CHG*wp-config*) want "34 tang METADATA mu truoc ca nay" "BAT (tang bam vo nghia)" "mu" ;;
+    *)               want "34 tang METADATA mu truoc ca nay" "mu" "mu" ;;
+esac
+
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
