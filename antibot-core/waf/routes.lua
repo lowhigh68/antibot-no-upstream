@@ -79,11 +79,38 @@ _M.ct_family = ct_family
 --   methods   tap method duoc phep. Thieu khoa = khong rang buoc.
 --   ct        tap ho content-type duoc phep khi CO than. Thieu = khong rang buoc.
 --   upload    `false` = route nay KHONG BAO GIO nhan tep.
+--   upload_expected `true` = route nay TON TAI de nhan tep (chieu nguoc lai).
+--             Dung cho P1-2: mot than khong soi duoc o DAY nghia khac han o mot
+--             route khong bao gio nhan tep. Hai truong KHONG BAO GIO cung xuat
+--             hien tren mot dong.
 --
 -- `GET`/`HEAD` duoc phep o ca bon: WordPress tu goi `/wp-login.php` bang GET de
 -- render form, `/xmlrpc.php` GET tra ve mot dong text, va mot cron trigger co the
 -- la GET. Chan GET khong bat duoc gi ma pha ca bon route.
 local CONTRACTS = {
+    -- ── P1-2: route LA endpoint upload ────────────────────────────────
+    --
+    -- Review 4 giai doan P1 muc 2: "Dinh nghia policy ro cho body scan incomplete
+    -- o endpoint upload; khong can ap fail-closed cho moi POST". Hai nua cua cau
+    -- do deu quan trong: PHAI biet dau la endpoint upload, va KHONG duoc coi moi
+    -- POST la nhu nhau.
+    --
+    -- Bon dong tren deu la `upload = false` (route KHONG BAO GIO nhan tep). Day la
+    -- chieu NGUOC: route ma upload la chuc nang CHINH. Mot than multipart khong soi
+    -- duoc o `/wp-cron.php` va o `/wp-admin/async-upload.php` la hai su that khac
+    -- nhau han, nhung truoc ban nay chung ra cung mot fact
+    -- (`body_multipart_incomplete`, diem 0) nen khong tach duoc.
+    --
+    -- BAT BIEN doc tu ma WordPress, khong tu log — dung luat cua bang nay:
+    -- `wp-admin/async-upload.php` goi `wp_ajax_upload_attachment()`, ham do doc
+    -- `$_FILES['async-upload']`; va `wp-admin/includes/file.php:wp_handle_upload()`
+    -- la duong vao duy nhat cua Media Library. Route nay TON TAI de nhan tep.
+    ["/wp-admin/async-upload.php"] = {
+        methods         = { POST = true },
+        ct              = { multipart = true },
+        upload_expected = true,
+        why             = "endpoint upload cua Media Library: multipart la DUNG",
+    },
     ["/wp-cron.php"] = {
         -- `spawn_cron()` trong `wp-includes/cron.php` goi `wp_remote_post` voi
         -- `body => array()` — tuc than RONG. Khong co duong nao trong WordPress
@@ -212,6 +239,18 @@ function _M.check_post(uri, content_type, has_body, body, is_wp_fn, host, docroo
         return "route_ct", p
     end
     return nil
+end
+
+
+-- `is_upload_endpoint` — route nay co TON TAI de nhan tep khong (P1-2).
+--
+-- Tra `true` chi khi hop dong khai `upload_expected`. KHONG suy ra tu
+-- `Content-Type`: do la LOI KHAI BAO cua ke gui, va ca tep nay duoc viet de khong
+-- tin vao do (xem chu thich `route_upload`). Cung KHONG suy ra tu `upload ~= false`
+-- — mot route khong khai gi thi la KHONG BIET, khac han "la endpoint upload".
+function _M.is_upload_endpoint(uri, is_wp_fn, host, docroot)
+    local c = contract_of(uri, is_wp_fn, host, docroot)
+    return (c and c.upload_expected == true) or false
 end
 
 -- `route_multipart` — DO RIENG, khong tron vao `route_upload`.

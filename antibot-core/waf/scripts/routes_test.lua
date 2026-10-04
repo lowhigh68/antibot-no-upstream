@@ -113,6 +113,61 @@ check("cron doing_wp_cron",
 check("comment POST urlenc",  post("/wp-comments-post.php", URLENC, true, FORM), "-")
 check("comment GET",          pre("/wp-comments-post.php", "GET"),    "-")
 
+
+-- ══ P1-2: `is_upload_endpoint` — route NAO ton tai de nhan tep ═════════════
+--
+-- Review 4 P1 muc 2: "khong can ap fail-closed cho moi POST". Nen phep do o day
+-- hoi dung mot cau: route nay co KHAI la endpoint upload khong. Ba nguon tra loi
+-- SAI ma ham phai tu choi:
+--   · `Content-Type: multipart` — loi khai bao cua ke gui, ca tep nay duoc viet
+--     de khong tin vao do
+--   · `upload ~= false` — khong khai gi la KHONG BIET, khac "la endpoint upload"
+--   · route khong co hop dong — im lang tuyet doi
+io.write("routes: is_upload_endpoint chi tin hop dong\n")
+local function upep(uri, wp)
+    return routes.is_upload_endpoint(uri, wp or WP, "a.test")
+end
+check("async-upload LA endpoint upload",     upep("/wp-admin/async-upload.php"), true)
+check("wp-cron KHONG (upload=false)",        upep("/wp-cron.php"),               false)
+check("wp-login KHONG (upload=false)",       upep("/wp-login.php"),              false)
+check("xmlrpc KHONG (upload=false)",         upep("/xmlrpc.php"),                false)
+check("comments-post KHONG (upload=false)",  upep("/wp-comments-post.php"),      false)
+-- Route KHONG co hop dong: `nil` contract -> false, khong phai nil.
+check("admin-ajax KHONG khai -> false",      upep("/wp-admin/admin-ajax.php"),   false)
+check("goc KHONG khai -> false",             upep("/"),                          false)
+-- KHONG phai host WordPress -> khong co hop dong nao ap -> false.
+check("khong phai WP host -> false",
+      upep("/wp-admin/async-upload.php", function() return false end),           false)
+-- CA PHAN BIET hai bieu thuc. `upload_expected == true` va `upload ~= false` cho
+-- CUNG ket qua tren ca nam dong hien co, nen mot mutation doi sang `upload ~=
+-- false` KHONG bi bat (do 04-10). Phan biet duoc bang mot hop dong KHONG khai ca
+-- hai chieu: khi do `upload` la nil -> `upload ~= false` ra TRUE (sai), con
+-- `upload_expected == true` ra FALSE (dung) — khong khai gi la KHONG BIET.
+--
+-- Dung bang that chu khong bia route moi: tam chen mot dong vao `CONTRACTS`, do,
+-- roi go ra. `_M.CONTRACTS` tro thang vao bang nen sua duoc.
+do
+    local C = routes.CONTRACTS
+    C["/khong-khai-chieu-nao.php"] = {
+        methods = { POST = true }, ct = { urlencoded = true },
+        why = "chi de test: hop dong KHONG khai upload lan upload_expected",
+    }
+    check("hop dong khong khai gi -> KHONG phai endpoint upload",
+          upep("/khong-khai-chieu-nao.php"), false)
+    C["/khong-khai-chieu-nao.php"] = nil
+end
+
+-- Hop dong cua endpoint upload phai CHO multipart (nguoc han bon route kia).
+io.write("routes: endpoint upload CHO multipart, CAM cai khac\n")
+check("async-upload multipart co tep -> im lang",
+      post("/wp-admin/async-upload.php", MULTI, true, WITH_FILE),     "-")
+check("async-upload urlencoded -> route_ct",
+      post("/wp-admin/async-upload.php", URLENC, true, FORM),         "route_ct")
+check("async-upload GET -> route_method",
+      pre("/wp-admin/async-upload.php", "GET"),                       "route_method")
+check("async-upload POST qua pha 1",
+      pre("/wp-admin/async-upload.php", "POST"),                      "-")
+
 -- ── Route KHONG co hop dong: im lang TUYET DOI ──
 io.write("routes: route KHONG khai bao -> im lang tuyet doi\n")
 check("admin-ajax multipart",
@@ -120,8 +175,6 @@ check("admin-ajax multipart",
 check("admin-ajax mp do",
       mp("/wp-admin/admin-ajax.php", MULTI, true),                    "-")
 check("admin-ajax PUT",       pre("/wp-admin/admin-ajax.php", "PUT"), "-")
-check("async-upload",
-      post("/wp-admin/async-upload.php", MULTI, true, WITH_FILE),     "-")
 check("wp-json PUT",          pre("/wp-json/wp/v2/posts/1", "PUT"),   "-")
 check("goc GET",              pre("/", "GET"),                        "-")
 check("index.php multipart",  post("/index.php", MULTI, true, WITH_FILE), "-")
@@ -291,11 +344,25 @@ do
         n = n + 1
         check("hop dong " .. path .. " co why",
               type(c.why) == "string" and #c.why > 10, true)
-        check("hop dong " .. path .. " cho GET", c.methods.GET, true)
+        -- `upload_expected` la CHIEU NGUOC cua `upload=false`, va hai bat bien
+        -- chung cua bang cu KHONG ap cho no (sua 04-10, P1-2):
+        --   · `/wp-admin/async-upload.php` chi nhan POST — WordPress khong render
+        --     form nao o day, GET vao do khong co nghia.
+        --   · va no TON TAI de nhan tep, nen `upload` phai la nil chu khong false.
+        -- Hai truong KHONG BAO GIO cung xuat hien tren mot dong.
+        check("hop dong " .. path .. " khong khai ca hai chieu",
+              (c.upload == false and c.upload_expected == nil)
+              or (c.upload == nil and c.upload_expected == true), true)
+        if c.upload_expected then
+            check("hop dong " .. path .. " endpoint upload: chi POST", c.methods.POST, true)
+            check("hop dong " .. path .. " endpoint upload: KHONG cam tep", c.upload, nil)
+        else
+            check("hop dong " .. path .. " cho GET", c.methods.GET, true)
+            check("hop dong " .. path .. " cam tep", c.upload, false)
+        end
         -- Bon route deu KHONG nhan tep — do la bat bien chung cua bang hom nay.
-        check("hop dong " .. path .. " cam tep", c.upload, false)
     end
-    check("co du bon hop dong", n, 4)
+    check("co du NAM hop dong", n, 5)
 end
 
 io.write(string.format("\nroutes: %d qua, %d hong\n", pass, fail))

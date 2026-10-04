@@ -166,6 +166,31 @@ why != "" { g[why "  " f["domain"] "  " f["method"] " " f["uri"] "  class=" f["c
 END { for (k in g) printf "%d\t%s\n", g[k], k }' | sort -t"$(printf '\t')" -k1,1nr | head -25 \
 | awk -F'\t' '{ printf "  %6d  %s\n", $1, $2 }'
 
+# ── P1-2: TACH nhom "incomplete TAI endpoint upload" ────────────────
+#
+# Muc 8 o tren gop moi than multipart khong soi het. Nhung mot than khong soi duoc
+# o `/wp-cron.php` va o `/wp-admin/async-upload.php` la hai su that khac han: o
+# route khong bao gio nhan tep thi ban than multipart da bat thuong; o endpoint
+# upload thi multipart la DUNG, va dieu dang lo la noi dung tep vao Media Library
+# ma khong soi duoc.
+#
+# Day la so lieu de CHON chinh sach (Review 4 P1 muc 2: "khong can ap fail-closed
+# cho moi POST"). Khong bake nguong vao code — doc cot nay roi quyet.
+echo "=== 8b. P1-2: incomplete TAI endpoint upload (body_upload_ep_incomplete) ==="
+grep -F '[waf-body]' "$W" | awk "$P$B1"'
+why != "" && f["uri"] ~ /async-upload\.php/ {
+    g[why "  " f["domain"] "  class=" f["class"] " vfy=" f["vfy"]] += s; t += s }
+END {
+    if (!t) { print "  (khong co luot nao o endpoint upload)"; exit }
+    printf "  tong %d luot. Theo ly do / domain / lop:\n", t
+    for (k in g) printf "  %6d  %s\n", g[k], k
+}'
+echo "  -- CACH DOC --"
+echo "  0 luot                 : endpoint upload khong he co than khong soi duoc -> chua co co so doi policy"
+echo "  tap trung 1-2 domain   : xem cau hinh site do (body lon? spill?) truoc khi doi policy toan fleet"
+echo "  vfy=1 phan lon         : nguoi dung da dang nhap -> fail-closed se chan admin that, can than"
+echo "  fntr_* phan lon        : kenh ten tep dung giua -> tang tran thay vi chan"
+
 echo "=== 9. B3: hang doi soi file tam (than spill; moi luot deu ghi, smp=1) ==="
 grep -F '[waf-body]' "$W" | grep -F ' qw=' | awk "$P"'
 f["qw"] != "-" && f["qw"] != "" {

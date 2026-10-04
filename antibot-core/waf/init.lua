@@ -211,7 +211,7 @@ local BODY_REGIONS = {
     { field = "filename_rules", region = "filename", target = "MULTIPART_FILENAME" },
 }
 
-local function emit_body_facts(ctx, state)
+local function emit_body_facts(ctx, state, up_ep)
     local b = ctx.waf_body
     if not b then return end
 
@@ -239,7 +239,26 @@ local function emit_body_facts(ctx, state)
     -- la LY DO — ma `scan` khi khong soi duoc, `fntr_<ma>` khi kenh ten tep dung
     -- giua chung — khong bao gio la noi dung than.
     local blind = b.scan and b.scan ~= "ok" and b.scan ~= "empty"
-    if b.family == "multipart" and (blind or body_core.FN_INCOMPLETE[b.fn_trunc]) then
+    -- ── P1-2: tach rieng "incomplete TAI endpoint upload" ─────────────
+    --
+    -- Review 4 P1 muc 2: "Dinh nghia policy ro cho body scan incomplete o endpoint
+    -- upload; khong can ap fail-closed cho moi POST".
+    --
+    -- Truoc ban nay mot than multipart khong soi duoc o `/wp-cron.php` va o
+    -- `/wp-admin/async-upload.php` ra CUNG MOT fact, nen khong tach duoc hai su
+    -- that khac han nhau: o route khong bao gio nhan tep thi ban than viec co
+    -- multipart da la bat thuong; con o endpoint upload thi multipart la DUNG, va
+    -- dieu dang lo la KHONG SOI DUOC noi dung tep dang di vao Media Library.
+    --
+    -- `observe`, diem 0 — GIAI DOAN DO. Khong bake nguong vao code; `postdeploy.sh`
+    -- muc 8 da in ly do + domain + route, nay them mot nhom RIENG de doc. Nguoi
+    -- dung 27-09: phan chua xac dinh thi ghi so tho roi quyet tu log.
+    if b.family == "multipart" and up_ep and (blind or body_core.FN_INCOMPLETE[b.fn_trunc]) then
+        policy.emit(state, "body_upload_ep_incomplete", {
+            target = "BODY",
+            matched = blind and tostring(b.scan) or ("fntr_" .. tostring(b.fn_trunc)),
+        })
+    elseif b.family == "multipart" and (blind or body_core.FN_INCOMPLETE[b.fn_trunc]) then
         policy.emit(state, "body_multipart_incomplete", {
             target = "BODY",
             matched = blind and tostring(b.scan) or ("fntr_" .. tostring(b.fn_trunc)),
@@ -1090,7 +1109,11 @@ local function run_pre(ctx, rt)
     if qs and qs ~= "" then
         record_arg(state, args.check(qs), "ARGS", args.describe(qs))
     end
-    emit_body_facts(ctx, state)
+    -- P1-2: route NAY co phai endpoint upload khong. Tinh o day vi `request` da co
+    -- san, va `emit_body_facts` can biet de tach fact. KHONG suy tu Content-Type.
+    local up_ep = routes.is_upload_endpoint(
+        request.uri, wp_paths.is_wp_root, request.host, request.dr)
+    emit_body_facts(ctx, state, up_ep)
 
     -- PHA 2 cua hop dong endpoint — SAU `body.probe`, vi hai phep kiem con lai can
     -- biet co THAN hay khong, va `route_upload` can PARSER chung minh co part tep.

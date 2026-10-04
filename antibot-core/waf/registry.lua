@@ -53,6 +53,22 @@ add("body_scan_incomplete", "body", "request_body", "generic", "observe", "enfor
 add("body_multipart_incomplete", "body", "request_body", "generic", "observe", "enforce",
     0, 1, 1.00, { "body.multipart_incomplete" })
 
+-- P1-2 (Review 4 giai doan P1 muc 2): than multipart KHONG soi het TAI CHINH
+-- endpoint upload. Tach khoi `body_multipart_incomplete` vi hai nhom tra loi hai
+-- cau khac nhau:
+--
+--   `body_multipart_incomplete`  route KHONG khai la endpoint upload -> ban than
+--                                viec co multipart o do la dieu dang xem
+--   `body_upload_ep_incomplete`  route LA endpoint upload (`upload_expected`) ->
+--                                multipart la DUNG; dieu dang lo la noi dung tep
+--                                dang vao Media Library ma KHONG soi duoc
+--
+-- `observe`, diem 0 — GIAI DOAN DO, giong hai luat kia. Chinh sach (fail-closed o
+-- rieng nhom nay? tra 503? chi canh bao?) chon SAU khi co so lieu: `postdeploy.sh`
+-- muc 8 in ly do + domain + route cho ca ba nhom. Khong bake nguong vao code.
+add("body_upload_ep_incomplete", "body", "request_body", "generic", "observe", "enforce",
+    0, 1, 1.00, { "body.upload_ep_incomplete" })
+
 -- Mot luat tham so khop trong NOI DUNG mot tep dinh kem, khong trong tham so.
 --
 -- `action = "observe"` va `score = 0`, va do la ca CHINH SACH chu khong phai mot
