@@ -293,7 +293,9 @@ fim.sh check    [--hot|--hash] [--dry] [-v]
 ```
 
 - Manifest **riêng cho từng tier** (`manifest.hot.txt` / `manifest.full.txt` / `manifest.hash.txt`). Bắt buộc: đối chiếu tập con với manifest đầy sẽ báo mọi file không được phủ là DEL, biến manifest đầy thành rác và nuốt mọi thay đổi về sau.
-- Manifest ở `/var/lib/antibot/fim/`, **ngoài cây deploy** — `./deploy.sh` không đụng tới, không cần dựng lại baseline sau mỗi lần deploy.
+- Manifest ở `/var/lib/antibot/fim/`, **ngoài cây deploy** — `rsync --delete` ở bước `[4]` chỉ chạm `$TARGET_DIR`, nên deploy **không bao giờ** làm mất baseline. `baseline` là **việc một lần cho mỗi máy**, không phải mỗi lần deploy; chạy lại khi đã có là **có hại** vì nó xoá `PREVCHG`/`CHGCOUNT`/`NEWCOUNT` (`fim.sh:1986-1991`), tức xoá lịch sử thay đổi. Chỉ phải chạy lại khi xoá `/var/lib/antibot/fim/` hoặc khi **tập file** của một tier thay đổi.
+- **`baseline` là quyết định an ninh:** nó công nhận mọi file đang có là đáng tin, nên webshell nằm sẵn vào manifest như file sạch và không bao giờ còn là `NEW`. Tiền lệ thật: cloud28-246, `check --hot` trả `exit=0` im lặng với 21 webshell ở `mu-plugins` (vào manifest từ tháng 7) — xem mục 2026-09-20 ở dưới. Nhưng **không** baseline thì tier đó không bảo vệ gì cả (`check` `exit 2` khi thiếu manifest), nên "không chạy" kém hơn "chạy trên máy có thể nhiễm" ở mọi tình huống: backdoor không tĩnh, kẻ tấn công quay lại sửa, và tier băm bắt đúng việc sửa đó kể cả khi giữ nguyên size+mtime.
+- **Đối chiếu chéo core trước khi baseline tier băm.** Tập của tier băm là `wp-includes/*.php` — file core WordPress, nên có **đáp án đúng** để so, khác `mu-plugins` (nội dung tuỳ ý). Cùng phiên bản core trên nhiều site thì phải cùng băm; một băm lẻ = file bị sửa. Đo cloud171-96 04-10-2026: **5.079** cặp (phiên bản, tên tệp), **0** băm lẻ. Nhưng phải đọc kèm **độ phủ**: 23 phiên bản trên 42 site, **18 site ở phiên bản một mình** → `0` nghĩa là "24 site sạch core, 18 site chưa biết", không phải "42 site sạch". Một `0` không kèm độ phủ sẽ bị đọc thành "đã xác minh sạch".
 - Im lặng khi không có gì (cron gửi mail theo **bất kỳ** dòng stdout nào). `-v` để ép in.
 - Mã thoát 1 = có CRITICAL.
 

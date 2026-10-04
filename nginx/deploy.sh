@@ -622,9 +622,20 @@ if [ -d /etc/cron.d ]; then
     else
         echo "    lich tang bam: da co, dung noi dung"
     fi
+    # NOI RO DAY LA VIEC MOT LAN. Ban truoc chi in "CHUA co baseline" roi dua
+    # lenh, khong noi tan suat — nen moi lan deploy thong bao lai y nguyen, va
+    # nguoi van hanh chi co hai duong doan: chay lai (baseline XOA lich su
+    # $PREVCHG/$CHGCOUNT/$NEWCOUNT, fim.sh:1986-1991) hoac bo qua (tang bam
+    # chet). Ca hai deu sai. Manifest nam o /var/lib/antibot/fim/, NGOAI cay
+    # deploy, va `rsync --delete` o buoc [4] chi cham $TARGET_DIR — nen deploy
+    # KHONG BAO GIO lam mat baseline.
     if [ ! -s "$FIM_STATE_DIR/manifest.hash.txt" ]; then
         echo "    *** tang bam CHUA co baseline — lich da dat nhung se khong do duoc gi ***"
-        echo "    Doc ky truoc khi chay (cong nhan moi file HIEN CO la dang tin):"
+        echo "    VIEC MOT LAN cho may nay: manifest o $FIM_STATE_DIR nam ngoai cay"
+        echo "    deploy, nen cac lan deploy sau KHONG lam mat no va dong nay se tu im."
+        echo "    Chay lai khi da co baseline la CO HAI — no xoa lich su thay doi."
+        echo "    Nen doi chieu core truoc (cung phien ban tren nhieu site thi phai"
+        echo "    cung bam; mot bam le = tep bi sua), roi chay:"
         echo "      $FIM_SH baseline --hash"
     fi
 else
