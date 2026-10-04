@@ -610,6 +610,68 @@ if command -v redis-cli >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# [9] BI MAT: ai doc duoc gi.
+#
+# Do tren cloud171-96 04-10 bang `waf/scripts/secaudit.sh` chay bang UID tenant:
+# `core/config.lua` va `admin/init.lua` la `644 root:root`, tuc MOI tenant tren
+# may doc duoc `pow.challenge_secret` va `AUTH_USER`/`AUTH_PASS`. Doc duoc
+# challenge secret = tu sinh cookie `verified:*` hop le = di qua TOAN BO lop cham
+# diem. Day khong phai lo ly thuyet.
+#
+# Chieu NGUOC lai cung chet, va de quen hon: cay nay KHONG co `init_by_lua`, chi
+# co `init_worker_by_lua_block`, nen `config.lua` duoc `require` lan dau trong
+# WORKER — da ha quyen sang `user nginx`. Dat `600 root:root` thi worker doc ra
+# chuoi RONG, khong gui AUTH, va moi phep Redis that bai IM LANG (fail-open).
+# Vi vay dung muc tieu la `640 root:nginx`, KHONG phai `600 root:root`.
+# ---------------------------------------------------------------------------
+# `case "$m" in *[2367])` KHONG dung: `case` khop CHUOI nen `*[2367]` chi xet KY TU
+# CUOI, va `644` ket thuc bang `4` -> KHONG khop -> bo sot dung ca pho bien nhat.
+# Do duoc 04-10: 644/604/664 deu ra "ok" trong khi ca ba la world-readable.
+# Dung phep toan BIT tren chu so "other".
+world_readable() {
+    local m="$1" o
+    o=${m#"${m%?}"}
+    [ -n "$o" ] || return 1
+    [ $(( o & 4 )) -ne 0 ]
+}
+
+echo "[9] Bi mat: quyen doc..."
+NGX_USER=$(sed -n 's/^[[:space:]]*user[[:space:]]\+\([^;[:space:]]*\).*/\1/p' \
+           "$(dirname "$TARGET_DIR")/nginx.conf" 2>/dev/null | head -1)
+NGX_USER="${NGX_USER:-nginx}"
+echo "    worker chay bang: $NGX_USER"
+for _f in "$TARGET_DIR/core/config.lua" "$TARGET_DIR/admin/init.lua"; do
+    [ -e "$_f" ] || continue
+    _m=$(stat -c '%a' "$_f" 2>/dev/null)
+    if world_readable "$_m"; then
+        echo "    *** ${_f##*/} la $_m — MOI user tren may doc duoc ***"
+        echo "        chmod 640 '$_f' && chown root:$NGX_USER '$_f'"
+    else
+        echo "    ${_f##*/}: $_m $(stat -c '%U:%G' "$_f" 2>/dev/null) — ok"
+    fi
+done
+# `redis.pass`: phai KHONG world-readable, nhung PHAI de worker doc duoc.
+_pw=/etc/antibot/redis.pass
+if [ -e "$_pw" ]; then
+    _pm=$(stat -c '%a' "$_pw" 2>/dev/null)
+    _pg=$(stat -c '%G' "$_pw" 2>/dev/null)
+    if world_readable "$_pm"; then
+        echo "    *** redis.pass la $_pm — world-readable, tenant doc duoc mat khau ***"
+        echo "        chmod 640 $_pw && chown root:$NGX_USER $_pw"
+    fi
+    # Kiem THUC TE worker co doc duoc khong, khong doan tu che do.
+    if ! su -s /bin/sh -c "head -1 '$_pw' >/dev/null 2>&1" "$NGX_USER" 2>/dev/null; then
+        echo "    *** $NGX_USER KHONG doc duoc $_pw ***"
+        echo "        Worker se doc ra chuoi rong -> khong gui AUTH -> MOI phep Redis"
+        echo "        that bai IM LANG. Sua: chown root:$NGX_USER $_pw && chmod 640 $_pw"
+    else
+        echo "    redis.pass: $_pm root:$_pg — $NGX_USER doc duoc, ok"
+    fi
+else
+    echo "    redis.pass: khong co — Redis dang khong dung mat khau"
+fi
+
+# ---------------------------------------------------------------------------
 # Bao tri Redis - CHI khi co co.
 #
 # Ly do ton tai: mot so khoa Redis lam request THOAT SOM, TRUOC khi code moi

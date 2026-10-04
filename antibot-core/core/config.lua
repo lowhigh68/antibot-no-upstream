@@ -11,8 +11,13 @@ local _M = {}
 -- bat o Redis TRUOC khi tao tep la hong, va tao tep truoc khi bat o Redis cung hong:
 -- hai viec phai di cung nhau (xem thu tu lenh trong `waf/CLAUDE.md`).
 --
--- `io.open` chay duoc o `init_by_lua` (khong phai cosocket), nen doc mot lan luc
--- khoi dong la du; moi worker thua ket qua qua `require` cache.
+-- `io.open` khong phai cosocket nen chay duoc o moi phase. Nhung CHU Y AI doc:
+-- cay nay KHONG co `init_by_lua`, chi co `init_worker_by_lua_block`
+-- (`nginx/nginx.conf:124`), tuc `config.lua` duoc `require` lan dau trong WORKER —
+-- da ha quyen sang `user nginx`. Vi vay `/etc/antibot/redis.pass` phai de `nginx`
+-- doc duoc (`640 root:nginx`), KHONG phai `600 root:root`: dat 600 thi worker doc
+-- ra chuoi rong, khong gui AUTH, va MOI phep Redis that bai IM LANG.
+-- `deploy.sh` buoc [9] kiem dung dieu nay.
 local function doc_mat_khau()
     local p = os.getenv("ANTIBOT_REDIS_PASS_FILE") or "/etc/antibot/redis.pass"
     local f = io.open(p, "r")
