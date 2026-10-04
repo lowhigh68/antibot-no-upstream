@@ -402,6 +402,78 @@ else
     echo "[4e] thread_pool TAT — than tran ra file tam KHONG duoc soi (scan=nothread)."
 fi
 
+# ---------------------------------------------------------------------------
+# [4b] BI MAT: chuan hoa quyen NGAY SAU rsync, TRUOC `nginx -t`/reload.
+#
+# VI SAO O DAY chu khong o cuoi (Review 7 muc 3; output nguoi dung 04-10 xac nhan):
+# buoc [4] dung `rsync -avz`, va `-a` BAO TOAN mode NGUON — `config.lua` trong repo
+# la 644, nen moi lan deploy no QUAY VE `644 root:root`. Dong
+#     config.lua: 644 root:root -> 640 root:nginx (da sua)
+# xuat hien tren mot may DA sua hom truoc chinh la bang chung.
+#
+# Dat o cuoi sinh ra HAI cua so, ca hai deu that:
+#   · reload o buoc [6] tao worker MOI khi `config.lua` con 644 -> trong khoang do
+#     tenant doc duoc `pow.challenge_secret`
+#   · neu `redis.pass` chua doc duoc, worker vua reload nap `password = ""` va GIU
+#     nguyen trong module cache; sua quyen SAU do khong lam worker doc lai
+#
+# Nen quyen phai dung TRUOC khi co worker nao nap config.
+echo "[4b] Bi mat: quyen doc..."
+NGX_USER=$(sed -n 's/^[[:space:]]*user[[:space:]]\+\([^;[:space:]]*\).*/\1/p' \
+           "$(dirname "$TARGET_DIR")/nginx.conf" 2>/dev/null | head -1)
+NGX_USER="${NGX_USER:-nginx}"
+echo "    worker chay bang: $NGX_USER"
+# TU SUA, khong chi in goi y. Buoc [4c] o tren da tu `chown nginx:nginx` +
+# `chmod 0750` cho `/var/log/antibot`, nen in goi y o day la HAI CHUAN trong cung
+# mot tep — va vi dieu nay phai dung tren CA SAU may, in goi y nghia la nam may
+# con lai bi bo sot cho den khi co nguoi doc log deploy.
+#
+# `640 root:nginx`: worker (`user nginx`) PHAI doc duoc vi cay nay khong co
+# `init_by_lua` — `config.lua` duoc `require` lan dau trong WORKER da ha quyen.
+# Tenant KHONG duoc doc: `config.lua` chua `pow.challenge_secret`, doc duoc la tu
+# sinh cookie `verified:*` hop le va di qua TOAN BO lop cham diem.
+for _f in "$TARGET_DIR/core/config.lua" "$TARGET_DIR/admin/init.lua"; do
+    [ -e "$_f" ] || continue
+    _m=$(stat -c '%a' "$_f" 2>/dev/null)
+    _og=$(stat -c '%U:%G' "$_f" 2>/dev/null)
+    if world_readable "$_m" || [ "$_og" != "root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_f" 2>/dev/null || :
+        chmod 0640 "$_f" 2>/dev/null || :
+        _m2=$(stat -c '%a %U:%G' "$_f" 2>/dev/null)
+        if [ "$_m2" = "640 root:$NGX_USER" ]; then
+            echo "    ${_f##*/}: $_m $_og -> $_m2 (da sua)"
+        else
+            echo "    *** ${_f##*/}: SUA KHONG DUOC, con $_m2 ***"
+            echo "        chmod 640 '$_f' && chown root:$NGX_USER '$_f'"
+        fi
+    else
+        echo "    ${_f##*/}: $_m $_og — ok"
+    fi
+done
+# `redis.pass`: phai KHONG world-readable, nhung PHAI de worker doc duoc.
+_pw=/etc/antibot/redis.pass
+if [ -e "$_pw" ]; then
+    # Thu muc TRUOC, tep SAU. Do 04-10 tren cloud171-96: tep da `640 root:nginx`
+    # ma `nginx` VAN bi `Permission denied`, vi `/etc/antibot` la `700 root:root`.
+    # Doc mot tep can bit `x` tren MOI thu muc tren duong dan, nen sua tep ma
+    # khong sua thu muc la sua xong ma van hong.
+    _pd=${_pw%/*}
+    if [ -d "$_pd" ]; then
+        _dm=$(stat -c '%a %U:%G' "$_pd" 2>/dev/null)
+        if [ "$_dm" != "750 root:$NGX_USER" ]; then
+            chown "root:$NGX_USER" "$_pd" 2>/dev/null || :
+            chmod 0750 "$_pd" 2>/dev/null || :
+            echo "    $_pd: $_dm -> $(stat -c '%a %U:%G' "$_pd" 2>/dev/null)"
+        fi
+    fi
+    _pm=$(stat -c '%a %U:%G' "$_pw" 2>/dev/null)
+    if [ "$_pm" != "640 root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_pw" 2>/dev/null || :
+        chmod 0640 "$_pw" 2>/dev/null || :
+        echo "    redis.pass: $_pm -> $(stat -c '%a %U:%G' "$_pw" 2>/dev/null)"
+    fi
+fi
+
 echo "[5] nginx -t..."
 "$NGINX" -t
 
@@ -641,60 +713,14 @@ world_readable() {
     [ $(( o & 4 )) -ne 0 ]
 }
 
-echo "[9] Bi mat: quyen doc..."
-NGX_USER=$(sed -n 's/^[[:space:]]*user[[:space:]]\+\([^;[:space:]]*\).*/\1/p' \
-           "$(dirname "$TARGET_DIR")/nginx.conf" 2>/dev/null | head -1)
-NGX_USER="${NGX_USER:-nginx}"
-echo "    worker chay bang: $NGX_USER"
-# TU SUA, khong chi in goi y. Buoc [4c] o tren da tu `chown nginx:nginx` +
-# `chmod 0750` cho `/var/log/antibot`, nen in goi y o day la HAI CHUAN trong cung
-# mot tep — va vi dieu nay phai dung tren CA SAU may, in goi y nghia la nam may
-# con lai bi bo sot cho den khi co nguoi doc log deploy.
+# ---------------------------------------------------------------------------
+# [9] REDIS AUTH: trang thai thuc te sau khi worker da nap config.
 #
-# `640 root:nginx`: worker (`user nginx`) PHAI doc duoc vi cay nay khong co
-# `init_by_lua` — `config.lua` duoc `require` lan dau trong WORKER da ha quyen.
-# Tenant KHONG duoc doc: `config.lua` chua `pow.challenge_secret`, doc duoc la tu
-# sinh cookie `verified:*` hop le va di qua TOAN BO lop cham diem.
-for _f in "$TARGET_DIR/core/config.lua" "$TARGET_DIR/admin/init.lua"; do
-    [ -e "$_f" ] || continue
-    _m=$(stat -c '%a' "$_f" 2>/dev/null)
-    _og=$(stat -c '%U:%G' "$_f" 2>/dev/null)
-    if world_readable "$_m" || [ "$_og" != "root:$NGX_USER" ]; then
-        chown "root:$NGX_USER" "$_f" 2>/dev/null || :
-        chmod 0640 "$_f" 2>/dev/null || :
-        _m2=$(stat -c '%a %U:%G' "$_f" 2>/dev/null)
-        if [ "$_m2" = "640 root:$NGX_USER" ]; then
-            echo "    ${_f##*/}: $_m $_og -> $_m2 (da sua)"
-        else
-            echo "    *** ${_f##*/}: SUA KHONG DUOC, con $_m2 ***"
-            echo "        chmod 640 '$_f' && chown root:$NGX_USER '$_f'"
-        fi
-    else
-        echo "    ${_f##*/}: $_m $_og — ok"
-    fi
-done
-# `redis.pass`: phai KHONG world-readable, nhung PHAI de worker doc duoc.
+# Quyen da duoc chuan hoa o buoc [4b], TRUOC reload. Muc nay chi tra loi: worker
+# dang chay co that su dung mat khau khong, va hai ben co khop khong.
+echo "[9] Redis auth: trang thai..."
 _pw=/etc/antibot/redis.pass
 if [ -e "$_pw" ]; then
-    # Thu muc TRUOC, tep SAU. Do 04-10 tren cloud171-96: tep da `640 root:nginx`
-    # ma `nginx` VAN bi `Permission denied`, vi `/etc/antibot` la `700 root:root`.
-    # Doc mot tep can bit `x` tren MOI thu muc tren duong dan, nen sua tep ma
-    # khong sua thu muc la sua xong ma van hong.
-    _pd=${_pw%/*}
-    if [ -d "$_pd" ]; then
-        _dm=$(stat -c '%a %U:%G' "$_pd" 2>/dev/null)
-        if [ "$_dm" != "750 root:$NGX_USER" ]; then
-            chown "root:$NGX_USER" "$_pd" 2>/dev/null || :
-            chmod 0750 "$_pd" 2>/dev/null || :
-            echo "    $_pd: $_dm -> $(stat -c '%a %U:%G' "$_pd" 2>/dev/null)"
-        fi
-    fi
-    _pm=$(stat -c '%a %U:%G' "$_pw" 2>/dev/null)
-    if [ "$_pm" != "640 root:$NGX_USER" ]; then
-        chown "root:$NGX_USER" "$_pw" 2>/dev/null || :
-        chmod 0640 "$_pw" 2>/dev/null || :
-        echo "    redis.pass: $_pm -> $(stat -c '%a %U:%G' "$_pw" 2>/dev/null)"
-    fi
     # BANG CHUNG THAT, khong suy ra tu che do: ACL/SELinux/mount co the khac.
     if ! su -s /bin/sh -c "head -1 '$_pw' >/dev/null 2>&1" "$NGX_USER" 2>/dev/null; then
         echo "    *** $NGX_USER VAN KHONG doc duoc $_pw ***"
@@ -710,9 +736,28 @@ if [ -e "$_pw" ]; then
         done
     else
         echo "    redis.pass: $(stat -c '%a %U:%G' "$_pw" 2>/dev/null) — $NGX_USER doc duoc, ok"
-        echo "    Bang chung WAF that su AUTH (chay sau reload):"
-        echo "      redis-cli --no-auth-warning -a \"\$(cat $_pw)\" CONFIG RESETSTAT"
-        echo "      <mot request>; redis-cli ... INFO commandstats | grep cmdstat_auth"
+        # TU NGHIEM THU, khong in huong dan chay tay. Output nguoi dung 04-10 cho
+        # thay ba dong goi y nay roi KHONG AI chay — va neu co chay thi chung lai
+        # dung dung phep do da bi Review 7 muc 2 bac: `redis-cli -a` tu gui AUTH
+        # nen `cmdstat_auth` tu tang.
+        #
+        # Day dung bai hoc "canh bao dung ma khong ai mo". Phep do dung la dem khoa
+        # do WORKER ghi — `res_ip:<ip>` / `burst:<id>` (`l7/rate/res_ip_counter.lua`,
+        # `l7/burst/burst_counter.lua`) — vi chung chi ton tai khi worker AUTH duoc
+        # VA ghi duoc.
+        _wk=$(REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --scan --pattern 'res_ip:*' 2>/dev/null | grep -c . )
+        _wb=$(REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --scan --pattern 'burst:*'  2>/dev/null | grep -c . )
+        if [ "${_wk:-0}" -gt 0 ] || [ "${_wb:-0}" -gt 0 ]; then
+            echo "    worker DANG ghi Redis (res_ip=$_wk burst=$_wb) -- AUTH that su hoat dong"
+        else
+            # TTL ngan (`burst` 1s, `res_ip` theo `ttl.rate`) nen 0 co the chi la
+            # may dang khong co luu luong. Khong ket luan "hong", nhung cung KHONG
+            # bao "ok" -- do la mot cau hoi chua co cau tra loi.
+            echo "    CHUA THAY khoa nao do worker ghi (res_ip=0 burst=0)."
+            echo "      Co the may dang khong co request (TTL cac khoa nay rat ngan),"
+            echo "      cung co the worker dang fail-open. Do lai khi co luu luong:"
+            echo "      REDISCLI_AUTH=\$(cat $_pw) redis-cli --scan --pattern 'res_ip:*' | head"
+        fi
     fi
 else
     # ── BON TRANG THAI, theo bang cua Review 7 muc 2 ──────────────────
