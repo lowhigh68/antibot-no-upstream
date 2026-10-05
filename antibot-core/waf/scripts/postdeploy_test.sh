@@ -430,5 +430,34 @@ if [ -f "$HERE/inifile_parse.awk" ]; then
         printf 'HONG  %s\n' "$nloose cho goi inifile_parse.awk khong chan stdout -> '+'/'-' lac vao bao cao"
     fi
 fi
+
+# ── muc 22: SHADOW h-:php ─────────────────────────────────────────────
+#
+# Doc TRANG THAI tu Redis, nen bo test nay chi kiem bo token khop `suspect_cfg`
+# trong fim.sh — mot lech giua hai noi la mot FN im lang (muc 22 bao 0 trong khi
+# fim.sh dang bao, hoac nguoc lai).
+for _t in '@ft-' '@sh-' 'h-:php' 'h-:phtml' 't-:php' 't-:phtml'; do
+    nf=$(grep -c -- "$_t" "$HERE/fim.sh" || :)
+    np=$(grep -c -- "$_t" "$HERE/postdeploy.sh" || :)
+    if [ "${nf:-0}" -gt 0 ] && [ "${np:-0}" -gt 0 ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        printf 'HONG  %s\n' "token '$_t' lech giua fim.sh ($nf) va postdeploy.sh ($np)"
+    fi
+done
+# `h0:` KHONG duoc tinh o CA HAI noi. Day la quyet dinh co chu y (reset cho
+# Apache roi xuong content type, co trong cau hinh hop le).
+for _f in fim.sh postdeploy.sh; do
+    if grep -q 'h0:php,\*) return 0' "$HERE/$_f" 2>/dev/null \
+       || grep -q '\*,h0:php,\*$' "$HERE/$_f" 2>/dev/null; then
+        fail=$((fail+1)); printf 'HONG  %s\n' "$_f tinh ca h0: (reset) — se bao uploads/ hop le"
+    else
+        pass=$((pass+1))
+    fi
+done
+want "22 co tieu de"  '22\. SHADOW h-:php'
+want "22 co CACH DOC" 'BAT BIEN SAI'
+
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

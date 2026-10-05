@@ -861,3 +861,45 @@ else
     echo "                                 hoac dict loi; ngan sach resource 4000/s"
     echo "                                 dang ap cho ca static miss"
 fi
+echo
+echo "=== 22. SHADOW h-:php: thu muc plugin/theme anh xa PHP sang text/plain ==="
+# ── VI SAO CO MUC NAY ────────────────────────────────────────────────
+#
+# `fim.sh` bao vao `$CRITLOG` khi TAP doi (chong lap bang chu ky md5), nen mot
+# thu muc bi cay tu truoc se KHONG xuat hien o luot sau. Muc nay doc TRANG THAI
+# hien tai tu Redis chu khong doc log, nen no tra loi "dang co gi" thay vi "vua
+# doi gi" — dung phan biet ma `feedback_alert_reaches_nobody` noi toi.
+#
+# SHADOW: n=2 tren toan fleet 05-10 (ca hai o mot site da xac nhan bi hack).
+# Khong promote thanh luat truoc khi so nay co them mau tu site HOP LE hay khong.
+if ! command -v "$RCLI" >/dev/null 2>&1; then
+    echo "  thieu '$RCLI' — khong doc duoc khoa"
+else
+    nsus=0
+    while read -r k; do
+        [ -n "$k" ] || continue
+        v=$("$RCLI" "${RAUTH[@]}" -n "$RDB" GET "$k" 2>/dev/null)
+        d="${k#waf:fimcfg:}"
+        case "$d" in
+            */wp-content/plugins/*|*/wp-content/themes/*) ;;
+            *) continue ;;
+        esac
+        # Cung bo token voi `suspect_cfg` trong fim.sh. `h0:` (reset) KHONG tinh.
+        case ",$v," in
+            *,@ft-,*|*,@sh-,*|*,h-:php,*|*,h-:phtml,*|*,t-:php,*|*,t-:phtml,*)
+                nsus=$((nsus + 1))
+                printf '  %s\n      %s\n' "$d" "$v" ;;
+        esac
+    done <<EOT
+$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | sort)
+EOT
+    echo "  tong: $nsus thu muc"
+    echo "  -- CACH DOC --"
+    echo "  0                    : may nay khong co dau hieu nay (mong doi)"
+    echo "  >0 tren MOT site     : nghi site do bi xam nhap — doi chieu mtime cua"
+    echo "                         tep trong thu muc; cung mot moc = mot lan drop"
+    echo "  >0 tren NHIEU site   : hoac co dot tan cong, hoac BAT BIEN SAI (mot"
+    echo "                         plugin hop le lam vay) — kiem truoc khi promote"
+    echo "  Go handler PHP = .php tai ve dang TEXT thay vi chay. Khong phai duong"
+    echo "  chay ma, nen gia tri la DAU HIEU DA BI XAM NHAP."
+fi

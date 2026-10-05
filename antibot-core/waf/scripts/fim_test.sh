@@ -2559,6 +2559,121 @@ want "35 rest-api (do sau 2) CHI o full" \
 # tier mat y nghia (full = 317.343 file / 27 giay tren may that).
 want "35 hot NHO HON full (tach tier con y nghia)" \
      "$([ "$(grep -c . "$S35/hot.p")" -lt "$(grep -c . "$S35/full.p")" ] && echo dung || echo "hot=$(grep -c . "$S35/hot.p") full=$(grep -c . "$S35/full.p")")" "dung"
+
+# ── SHADOW `h-:php`: thu muc plugin/theme GO handler PHP (muc 36) ──
+#
+# Bat bien: thu muc duoi `wp-content/plugins/` hoac `themes/` KHONG co ly do
+# chinh dang nao de GO handler PHP cua chinh no. Do 6 may 05-10: 2 dong, ca hai
+# o `thegioibds.online` (nguoi dung xac nhan da bi hack), 0 dong tu site hop le.
+#
+# SHADOW THUAN: bao, khong chan, khong doi ma thoat. Nen test o day kiem DUONG
+# RA (`$CRITLOG` + stdout) chu khong kiem `$?`.
+printf '\n── SHADOW h-:php: plugin/theme go handler PHP (muc 36) ──\n'
+S36="$S/g36"; W36="$S36/home/u/domains/d.test/public_html"
+mkdir -p "$W36/wp-content/plugins/evil/Fox-C" \
+         "$W36/wp-content/plugins/good" \
+         "$W36/wp-content/themes/t/sub" \
+         "$W36/wp-content/uploads/cache" \
+         "$W36/cgi-bin"
+printf '<?php x' > "$W36/index.php"
+printf '<?php x' > "$W36/wp-content/plugins/evil/Fox-C/p.php"
+printf '<?php x' > "$W36/wp-content/plugins/good/g.php"
+printf '<?php x' > "$W36/wp-content/themes/t/sub/s.php"
+
+# DUONG BAO: anh xa `.php` sang `text/plain` trong thu muc plugin. Day la DANG
+# THAT do tren 168-101: `@ft-,h-:html,h-:php,h-:shtml,t-:html,t-:php,t-:shtml`.
+cat > "$W36/wp-content/plugins/evil/Fox-C/.htaccess" <<'HT'
+ForceType text/plain
+AddHandler text/plain .html .php .shtml
+AddType text/plain .html .php .shtml
+HT
+# DUONG KHONG BAO 1: cung go, nhung KHONG o plugin/theme. uploads/cache go
+# handler la cau hinh HOP LE va PHO BIEN (chinh la "writable khong executable").
+cat > "$W36/wp-content/uploads/cache/.htaccess" <<'HT'
+ForceType text/plain
+AddHandler text/plain .php
+HT
+# DUONG KHONG BAO 2: trong plugin nhung THEM handler, khong go.
+cat > "$W36/wp-content/plugins/good/.htaccess" <<'HT'
+AddHandler application/x-httpd-php .php
+HT
+# DUONG KHONG BAO 3: theme, nhung chi dat type cho tep tinh.
+cat > "$W36/wp-content/themes/t/sub/.htaccess" <<'HT'
+AddType image/webp .webp
+HT
+# DUONG KHONG BAO 5: `RemoveHandler` TRONG plugin -> `h0:php` (reset). Day la
+# quyet dinh CO CHU Y: reset go mapping va CHO Apache roi xuong content type,
+# dang nay co trong cau hinh hop le. Khong co ca nay thi viec loai `h0:` khong
+# duoc ghim va mot ban sau them `*,h0:php,*` vao se khong bi bat.
+mkdir -p "$W36/wp-content/plugins/reset"
+printf '<?php x' > "$W36/wp-content/plugins/reset/r.php"
+cat > "$W36/wp-content/plugins/reset/.htaccess" <<'HT'
+RemoveHandler .php .phtml
+HT
+# DUONG KHONG BAO 4: cgi-bin ExecCGI — pho bien tren CA FLEET (44/49 khoa tren
+# 168-101). Bao o day thi moi may se co hang chuc dong rac.
+cat > "$W36/cgi-bin/.htaccess" <<'HT'
+Options +ExecCGI
+AddHandler cgi-script .cgi .pl
+HT
+
+e36() {
+    env FIM_ROOTS="$S36/home/*/domains/*/public_html" FIM_STATE="$S36/st" \
+        FIM_HOME="$S36/home" FIM_LOG="$S36/f.log" FIM_CRITLOG="$S36/c.log" \
+        FIM_REDIS_CLI="$R/bin/rcli" ANTIBOT_REDIS_PASS_FILE="$S36/nopass" \
+        bash "$HERE/fim.sh" "$@" 2>&1
+}
+e36 baseline >/dev/null 2>&1
+OUT36=$(e36 check); RC36=$?
+
+# Tien de: `htaccess_parse.awk` PHAI sinh token go handler cho fixture nay. Neu
+# khong thi moi `want` duoi chi dang do mot fixture khong hieu luc.
+TOK36=$(awk -v execcgi_ok=yes -f "$HERE/htaccess_parse.awk" \
+        "$W36/wp-content/plugins/evil/Fox-C/.htaccess" 2>/dev/null | sort -u | paste -sd, -)
+want "36 tien de: parser sinh token go handler" \
+     "$(case ",$TOK36," in *,h-:php,*) echo co ;; *) echo "KHONG($TOK36)" ;; esac)" "co"
+
+want "36 BAO thu muc plugin go handler" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'plugins/evil/Fox-C')" "1"
+want "36 co tieu de SHADOW" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'SHADOW: thu muc plugin/theme GO handler PHP')" "1"
+want "36 ghi ca vao CRITLOG (duong ra thu hai)" \
+     "$(grep -c 'plugins/evil/Fox-C' "$S36/c.log" 2>/dev/null)" "1"
+
+# BON duong KHONG bao — moi cai mot `want` rieng, vi gop lai thi mot ca hong an
+# trong tong so.
+want "36 KHONG bao uploads/cache (writable-not-exec la HOP LE)" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'uploads/cache')" "0"
+want "36 KHONG bao plugin THEM handler" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'plugins/good')" "0"
+want "36 KHONG bao theme dat AddType tinh" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'themes/t/sub')" "0"
+want "36 KHONG bao cgi-bin ExecCGI (44/49 khoa fleet)" \
+     "$(printf '%s\n' "$OUT36" | grep -c 'cgi-bin')" "0"
+want "36 KHONG bao RemoveHandler (h0 reset) trong plugin" \
+     "$(printf '%s
+' "$OUT36" | grep -c 'plugins/reset')" "0"
+
+# SHADOW: ma thoat KHONG duoc doi. `exit 3` da co nghia "ton dong mu-plugins";
+# tron mot tin hieu n=2 chua tunning vao do se lam giam sat phan ung sai.
+want "36 SHADOW khong doi ma thoat" "$RC36" "0"
+
+# CHONG LAP: thu muc bi cay nam do mai, bao moi luot (30 phut/lan) la bien canh
+# bao thanh tieng on. Luot hai KHONG duoc bao lai.
+OUT36B=$(e36 check)
+want "36 luot hai KHONG bao lai (chong lap)" \
+     "$(printf '%s\n' "$OUT36B" | grep -c 'plugins/evil/Fox-C')" "0"
+# Nhung TAP doi thi phai bao lai — neu khong thi mot thu muc THU HAI bi cay se
+# vo hinh vi chu ky cu con do.
+mkdir -p "$W36/wp-content/plugins/evil2/Fox-C"
+printf '<?php x' > "$W36/wp-content/plugins/evil2/Fox-C/p.php"
+cat > "$W36/wp-content/plugins/evil2/Fox-C/.htaccess" <<'HT'
+AddHandler text/plain .php
+HT
+OUT36C=$(e36 check)
+want "36 tap DOI thi bao lai (ca hai thu muc)" \
+     "$(printf '%s\n' "$OUT36C" | grep -c 'evil2/Fox-C')" "1"
+
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

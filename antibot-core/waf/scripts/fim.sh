@@ -75,6 +75,19 @@ LOG="${FIM_LOG:-/var/log/antibot/fim.log}"
 # DAY cung voi cac duong dan khac, khong o cho dung: nguong ton dong mu-plugins
 # ghi vao no TRUOC diem do.
 CRITLOG="${FIM_CRITLOG:-/var/log/antibot/fim_critical.log}"
+
+# SHADOW `h-:php` — tep tam thu thap trong MOT luot chay, va tep trang thai
+# chong lap giua cac luot.
+#
+# `SUSPECTF` la tep TAM (mktemp luc dung), KHONG phai duong dan co dinh: hai
+# tier chay song song o phut 0/30 (khoa per-tier, CO Y) nen mot duong dan chung
+# se tron ket qua cua hai luot quet khac pham vi.
+#
+# `SUSPSTATE` theo tier vi cung ly do.
+SUSPSTATE_BASE="${FIM_SUSPSTATE:-$STATE/suspectcfg}"
+# `set -u`: nhanh thay doi o cap cao doc `$SUSPECTF` TRUOC khi `state_marks` tao no,
+# nen phai co gia tri mac dinh o day. Rong = khong thu thap, dung y.
+SUSPECTF=""
 # Hai parser cau hinh la TEP RIENG, dung chung voi `htaccess_fixture_test.sh`.
 # Truoc day khoi awk nam trong file nay va bo test phai TRICH ra bang moc comment
 # — mot phep trich la mot cho de lech, va no da hong mot lan (mat dong dau va dau
@@ -787,9 +800,102 @@ STATE_DEL=0
 #   2. thu muc CON cua nhung thu muc pha 1 DA CO token -> ke thua. Loc bang tap pha 1
 #      chu khong quet moi thu muc: fleet co 317.494 tep, mo het la hang chuc nghin lan
 #      goi `awk`.
+# ── SHADOW: thu muc plugin/theme GO handler PHP ──────────────────────
+#
+# BAT BIEN, khong phai mot ca: mot thu muc duoi `wp-content/plugins/` hoac
+# `wp-content/themes/` KHONG co ly do chinh dang nao de GO handler PHP cua chinh
+# no. Plugin that khong lam vay — no can `.php` cua no CHAY.
+#
+# Y nghia cua viec go: `h-:php` / `@ft-` lam `.php` trong thu muc do duoc TAI VE
+# DANG TEXT thay vi chay (`init.lua` muc `hd == false`, "TAT TUONG MINH"). Day la
+# cach giu payload o noi may quet khong thay no thuc thi. No KHONG phai duong
+# chay ma, nen gia tri cua no la DAU HIEU DA BI XAM NHAP — thuoc bao cao, khong
+# thuoc `ngx.exit`.
+#
+# DO TREN 6 MAY 05-10-2026: dung 2 dong, ca hai o
+# `thegioibds.online` (nguoi dung xac nhan site NAY da bi hack va khai thac),
+# ten plugin ngau nhien 10 ky tu `kgtlppodzv` va `yzscjqmvjy`, cung chua thu muc
+# con `Fox-C/`. KHONG mot dong nao tu site hop le. FP co so = 0 tren fleet thuc.
+#
+# VI SAO O DAY chu khong o `waf/init.lua`: ham do chay o ACCESS PHASE, tuc CHI
+# khi co request toi duong dan. Thu muc trong plugin ten ngau nhien thi chi ke
+# tan cong biet duong dan — khong ai request thi khong co nhan, khong co dong
+# log. `state_marks` chay OFF-REQUEST moi luot quet nen thay ca thu muc khong ai
+# goi toi, va no DA thay hai thu muc nay (chinh no ghi 2 khoa do).
+#
+# SHADOW THUAN: chi bao, khong chan, khong tin hieu, khong diem. n=2 chua du de
+# thanh luat — gom du lieu truoc, tunning sau.
+suspect_cfg() {
+    local d="$1" toks="$2"
+    case "$d" in
+        */wp-content/plugins/*|*/wp-content/themes/*) ;;
+        *) return 1 ;;
+    esac
+    # TOKEN THAT, do bang chinh `htaccess_parse.awk` chu khong suy tu ten:
+    #   `AddHandler text/plain .php`  -> `h-:php`   (explicit LANH, dung lai)
+    #   `AddType    text/plain .php`  -> `t-:php`
+    #   `ForceType  text/plain`       -> `@ft-`
+    #   `SetHandler text/plain`       -> `@sh-`
+    #   `RemoveHandler .php`          -> `h0:php`   (reset) <- KHONG tinh
+    #
+    # `h0:` la reset: no GO mapping va CHO Apache roi xuong content type. Dang do
+    # xuat hien trong cau hinh hop le, nen tinh no se bao ca `uploads/` cua khach.
+    # Nhan THAT tren 168-101 la dang `text/plain`:
+    #   `@ft-,h-:html,h-:php,h-:shtml,t-:html,t-:php,t-:shtml`
+    # tuc ke tan cong ANH XA `.php` sang `text/plain`, khong phai go mapping.
+    case ",$toks," in
+        *,@ft-,*|*,@sh-,*) return 0 ;;
+        *,h-:php,*|*,h-:phtml,*|*,h-:php[0-9],*) return 0 ;;
+        *,t-:php,*|*,t-:phtml,*|*,t-:php[0-9],*) return 0 ;;
+    esac
+    return 1
+}
+
+# ── SHADOW `h-:php`: duong ra ─────────────────────────────────────────
+#
+# Theo DUNG mau cua khoi ton dong mu-plugins o duoi: `tee` hai duong (stdout cho
+# cron mail, `$CRITLOG` cho trang admin) vi chung that bai KHAC nhau — mail thi
+# chim, file thi co the mat quyen doc (da gap 20-09).
+#
+# Chong lap bang chu ky md5 trong tep trang thai: thu muc bi cay mot lan roi nam
+# do mai, nen bao MOI LUOT (30 phut/lan) la bien canh bao dung thanh tieng on va
+# dung lai ho loi `feedback_alert_reaches_nobody`. Chi bao khi TAP thay doi.
+#
+# KHONG dat ma thoat: day la SHADOW. `exit 3` da co nghia "ton dong mu-plugins",
+# va tron mot phat hien chua tunning vao do se lam giam sat phan ung voi mot tin
+# hieu chi co n=2 mau. Lay du lieu truoc.
+suspect_report() {
+    local f="$1" st sig prev nline
+    [ -n "$f" ] && [ -s "$f" ] || return 0
+    st="${SUSPSTATE_BASE}.${tier}.txt"
+    nline=$(wc -l < "$f")
+    sig=$(sort -u "$f" | md5sum 2>/dev/null | cut -d' ' -f1)
+    prev=$(cat "$st" 2>/dev/null || :)
+    [ "$sig" = "$prev" ] && return 0
+    {
+        echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] SHADOW: thu muc plugin/theme GO handler PHP ==="
+        sort -u "$f" | while IFS='|' read -r d t; do
+            printf '  %s\n      %s\n' "$d" "$t"
+        done
+        echo "  ($nline thu muc. GO handler PHP = .php tai ve dang TEXT thay vi chay."
+        echo "   Plugin that khong lam vay. Do 6 may 05-10: 2 dong, ca hai o mot site"
+        echo "   da xac nhan bi hack. SHADOW — chi bao, khong chan.)"
+    } | tee -a "$CRITLOG" 2>/dev/null || :
+    chgrp nginx "$CRITLOG" 2>/dev/null || :
+    chmod 0640 "$CRITLOG" 2>/dev/null || :
+    [ $dry -eq 0 ] && printf '%s\n' "$sig" > "$st"
+    return 0
+}
+
 state_marks() {
     local snap="$1" skip="${2:-}" d toks n=0
     STATE_N=0
+    # SHADOW `h-:php`: tep tam cho luot nay. GIU LAI neu nhanh thay doi o cap cao
+    # da tao va thu thap vao no — nhanh do chay TRUOC `state_marks` (3160 < 3275),
+    # nen ghi de o day se mat nhung thu muc VUA bi cay cau hinh.
+    # mktemp that bai thi dat rong: phat hien mat, nhung `state_marks` KHONG duoc
+    # chet vi mot tinh nang shadow.
+    if [ -z "$SUSPECTF" ]; then SUSPECTF=$(mktemp) || SUSPECTF=""; fi
     # Lenh di qua TEP RESP chu khong qua bien chuoi: xem `redis_resp`. Mot bien chuoi
     # buoc ta dung inline protocol, noi khoang trang trong duong dan lam lech so doi
     # so ma canary KHONG bat duoc.
@@ -813,6 +919,12 @@ state_marks() {
         # `check` cung van 1m25 thay vi ve 49s.
         toks=$(dir_tokens "$d")
         [ -n "$toks" ] || continue
+        # SHADOW: thu TRUOC phep `skip`. Mot thu muc bi `skip` (nhanh `$dirtydirs`
+        # da xu ly khoa cua no) VAN phai duoc xet o day — `skip` noi ve viec GHI
+        # KHOA, khong noi gi ve viec BAO.
+        if [ -n "$SUSPECTF" ] && suspect_cfg "$d" "$toks"; then
+            printf '%s|%s\n' "$d" "$toks" >> "$SUSPECTF"
+        fi
         # Tap MONG MUON cua generation nay, ghi TRUOC phep `skip`: mot thu muc vua doi
         # (`$dirtydirs` xu ly no) VAN thuoc tap mong muon, nen no khong duoc tinh la
         # "khoa cu can xoa".
@@ -908,6 +1020,11 @@ EOT
         sort -u "$want" > "$prevk" 2>/dev/null || :
     fi
     rm -f "$want" "$setf" "$delf" "$sentf" "$gonef"
+    # SHADOW `h-:php`: bao TRUOC khi tra ve, vi hai diem goi `state_marks` nam o
+    # hai nhanh thoat khac nhau — dat o day thi ca hai duoc phu, khong phai sua
+    # hai cho.
+    suspect_report "$SUSPECTF"
+    [ -n "$SUSPECTF" ] && rm -f "$SUSPECTF"
     STATE_N=$n
     STATE_DEL=$nd
     return 0
@@ -3035,6 +3152,9 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
         # mot ky tu khac.
         chgrespf=$(mktemp) || exit 2
         chgkeyf=$(mktemp)  || exit 2
+        # SHADOW `h-:php`: tao o DAY vi vong duoi (thu muc VUA doi cau hinh) thu
+        # thap vao no, va `state_marks` o cuoi se GIU LAI roi bao + xoa.
+        SUSPECTF=$(mktemp) || SUSPECTF=""
         setcmds=""
         delkeys=""
         marked_chg=0
@@ -3054,6 +3174,12 @@ if [ $dry -eq 0 ] && { [ -s "$marks" ] || [ -s "$chgs" ] || [ -s "$dels" ]; }; t
             fi
             toks=$(dir_tokens "$d")
             if [ -n "$toks" ]; then
+                # SHADOW: nhanh nay chay cho thu muc VUA DOI cau hinh, tuc dung
+                # luc mot `.htaccess` moi duoc cay. Thieu o day thi phat hien
+                # phai cho luot quet day ke tiep.
+                if [ -n "$SUSPECTF" ] && suspect_cfg "$d" "$toks"; then
+                    printf '%s|%s\n' "$d" "$toks" >> "$SUSPECTF"
+                fi
                 redis_resp SETEX "waf:fimcfg:$d/" "$MARK_TTL" "$toks" >> "$chgrespf"
                 printf 'waf:fimcfg:%s/\n' "$d" >> "$chgkeyf"
                 # Mau DAU TIEN, de phan xac minh doc nguoc mot khoa cu the.
