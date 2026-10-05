@@ -88,5 +88,27 @@ for m in "apache Host: di vong" "redis GHI" "ghi duoc != chay duoc"; do
     has "muc '$m' ton tai" "$m" "$SRC"
 done
 
+
+printf '\n── 7. nguon danh sach KHONG duoc la mot phep BI CHAN ──\n'
+# Ho loi da tai phat BA lan trong file nay: dung mot phep ma tenant khong lam
+# duoc (`-d` thu muc tenant khac, glob `$DA_USERS/*`, glob
+# `$HOME_BASE/*/domains/*/`) lam NGUON danh sach. Ket qua la cach ly DANG HOAT
+# DONG lai lam phep do tra "BO QUA" — tuc mot may AN TOAN va mot may KHONG DO
+# DUOC tra cung ket luan.
+#
+# Bat bien: moi danh sach tenant/domain phai den tu bien `SEC_*` do ROOT lap o
+# muc 0, khong tu glob trong than script sau khi da ha quyen.
+has "domain tenant khac lay tu SEC_OTHER_DOMAIN" 'SEC_OTHER_DOMAIN' "$SRC"
+has "root co lap OTHER_DOMAIN" 'OTHER_DOMAIN=""' "$SRC"
+has "truyen qua su" "SEC_OTHER_DOMAIN='\$OTHER_DOMAIN'" "$SRC"
+# Than script (sau khi ha quyen) KHONG duoc glob thu muc tenant khac nua.
+# Moc: tu dong in "NGHIEM THU RANH GIOI" tro di — day la than CHAY BANG
+# TENANT. Truoc do la phase ROOT, noi glob thu muc tenant la HOP LE
+# (`pick_tenant` can no). Moc cu (`# ── TRANG THAI`) nam o dau file nen no
+# quet ca phase root va bao FAIL cho mot dong dung.
+nglob=$(awk '/NGHIEM THU RANH GIOI -- chay bang uid/,0' "$S" \
+        | grep -cE 'in .*HOME_BASE.*/domains' || :)
+want "than script khong glob domains cua tenant khac" "$nglob" "0"
+
 printf '\nsecaudit_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

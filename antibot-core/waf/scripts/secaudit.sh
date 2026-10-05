@@ -185,6 +185,25 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
         [ "$n_oth" -ge 40 ] && break
     done
     printf '  tenant khac se do: %s\n' "$n_oth"
+    # MOT domain cua tenant KHAC, do ROOT tim. Tenant khong tu tim duoc: glob
+    # `$HOME_BASE/*/domains/*/` doi quyen DOC thu muc tenant khac, ma do dung la
+    # thu muc 4 chung minh bi tu choi — nen vong `for` khop 0 lan va phep do bao
+    # "khong tim duoc domain" tren mot may co 40 tenant.
+    #
+    # Lap lai DUNG loi ma chu thich o muc 4 da canh bao ("dung mot phep BI CHAN
+    # lam nguon danh sach thi mat luon kha nang do"), chi o mot muc khac. Do
+    # 06-10 tren 171-96: `tenant khac se do: 40` ma `apache Host:` ra BO QUA.
+    OTHER_DOMAIN=""
+    for _u in $OTHERS; do
+        for _dd in "$HOME_BASE/$_u"/domains/*/; do
+            [ -d "$_dd" ] || continue
+            _dn=${_dd%/}; _dn=${_dn##*/}
+            # Bo qua ten khong giong domain (thu muc rac, `.`-prefix).
+            case "$_dn" in *.*) OTHER_DOMAIN="$_dn"; break ;; esac
+        done
+        [ -n "$OTHER_DOMAIN" ] && break
+    done
+    printf '  domain tenant khac de thu Host: %s\n' "${OTHER_DOMAIN:-KHONG TIM DUOC}"
 
     echo "Ha quyen sang tenant '$TEN' (uid $(id -u "$TEN")) roi chay lai..."
     echo
@@ -195,7 +214,7 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
         SEC_LIVE_DA=$LIVE_DA \
         SEC_APACHE_HTTP='$APACHE_HTTP_PORT' SEC_APACHE_HTTPS='$APACHE_HTTPS_PORT' \
         SEC_REDIS_PORT='$REDIS_PORT' SEC_HOME='$HOME_BASE' SEC_DA_USERS='$DA_USERS' \
-        SEC_OTHERS='$OTHERS' \
+        SEC_OTHERS='$OTHERS' SEC_OTHER_DOMAIN='$OTHER_DOMAIN' \
         bash '$(readlink -f "$0")'"
 fi
 
@@ -233,17 +252,14 @@ apache_host_probe() {
 }
 
 # Chon mot domain THAT tren may, cua mot tenant KHAC tenant dang chay — do moi
-# la phep thu "chui sang B". Lay tu `/home/*/domains/*` chu khong hardcode.
-other_domain=""
-if [ -d "$HOME_BASE" ]; then
-    me_home=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
-    for d in "$HOME_BASE"/*/domains/*/; do
-        [ -d "$d" ] || continue
-        case "$d" in "$me_home"/*) continue ;; esac
-        other_domain=$(basename "$d")
-        break
-    done
-fi
+# la phep thu "chui sang B".
+# Domain cua tenant KHAC: lay tu `$SEC_OTHER_DOMAIN` (root tim, xem muc 0).
+#
+# KHONG tu glob o day. Glob doi quyen DOC thu muc tenant khac, ma muc 4 chung
+# minh quyen do bi tu choi — nen cach ly DANG HOAT DONG lai chinh la ly do phep
+# do that bai, va ket qua la "BO QUA" tren mot may co 40 tenant (do 06-10 tren
+# 171-96). Cung ho loi voi `$DA_USERS` o muc 4.
+other_domain="${SEC_OTHER_DOMAIN:-}"
 
 if [ "${SEC_LIVE_HTTP:-0}" != "1" ]; then
     skip "apache Host: di vong" "cong $APACHE_HTTP_PORT khong song voi root -> khong co gi de thu"
