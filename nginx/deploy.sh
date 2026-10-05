@@ -233,6 +233,26 @@ fi
 echo "[4] Sync core folder..."
 rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
 
+# BIT THUC THI — rsync -a BAO TOAN mode TU NGUON, nen mot script 644 trong git
+# toi day van 644 va `./postdeploy.sh` tra RC=126 ("found but not executable").
+#
+# DA XAY RA, va kieu that bai cua no la cai dang so: 05-10-2026 `postdeploy.sh`
+# o mode 100644 trong git tren CA 6 MAY. Script tu kiem sau deploy chua tung
+# chay duoc bang cach goi truc tiep, va vi no khong in gi ca thi output rong
+# trong nhu "khong co van de" chu khong nhu "khong chay duoc". Mot lan truoc do
+# ket luan "muc 21 chua commit" cung tu output rong nay — dung ket luan, sai ly
+# do, vi khong ai doc $?.
+#
+# Vi sao sua o DAY chu khong chi `git update-index --chmod=+x`: mode trong git la
+# nguon that, nhung mot file .sh moi tao tren Windows (core.filemode=false) vao
+# index la 644 va KHONG AI THAY cho den khi goi no tren may that. Vong nay dong
+# lai sau deploy, khong phu thuoc ai nho chmod luc commit.
+#
+# `-type f -name '*.sh'` chu khong `chmod -R +x`: thu muc va .lua/.awk/.txt
+# khong can bit nay.
+find "$TARGET_DIR/waf/scripts" "$TARGET_DIR/intelligence/threat/scripts" \
+     -type f -name '*.sh' -exec chmod 0755 {} + 2>/dev/null || :
+
 # DAU BAN — PHAI ghi SAU rsync, vi buoc tren dung `--delete` va se xoa chinh
 # file nay neu no da nam san trong $TARGET_DIR.
 #

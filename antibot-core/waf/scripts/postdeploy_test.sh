@@ -341,5 +341,40 @@ else
 fi
 want  "21 co CACH DOC"        'cot ip-miss quyet dinh'
 
+
+# ── BIT THUC THI TRONG GIT ────────────────────────────────────────────
+#
+# Day khong phai kiem noi dung script ma kiem mode cua no TRONG GIT, vi
+# `deploy.sh` dung `rsync -a` — mode o nguon la mode toi may that. 05-10-2026
+# `postdeploy.sh` o 100644 tren ca 6 may: goi truc tiep tra RC=126 va KHONG IN
+# GI, nen output rong trong nhu "khong co van de". `deploy.sh` gio chmod 0755
+# sau rsync, nhung nguon van phai dung — ai them mot .sh moi tren Windows
+# (core.filemode=false) se lap lai dung loi nay.
+#
+# `git ls-files -s` doc INDEX chu khong doc dia: tren Windows mode tren dia vo
+# nghia, con index la cai rsync mang di.
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    bad=$(git ls-files -s -- '*.sh' | awk '$1 != "100755" && $4 ~ /^antibot-core\// {print $4}')
+    if [ -z "$bad" ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        printf 'HONG  %s\n' "moi .sh trong antibot-core/ phai la 100755 trong git"
+        printf '      thieu bit +x: %s\n' "$bad"
+        printf '      sua: git update-index --chmod=+x <file>\n'
+    fi
+    # Kiem chinh phep do: neu lenh tren bi viet sai (vi du `$1` doi thanh `$2`)
+    # thi no se khong bao gio tim thay gi va bao "qua" vinh vien. Mot tep .lua
+    # BUOC phai o 100644, nen bo dem nay phai > 0.
+    nlua=$(git ls-files -s -- 'antibot-core/*.lua' | awk '$1 == "100644"' | wc -l)
+    if [ "${nlua:-0}" -gt 0 ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        printf 'HONG  %s\n' "phep do mode bi hong: khong thay .lua nao o 100644"
+    fi
+else
+    printf 'BO QUA  khong o trong git -- khong kiem duoc mode\n'
+fi
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
