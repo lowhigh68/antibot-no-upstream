@@ -204,6 +204,62 @@ echo
 echo "--- 1. Apache backend: tenant khong duoc di vong qua OpenResty (Review 4, 4.1) ---"
 must_blocked "apache http  :$APACHE_HTTP_PORT"  127.0.0.1 "$APACHE_HTTP_PORT"  "${SEC_LIVE_HTTP:-0}"  1
 must_blocked "apache https :$APACHE_HTTPS_PORT" 127.0.0.1 "$APACHE_HTTPS_PORT" "${SEC_LIVE_HTTPS:-0}" 1
+
+# HAI CAU HOI DOC LAP, va cau thu hai moi la cau Review 4 hoi:
+#   (a) tenant co MO duoc cong 8080 khong?           <- `must_blocked` o tren
+#   (b) neu mo duoc, co LAY DUOC NOI DUNG site KHAC khong?
+#
+# (a) mot minh KHONG du. Cong mo ma moi `Host:` deu tra 403 thi tenant khong di
+# vong duoc; cong mo ma `Host: B` tra 200 kem noi dung cua B thi ranh gioi da
+# thung — OpenResty bi bo qua hoan toan, nen moi luat WAF/antibot deu vo nghia
+# voi duong do. Truoc ban nay script dung o (a) va bao `NGOAI`, tuc no bao
+# "khong sua duoc o day" cho mot cau hoi no CHUA TUNG HOI.
+#
+# KHONG dung `curl`: no co the thieu tren may toi gian, va mot `skip` vi thieu
+# binary se im lang che mat mot FAIL that. `bash /dev/tcp` da duoc dung o
+# `tcp_probe` nen chac chan co.
+#
+# CHI GUI `HEAD`, va chi doc DONG DAU + `Content-Length`. Khong keo noi dung ve,
+# khong ghi ra dau: day la may khach that (nguyen tac "khong doc du lieu khach
+# hang"). Dong trang thai du de ket luan.
+apache_host_probe() {
+    local port="$1" host="$2" out
+    out=$(timeout 4 bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/'"$port"' || exit 9
+        printf "HEAD / HTTP/1.1\r\nHost: '"$host"'\r\nConnection: close\r\n\r\n" >&3
+        head -c 400 <&3
+    ' 2>/dev/null) || return 1
+    printf '%s' "$out" | head -1 | tr -d '\r'
+}
+
+# Chon mot domain THAT tren may, cua mot tenant KHAC tenant dang chay — do moi
+# la phep thu "chui sang B". Lay tu `/home/*/domains/*` chu khong hardcode.
+other_domain=""
+if [ -d "$HOME_BASE" ]; then
+    me_home=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+    for d in "$HOME_BASE"/*/domains/*/; do
+        [ -d "$d" ] || continue
+        case "$d" in "$me_home"/*) continue ;; esac
+        other_domain=$(basename "$d")
+        break
+    done
+fi
+
+if [ "${SEC_LIVE_HTTP:-0}" != "1" ]; then
+    skip "apache Host: di vong" "cong $APACHE_HTTP_PORT khong song voi root -> khong co gi de thu"
+elif [ -z "$other_domain" ]; then
+    skip "apache Host: di vong" "khong tim duoc domain cua tenant KHAC de thu"
+else
+    line=$(apache_host_probe "$APACHE_HTTP_PORT" "$other_domain")
+    case "$line" in
+        "")              skip "apache Host: di vong" "khong mo duoc socket hoac khong co tra loi" ;;
+        *" 200"*|*" 301"*|*" 302"*)
+            bad "apache Host: di vong -- tenant lay duoc '$other_domain' qua :$APACHE_HTTP_PORT ($line)" ;;
+        *" 403"*|*" 404"*|*" 400"*)
+            ok "apache Host: di vong -- '$other_domain' tra '$line', khong phuc vu noi dung" ;;
+        *)               skip "apache Host: di vong" "tra loi khong hieu: $line" ;;
+    esac
+fi
 echo
 
 echo "--- 2. Redis la control plane cua WAF (Review 4, 4.2) ---"
@@ -228,7 +284,39 @@ case "$rr" in
         pong=$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$REDIS_PORT
             printf 'PING\r\n' >&3; read -t 2 -r L <&3; printf '%s' \"\$L\"" 2>/dev/null)
         case "$pong" in
-            *PONG*)      bad "redis AUTH -- PING khong can mat khau da tra PONG (ACL/requirepass TAT)" ;;
+            *PONG*)
+                bad "redis AUTH -- PING khong can mat khau da tra PONG (ACL/requirepass TAT)"
+                # DOC duoc da xau, GHI duoc moi la thung ranh gioi: tenant ghi
+                # `verified:<cookie>` = tu cap ve thong hanh qua antibot; ghi
+                # `waf:fimcfg:*` = tat phat hien cua FIM cho thu muc minh chon.
+                # Review 4 doi "dac biet GHI key WAF/FIM phai that bai", va phep
+                # do PING o tren KHONG tra loi cau do: mot Redis co
+                # `+@read -@write` van tra PONG.
+                #
+                # KHOA RIENG co tien to `secaudit:` + pid, TTL 60s. KHONG cham
+                # khoa that: ghi `verified:` hay `waf:` du chi de thu cung la
+                # thay doi hanh vi production tren may khach.
+                #
+                # Doc `-ERR`/`-NOPERM` chu khong chi doc `+OK`: mot ACL dung se
+                # tra loi loi, va phan biet "bi tu choi" voi "khong tra loi" la
+                # bat buoc o lop nay.
+                wkey="secaudit:probe:$$"
+                wres=$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$REDIS_PORT
+                    printf 'SET %s 1 EX 60\r\n' '$wkey' >&3
+                    read -t 2 -r L <&3; printf '%s' \"\$L\"" 2>/dev/null)
+                case "$wres" in
+                    *+OK*)
+                        bad "redis GHI -- tenant SET duoc khoa (tu cap verified:* / tat FIM duoc)"
+                        # Don ngay, khong de lai rac tren may khach.
+                        timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$REDIS_PORT
+                            printf 'DEL %s\r\n' '$wkey' >&3; read -t 2 -r _ <&3" \
+                            >/dev/null 2>&1 || : ;;
+                    *NOAUTH*|*NOPERM*|*WRONGPASS*|*"-ERR"*)
+                        ok "redis GHI -- bi tu choi ($(printf '%s' "$wres" | tr -d '\r\n' | head -c 40))" ;;
+                    "")  skip "redis GHI" "khong doc duoc tra loi cho SET" ;;
+                    *)   skip "redis GHI" "tra loi khong hieu: $(printf '%s' "$wres" | tr -d '\r\n' | head -c 40)" ;;
+                esac
+                ;;
             *NOAUTH*|*NOPERM*|*WRONGPASS*)
                          ok  "redis AUTH -- server doi xac thuc ($(printf '%s' "$pong" | tr -d '\r\n' | head -c 40))" ;;
             "")          skip "redis AUTH" "mo duoc socket nhung khong doc duoc tra loi" ;;
@@ -328,6 +416,82 @@ for f in /var/log/antibot/antibot.log /var/log/antibot/waf.log; do
     elif [ -r "${f%/*}" ]; then skip "$f" "thu muc doc duoc nhung tep khong ton tai"
     else ok "$f -- tenant khong voi tay toi duoc (ke ca thu muc cha)"; fi
 done
+echo
+echo "--- 6. Ghi duoc thi KHONG duoc chay (Review 4, 4.4 / muc 5 bo nghiem thu) ---"
+# BAT BIEN: `uploads/`, `cache/`, `tmp/` phai writable nhung Apache/FPM KHONG
+# duoc chay PHP tai do. Day la Vong 2 trong ba vong cua Review 5, va no la thu
+# duy nhat con chan khi mot upload da lot qua WAF.
+#
+# KHONG DAT TEP THUC THI LEN PRODUCTION. Rang buoc cung cua nguoi dung, va no
+# dung: mot `<?php` tren may khach de kiem tra chinh la thu ma ca lop nay ton tai
+# de ngan. Nen phep do nay dat mot tep `.php` chua TEXT THUAN (khong mot the mo
+# nao) roi doc `Content-Type` cua phan hoi:
+#
+#   `text/html` + khong tra lai noi dung  -> PHP DA xu ly tep  -> handler BAT
+#   `text/plain` / `application/octet-*`  -> tra tep tho       -> handler TAT
+#
+# Phan biet duoc ma khong mot dong ma nao chay. Neu handler dang BAT thi ket
+# luan la FAIL, va tep text vo hai do chinh la bang chung.
+#
+# `$$` trong ten tep + don NGAY sau khi do, ke ca khi do that bai (`trap`).
+probe_exec_area() {
+    local dir="$1" nhan="$2" host="$3"
+    [ -d "$dir" ] || { skip "$nhan" "khong co thu muc $dir"; return; }
+    [ -w "$dir" ] || { skip "$nhan" "$dir khong ghi duoc bang uid nay"; return; }
+    local name="secaudit-probe-$$.php"
+    local path="$dir/$name"
+    # Noi dung KHONG phai ma PHP: khong `<?php`, khong `<?=`, khong `<script`.
+    printf 'secaudit text probe, khong phai ma PHP\n' > "$path" 2>/dev/null \
+        || { skip "$nhan" "khong ghi duoc tep thu vao $dir"; return; }
+    # Don trong moi duong ra, ke ca khi `timeout` giet phep do.
+    trap 'rm -f "$path" 2>/dev/null' RETURN
+    local rel="${dir#*/public_html}"
+    local line ctype
+    line=$(timeout 4 bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/'"$APACHE_HTTP_PORT"' || exit 9
+        printf "HEAD '"$rel/$name"' HTTP/1.1\r\nHost: '"$host"'\r\nConnection: close\r\n\r\n" >&3
+        head -c 600 <&3
+    ' 2>/dev/null)
+    if [ -z "$line" ]; then
+        skip "$nhan" "khong ket noi duoc :$APACHE_HTTP_PORT de do"
+        return
+    fi
+    ctype=$(printf '%s' "$line" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print tolower($2)}')
+    case "$(printf '%s' "$line" | head -1 | tr -d '\r')" in
+        *" 404"*) skip "$nhan" "Apache tra 404 — duong dan khong khop docroot, chua do duoc" ;;
+        *" 403"*) ok   "$nhan -- Apache tu choi (403), tep trong vung ghi duoc khong phuc vu" ;;
+        *)
+            case "$ctype" in
+                text/html*)
+                    bad "$nhan -- PHP DA xu ly tep .php trong vung GHI DUOC (ctype=$ctype)" ;;
+                text/plain*|application/*|"")
+                    ok "$nhan -- tra tep tho (ctype=${ctype:-khong co}), handler PHP TAT" ;;
+                *)  skip "$nhan" "Content-Type khong hieu: $ctype" ;;
+            esac ;;
+    esac
+}
+
+if [ "${SEC_LIVE_HTTP:-0}" != "1" ]; then
+    skip "ghi duoc != chay duoc" "cong $APACHE_HTTP_PORT khong song voi root -> khong do duoc"
+else
+    # Thu muc cua CHINH tenant dang chay: do la vung no ghi duoc that, va la
+    # vung mot webshell se roi vao.
+    my_home=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+    found=0
+    if [ -n "$my_home" ]; then
+        for wr in "$my_home"/domains/*/public_html/wp-content/uploads \
+                  "$my_home"/domains/*/public_html/wp-content/cache; do
+            [ -d "$wr" ] || continue
+            dom=$(printf '%s' "$wr" | sed -n 's|.*/domains/\([^/]*\)/public_html.*|\1|p')
+            [ -n "$dom" ] || continue
+            probe_exec_area "$wr" "ghi duoc != chay duoc: ${wr##*public_html}" "$dom"
+            found=1
+            break
+        done
+    fi
+    [ "$found" = "1" ] || skip "ghi duoc != chay duoc" \
+        "khong tim duoc uploads/ hay cache/ cua tenant dang chay"
+fi
 echo
 echo "=== TONG ==="
 printf '  PASS   %d\n  FAIL   %d\n  BO QUA %d\n  NGOAI  %d\n' \

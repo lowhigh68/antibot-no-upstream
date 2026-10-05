@@ -116,6 +116,9 @@ echo "── l7 (admission + circuit breaker) ───────────�
 echo "── admin: duong ra bo dem L7 ──────────────────────────"
 "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
 
+echo "── secaudit (bo nghiem thu ranh gioi) ────────────────"
+bash "${ANTIBOT_SRC}waf/scripts/secaudit_test.sh" || rc=1
+
 # `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
 # trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
 # bash chu khong resty (no kiem mot script shell).
