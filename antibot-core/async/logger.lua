@@ -552,14 +552,31 @@ function _M.run(ctx)
             tostring(ctx.xf_over or false))
     end
 
-    -- Local admission telemetry. Chi append khi request la resource candidate,
-    -- di endpoint noi bo, hoac thuc su bi throttle de khong lam phong
-    -- moi dong dynamic thong thuong. `adm=` la capacity verdict, KHONG phai bot
-    -- verdict; dashboard/phan tich khong duoc dua no vao reputation.
+    -- Local admission telemetry, HAI MUC DO.
+    --
+    -- Muc CHI TIET (khoi `if` dau): resource candidate, endpoint noi bo, hoac
+    -- thuc su bi throttle. Day la tap nho nen in du 9 cot khong lam phong log.
+    --
+    -- Muc NGAN (khoi `elseif`): MOI request con lai — tuc dynamic thong thuong.
+    -- Them dung hai cot. VI SAO CAN: do 04-10 tren hai may that, chi 0,33%
+    -- (28-246) va 0,47% (171-96) so dong log co cot admission, nen 99,6%
+    -- request dynamic KHONG co so lieu nao va `host_group.dynamic.short = 500/s`
+    -- chua tung duoc doi chieu voi luu luong thuc.
+    --
+    --   adm_use=<%>   ti le su dung CAO NHAT trong cac truc da kiem
+    --   adm_top=<ten> truc dat ti le do, dang `<truc>:<cua so>`
+    --
+    -- Mot con so moi dong thi tinh duoc p50/p95/p99 bang `sort -n`:
+    --   grep -o 'adm_use=[0-9]*' antibot.log | cut -d= -f2 | sort -n \
+    --     | awk '{a[NR]=$1} END{printf "p50=%d p95=%d p99=%d max=%d\n",
+    --            a[int(NR*0.5)], a[int(NR*0.95)], a[int(NR*0.99)], a[NR]}'
+    --
+    -- `adm=` la capacity verdict, KHONG phai bot verdict; dashboard/phan tich
+    -- khong duoc dua no vao reputation.
     local admission_str = ""
     if ctx.admission_limited or ctx.resource_candidate or ctx.backend_class then
         admission_str = string.format(
-            " adm=%s adm_n=%s adm_lim=%s adm_win=%s adm_grp=%s adm_route=%s backend=%s rcand=%s ractual=%s",
+            " adm=%s adm_n=%s adm_lim=%s adm_win=%s adm_grp=%s adm_route=%s backend=%s rcand=%s ractual=%s adm_use=%s adm_top=%s",
             tostring(ctx.admission_reason or "-"),
             tostring(ctx.admission_count or "-"),
             tostring(ctx.admission_limit or "-"),
@@ -568,7 +585,49 @@ function _M.run(ctx)
             tostring(ctx.admission_route_shard or "-"),
             tostring(ctx.backend_class or "-"),
             tostring(ctx.resource_candidate or false),
-            (ctx.resource_actual == nil) and "-" or tostring(ctx.resource_actual))
+            (ctx.resource_actual == nil) and "-" or tostring(ctx.resource_actual),
+            tostring(ctx.admission_use or "-"),
+            tostring(ctx.admission_use_axis or "-"))
+    elseif ctx.admission_use then
+        -- `ctx.admission_use` chi ton tai khi admission DA chay va dem duoc it
+        -- nhat mot truc. Request thoat truoc admission (vi du dict thieu) thi
+        -- khong co cot nay — dung, vi khi do khong co phep do nao de bao cao.
+        admission_str = string.format(" adm_use=%s adm_top=%s",
+            tostring(ctx.admission_use),
+            tostring(ctx.admission_use_axis or "-"))
+    end
+
+    -- Per-host circuit breaker telemetry.  Emit only for the once-per-second
+    -- evaluator, state transition, probe, or a request that would be/was shed;
+    -- CLOSED traffic therefore does not add fields to every log line.
+    local circuit_str = ""
+    if ctx.circuit_evaluated or ctx.circuit_transition or ctx.circuit_probe
+       or ctx.circuit_would_reject or ctx.circuit_degraded
+       -- `circuit_no_sample`: request dynamic KHONG co `upstream_status`. Phai
+       -- ban mot dong, neu khong thi "0 dong cb=" khong phan biet duoc
+       -- "chua du luu luong" voi "bien khong doc duoc o log phase".
+       or ctx.circuit_no_sample then
+        circuit_str = string.format(
+            " cb=%s cbmode=%s cbcause=%s cbwould=%s cbprobe=%s cbpslow=%s cbstale=%s cbn=%s cbrps=%s cbslow=%s cbslowcand=%s cberr=%s cbuntil=%s cbfor=%s cbtrans=%s cbdeg=%s cbnosample=%s",
+            tostring(ctx.circuit_state or "-"),
+            tostring(ctx.circuit_mode or "-"),
+            tostring(ctx.circuit_cause or "-"),
+            tostring(ctx.circuit_would_reject or false),
+            tostring(ctx.circuit_probe or false),
+            tostring(ctx.circuit_probe_slow or false),
+            tostring(ctx.circuit_probe_stale or false),
+            tostring(ctx.circuit_total or "-"),
+            ctx.circuit_rps and string.format("%.2f", ctx.circuit_rps) or "-",
+            ctx.circuit_slow_ratio
+                and string.format("%.3f", ctx.circuit_slow_ratio) or "-",
+            tostring(ctx.circuit_slow_candidate or false),
+            ctx.circuit_hard_ratio
+                and string.format("%.3f", ctx.circuit_hard_ratio) or "-",
+            tostring(ctx.circuit_open_until or "-"),
+            tostring(ctx.circuit_open_for or "-"),
+            tostring(ctx.circuit_transition or "-"),
+            tostring(ctx.circuit_degraded or false),
+            tostring(ctx.circuit_no_sample or false))
     end
 
     -- mismatch telemetry (intelligence/correlation/consistency_check.lua).
@@ -625,7 +684,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -737,7 +796,8 @@ function _M.run(ctx)
         sc_str,
         mm_str,
         waf_str,
-        admission_str
+        admission_str,
+        circuit_str
     )
 
     write_log_line(line)

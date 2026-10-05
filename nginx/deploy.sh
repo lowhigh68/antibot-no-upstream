@@ -172,7 +172,7 @@ fi
 # phat hien FP bang cach gay ra FP tren luu luong khach hang.
 # Can resty chu khong phai luajit: luat quyet dinh bang PCRE lookahead cua ngx.re.
 if [ -x "$RESTY" ] && [ -x "$REPO_DIR/antibot-core/waf/scripts/run.sh" ]; then
-    echo "[3b] Chay T (test luat WAF)..."
+    echo "[3b] Chay T (test luat WAF + L7 admission/circuit breaker)..."
 
     # ── REDIS TAM cho nhom 27 (`LC_ALL=C`) ──────────────────────────
     #

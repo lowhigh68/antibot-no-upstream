@@ -1,17 +1,31 @@
--- Chay tu repository root:
---   resty antibot-core/l7/tests/l7_regression.lua
+-- Chay bang `run.sh` (cach dung chinh), hoac tay tu repository root:
+--   ANTIBOT_SRC=antibot-core/ resty antibot-core/l7/tests/l7_regression.lua
+--
+-- `ANTIBOT_SRC` chu KHONG dong cung `./antibot-core/`: production deploy dat cay
+-- nay tai `/conf/antibot` (ten khac), nen ban dong cung khong chay duoc o do —
+-- va do la ly do bo nay tung KHONG nam trong `run.sh`. Hau qua: moi commit cham
+-- L7 di qua mot cong khong kiem L7. Bat duoc 05-10 khi dem `grep -c
+-- l7_regression run.sh` = 0 sau khi `run.sh` da bao rc=0.
+--
+-- Searcher nho nay giu nguyen `require("antibot.*")` cua code production va chi
+-- anh xa layout trong regression test.
+local SRC = os.getenv("ANTIBOT_SRC")
+if not SRC or SRC == "" then
+    io.write("thieu bien moi truong ANTIBOT_SRC\n")
+    io.write("  chay bang: waf/scripts/run.sh\n")
+    io.write("  hoac tay:  ANTIBOT_SRC=antibot-core/ resty antibot-core/l7/tests/l7_regression.lua\n")
+    os.exit(2)
+end
+if SRC:sub(-1) ~= "/" then SRC = SRC .. "/" end
 
--- Production deploy dat cay nay tai `/conf/antibot`, con source checkout co
--- ten `antibot-core`. Searcher nho nay giu nguyen require("antibot.*") cua code
--- production va chi anh xa layout trong regression test.
 table.insert(package.loaders, 1, function(name)
     local rel = name:match("^antibot%.(.+)$")
     if not rel then return nil end
     rel = rel:gsub("%.", "/")
     local errors = {}
     for _, path in ipairs({
-        "./antibot-core/" .. rel .. ".lua",
-        "./antibot-core/" .. rel .. "/init.lua",
+        SRC .. rel .. ".lua",
+        SRC .. rel .. "/init.lua",
     }) do
         local chunk, err = loadfile(path)
         if chunk then return chunk end
@@ -53,6 +67,7 @@ local syntax_files = {
     "antibot-core/enforcement/decision/engine.lua",
     "antibot-core/async/logger.lua",
     "antibot-core/l7/admission.lua",
+    "antibot-core/l7/circuit_breaker.lua",
     "antibot-core/l7/init.lua",
     "antibot-core/l7/expensive_filter_guard.lua",
     "antibot-core/l7/ban/ip_ban_check.lua",
@@ -106,8 +121,16 @@ function Dict:get(key)
     return self:_live(key)
 end
 function Dict:set(key, value, ttl)
+    if value == nil then
+        self.data[key], self.expiry[key] = nil, nil
+        return true
+    end
     self.data[key] = value
     self.expiry[key] = ttl and (clock + ttl) or nil
+    return true
+end
+function Dict:delete(key)
+    self.data[key], self.expiry[key] = nil, nil
     return true
 end
 
@@ -128,6 +151,13 @@ local fake_ngx = {
         for i = 1, #s do n = (n + s:byte(i)) % 4294967296 end
         return n
     end,
+    timer = {
+        at = function(_, fn, ...)
+            fn(false, ...)
+            return true
+        end,
+    },
+    worker = { pid = function() return 123 end },
 }
 _G.ngx = fake_ngx
 
@@ -175,6 +205,72 @@ eq(exit2, false, "admission allows request at limit")
 eq(exit3, true, "admission rejects over short IP budget")
 eq(exits[#exits], 429, "admission returns 429")
 eq(actx.admission_reason, "ip_navigation", "admission reason is observable")
+
+-- ── adm_use: do VUNG MU dynamic ─────────────────────────────────────
+--
+-- VI SAO CO NHOM NAY. Cot admission truoc day chi duoc ghi khi
+-- `admission_limited or resource_candidate or backend_class`. Do 04-10 tren hai
+-- may that: chi 0,33% (28-246: 2.191/666.752) va 0,47% (171-96: 1.793/378.959)
+-- so dong log co cot do -> 99,6% request dynamic KHONG co so lieu admission nao,
+-- va `host_group.dynamic.short = 500/s` chua tung duoc doi chieu voi luu luong
+-- thuc. `adm_use` la mot con so duy nhat moi dong de tinh p50/p95/p99.
+--
+-- Cau hinh test o tren: ip.default.short = 2, con global/host/host_group/
+-- route_group deu 100. Nen voi 1 IP + 1 URI, truc CHAT NHAT la ip_* va
+-- `adm_use` phai theo no.
+--
+-- DAP AN TINH TAY: limit = 2, nen request 1 -> floor(1/2*100) = 50;
+-- request 2 -> 100 (DUNG tran, van qua vi dieu kien la `value > limit`);
+-- request 3 -> 150 va bi 429.
+clock = 50
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.remote_addr = "198.51.100.77"
+fake_ngx.var.uri = "/dynamic-page"
+local u1 = { ip = "198.51.100.77", req_class = "unknown", req = {} }
+local _, ue1 = admission.run(u1)
+eq(ue1, false, "adm_use: request dau duoc qua")
+eq(u1.admission_use, 50, "adm_use = 50 o request 1/2")
+eq(u1.admission_use_axis, "ip_unknown:short", "adm_top la truc CHAT NHAT")
+
+local u2 = { ip = "198.51.100.77", req_class = "unknown", req = {} }
+admission.run(u2)
+eq(u2.admission_use, 100, "adm_use = 100 o DUNG tran (chua chan)")
+eq(u2.admission_limited, nil, "dung tran thi CHUA bi gioi han")
+
+local u3 = { ip = "198.51.100.77", req_class = "unknown", req = {} }
+local _, ue3 = admission.run(u3)
+eq(ue3, true, "vuot tran moi bi chan")
+eq(u3.admission_use, 150, "adm_use = 150 khi da vuot")
+
+-- `adm_use` phai co CA KHI khong bi gioi han — do la toan bo ly do no ton tai.
+-- Neu no chi xuat hien luc throttle thi vung mu khong he duoc do.
+local u4 = { ip = "203.0.113.200", req_class = "unknown", req = {} }
+admission.run(u4)
+eq(u4.admission_limited, nil, "IP moi: khong bi gioi han")
+ok(u4.admission_use ~= nil, "adm_use co MAC DU khong bi gioi han")
+
+-- `math.floor` chu KHONG lam tron len. Ba ca o tren deu chia chan (1/2, 2/2,
+-- 3/2) nen dot bien `floor -> ceil` KHONG bi bat — do la lo trong phep do,
+-- khong trong code. Ca nay dung mot ti le LE: ip.default.short = 2 doi thanh 3
+-- cho rieng mot class, nen 1/3 = 33,33% -> floor = 33, con ceil = 34.
+--
+-- VI SAO `floor` moi dung: `adm_use` tra loi "con bao nhieu khoang an toan".
+-- Lam tron LEN bao 34 khi thuc te moi dung 33,3% la bao THIEU khoang an toan —
+-- sai lech theo chieu lam nguoi doc tuong minh gan tran hon thuc te, roi ha
+-- nguong khong can thiet va tao FP. Xem [[feedback_fp_over_fn]].
+cfg.l7_admission.limits.ip.api_callback = { short = 3, long = 100 }
+clock = 60
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.remote_addr = "198.51.100.88"
+local r1 = { ip = "198.51.100.88", req_class = "api_callback", req = {} }
+admission.run(r1)
+eq(r1.admission_use, 33, "adm_use dung math.floor (1/3 -> 33, khong phai 34)")
+local r2 = { ip = "198.51.100.88", req_class = "api_callback", req = {} }
+admission.run(r2)
+eq(r2.admission_use, 66, "adm_use 2/3 -> 66, khong phai 67")
+cfg.l7_admission.limits.ip.api_callback = nil
 
 clock = 1.1
 exits = {}
@@ -375,6 +471,334 @@ local c3 = classify({
 })
 eq(c3.req_class, "resource", "GET static extension uses lightweight lane")
 
+-- Per-host backend circuit breaker.  Tat ca ca nay dung shared dict local;
+-- khong Redis, khong nginx directive, va state cua host A khong duoc ro sang B.
+local old_circuit = cfg.l7_circuit_breaker
+cfg.l7_circuit_breaker = {
+    enabled = true, mode = "shadow", status = 503, retry_after = 2,
+    window_seconds = 10, bucket_grace_seconds = 4, eval_interval = 1,
+    min_samples = 2, min_dynamic_rps = 0.1,
+    slow_seconds = 1, hard_error_ratio = 0.5,
+    slow_candidate_ratio = 0.5,
+    open_seconds = 2, max_open_seconds = 8,
+    probe_interval = 1, recover_successes = 2,
+    stable_reset_seconds = 30,
+}
+fake_ngx.shared.antibot_cache = Dict.new()
+package.loaded["antibot.l7.circuit_breaker"] = nil
+local circuit = require "antibot.l7.circuit_breaker"
+
+local function cbvars(host, status, upstream_time)
+    fake_ngx.var = {
+        server_name = host,
+        host = host,
+        uri = "/index.php",
+        upstream_status = status,
+        upstream_response_time = upstream_time,
+    }
+end
+
+local function cbctx(group)
+    return { req_class = group == "resource" and "resource" or "navigation",
+             admission_group = group, req = {} }
+end
+
+-- Evaluator chi doc bucket DA HOAN TAT. Hai hard-error o 600/601 duoc danh
+-- gia boi request dau 602; bucket 602 hien tai khong chen vao mau.
+clock = 600
+exits = {}
+cbvars("a.test", "503", "0.100")
+local ca1 = cbctx("dynamic")
+circuit.after(ca1)
+eq(ca1.circuit_transition, nil, "circuit khong mo khi chua du mau")
+clock = 601
+local ca2 = cbctx("dynamic")
+circuit.after(ca2)
+eq(ca2.circuit_transition, nil,
+   "evaluator khong doc bucket 601 dang ghi do")
+clock = 602
+local ca3 = cbctx("dynamic")
+circuit.after(ca3)
+eq(ca3.circuit_transition, "closed>open", "hard-error du nguong mo breaker")
+eq(ca3.circuit_state, "open", "host A vao OPEN")
+eq(ca3.circuit_cause, "hard", "OPEN ghi ro nguyen nhan hard")
+eq(ca3.circuit_total, 2, "evaluator doc hai bucket da hoan tat")
+ok(ca3.circuit_open_until > clock, "OPEN co deadline")
+
+-- Shadow mo hinh hoa phan quyet nhung tuyet doi khong 503.
+local ca_shadow = cbctx("dynamic")
+local _, shadow_exit = circuit.before(ca_shadow)
+eq(shadow_exit, false, "shadow circuit khong terminate request")
+eq(ca_shadow.circuit_would_reject, true, "shadow ghi would-reject")
+eq(ca_shadow.circuit_state, "open", "shadow ghi dung state OPEN")
+eq(ca_shadow.circuit_cause, "hard", "shadow giu cause cua OPEN state")
+
+-- Host B doc lap: A OPEN khong duoc lam B bi shed.
+cbvars("b.test", nil, nil)
+local cb = cbctx("dynamic")
+local _, b_exit = circuit.before(cb)
+eq(b_exit, false, "host B khong bi anh huong boi host A")
+eq(cb.circuit_state, "closed", "state tach theo canonical host")
+
+-- Static hit tren chinh host A khong bao gio bi circuit breaker chan.
+cbvars("a.test", nil, nil)
+local static_ctx = cbctx("resource")
+local _, static_exit = circuit.before(static_ctx)
+eq(static_exit, false, "OPEN host van phuc vu static hit")
+eq(static_ctx.circuit_would_reject, nil, "static khong tham gia breaker")
+
+-- Enforce chi doi PHAN QUYET, khong doi state da hoc trong shadow.
+cfg.l7_circuit_breaker.mode = "enforce"
+local ca_enforce = cbctx("dynamic")
+local _, enforce_exit = circuit.before(ca_enforce)
+eq(enforce_exit, true, "enforce OPEN tra loi som")
+eq(exits[#exits], 503, "circuit breaker dung 503, khong dung 429")
+eq(ca_enforce.action_reason, "l7_circuit:open", "503 co reason capacity")
+
+-- Het cooldown: mot probe/giay duoc qua, request thu hai van bi shed.
+clock = ca3.circuit_open_until + 0.1
+exits = {}
+cbvars("a.test", nil, nil)
+local probe1 = cbctx("dynamic")
+local _, probe1_exit = circuit.before(probe1)
+eq(probe1_exit, false, "HALF-OPEN cho probe dau tien di qua")
+eq(probe1.circuit_probe, true, "request duoc gan probe lease")
+local no_probe = cbctx("dynamic")
+local _, no_probe_exit = circuit.before(no_probe)
+eq(no_probe_exit, true, "HALF-OPEN shed request khong co probe lease")
+eq(no_probe.circuit_state, "half_open", "shed ghi state HALF-OPEN")
+
+-- Ket qua cua probe thuoc epoch cu khong duoc sua state moi. Day khong phai
+-- ca ly thuyet: slow_seconds lon hon probe_interval tao nhieu probe in-flight.
+local probe_epoch = probe1.circuit_open_until
+fake_ngx.shared.antibot_cache:set(
+    "cb:a.test:open_until", probe_epoch + 10, 30)
+cbvars("a.test", "200", "0.100")
+circuit.after(probe1)
+eq(probe1.circuit_probe_stale, true,
+   "late probe cua epoch cu bi bo qua")
+eq(fake_ngx.shared.antibot_cache:get("cb:a.test:probe_ok"), nil,
+   "late probe khong duoc cong recovery")
+fake_ngx.shared.antibot_cache:set(
+    "cb:a.test:open_until", probe_epoch, 30)
+probe1.circuit_probe_stale = nil
+
+-- Hai probe tot lien tiep dong breaker.  Request khong chua upstream_status
+-- khong duoc tinh la probe thanh cong.
+cbvars("a.test", nil, nil)
+circuit.after(probe1)
+eq(probe1.circuit_probe_successes, nil,
+   "probe khong cham upstream khong duoc tinh thanh cong")
+cbvars("a.test", "200", "0.100")
+circuit.after(probe1)
+eq(probe1.circuit_probe_successes, 1, "probe tot thu nhat duoc ghi")
+
+clock = clock + 1.1
+cbvars("a.test", nil, nil)
+local probe2 = cbctx("dynamic")
+local _, probe2_exit = circuit.before(probe2)
+eq(probe2_exit, false, "giay sau cap probe recovery tiep theo")
+cbvars("a.test", "200", "0.200")
+circuit.after(probe2)
+eq(probe2.circuit_transition, "half_open>closed",
+   "du probe tot thi dong breaker")
+eq(probe2.circuit_cause, "hard", "recovery dong dung hard circuit")
+
+-- ── cbnosample: phan biet "chua du luu luong" voi "khong doc duoc" ───
+--
+-- VI SAO CAN. `sample_from_ngx` tra `nil` khi request khong toi upstream, va
+-- ban dau `after()` thoat IM LANG o do. Hau qua: "0 dong `cb=` trong
+-- antibot.log" mang HAI nghia khac nhau — breaker chay nhung chua du luu
+-- luong, HAY `ngx.var.upstream_status` khong doc duoc o log phase va ca module
+-- la ma chet. Khong mot tep nao khac trong cay nay doc bien do, nen gia dinh
+-- "doc duoc o log phase" chua tung duoc kiem tren may that.
+--
+-- Day la lop loi [[feedback_flag_read_before_write]] (cot `-` thuong la "thoat
+-- truoc khi tang chay", khong phai "da do, rong") cong
+-- [[feedback_alert_reaches_nobody]] (kiem DUONG RA, khong chi kiem phat hien).
+--
+-- CHI MOT MAU moi giay moi host: tren 28-246 co 666.752 dong/24h va phan lon
+-- request dynamic khong toi upstream la nhung request chinh antibot da chan
+-- (PoW page, 403, 429). Danh dau het la tu lam phong log de tra loi mot cau
+-- hoi chi can mot mau.
+clock = 700
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+cbvars("nosample.test", nil, nil)
+local ns_marked = 0
+for _ = 1, 50 do
+    local c = cbctx("dynamic")
+    circuit.after(c)
+    if c.circuit_no_sample then ns_marked = ns_marked + 1 end
+end
+eq(ns_marked, 1, "cbnosample ban DUNG MOT lan trong mot giay")
+
+clock = 701
+local ns2 = 0
+for _ = 1, 50 do
+    local c = cbctx("dynamic")
+    circuit.after(c)
+    if c.circuit_no_sample then ns2 = ns2 + 1 end
+end
+eq(ns2, 1, "giay moi -> mot mau moi")
+
+-- Request khong toi upstream KHONG duoc tao mau cho cua so: neu nguoc lai,
+-- mot host bi antibot chan hang loat se tu sinh ra `total` lon ma khong co
+-- bang chung nao ve suc khoe backend.
+local c3 = cbctx("dynamic")
+circuit.after(c3)
+eq(c3.circuit_total, nil, "khong toi upstream thi khong danh gia cua so")
+
+-- Doi chieu: co `upstream_status` thi KHONG danh dau nosample.
+clock = 702
+cbvars("nosample.test", "200", "0.100")
+local c4 = cbctx("dynamic")
+circuit.after(c4)
+eq(c4.circuit_no_sample, nil, "co upstream sample thi khong danh dau nosample")
+eq(fake_ngx.shared.antibot_cache:get("cb:a.test:b:601:n"), nil,
+   "dong breaker xoa mau loi cu, khong lap tuc mo lai")
+eq(fake_ngx.shared.antibot_cache:get("cb:a.test:cause"), nil,
+   "dong breaker xoa cause cua episode cu")
+
+cbvars("a.test", nil, nil)
+local recovered = cbctx("dynamic")
+local _, recovered_exit = circuit.before(recovered)
+eq(recovered_exit, false, "host phuc hoi cho dynamic traffic di qua")
+eq(recovered.circuit_state, "closed", "state tro ve CLOSED")
+
+-- 404/403 la ket qua client/application, khong phai hard backend failure.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.l7_circuit_breaker.mode = "shadow"
+clock = 700
+cbvars("c.test", "404", "0.100")
+circuit.after(cbctx("dynamic"))
+clock = 701
+circuit.after(cbctx("dynamic"))
+clock = 702
+local c404 = cbctx("dynamic")
+circuit.after(c404)
+eq(c404.circuit_transition, nil, "404 khong mo circuit breaker")
+eq(c404.circuit_hard_ratio, 0, "404 khong tinh hard error")
+
+-- Slow 200 chi la candidate telemetry. Du 100% cham cung KHONG duoc ghi OPEN.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 800
+cbvars("slow.test", "200", "2.500")
+circuit.after(cbctx("dynamic"))
+clock = 801
+circuit.after(cbctx("dynamic"))
+clock = 802
+cbvars("slow.test", "200", "0.100")
+local slow_ctx = cbctx("dynamic")
+circuit.after(slow_ctx)
+eq(slow_ctx.circuit_transition, nil,
+   "slow 200 du nguong khong mo breaker")
+eq(slow_ctx.circuit_hard_ratio, 0, "slow 200 khong bi goi la hard error")
+eq(slow_ctx.circuit_slow_ratio, 1, "slow ratio duoc do rieng")
+eq(slow_ctx.circuit_slow_candidate, true,
+   "slow candidate duoc ghi de do tren fleet")
+eq(fake_ngx.shared.antibot_cache:get("cb:slow.test:open_until"), nil,
+   "slow candidate khong tao OPEN state")
+
+-- Probe 200 cham van chung minh hard outage da het. No duoc ghi telemetry
+-- nhung khong duoc reopen hard circuit.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 850
+fake_ngx.shared.antibot_cache:set("cb:probe-slow.test:open_until", 849, 30)
+fake_ngx.shared.antibot_cache:set("cb:probe-slow.test:cause", "hard", 30)
+cbvars("probe-slow.test", nil, nil)
+local slow_probe = cbctx("dynamic")
+local _, slow_probe_exit = circuit.before(slow_probe)
+eq(slow_probe_exit, false, "slow recovery probe duoc di qua")
+eq(slow_probe.circuit_probe, true, "slow recovery request la probe")
+cbvars("probe-slow.test", "200", "2.500")
+circuit.after(slow_probe)
+eq(slow_probe.circuit_probe_slow, true, "probe cham duoc ghi telemetry")
+eq(slow_probe.circuit_transition, nil,
+   "mot slow 200 khong reopen hard circuit")
+eq(slow_probe.circuit_probe_successes, 1,
+   "slow 200 van la hard-recovery success")
+clock = 851.1
+cbvars("probe-slow.test", nil, nil)
+local slow_probe2 = cbctx("dynamic")
+local _, slow_probe2_exit = circuit.before(slow_probe2)
+eq(slow_probe2_exit, false, "slow recovery probe thu hai duoc di qua")
+cbvars("probe-slow.test", "200", "2.500")
+circuit.after(slow_probe2)
+eq(slow_probe2.circuit_transition, "half_open>closed",
+   "hai slow 200 dong hard circuit thay vi reopen")
+eq(fake_ngx.shared.antibot_cache:get(
+    "cb:probe-slow.test:open_until"), nil,
+   "slow 200 recovery xoa OPEN state")
+
+-- Resource sample va response khong co upstream khong duoc tao bucket.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 900
+cbvars("ignore.test", "503", "3.000")
+circuit.after(cbctx("resource"))
+clock = 901
+cbvars("ignore.test", nil, nil)
+local ignored = cbctx("dynamic")
+circuit.after(ignored)
+eq(ignored.circuit_evaluated, nil,
+   "chi hoc tu dynamic request da cham upstream")
+
+-- Dung 3 req/s trong 10 giay = 30 mau. Ban cu doc bucket hien tai moi co
+-- mot request nen chi thay 28 va khong bao gio mo; complete buckets phai mo o
+-- request dau giay 11 voi dung n=30, rps=3.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.l7_circuit_breaker.min_samples = 30
+cfg.l7_circuit_breaker.min_dynamic_rps = 3
+cfg.l7_circuit_breaker.hard_error_ratio = 1
+clock = 1000
+local exact3_last
+for sec = 0, 9 do
+    for hit = 1, 3 do
+        clock = 1000 + sec + hit / 10
+        cbvars("exact3.test", "503", "0.100")
+        exact3_last = cbctx("dynamic")
+        circuit.after(exact3_last)
+        eq(exact3_last.circuit_transition, nil,
+           "3rps khong mo truoc khi du 10 bucket")
+    end
+end
+clock = 1010.1
+cbvars("exact3.test", "503", "0.100")
+local exact3_trip = cbctx("dynamic")
+circuit.after(exact3_trip)
+eq(exact3_trip.circuit_transition, "closed>open",
+   "dung 3rps mo sau 10 bucket hoan tat")
+eq(exact3_trip.circuit_total, 30, "3rps co dung 30 mau")
+eq(exact3_trip.circuit_rps, 3, "config 3rps khop hanh vi 3rps")
+
+-- Circuit breaker khong hua chan burst duoi mot giay: evaluator dau giay thay
+-- cua so cu. Neu traffic con tiep tuc sang giay sau, no moi thay tron burst;
+-- admission.lua chiu trach nhiem chan ngay trong cung mot giay.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 1100.1
+local burst_same_second
+for _ = 1, 100 do
+    cbvars("burst.test", "503", "0.100")
+    burst_same_second = cbctx("dynamic")
+    circuit.after(burst_same_second)
+    eq(burst_same_second.circuit_transition, nil,
+       "burst cung giay khong bi circuit danh gia lai moi request")
+end
+eq(fake_ngx.shared.antibot_cache:get("cb:burst.test:open_until"), nil,
+   "burst dung trong mot giay khong mo circuit")
+clock = 1101.1
+cbvars("burst.test", "503", "0.100")
+local burst_next_second = cbctx("dynamic")
+circuit.after(burst_next_second)
+eq(burst_next_second.circuit_transition, "closed>open",
+   "request giay sau thay tron burst cua giay truoc")
+eq(burst_next_second.circuit_total, 100,
+   "evaluator giay sau doc du 100 mau")
+eq(burst_next_second.circuit_rps, 10,
+   "burst 100 mau tren cua so 10s thanh 10rps")
+
+cfg.l7_circuit_breaker = old_circuit
+
 -- Redis rate counter: hai bucket tao approximate sliding window; traffic cu
 -- phai fade thay vi bi refresh vo han boi request moi.
 clock = 0
@@ -469,21 +893,35 @@ ok(init_src:find("xfilter_guard%.run%(ctx%)", verified_pos) ~= nil,
 local admission_steps = assert(init_src:match(
     "local STEPS_ADMISSION%s*=%s*{(.-)\n}"))
 local local_brake_pos = assert(admission_steps:find("layer%s*=%s*l7_admission"))
+local circuit_pos = assert(admission_steps:find("layer%s*=%s*l7_circuit"))
 local redis_ban_pos = assert(admission_steps:find("layer%s*=%s*ip_ban_check"))
+ok(local_brake_pos < circuit_pos,
+   "circuit breaker reuses admission dynamic/static decision")
+ok(circuit_pos < redis_ban_pos,
+   "OPEN host sheds work before Redis-backed IP ban lookup")
 ok(local_brake_pos < redis_ban_pos,
    "local admission shields Redis-backed IP ban lookup")
+
+local circuit_after_pos = assert(init_src:find("l7_circuit%.after%(ctx%)"))
+local logger_pos = assert(init_src:find("logger%.run%(ctx%)", circuit_after_pos))
+ok(circuit_after_pos < logger_pos,
+   "log-phase circuit telemetry is ready before main logger")
 
 local generator = read_file("nginx/da_to_openresty.sh")
 ok(generator:find("antibot.l7.admission", 1, true) == nil,
    "generator is not coupled to Lua admission")
 ok(generator:find("limit_conn antibot_conn_", 1, true) == nil,
    "generator has no admission-specific native connection limits")
+ok(generator:find("circuit_breaker", 1, true) == nil,
+   "generator is not coupled to Lua circuit breaker")
 
 local nginx_conf = read_file("nginx/nginx.conf")
 ok(nginx_conf:find("antibot_l7_", 1, true) == nil,
    "nginx.conf has no admission-specific shared dict")
 ok(nginx_conf:find("limit_conn_zone", 1, true) == nil,
    "nginx.conf is unchanged by Lua-only admission")
+ok(nginx_conf:find("circuit_breaker", 1, true) == nil,
+   "nginx.conf is unchanged by Lua-only circuit breaker")
 
 local verify_handler = read_file(
     "antibot-core/enforcement/challenge/verify_token.lua")

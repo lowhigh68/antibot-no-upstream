@@ -100,6 +100,19 @@ echo
 echo "── routes (muc 5: hop dong endpoint) ─────────────────"
 "$RESTY" "$HERE/routes_test.lua" || rc=1
 
+# L7 la lop DUY NHAT tra 429/503 TRUOC khi request toi backend, va truoc ban nay
+# bo kiem cua no KHONG nam trong `run.sh`. Hau qua: moi commit cham L7 di qua mot
+# cong khong kiem L7. Bat duoc 05-10 bang `grep -c l7_regression run.sh` = 0 ngay
+# sau khi `run.sh` vua bao rc=0 cho mot thay doi admission.
+#
+# `$ANTIBOT_SRC` chu khong duong dan tuong doi: bo nay chay duoc o CA HAI noi —
+# repo (`antibot-core/`) lan cay da deploy (`conf/antibot/`), vi chinh loader cua
+# no doc bien do. Ban dong cung `./antibot-core/` truoc day la ly do no khong vao
+# duoc `run.sh`.
+echo
+echo "── l7 (admission + circuit breaker) ──────────────────"
+"$RESTY" "${ANTIBOT_SRC}l7/tests/l7_regression.lua" || rc=1
+
 # `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
 # trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
 # bash chu khong resty (no kiem mot script shell).

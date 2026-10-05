@@ -18,6 +18,7 @@ local fingerprint_layer  = require "antibot.core.fingerprint"
 local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
+local l7_circuit         = require "antibot.l7.circuit_breaker"
 local detection_layer    = require "antibot.detection"
 local bot_lite_verify    = require "antibot.detection.bot.lite_verify"
 local res_ip_counter     = require "antibot.l7.rate.res_ip_counter"
@@ -37,6 +38,9 @@ local STEPS_ADMISSION = {
     { layer = classifier,        fn = "run_fast"      },
     { layer = proxy_origin,      fn = "run"           },
     { layer = l7_admission,      fn = "run"           },
+    -- Per-host backend health gate.  Admission has already classified static
+    -- hit vs dynamic/static-miss, so the breaker never penalizes real assets.
+    { layer = l7_circuit,        fn = "before"        },
     -- Redis ban lookup dung SAU local budget: flood tu mot IP da ban khong duoc
     -- phep bien thanh unlimited Redis traffic.
     { layer = ip_ban_check,      fn = "run"           },
@@ -280,6 +284,11 @@ end
 function _M.log()
     local ctx = ngx.ctx.antibot
     if not ctx then return end
+
+    -- Shared-dict only: legal directly in log phase (unlike Redis/cosocket).
+    -- Run before logger so the elected sample/transition is observable in the
+    -- same antibot.log line.
+    l7_circuit.after(ctx)
 
     if ctx.req_class ~= "resource" and ctx.identity then
         ngx.timer.at(0, function()

@@ -786,3 +786,78 @@ else
     echo "  pf=ok == lan                 : moi lan ban deu co bang chung than -> co co so promote"
     echo "  0 lan ban sau >1 ngay        : luat chua gap luu luong thuc -> chua co co so promote"
 fi
+
+echo
+echo "=== 21. Static MISS theo DOMAIN (admission: resource candidate vs thuc te) ==="
+#
+# VI SAO CO MUC NAY, va vi sao phai co cot DOMAIN.
+#
+# `admission.lua` dua static MISS vao ngan sach `dynamic` thay vi `resource`, vi
+# `try_files` khong thay tep thi request di `@static_backend` -> Apache/PHP (voi
+# WordPress thi `.htaccess` rewrite thanh `index.php`). Do la tai dynamic du duoi
+# tep la `.jpg`.
+#
+# Ban dau phep do duoc de nghi la:
+#     grep -o 'ractual=[^ ]*' antibot.log | sort | uniq -c
+# Nguoi dung bat dung: lenh do chi tra hai dong TONG, khong biet domain nao —
+# nen no KHONG tra loi duoc chinh cau hoi can tra loi ("tap trung o mot domain
+# vua migrate thi do la FP"). Dung lop loi "lenh do hong tra so trong-co-ly".
+#
+# COT `ip-miss` LA COT QUYET DINH, khong phai cot `miss`:
+#   · miss cao + ip-miss THAP (1-3 IP)   -> mot client/bot quet; dung noi ngung
+#   · miss cao + ip-miss CAO (hang tram) -> KHACH THAT dang 404 anh hang loat.
+#     Nghia la site vua migrate/doi theme va con link cu tro toi anh da xoa.
+#     Day la FP ve capacity: ho khong tan cong, ho chi co nhieu 404 hop le.
+#   · cot 429 > 0                        -> da co nguoi bi throttle that
+#
+# `ractual=-` (cot khong-do) la fail-open: `document_root` rong hoac dict loi ->
+# admission coi nhu static that. So nay > 0 lien tuc nghia la phep do dang khong
+# chay o dau do, va ngan sach `resource` 4000/s dang duoc ap cho ca static miss.
+#
+# Dong KHONG co cot `ractual=` la dong khong phai resource candidate -> bo qua,
+# khong dem vao bat ky nhom nao. Bo phep loc nay thi dong `navigation` bi dem
+# thanh "khong-do" (da thu dot bien, bao gia).
+AF=$(since "$L" antibot.log)
+if [ -z "$AF" ]; then
+    echo "  khong co antibot.log nao moi hon $T — khong do duoc"
+else
+    echo "  antibot.log doc:$(names $AF)"
+    catf $AF | awk '
+        {
+            dm = "-"; ra = ""; ipa = ""; ac = ""
+            for (i = 1; i <= NF; i++) {
+                if      (substr($i, 1, 7) == "domain=")  dm  = substr($i, 8)
+                else if (substr($i, 1, 8) == "ractual=") ra  = substr($i, 9)
+                else if (substr($i, 1, 3) == "ip=")      ipa = substr($i, 4)
+                else if (substr($i, 1, 7) == "action=")  ac  = substr($i, 8)
+            }
+            if (ra == "") next
+            if (ra == "false") {
+                miss[dm]++
+                if (!seen[dm "|" ipa]++) ipn[dm]++
+                if (ac == "throttled") thr[dm]++
+            } else if (ra == "true") hit[dm]++
+            else                     unk[dm]++
+            doms[dm] = 1
+        }
+        END {
+            if (length(doms) == 0) {
+                print "  khong mot dong nao co cot ractual= (chua deploy ban static-probe?)"
+                exit
+            }
+            printf "  %-30s %7s %7s %9s %8s %6s\n", \
+                   "domain", "miss", "hit", "khong-do", "ip-miss", "429"
+            for (d in doms)
+                printf "  %-30s %7d %7d %9d %8d %6d\n", d, \
+                       miss[d]+0, hit[d]+0, unk[d]+0, ipn[d]+0, thr[d]+0
+        }' | { IFS= read -r hdr; [ -n "$hdr" ] && echo "$hdr"; sort -k2 -rn | head -25; }
+    echo "  -- CACH DOC (cot ip-miss quyet dinh, KHONG phai cot miss) --"
+    echo "  miss cao + ip-miss 1-3       : mot bot quet duong dan — dung noi ngan sach"
+    echo "  miss cao + ip-miss hang tram : KHACH THAT 404 anh hang loat (site vua"
+    echo "                                 migrate/doi theme) -> FP capacity, nang"
+    echo "                                 host_group.dynamic cho rieng host do"
+    echo "  cot 429 > 0                  : da co nguoi bi throttle that, xem ngay"
+    echo "  khong-do > 0 lien tuc        : fail-open dang chay — document_root rong"
+    echo "                                 hoac dict loi; ngan sach resource 4000/s"
+    echo "                                 dang ap cho ca static miss"
+fi

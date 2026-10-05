@@ -124,8 +124,24 @@ echo "[$N] [waf] ts=13 rid=r45 id=- domain=p.test ip=8.8.8.8 rule=body_ct_missin
 } > "$R/L/waf.log"
 {
 echo "[$N] [antibot] ts=4 domain=h.test class=navigation id=- ip=8.8.8.8 action=block top=waf_wp_path=39% reason=score"
+# ── Muc 21: static MISS theo domain ──────────────────────────────────
+# DAP AN TINH BANG TAY tu bay dong duoi (KHONG lay tu output):
+#   mig.test  : 3 dong ractual=false, IP 11.0.0.1 / 11.0.0.2 / 11.0.0.3
+#               -> miss=3  ip-miss=3  429=0      (hinh dang KHACH THAT 404 anh)
+#   bot.test  : 2 dong ractual=false, CUNG IP 12.0.0.9, mot dong throttled
+#               -> miss=2  ip-miss=1  429=1      (hinh dang MOT bot quet)
+#   ok.test   : 1 dong ractual=true                      -> hit=1
+#   nd.test   : 1 dong ractual=-                         -> khong-do=1
+# Dong `navigation` o tren KHONG co cot ractual= nen phai bi BO QUA hoan toan;
+# neu no bi dem thi h.test xuat hien trong bang (da thu dot bien, bao gia).
+echo "[$N] [antibot] ts=21 domain=mig.test class=resource id=- ip=11.0.0.1 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=dynamic adm_route=4 backend=- rcand=true ractual=false"
+echo "[$N] [antibot] ts=21 domain=mig.test class=resource id=- ip=11.0.0.2 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=dynamic adm_route=4 backend=- rcand=true ractual=false"
+echo "[$N] [antibot] ts=21 domain=mig.test class=resource id=- ip=11.0.0.3 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=dynamic adm_route=9 backend=- rcand=true ractual=false"
+echo "[$N] [antibot] ts=21 domain=bot.test class=resource id=- ip=12.0.0.9 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=dynamic adm_route=2 backend=- rcand=true ractual=false"
+echo "[$N] [antibot] ts=21 domain=bot.test class=resource id=- ip=12.0.0.9 action=throttled reason=l7_admission:ip_resource adm=ip_resource adm_n=251 adm_lim=250 adm_win=1 adm_grp=dynamic adm_route=2 backend=- rcand=true ractual=false"
+echo "[$N] [antibot] ts=21 domain=ok.test class=resource id=- ip=13.0.0.1 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=resource adm_route=1 backend=- rcand=true ractual=true"
+echo "[$N] [antibot] ts=21 domain=nd.test class=resource id=- ip=14.0.0.1 action=allow reason=- adm=- adm_n=- adm_lim=- adm_win=- adm_grp=resource adm_route=1 backend=- rcand=true ractual=-"
 } > "$R/L/antibot.log"
-
 WEBP=/home/u1/domains/s.test/public_html
 
 # ── Muc 17: bo dem so lan doi ───────────────────────────────────────
@@ -303,5 +319,27 @@ want  "17 thu muc uploads"    '2 lan / +2 tep .*uploads$'
 # im lang thi nguoi doc khong phan biet duoc "khong co du lieu" voi "muc bi hong".
 want  "17 hot chua co bo dem" '\[hot\] chua co bo dem'
 want  "17 co CACH DOC"        'mot thu muc chiem da so'
+
+# ── Muc 21: static MISS theo DOMAIN ─────────────────────────────────
+#
+# Phep do ban dau duoc de nghi la `grep -o 'ractual=[^ ]*' | uniq -c`, chi tra
+# hai dong TONG. Nguoi dung bat dung: no khong biet domain nao, nen khong tra
+# loi duoc chinh cau hoi can tra loi. Cac want() duoi doi chieu voi dap an tinh
+# BANG TAY o khoi log gia (xem chu thich tai do), khong lay tu output.
+#
+# `ip-miss` la cot QUYET DINH chu khong phai `miss`: cung 3 luot miss, 3 IP
+# khac nhau la khach that 404 anh hang loat (FP capacity), con 1 IP la bot quet.
+want  "21 mig 3 miss / 3 ip"  'mig\.test +3 +0 +0 +3 +0'
+want  "21 bot 2 miss / 1 ip"  'bot\.test +2 +0 +0 +1 +1'
+want  "21 ok.test chi hit"    'ok\.test +0 +1 +0 +0 +0'
+want  "21 nd.test khong do"   'nd\.test +0 +0 +1 +0 +0'
+# Dong `navigation` khong co cot ractual= PHAI bi bo qua hoan toan.
+if printf '%s\n' "$OUT" | sed -n '/=== 21\./,/CACH DOC (cot ip-miss/p' | grep -q 'h\.test'; then
+    fail=$((fail+1)); printf 'HONG  %s\n' "21 dong khong co ractual= bi dem (h.test lot vao bang)"
+else
+    pass=$((pass+1))
+fi
+want  "21 co CACH DOC"        'cot ip-miss quyet dinh'
+
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

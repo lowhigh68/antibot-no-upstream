@@ -204,7 +204,44 @@ local function reject(ctx, reason, value, limit, window, status, retry_after)
     return true, true
 end
 
-local function count_limit(dict, prefix, spec, windows, t)
+-- ── DO VUNG MU DYNAMIC ──────────────────────────────────────────────
+--
+-- VI SAO. Cot `ractual=`/`adm_*` truoc day CHI duoc ghi khi
+-- `admission_limited or resource_candidate or backend_class` — co y, de khong
+-- lam phong moi dong dynamic thong thuong. Hau qua do duoc 04-10 tren hai may
+-- that: chi 0,33% (28-246: 2.191/666.752) va 0,47% (171-96: 1.793/378.959) so
+-- dong log co cot do. Tuc 99,6% request la DYNAMIC va KHONG co mot so lieu
+-- admission nao — `host_group.dynamic.short = 500/s` chua tung duoc doi chieu
+-- voi luu luong thuc. Do la vung mu do chinh dieu kien log tren tao ra.
+--
+-- Ghi mot con so DUY NHAT thay vi 6 cot: ti le su dung CAO NHAT tren moi truc
+-- da kiem (`adm_use=<phan tram>`) kem ten truc dat ti le do (`adm_top=`). Voi
+-- mot con so moi dong thi tinh duoc p50/p95/p99 bang `sort -n`, ma dong log chi
+-- dai them ~20 byte thay vi ~120.
+--
+-- KHONG ghi `adm_n`/`adm_lim` tho cho moi truc: sau truc x hai cua so = 12 so
+-- moi request, va cau hoi can tra loi ("con bao nhieu khoang an toan") chi can
+-- MOT: truc chat nhat. Mot phep do ghi 12 so de tra loi mot cau hoi la phep do
+-- sai kich thuoc.
+--
+-- `math.floor` chu khong lam tron: 99,6% phai hien ra 99 chu khong phai 100.
+--
+-- MOC CHAN la `> 100`, khong phai `>= 100`. Do bang harness tren
+-- `ip.navigation.short = 80`: req 79 -> adm_use=98 qua; req 80 -> adm_use=100
+-- VAN QUA (dieu kien la `value > limit`, khong phai `>=`); req 81 -> adm_use=101
+-- va bi 429. Nen `adm_use=100` nghia la DUNG tran, chua chan; tu 101 moi chan.
+local function note_headroom(ctx, reason, window_name, value, limit)
+    if not ctx or not limit or limit <= 0 then return end
+    local pct = math.floor((value / limit) * 100)
+    if (ctx.admission_use or -1) < pct then
+        ctx.admission_use = pct
+        ctx.admission_use_axis = tostring(reason) .. ":" .. tostring(window_name)
+    end
+end
+
+-- Tra ve `nil` khi KHONG vuot, mot bang khi vuot. Nhung dong thoi ghi lai
+-- TI LE SU DUNG cao nhat vao `ctx` — xem khoi chu thich cua `note_headroom`.
+local function count_limit(ctx, dict, prefix, spec, windows, t, reason)
     if not spec then return nil end
     for _, name in ipairs({ "short", "long" }) do
         local seconds = tonumber(windows[name])
@@ -217,6 +254,7 @@ local function count_limit(dict, prefix, spec, windows, t)
                     value = 0, limit = limit, window = seconds,
                 }
             end
+            note_headroom(ctx, reason, name, value, limit)
             if value > limit then
                 return {
                     value = value, limit = limit, window = seconds,
@@ -228,7 +266,7 @@ local function count_limit(dict, prefix, spec, windows, t)
 end
 
 local function apply_check(ctx, dict, prefix, spec, reason, c, t)
-    local over = count_limit(dict, prefix, spec, c.windows or {}, t)
+    local over = count_limit(ctx, dict, prefix, spec, c.windows or {}, t, reason)
     if not over then return false, false end
 
     local final_reason = over.reason == "dict_error"

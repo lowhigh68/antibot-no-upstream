@@ -13,6 +13,7 @@ security signals and reject identities that already have a supported ban.
 | File | Role | Phase |
 |---|---|---|
 | `admission.lua` | Mandatory local fixed-bucket budgets: global, host, host-group, route-shard and IP. Reuses the existing `antibot_cache`; internal endpoint handlers call it directly. Returns 429 only, never writes reputation/ban. **Static MISS is charged to the `dynamic` budget, not `resource`** — it probes `document_root .. uri` on disk (cached, short TTL) because `try_files` sends a miss to `@static_backend` → Apache/PHP, which is dynamic load whatever the extension says |
+| `circuit_breaker.lua` | Per-host backend health gate. Learns **only** from requests that reached an upstream (`ngx.var.upstream_status`), and only from dynamic ones — so static hits keep being served while an unhealthy PHP path is open. Only hard failures (502/503/504) open the state machine; a slow 200 is recorded as `cbslowcand` but **never** sheds traffic. 503 + `Retry-After`, never a ban |
 | `init.lua` | Per-class Redis L7 orchestrator: `ban_store`, `rate.counter`, `adaptive_limit`, `burst_counter`, `burst_decision` |
 | `ban/ip_ban_check.lua` | Read `ban:<ip>` from Redis. Hit → set `ctx.action="block"`, `ctx.action_reason="banned_ip"`, `ngx.exit(403)` |
 | `ban/ban_store.lua` | Read `ban:<identity>`, escalate repeat hits and exit 403. Good-bot defer requires cached positive crawler proof; shared-identity lift requires a known first-party cookie plus request-own richness |
@@ -28,6 +29,10 @@ security signals and reject identities that already have a supported ban.
 
 ## ctx fields written
 `admission_limited`, `admission_reason/count/limit/window/group/route_shard`,
+`admission_use/use_axis` (highest budget utilisation, on EVERY line),
+`resource_actual` (false = static miss, charged to the dynamic budget),
+`circuit_state/mode/cause/would_reject/probe/probe_stale/no_sample/degraded`,
+`circuit_total/rps/slow_ratio/hard_ratio/slow_candidate/open_until/transition`,
 `backend_class`, `banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `ip_surge`,
 `rate_flag` (also `action`, `action_reason` before `ngx.exit`).
 
@@ -40,6 +45,7 @@ security signals and reject identities that already have a supported ban.
 ```
 ADMISSION → ctx + fast class + proxy origin
           → local admission      → immediate 429 on capacity budget
+          → circuit_breaker.before → 503 while the host backend is OPEN
           → ip_ban_check         → 403 if IP banned
           → WAF pre-scan
           → verified fast path still crosses expensive-filter guard
@@ -51,6 +57,9 @@ FULL/INT → ban_store             → 403 if identity ban is enforceable
          → adaptive_limit        → signal or immediate extreme-rate block
          → burst_counter         → fixed one-second count
          → burst_decision        → burst signal
+LOG      → circuit_breaker.after  → learns from upstream_status, elects one
+                                     evaluator per host/second
+
 RESOURCE → resource counter + lite crawler verification
          → failed proof escalates to FULL; proved crawler stays lightweight
 ```
@@ -60,6 +69,50 @@ RESOURCE → resource counter + lite crawler verification
 - Downstream: `intelligence/scoring/compute.lua` reads `ip_rate`, `burst`, `slow`, `burst_flag`, `ip_surge`, `rate_flag` as signals
 - Related ban writes: `enforcement/ban/ban_store_write.lua` writes `ban:<id>`.
   L7 writes `ban:<ip>` only for extreme rate or configured per-IP faceted crawl.
+
+## Circuit breaker: what to check before `enforce`
+
+Default is `mode = "shadow"`. Two things must be measured on a real machine
+first, and both have a column in `antibot.log`.
+
+**1. Is `upstream_status` even readable in the log phase?** No other file in the
+tree reads it, so this is an unverified assumption. A request that never reached
+an upstream is marked `cbnosample=true` — **once per second per host**, not on
+every line, because most such requests are ones antibot itself blocked (PoW
+page, 403, 429) and marking them all would inflate the log to answer a question
+that needs one sample.
+
+```bash
+grep -c 'cbnosample=true' /var/log/antibot/antibot.log   # breaker is running
+grep -o 'cbn=[0-9]*' /var/log/antibot/antibot.log | head # real upstream samples
+```
+
+Zero `cb=` lines **and** zero `cbnosample=true` means the module never ran.
+Zero `cbn=` with `cbnosample=true` present means it ran but `upstream_status`
+is unreadable — the breaker would be dead code, and that must be fixed before
+`enforce` is even considered.
+
+**2. The traffic floor.** Measured on a harness, backend 100% dead for 60s:
+
+| dynamic req/s | opens? | second |
+|---|---|---|
+| 1–2 | **never** | — |
+| 3 | yes | 10 |
+| 4 | yes | 8 |
+| 10 | yes | 3 |
+| 30 | yes | 1 |
+
+Below `min_dynamic_rps` nothing opens, deliberately: a host at 1 req/s cannot
+drain the PHP pool, so a 503 there is pure FP. But on this fleet most hosts sit
+*under* that floor (measured on 171-96, 2026-10-04: `phuson.vn` 752 hits/24h ≈
+0.009 req/s), so the breaker protects only the few largest hosts. Do not expect
+it to rescue every tenant.
+
+**Slow 200 never sheds.** `slow_candidate_ratio` only sets `cbslowcand`.
+Measured before that split: at `slow_ratio = 0.60`, a heavy WordPress site with
+60% of pages ≥ 2s — all returning a correct 200 — would have been given 503s.
+Replacing a valid slow page with an error needs fleet evidence and its own
+policy, not the hard-failure switch.
 
 ## Important rules
 - Any `ngx.exit(...)` MUST set `ctx.action` AND `ctx.action_reason` first — log_by_lua produces `reason=-` otherwise (already done in ban_store.lua banned_id, ip_ban_check.lua banned_ip)

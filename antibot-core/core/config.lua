@@ -445,6 +445,47 @@ _M.l7_admission = {
     },
 }
 
+-- Per-host backend circuit breaker.  Unlike admission (pre-set request
+-- budgets), this control learns whether Apache/PHP is actually slow or failing
+-- and temporarily sheds only dynamic work for the affected virtual host.
+--
+-- Shadow is the safe rollout default.  It runs the complete CLOSED/OPEN/
+-- HALF-OPEN state machine for HARD failures and logs `cb*` fields, but never
+-- returns 503.  Slow 200 is telemetry only (`cbslowcand=true`) and cannot open
+-- the breaker.  Promote hard failures to `enforce` only after real-fleet data.
+-- All state reuses `antibot_cache`; no Redis or nginx change.
+_M.l7_circuit_breaker = {
+    enabled              = true,
+    mode                 = "shadow", -- shadow | enforce | off
+    status               = 503,
+    retry_after          = 5,
+
+    window_seconds       = 10,
+    bucket_grace_seconds = 10,
+    eval_interval        = 1,
+
+    -- Evaluator reads the previous ten COMPLETE one-second buckets.  Therefore
+    -- 3 req/s means exactly 30 samples/10s, with about one second detection
+    -- latency.  Same-second bursts are admission.lua's responsibility.
+    -- Initial SHADOW values, not production capacity claims.
+    min_samples          = 30,
+    min_dynamic_rps      = 3,
+
+    -- Hard failures are the only state-machine trigger.
+    hard_error_ratio     = 0.30, -- only 502/503/504
+
+    -- Slow 200 stays observable but never writes OPEN state.  It must get a
+    -- separate policy backed by fleet data before it can ever shed traffic.
+    slow_seconds         = 2.0,
+    slow_candidate_ratio = 0.60,
+
+    open_seconds         = 5,
+    max_open_seconds     = 60,
+    probe_interval       = 1,
+    recover_successes    = 3,
+    stable_reset_seconds = 300,
+}
+
 _M.trust = {
     session_min        = 5,
     session_active_min = 3,
