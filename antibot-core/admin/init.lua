@@ -2354,6 +2354,79 @@ end
 --
 -- Chi doc, khong ghi, khong xoa. `snapshot()` KHOA dict trong luc quet nen no chi
 -- duoc goi tu day (nguoi van hanh bam), khong bao gio tu duong request.
+
+-- ── /antibot-admin/l7: bo dem suc khoe cua L7 ────────────────────────
+--
+-- VI SAO CO ENDPOINT NAY. `l7/admission` dem `l7adm:dicterr:*` vao
+-- `antibot_stats` vi duong ra qua `error.log` KHONG DANG TIN: `last_dict_error`
+-- la bien PER-WORKER voi rate-limit 60 giay, nen do 06-10 tren 171-96 ra 17
+-- luot `adm=*dict_error` trong `antibot.log` ma `error.log` 0 DONG.
+--
+-- Nhung mot bo dem KHONG AI DOC DUOC thi y nhu khong co bo dem — do dung la ho
+-- loi vua sua cho `error.log`, nen de nguyen la tu tao lai no. Day la duong ra.
+--
+-- `antibot_stats` truoc ban nay CHUA TUNG duoc module nao doc hay ghi (khai bao
+-- 1m trong nginx.conf tu dau, trong rong). Nen khong co mau san de theo; ham nay
+-- di theo `render_fim`/`render_waf_v2`: PHAN BIET "khong co so lieu" voi "khong
+-- doc duoc", vi gop hai cai lai la dung loi da giet `wp_paths.mark()` 4 thang.
+local function render_l7()
+    ngx.header["Content-Type"] = "application/json"
+
+    local dict = ngx.shared and ngx.shared.antibot_stats
+    if not dict then
+        -- Dict thieu khai bao: bo dem khong the ton tai. KHAC HAN "bo dem = 0".
+        ngx.say(cjson.encode({
+            available = false,
+            reason    = "lua_shared_dict antibot_stats khong co trong nginx.conf",
+        }))
+        return
+    end
+
+    -- `get_keys(0)` quet TOAN dict va giu khoa lau hon du kien; `antibot_stats`
+    -- nho (1m) nen tran 1024 la du rong, va no CHAN truong hop mot ban sau them
+    -- bo dem theo host/IP vao day.
+    local keys, kerr = dict:get_keys(1024)
+    if not keys then
+        ngx.say(cjson.encode({
+            available = false,
+            reason    = "get_keys that bai: " .. tostring(kerr),
+        }))
+        return
+    end
+
+    -- `dicterr` LUON co ba khoa, ke ca khi bang 0. Hai ly do:
+    --
+    --   1. `cjson.empty_object` KHONG ton tai trong ban nay (do: `nil`), nen mot
+    --      bang rong bi encode thanh `{}` hay bi BO khoi JSON tuy ngu canh —
+    --      client khong phan biet duoc "khong co loi" voi "truong thieu".
+    --   2. Khoa co san voi gia tri 0 noi duoc "da do, bang 0". Khoa VANG noi
+    --      "chua do". Do dung la phan biet ma `render_fim` giu bang `exists`.
+    local dicterr = { full = 0, missing = 0, unknown = 0 }
+    local total = 0
+    for _, k in ipairs(keys) do
+        local kind = k:match("^l7adm:dicterr:(.+)$")
+        if kind then
+            local v = tonumber(dict:get(k)) or 0
+            dicterr[kind] = (dicterr[kind] or 0) + v
+            total = total + v
+        end
+    end
+
+    -- `truncated`: neu dict that su co hon 1024 khoa thi con so o tren la MOT
+    -- PHAN, va noi ra la cach duy nhat de nguoi doc khong ket luan tu tap thieu.
+    ngx.say(cjson.encode({
+        available      = true,
+        dicterr        = dicterr,
+        dicterr_total  = total,
+        keys_seen      = #keys,
+        truncated      = (#keys >= 1024) or nil,
+        -- `dicterr_total > 0` nghia la admission DA fail-open va request di qua
+        -- ma khong duoc dem — mot lo ngan sach, khong phai mot canh bao hieu
+        -- nang. Noi ro o day de UI khong ve no thanh mot bieu do cho vui.
+        note = "dicterr>0 = antibot_cache DAY, admission fail-open, request KHONG duoc dem",
+    }))
+end
+
 local function render_waf_v2()
     ngx.header["Content-Type"] = "application/json"
 
@@ -2414,6 +2487,9 @@ function _M.router()
     end
     if uri == "/antibot-admin/fim" then
         return render_fim()
+    end
+    if uri == "/antibot-admin/l7" then
+        return render_l7()
     end
     if uri == "/antibot-admin/waf" then
         return render_waf_v2()
