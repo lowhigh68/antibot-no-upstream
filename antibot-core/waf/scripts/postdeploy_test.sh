@@ -376,5 +376,59 @@ if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; th
 else
     printf 'BO QUA  khong o trong git -- khong kiem duoc mode\n'
 fi
+
+# ── OUTPUT LAC VAO BAO CAO ────────────────────────────────────────────
+#
+# `inifile_parse.awk` in `+` hoac `-` RA STDOUT va dung EXIT CODE lam ket qua.
+# Muc 18 doi chieu dia goi no de DEM, nen chi can exit code — nhung ban truoc
+# khong chan stdout, va `fim.sh` thi chan (no bat vao `$(...)` vi no DUNG gia
+# tri). Do tren 171-96 05-10: sau danh sach 32 nhan khoa co dung 6 dong `+`
+# tron vao, tuong ung 6 tep .user.ini/php.ini co handler.
+#
+# Hai so VAN DUNG (`khoa=32` khop `dia=32`), nen day la loi HIEN THI — va dung
+# loai kho bat nhat: bao cao van doc duoc, chi co sau dong rac khong ai giai
+# thich duoc, giua mot muc ma nguoi van hanh dang dung de doi chieu so lieu.
+# `htaccess_parse.awk` thoat duoc chi vi no co `| grep -q .` hut stdout.
+#
+# Kiem bang CHINH awk that chu khong bang chuoi gia: mot `.user.ini` co handler
+# phai lam muc 18 dem len MA khong in gi.
+if [ -f "$HERE/inifile_parse.awk" ]; then
+    _tmpd=$(mktemp -d) || _tmpd=""
+    if [ -n "$_tmpd" ]; then
+        printf '%s
+' 'auto_prepend_file=/tmp/x.php' > "$_tmpd/t.ini"
+        _out=$(awk -f "$HERE/inifile_parse.awk" "$_tmpd/t.ini" 2>/dev/null)
+        _rc=$?
+        # Tien de: awk nay PHAI in gi do va PHAI tra 0 — neu khong thi ca nay
+        # dang kiem mot thu khong ton tai va se "qua" vo nghia.
+        if [ "$_rc" -eq 0 ] && [ -n "$_out" ]; then
+            pass=$((pass+1))
+        else
+            fail=$((fail+1))
+            printf 'HONG  %s\n' "tien de sai: inifile_parse.awk khong in gi / rc!=0 (rc=$_rc out='$_out')"
+        fi
+        rm -rf "$_tmpd"
+    fi
+    # Moi lan goi awk nay trong postdeploy.sh phai chan STDOUT.
+    #
+    # `grep -v '>/dev/null'` KHONG dung duoc, va day la cai bay da mat hai luot
+    # de bat: mau do khop CA `2>/dev/null`, tuc chan STDERR. Dong 654 chi chan
+    # stderr van bi coi la "da chan" nen bo dem ve 0 vinh vien va mutation khong
+    # bao gio bi bat. Phai phan biet ` >/dev/null` / `1>/dev/null` (stdout) voi
+    # `2>/dev/null` (stderr) — dung `case` chu khong dung mot regex.
+    nloose=0
+    while IFS= read -r _line; do
+        case "$_line" in
+            *' >/dev/null'*|*'1>/dev/null'*|*'|'*) : ;;
+            *) nloose=$((nloose+1)) ;;
+        esac
+    done < <(grep 'awk -f "$A/inifile_parse.awk"' "$HERE/postdeploy.sh" || :)
+    if [ "${nloose:-0}" -eq 0 ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        printf 'HONG  %s\n' "$nloose cho goi inifile_parse.awk khong chan stdout -> '+'/'-' lac vao bao cao"
+    fi
+fi
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

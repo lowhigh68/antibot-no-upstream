@@ -651,7 +651,7 @@ if [ -f "$A/htaccess_parse.awk" ] && [ -f "$A/inifile_parse.awk" ]; then
         d=$(dirname "$f")
         case "$(basename "$f")" in
             .htaccess) awk -f "$A/htaccess_parse.awk" "$f" 2>/dev/null | grep -q . && ndisk=$((ndisk+1)) ;;
-            *)         awk -f "$A/inifile_parse.awk" "$f" 2>/dev/null && ndisk=$((ndisk+1)) ;;
+            *)         awk -f "$A/inifile_parse.awk" "$f" >/dev/null 2>&1 && ndisk=$((ndisk+1)) ;;
         esac
     done < <(find ${POSTDEPLOY_ROOTS:-/home/*/domains/*/public_html} \
                   \( -name '.htaccess' -o -name '.user.ini' -o -name 'php.ini' \) \
