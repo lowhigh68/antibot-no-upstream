@@ -20,7 +20,28 @@ E=${E:-/usr/local/openresty/nginx/logs/error.log}
 # `FIM_STATE` trong `fim.sh`; bo test tro no vao mot `mktemp -d`.
 FS=${FS:-/var/lib/antibot/fim}
 
-T=$(sed -n 's/^deployed=//p' "$A/VERSION" 2>/dev/null)
+# MOC CUA SO DO = `first_deployed=`, KHONG phai `deployed=`.
+#
+# `deployed=` bi ghi lai moi lan `deploy.sh` chay, nen moi deploy xoa cua so do
+# ve 0 phut — ke ca khi ban moi khong cham module dang do. Nguoi dung bat 06-10:
+# 05-10 deploy 5 lan trong mot ngay nen MOI phep do 24h deu bao "CHUA DU 24 GIO"
+# vinh vien; `335f395` chi sua `fim.sh` ma van reset cua so cua `adm_use` thuoc
+# `0570ea2`.
+#
+# `first_deployed=` chi doi khi `sha` doi (xem `deploy.sh`), nen deploy lai cung
+# ban giu nguyen cua so.
+#
+# FALLBACK ve `deployed=`: mot may chay ban deploy.sh TRUOC thay doi nay se co
+# VERSION khong co truong moi. Im lang roi xuong `deployed=` la dung — so lieu
+# hep hon chu khong SAI. In ra moc dang dung de nguoi doc biet minh dang xem cai
+# nao; khong in thi hai may cho hai cua so khac nhau ma trong y nhau.
+T=$(sed -n 's/^first_deployed=//p' "$A/VERSION" 2>/dev/null)
+TSRC="first_deployed"
+if [ -z "$T" ]; then
+    T=$(sed -n 's/^deployed=//p' "$A/VERSION" 2>/dev/null)
+    TSRC="deployed (VERSION cu, chua co first_deployed)"
+fi
+TDEP=$(sed -n 's/^deployed=//p' "$A/VERSION" 2>/dev/null)
 S=$(sed -n 's/^sha=//p' "$A/VERSION" 2>/dev/null)
 [ -n "$T" ] || { echo "khong doc duoc $A/VERSION"; exit 2; }
 
@@ -35,7 +56,10 @@ catf $WF | awk -v T="$T" 'substr($0,2,19) >= T' > "$W"
 
 MIN=$(( ( $(date +%s) - $(date -d "$T" +%s) ) / 60 ))
 echo "=== 0. Cua so do ==="
-echo "  ban $S  deploy $T  -> $MIN phut"
+echo "  ban $S  moc do $T ($TSRC)  -> $MIN phut"
+# In CA `deployed=` khi hai moc khac nhau: do la dau hieu da deploy lai cung
+# ban, va nguoi doc can biet cua so KHONG bi xoa chu khong phai script doc sai.
+[ "$TDEP" != "$T" ] && echo "  (deploy lan cuoi $TDEP — cung sha nen cua so GIU NGUYEN)" || :
 echo "  file doc   :$(names $WF)"
 [ -n "$WF" ] || echo "  KHONG CO file waf.log nao ghi sau deploy - moi so duoi day VO NGHIA"
 echo "  cua so THAT: $(head -n 1 "$W" | cut -c2-20) -> $(tail -n 1 "$W" | cut -c2-20)"

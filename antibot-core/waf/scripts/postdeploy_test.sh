@@ -459,5 +459,62 @@ done
 want "22 co tieu de"  '22\. SHADOW h-:php'
 want "22 co CACH DOC" 'BAT BIEN SAI'
 
+
+# ── MOC CUA SO DO: `first_deployed=` ─────────────────────────────────
+#
+# Lop loi: `deployed=` bi ghi lai moi lan deploy, nen moi deploy xoa cua so do
+# ve 0 phut. Nguoi dung bat 06-10 sau khi 05-10 deploy 5 lan va MOI phep do 24h
+# bao "CHUA DU 24 GIO" vinh vien. Bo test nay ghim ca ba hanh vi, vi hai trong
+# ba chi hien ra o lan deploy THU HAI — khong ai chay deploy hai lan de kiem.
+printf '\n── moc cua so do: first_deployed ──\n'
+MA=$(mktemp -d)
+mk_ver() { printf 'sha=%s\nsubject=x\ncommitted=x\ndeployed=%s\nfirst_deployed=%s\nhost=h\n' \
+                  "$1" "$2" "$3" > "$MA/VERSION"; }
+
+# 1. CO `first_deployed` -> dung no, KHONG dung `deployed`.
+mk_ver aaa1111 "2026-10-06 10:00:00" "2026-10-05 08:00:00"
+O=$(env A="$MA" L="$MA" FS="$MA" bash "$HERE/postdeploy.sh" 2>&1 | sed -n '/=== 0\./,/file doc/p')
+if printf '%s\n' "$O" | grep -q 'moc do 2026-10-05 08:00:00 (first_deployed)'; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' "moc do phai lay first_deployed, duoc: $(printf '%s' "$O" | head -2 | tr '\n' ' ')"
+fi
+# Va phai NOI RA rang deploy lan cuoi khac moc — khong noi thi hai may cho hai
+# cua so khac nhau ma trong y nhau.
+if printf '%s\n' "$O" | grep -q 'deploy lan cuoi 2026-10-06 10:00:00'; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' "phai in deployed= khi no khac moc do"
+fi
+
+# 2. VERSION CU (khong co `first_deployed`) -> roi xuong `deployed`, va PHAI noi
+#    ra la dang dung moc cu. Im lang thi so lieu hep hon ma khong ai biet.
+printf 'sha=bbb2222\ndeployed=2026-10-06 11:00:00\nhost=h\n' > "$MA/VERSION"
+O2=$(env A="$MA" L="$MA" FS="$MA" bash "$HERE/postdeploy.sh" 2>&1 | sed -n '/=== 0\./,/file doc/p')
+if printf '%s\n' "$O2" | grep -q 'moc do 2026-10-06 11:00:00 (deployed (VERSION cu'; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' "VERSION cu phai roi xuong deployed VA noi ra"
+fi
+
+# 3. `deploy.sh` GIU moc khi sha KHONG doi, DOI khi sha doi. Kiem bang chinh ba
+#    dong logic do chu khong chay deploy.sh (no rsync vao /usr/local).
+for _c in '_prev_sha=$(sed -n' '_prev_first=$(sed -n' 'first_deployed=$_first'; do
+    if grep -qF "$_c" "$HERE/../../../nginx/deploy.sh" 2>/dev/null; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1)); printf 'HONG  %s\n' "deploy.sh thieu: $_c"
+    fi
+done
+# Dieu kien GIU moc phai co ca ba phan — thieu phan giua thi mot VERSION cu lam
+# `_first` rong di vao tep va `date -d ""` o postdeploy tra loi.
+if grep -q 'n "\$_prev_first" \] && \[ -n "\$_prev_sha" \] && \[ "\$_prev_sha" = "\$_now_sha" \]' \
+       "$HERE/../../../nginx/deploy.sh" 2>/dev/null; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' "dieu kien giu moc phai kiem CA BA: co moc cu, co sha cu, sha khong doi"
+fi
+rm -rf "$MA"
+
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

@@ -268,11 +268,36 @@ find "$TARGET_DIR/waf/scripts" "$TARGET_DIR/intelligence/threat/scripts" \
 #
 # `git -C` chu khong phai `cd`: deploy.sh co the duoc goi tu bat ky thu muc nao.
 # Moi gia tri deu co duong lui, vi mot may thieu `git` van phai deploy duoc.
+# MOC CHO PHEP DO: `deployed=` bi ghi lai MOI lan deploy, nen moi lan chay
+# `deploy.sh` xoa cua so do ve 0 phut — ke ca khi ban moi KHONG cham module dang
+# duoc do. Nguoi dung bat 06-10: 05-10 deploy 5 lan trong mot ngay nen MOI so
+# lieu 24h deu khong bao gio do duoc; `335f395` chi sua `fim.sh` ma van reset cua
+# so cua `adm_use` thuoc `0570ea2`.
+#
+# `first_deployed=` chi doi khi `sha` doi. Mot deploy LAI cung sha (reload, sua
+# quyen, chay lai sau loi) giu nguyen moc, nen cua so do khong bi xoa.
+#
+# Doc sha CU tu VERSION hien co TRUOC khi ghi de — sau khi ghi thi khong con.
+_prev_sha=$(sed -n 's/^sha=//p' "$TARGET_DIR/VERSION" 2>/dev/null || :)
+_prev_first=$(sed -n 's/^first_deployed=//p' "$TARGET_DIR/VERSION" 2>/dev/null || :)
+_now_sha=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Ba dieu kien PHAI cung dung de giu moc cu: co moc cu, co sha cu, va sha KHONG
+# doi. Thieu dieu kien giua thi mot VERSION cu (ban truoc ban nay, chua co
+# `first_deployed=`) se lam moc rong di vao tep va `date -d ""` o postdeploy tra
+# loi — nen fallback ve `now` chu khong de rong.
+if [ -n "$_prev_first" ] && [ -n "$_prev_sha" ] && [ "$_prev_sha" = "$_now_sha" ]; then
+    _first="$_prev_first"
+else
+    _first=$(date '+%Y-%m-%d %H:%M:%S')
+fi
 {
     echo "sha=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "subject=$(git -C "$REPO_DIR" log -1 --pretty=%s 2>/dev/null || echo unknown)"
     echo "committed=$(git -C "$REPO_DIR" log -1 --date=iso --pretty=%cd 2>/dev/null || echo unknown)"
     echo "deployed=$(date '+%Y-%m-%d %H:%M:%S')"
+    # Moc cho PHEP DO (xem khoi tren). `deployed=` giu nguyen y nghia "lan deploy
+    # nay" — hai moc tra loi hai cau hoi khac nhau, khong thay the nhau.
+    echo "first_deployed=$_first"
     echo "host=$(hostname)"
 } > "$TARGET_DIR/VERSION"
 chmod 0644 "$TARGET_DIR/VERSION"
