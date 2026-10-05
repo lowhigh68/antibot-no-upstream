@@ -17,20 +17,52 @@ local function now()
     return ngx.now and ngx.now() or ngx.time()
 end
 
-local function log_dict_error(name)
+-- Hai nguyen nhan KHAC NHAU, truoc day gop vao mot thong diep:
+--
+--   1. dict KHONG duoc khai bao  -> `ngx.shared.antibot_cache` la `nil`
+--   2. dict DAY (het memory)     -> `dict:add` tra loi khac "exists"
+--
+-- Ban truoc noi "missing/unavailable: check nginx.conf and reload" cho CA HAI.
+-- Do 06-10 tren 171-96: 17 luot `adm=*dict_error` trong 94.121 mau, tat ca la
+-- ca 2 — va nguoi doc log duoc chi di sua `nginx.conf` cho mot thu DA khai bao
+-- dung. Mot canh bao chi dung sai cho con te hon khong canh bao.
+--
+-- `last_dict_error` la bien PER-WORKER: moi worker im lang rieng 60 giay, nen
+-- `error.log` ra 0 DONG trong khi `antibot.log` co 17 luot. Do la ho loi
+-- `feedback_alert_reaches_nobody` — lan thu nam. Nen dem vao `antibot_stats`
+-- (dict RIENG, tap khoa huu han nen khong chiu cung ap luc) de `postdeploy.sh`
+-- doc duoc con so THAT, khong phu thuoc vao dong log co bi nuot hay khong.
+local function log_dict_error(name, kind)
+    -- Dem TRUOC rate-limit: bo dem phai dung ke ca khi dong log bi bo.
+    local stats = ngx.shared and ngx.shared.antibot_stats
+    if stats then
+        local skey = "l7adm:dicterr:" .. (kind or "unknown")
+        -- TTL ro rang: bo dem de DOC trong mot cua so, khong tich luy vinh vien.
+        -- 86400 = mot ngay, khop cua so cua `postdeploy.sh`. Stub cua bo test
+        -- cong `clock + ttl` nen thieu TTL la loi runtime — production thi
+        -- `add` khong TTL nghia la KHONG BAO GIO het han, cung khong phai y.
+        if not stats:incr(skey, 1) then stats:add(skey, 1, 86400) end
+    end
     local t = now()
     if t - last_dict_error >= 60 then
         last_dict_error = t
-        ngx.log(ngx.ERR,
-            "[l7_admission] lua_shared_dict missing/unavailable: ", name,
-            " (check nginx.conf and reload)")
+        if kind == "full" then
+            ngx.log(ngx.ERR,
+                "[l7_admission] lua_shared_dict antibot_cache DAY (het memory): ",
+                name, " -- admission FAIL-OPEN, request khong duoc dem. ",
+                "Tang dung luong trong nginx.conf, dict KHONG thieu khai bao.")
+        else
+            ngx.log(ngx.ERR,
+                "[l7_admission] lua_shared_dict missing/unavailable: ", name,
+                " (check nginx.conf and reload)")
+        end
     end
 end
 
 local function dictionary()
     local shared = ngx.shared or {}
     local dict = shared.antibot_cache
-    if not dict then log_dict_error("antibot_cache") end
+    if not dict then log_dict_error("antibot_cache", "missing") end
     return dict
 end
 
@@ -124,18 +156,33 @@ local function static_target_exists(ctx, dict, uri)
     -- normalize va KHONG chua query. Giu nguyen de khoa cache on dinh.
     local ckey = "adm:fx:" .. root .. "|" .. uri
     if dict then
-        local cached = dict:get(ckey)
-        if cached == 1 then return true end
-        if cached == 0 then return false end
+        -- CHI chieu `true` duoc cache (xem khoi duoi), nen KHONG con nhanh
+        -- `cached == 0`. Giu lai nhanh do se la ma chet: no doi mot gia tri
+        -- khong con duoc ghi o dau. `nil` = chua biet -> `io.open` lai.
+        if dict:get(ckey) == 1 then return true end
     end
 
     local fh = io.open(root .. uri, "r")
     local exists = false
     if fh then fh:close(); exists = true end
 
-    if dict then
+    -- CHI cache chieu TRUE, va day la cho sai ro nhat cua ban 85f7448: no cache
+    -- CA HAI ket qua, ma chi chieu `true` co tap HUU HAN.
+    --
+    -- Tep co that = tap dong (anh, css, js cua site) -> cache dang.
+    -- Tep KHONG ton tai = tap VO HAN do ke gui quyet dinh. Mot bot quet URL sinh
+    -- URI moi lien tuc, va cache chung lai chinh la tu lam day dict.
+    --
+    -- Do 06-10 tren 171-96: 17 luot `dict_error` trong 94.121 mau, va 99,98%
+    -- request duong dan WP la do file KHONG ton tai (project_wp_path_fp). Tuc
+    -- gan nhu MOI khoa probe la mot khoa cua chieu `false`.
+    --
+    -- Gia phai tra: nhanh `false` phai `io.open` lai moi request. Do la mot
+    -- `stat` tren trang cache cua kernel — re hon han viec day khoa counter cua
+    -- `admission`/`circuit_breaker` ra khoi dict bang LRU.
+    if dict and exists then
         local ttl = tonumber((conf().static_probe_ttl)) or 30
-        dict:set(ckey, exists and 1 or 0, ttl)
+        dict:set(ckey, 1, ttl)
     end
     return exists
 end
@@ -276,7 +323,9 @@ local function apply_check(ctx, dict, prefix, spec, reason, c, t)
     -- Shared-dict pressure khong duoc bien thanh outage. Core budgets khac van
     -- tiep tuc bao ve; error duoc log rate-limited de operator thay.
     if over.reason == "dict_error" then
-        log_dict_error(final_reason .. ":" .. tostring(over.error))
+        -- `dict:add` tra loi khac "exists" = het memory. Phan biet o day de
+        -- thong diep chi dung cho, va de bo dem tach hai nguyen nhan.
+        log_dict_error(final_reason .. ":" .. tostring(over.error), "full")
         return false, false
     end
 

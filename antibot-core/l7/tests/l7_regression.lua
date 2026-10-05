@@ -108,7 +108,12 @@ function Dict:incr(key, delta)
     self.data[key] = value
     return value
 end
+-- `full`: mo phong dict HET MEMORY. OpenResty tra loi khac "exists" o `add` khi
+-- khong con cho, va do la duong DUY NHAT tien toi `dict_error` trong
+-- `admission` — fail-open, request di qua ma KHONG duoc dem. Lo do do thuc tren
+-- 171-96 (17 luot/94.121 mau) ma truoc 06-10 KHONG co mot ca test nao.
 function Dict:add(key, value, ttl)
+    if self.full then return nil, "no memory" end
     if self:_live(key) ~= nil then return nil, "exists" end
     self.data[key] = value
     self.expiry[key] = clock + ttl
@@ -370,26 +375,32 @@ with_fake_disk("/real.jpg", function()
     eq(actual, false, "resource_actual=false khi tep khong co")
     eq(last_exit, true, "static miss bi chan theo tran dynamic (3/giay)")
     eq(exits[#exits], 429, "static miss qua tran tra 429")
-    -- Cache: 4 request cung duong dan chi ton MOT `io.open`. Day la dieu lam
-    -- phep do nay re — mot flood vao cung URI khong tao 1 syscall/request.
-    eq(probe_opens, 1, "ket qua probe duoc cache trong cua so TTL")
+    -- KHONG cache chieu `false` (06-10): tep khong ton tai la tap VO HAN do ke
+    -- gui quyet dinh, nen cache chung la tu lam day `antibot_cache` — do that
+    -- tren 171-96: 17 luot `adm=*dict_error`, va `dict:set` khi het memory thi
+    -- OpenResty TU LRU-evict khong bao loi, nen no day khoa counter ra ngoai.
+    -- Nen 4 request vao cung URI thieu = 4 lan `io.open`. Mot `stat` tren trang
+    -- cache cua kernel re hon han viec mat bo dem ngan sach.
+    eq(probe_opens, 4, "static MISS KHONG duoc cache (tap vo han)")
 end)
 
--- Ca 2b: cache PHAI het han. Khong co TTL thi mot tep vua upload bi coi la
--- thieu MAI MAI — khach them anh moi se an ngan sach dynamic vinh vien. Dot
--- bien `ttl -> nil` khong bi ca 2 bat, nen bat bien nay can phep do rieng:
--- qua moc TTL thi probe chay LAI.
-fake_ngx.var.uri = "/fake.jpg"
+-- Ca 2b: cache chieu TRUE phai co TTL. Khong co TTL thi mot tep bi xoa van
+-- duoc coi la con MAI MAI. Dot bien `ttl -> nil` khong bi ca 1 bat, nen bat
+-- bien nay can phep do rieng — va no phai dung duong dan CO THAT, vi chieu
+-- `false` khong con vao cache nua.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.uri = "/real.jpg"
 with_fake_disk("/real.jpg", function()
     local c = { ip = "198.51.100.2b", req_class = "resource", req = {} }
     admission.run(c)
-    -- `with_fake_disk` reset bo dem, nhung cache tu ca 2 VAN con, nen request
-    -- nay khong stat lai -> 0. Do chinh la dieu muon do.
-    eq(probe_opens, 0, "trong TTL: dung cache tu truoc, khong stat lai")
+    eq(probe_opens, 1, "lan dau: stat that")
+    local c1 = { ip = "198.51.100.2b", req_class = "resource", req = {} }
+    admission.run(c1)
+    eq(probe_opens, 1, "trong TTL: dung cache, khong stat lai")
     clock = clock + 31          -- static_probe_ttl = 30
     local c2 = { ip = "198.51.100.2b", req_class = "resource", req = {} }
     admission.run(c2)
-    eq(probe_opens, 1, "qua TTL: probe chay lai (tep moi upload duoc nhan ra)")
+    eq(probe_opens, 2, "qua TTL: probe chay lai (tep bi xoa duoc nhan ra)")
 end)
 
 -- Ca 3: KHONG do duoc (document_root rong) -> PHAI fail-open ve `resource`.
@@ -959,5 +970,45 @@ ok(verify_handler:find('run_endpoint("verify")', 1, true) ~= nil,
    "verify handler invokes Lua-only endpoint admission")
 ok(beacon_handler:find('run_endpoint("beacon")', 1, true) ~= nil,
    "beacon handler invokes Lua-only endpoint admission")
+
+-- ── dict DAY: fail-open co bo dem, va thong diep chi dung cho ────────
+--
+-- Lo do that tren 171-96 06-10: 17 luot `adm=*dict_error` trong 94.121 mau, ma
+-- `error.log` ra 0 DONG — `last_dict_error` la bien PER-WORKER voi rate-limit
+-- 60 giay, nen moi worker im lang rieng. Truoc ban nay KHONG co mot ca test nao
+-- cho nhanh nay, nen ca fail-open ca duong ra deu chua tung duoc kiem.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_stats = Dict.new()
+fake_ngx.shared.antibot_cache.full = true
+clock = 3000
+exits = {}
+fake_ngx.var.uri = "/x.php"
+local dfull = { ip = "203.0.113.90", req_class = "navigation", req = {} }
+local _, dfull_exit = admission.run(dfull)
+-- FAIL-OPEN la co y: shared-dict het cho khong duoc bien thanh outage.
+eq(dfull_exit, false, "dict day -> fail-open, KHONG chan")
+ok(tostring(dfull.admission_reason or ""):find("dict_error", 1, true) ~= nil,
+   "dict day ghi reason *_dict_error de log doc duoc")
+-- BO DEM phai tang KE CA khi dong log bi rate-limit nuot. Day la diem khac biet
+-- that: `error.log` khong dang tin, `antibot_stats` thi dang.
+-- MOT request dung NHIEU truc (ip x short/long, host_group x short/long,
+-- route), va moi truc goi `bucket_incr` rieng — nen mot request voi dict day
+-- sinh NHIEU luot dem, khong phai mot. Do la hanh vi that, va no noi rang 17
+-- DONG trong antibot.log tuong ung nhieu hon 17 lan loi noi bo.
+local nfull = fake_ngx.shared.antibot_stats:get("l7adm:dicterr:full")
+local nfull = fake_ngx.shared.antibot_stats:get("l7adm:dicterr:full")
+ok(nfull and nfull >= 1, "bo dem antibot_stats tang khi dict day")
+-- Luot thu hai trong CUNG giay: dong log bi rate-limit bo, nhung bo dem KHONG
+-- duoc bo. Dot bien "dem SAU rate-limit" chi bi bat boi ca nay.
+local dfull2 = { ip = "203.0.113.91", req_class = "navigation", req = {} }
+admission.run(dfull2)
+ok(fake_ngx.shared.antibot_stats:get("l7adm:dicterr:full") > nfull,
+   "bo dem tang ca khi dong log bi rate-limit nuot")
+-- Hai nguyen nhan phai dem RIENG: "thieu khai bao" va "day" can hai cach xu ly
+-- khac nhau (sua nginx.conf vs tang dung luong).
+eq(fake_ngx.shared.antibot_stats:get("l7adm:dicterr:missing"), nil,
+   "dict day KHONG duoc dem vao o 'missing'")
+fake_ngx.shared.antibot_cache.full = nil
+
 
 print(string.format("L7_REGRESSION_OK %d", passed))
