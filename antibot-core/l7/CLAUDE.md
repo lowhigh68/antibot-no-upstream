@@ -102,11 +102,31 @@ is unreadable — the breaker would be dead code, and that must be fixed before
 | 10 | yes | 3 |
 | 30 | yes | 1 |
 
-Below `min_dynamic_rps` nothing opens, deliberately: a host at 1 req/s cannot
-drain the PHP pool, so a 503 there is pure FP. But on this fleet most hosts sit
-*under* that floor (measured on 171-96, 2026-10-04: `phuson.vn` 752 hits/24h ≈
-0.009 req/s), so the breaker protects only the few largest hosts. Do not expect
-it to rescue every tenant.
+Below `min_samples` nothing opens, deliberately: a host that cannot fill 30
+samples in 10s cannot drain the PHP pool either, so a 503 there is pure FP.
+`min_samples` is the ONLY volume gate — `rps` is derived telemetry
+(`total/window`), never a second threshold.
+
+Shadow distribution measured 2026-10-05 (samples per 10s window, from `cbn=`):
+
+| samples/window | 171-96 | 28-246 |
+|---|---|---|
+| 0–2 | 444 | 425 |
+| 3–4 | 63 | 135 |
+| 5–9 | 19 | 36 |
+| 10–19 | 9 | 0 |
+| 20–43 | 14 | 0 |
+| **≥30 (eligible)** | **6** | **0** |
+
+So the floor is selective, not dead: 171-96 peaks at 43 samples/10s and crosses
+it in about 1% of windows — the windows where a host actually has sustained
+load. At exactly 30 samples, `hard_error_ratio = 0.30` demands **9** real
+502/503/504 in 10s before the state machine moves.
+
+Do not measure this floor with per-domain hits/24h. `phuson.vn` is 752 hits/24h
+≈ 0.009 req/s, which reads as "far under the floor", yet the same machine's
+10-second windows reach 43 samples. The breaker's unit is the window, not the
+day; a daily average hides exactly the bursts it exists for.
 
 **Slow 200 never sheds.** `slow_candidate_ratio` only sets `cbslowcand`.
 Measured before that split: at `slow_ratio = 0.60`, a heavy WordPress site with

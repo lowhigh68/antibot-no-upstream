@@ -13,13 +13,14 @@
 -- All state lives in the existing `antibot_cache` shared dictionary.  Access
 -- phase performs one state lookup; log phase updates short fixed buckets and
 -- elects at most one evaluator per host/second.  Evaluation reads only fully
--- completed one-second buckets.  This makes a configured 3 req/s equal a real
--- 30 samples/10 seconds, at the deliberate cost of about one second detection
--- latency.  Same-second bursts belong to admission.lua.  No Redis/cosocket is
--- used.
+-- completed one-second buckets.  The only volume gate is `min_samples`; RPS is
+-- derived telemetry (`total/window`), not a second threshold.  With the default
+-- 30 samples/10 seconds this is an observed average of 3 req/s, at the
+-- deliberate cost of about one second detection latency.  Same-second bursts
+-- belong to admission.lua.  No Redis/cosocket is used.
 --
 -- SAN LUU LUONG, do tren harness voi backend chet 100% trong 60 giay:
---   1-2 req/s  -> KHONG BAO GIO mo (duoi min_dynamic_rps)
+--   1-2 req/s  -> KHONG BAO GIO mo (khong du 30 mau/10s)
 --   3 req/s    -> mo o giay 10
 --   4 req/s    -> giay 8
 --   10 req/s   -> giay 3
@@ -397,13 +398,11 @@ end
 
 local function evaluate_thresholds(c, metrics)
     local min_samples = math.max(tonumber(c.min_samples) or 30, 1)
-    local min_rps = math.max(tonumber(c.min_dynamic_rps) or 3, 0)
     local slow_setting = c.slow_candidate_ratio
     if slow_setting == nil then slow_setting = c.slow_ratio end
     local slow_ratio = clamp(slow_setting, 0, 1)
     local hard_ratio = clamp(c.hard_error_ratio, 0, 1)
     local eligible = metrics.total >= min_samples
-                 and metrics.rps >= min_rps
     return {
         eligible       = eligible,
         hard            = eligible and metrics.hard_ratio >= hard_ratio,

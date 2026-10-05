@@ -477,7 +477,7 @@ local old_circuit = cfg.l7_circuit_breaker
 cfg.l7_circuit_breaker = {
     enabled = true, mode = "shadow", status = 503, retry_after = 2,
     window_seconds = 10, bucket_grace_seconds = 4, eval_interval = 1,
-    min_samples = 2, min_dynamic_rps = 0.1,
+    min_samples = 2,
     slow_seconds = 1, hard_error_ratio = 0.5,
     slow_candidate_ratio = 0.5,
     open_seconds = 2, max_open_seconds = 8,
@@ -748,7 +748,6 @@ eq(ignored.circuit_evaluated, nil,
 -- request dau giay 11 voi dung n=30, rps=3.
 fake_ngx.shared.antibot_cache = Dict.new()
 cfg.l7_circuit_breaker.min_samples = 30
-cfg.l7_circuit_breaker.min_dynamic_rps = 3
 cfg.l7_circuit_breaker.hard_error_ratio = 1
 clock = 1000
 local exact3_last
@@ -770,6 +769,35 @@ eq(exact3_trip.circuit_transition, "closed>open",
    "dung 3rps mo sau 10 bucket hoan tat")
 eq(exact3_trip.circuit_total, 30, "3rps co dung 30 mau")
 eq(exact3_trip.circuit_rps, 3, "config 3rps khop hanh vi 3rps")
+
+-- Tach `min_samples` khoi RPS dan xuat: cung 30 mau nhung cua so 20s chi co
+-- rps=1.5 van PHAI du dieu kien. Neu ai khoi phuc cong RPS cu voi fallback 3,
+-- ca nay do. Neu ai xoa cong min_samples, cac assertion trong vong lap do som.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.l7_circuit_breaker.window_seconds = 20
+clock = 1050
+local sample_gate_last
+for sec = 0, 9 do
+    for hit = 1, 3 do
+        clock = 1050 + sec + hit / 10
+        cbvars("sample-gate.test", "503", "0.100")
+        sample_gate_last = cbctx("dynamic")
+        circuit.after(sample_gate_last)
+        eq(sample_gate_last.circuit_transition, nil,
+           "min_samples ngan trip som du hard ratio=1")
+    end
+end
+clock = 1060.1
+cbvars("sample-gate.test", "503", "0.100")
+local sample_gate_trip = cbctx("dynamic")
+circuit.after(sample_gate_trip)
+eq(sample_gate_trip.circuit_transition, "closed>open",
+   "30 mau la du du rps dan xuat chi 1.5")
+eq(sample_gate_trip.circuit_total, 30,
+   "cua so 20s van dung cong min_samples=30")
+eq(sample_gate_trip.circuit_rps, 1.5,
+   "rps chi la telemetry total/window, khong phai cong")
+cfg.l7_circuit_breaker.window_seconds = 10
 
 -- Circuit breaker khong hua chan burst duoi mot giay: evaluator dau giay thay
 -- cua so cu. Neu traffic con tiep tuc sang giay sau, no moi thay tron burst;

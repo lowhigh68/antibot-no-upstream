@@ -464,12 +464,28 @@ _M.l7_circuit_breaker = {
     bucket_grace_seconds = 10,
     eval_interval        = 1,
 
-    -- Evaluator reads the previous ten COMPLETE one-second buckets.  Therefore
-    -- 3 req/s means exactly 30 samples/10s, with about one second detection
-    -- latency.  Same-second bursts are admission.lua's responsibility.
-    -- Initial SHADOW values, not production capacity claims.
+    -- PHAN PHOI SHADOW DO TREN HAI MAY (mau trong cua so 10 giay):
+    --
+    --   mau/cua so       171-96       28-246
+    --   0-2                 444          425
+    --   3-4                  63          135
+    --   5-9                  19           36
+    --   10-19                 9            0
+    --   20-43                14            0
+    --   >=30                  6            0
+    --
+    -- Dinh do duoc la 43 mau/10s tren 171-96; 6 cua so >=30 chiem xap xi
+    -- 1% tap cua so cua may do. `min_samples=30` vi vay la san chon loc, khong
+    -- phai code ngu: no van bat duoc duoi phan phoi tai thoi diem host co tai
+    -- lien tuc. Voi dung 30 mau, `hard_error_ratio=0.30` doi hoi 9 loi
+    -- 502/503/504 trong 10 giay moi mo state machine.
+    --
+    -- Day la CONG LUU LUONG DUY NHAT. `rps=total/window` van duoc log de do,
+    -- nhung khong co cong RPS thu hai: voi window co dinh, them ca hai chi la
+    -- viet cung mot dieu kien hai lan va lam nguoi van hanh tuong co hai tin
+    -- hieu doc lap. Evaluator doc bucket da hoan tat nen co ~1s detection lag;
+    -- burst cung giay la trach nhiem cua admission.lua.
     min_samples          = 30,
-    min_dynamic_rps      = 3,
 
     -- Hard failures are the only state-machine trigger.
     hard_error_ratio     = 0.30, -- only 502/503/504
