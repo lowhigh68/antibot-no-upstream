@@ -27,6 +27,8 @@ add("dotfile_exposed", "exposure", "uri", "generic", "block", "enforce",
     100, 5, 0.99, { "path.forbidden", "exposure.secret" })
 add("dump_exposed", "exposure", "uri", "generic", "block", "enforce",
     100, 5, 0.99, { "path.forbidden", "exposure.backup" })
+add("inc_exposed", "exposure", "uri", "generic", "block", "enforce",
+    100, 5, 0.99, { "path.forbidden", "path.executable" })
 add("wellknown_exec", "exposure", "uri", "generic", "block", "enforce",
     100, 5, 0.99, { "path.forbidden", "path.executable" })
 

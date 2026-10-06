@@ -315,6 +315,35 @@ local EXPOSED_CASES = {
  "KHONG duoc mien: ngoai le chi khop khi /.well-known/ o DAU uri. Ghep ba thu " ..
  "doan (ten webshell + PATH_INFO + duong mien tru), thay tren CA SAU may"},
 {"/style.css",  nil, nil, "dau cham khong dung sau dau /"},
+-- ── `.inc`: CA THAT tu fleet 06-10, va ca FP cua framework ──────────
+--
+-- Nhanh (a) TEN chua `config` — bon ten nay do duoc tren CA 6 MAY:
+{"/wp-config.inc", nil, "inc_exposed", "CA THAT — 6/6 may"},
+{"/config.inc",    nil, "inc_exposed", "CA THAT — 6/6 may"},
+{"/wp-config.php.inc", nil, "inc_exposed", "CA THAT — doi duoi hai lan"},
+{"/config.php.inc",    nil, "inc_exposed", "CA THAT — 168-123"},
+-- Nhanh (a) khop ke ca o do sau > 1: ten la bang chung du manh.
+{"/app/etc/local-config.inc", nil, "inc_exposed",
+ "ten chua `config` thi do sau khong cuu — thu vien khong dat ten the nay"},
+-- Nhanh (b) DO SAU 0-1, khong can `config`:
+{"/shell.inc",     nil, "inc_exposed", "do sau 0 — ai do bo vao webroot"},
+{"/inc/shell.inc", nil, "inc_exposed", "do sau 1"},
+-- FP PHAI TRANH — do 06-10 tren 168-123: Magento co 1.598 tep `.phtml`/`.inc`
+-- trong `app/design` + `downloader/template`. Chan chung la lam chet mot site
+-- THAT, va `.htaccess` cua Magento trong `app/` da chan san (0 request toi
+-- `app/design` trong log).
+{"/app/design/frontend/base/default/template/page/html.inc", nil, nil,
+ "Magento template — do sau 7, khong co `config` trong ten"},
+{"/lib/Zend/Db/Statement.inc", nil, nil, "thu vien framework, do sau 3"},
+{"/includes/class/wp-db.inc",  nil, nil, "thu vien, do sau 2"},
+{"/downloader/template/x.inc", nil, nil, "Magento downloader, do sau 2"},
+-- `dump` THANG `.inc` khi khop ca hai: no la ban sao luu, khong phai ma dang
+-- duoc phuc vu — hai ket luan khac nhau trong log.
+{"/config.inc.bak", nil, "dump_exposed",
+ "dump chay TRUOC: `.bak` la ban sao luu, nhan dung hon cho nguoi doc log"},
+-- `.inc` trong `/.well-known/` — dotfile duoc mien nhung `.inc` do sau 1 thi
+-- khop nhanh (b) truoc khi toi phep mien.
+{"/.well-known/x.inc", nil, "inc_exposed", "do sau 1 duoi mot thu muc dotfile"},
 {"/backup.sql", nil, "dump_exposed", "mot .sql ro ra la mat tron database"},
 {"/db.sql.gz",  nil, "dump_exposed", ""},
 {"/site.wpress",nil, "dump_exposed", "dinh dang All-in-One WP Migration"},

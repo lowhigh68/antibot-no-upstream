@@ -49,11 +49,45 @@ local RX_PHP_EXEC = [[\.(?:php[0-9]?|phtml|phar|pht|phps)(?=[/;.\\]|$)]]
 -- mục mà kế hoạch đã bác bỏ, chỉ khác là lần này liệt kê phía cho phép.
 local RX_DUMP = [[\.(?:sql|wpress|bak|old|orig|save|swp|swo)(?:\.(?:gz|bz2|xz))?$]]
 
+
+-- `.inc` — CO DIEU KIEN, khong phai moi `.inc` o moi noi.
+--
+-- `.inc` KHAC `.sql`/`.bak`: no vua la ten file cau hinh bi doi duoi, vua la
+-- duoi thu vien chinh thuc cua nhieu framework. Do 06-10 tren 168-123: Magento
+-- co 1.598 tep trong `app/design` + `downloader/template` — chan moi `.inc` se
+-- la FP tren mot site that.
+--
+-- Nen hai nhanh, moi nhanh mot ly do rieng:
+--
+--   (a) TEN chua `config`  -> `wp-config.inc`, `config.inc`, `wp-config.php.inc`,
+--       `config.php.inc`. Do tren CA 6 MAY, dung cac ten nay: day la dang doi
+--       duoi de nhin nhu "khong phai PHP" nhung van bi FPM chay (truoc 06-10
+--       `security.limit_extensions` CO `.inc`). Thu vien framework khong dat
+--       ten `config.inc` o webroot.
+--
+--   (b) DO SAU 0 hoac 1 tu webroot -> `/x.inc`, `/inc/x.inc`. Thu vien that nam
+--       sau hon (`app/design/.../x.inc`, `lib/Zend/.../x.inc`,
+--       `includes/class/.../x.inc`). Gioi han do sau la cach tach "tep ai do bo
+--       vao webroot" khoi "thu vien cua framework" ma KHONG phai liet ke ten
+--       framework — mot danh sach ten se lac hau, mot bat bien ve do sau thi
+--       khong.
+--
+-- Hai nhanh DOC LAP: `app/config.inc` khop (a) du do sau 1; `/shell.inc` khop
+-- (b) du khong co `config`.
+--
+-- KHONG gop vao `RX_DUMP`: `dump_exposed` noi "dump/backup — ro ra la mat tron
+-- database", con day la "ma PHP phuc vu duoi duoi khac". Hai ket luan khac nhau
+-- trong log, va gop lai thi khong doc duoc cai nao dang xay ra.
+local RX_INC_CONFIG = [[(?:^|/)[^/]*config[^/]*\.inc$]]
+local RX_INC_SHALLOW = [[^/(?:[^/]+/)?[^/]+\.inc$]]
+
 local RULES = {
     dotfile_exposed = { action = "block", score = 0,
         why = "Dotfile (.env / .git/ / .htpasswd) khong bao gio duoc phuc vu" },
     dump_exposed    = { action = "block", score = 0,
         why = "Dump/backup (.sql .wpress .bak) — ro ra la mat tron database" },
+    inc_exposed     = { action = "block", score = 0,
+        why = "`.inc` o webroot hoac ten `config` — ma PHP phuc vu duoi duoi khac" },
     wellknown_exec  = { action = "block", score = 0,
         why = "PHP trong /.well-known/ — RFC 8615 chi chua metadata tinh" },
 }
@@ -68,6 +102,13 @@ function _M.check(uri)
     local low = uri:lower()
 
     if ngx.re.find(low, RX_DUMP, "jo") then return "dump_exposed" end
+
+    -- `.inc` SAU `dump`: mot `/config.inc.bak` khop ca hai, va `dump_exposed` la
+    -- nhan dung hon (no la ban sao luu, khong phai ma dang duoc phuc vu).
+    if ngx.re.find(low, RX_INC_CONFIG, "jo")
+       or ngx.re.find(low, RX_INC_SHALLOW, "jo") then
+        return "inc_exposed"
+    end
 
     -- `/.well-known/` được miễn `dotfile_exposed` — nhưng CHỈ cho nội dung tĩnh.
     --
