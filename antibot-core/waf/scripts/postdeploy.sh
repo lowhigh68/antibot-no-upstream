@@ -927,3 +927,52 @@ EOT
     echo "  Go handler PHP = .php tai ve dang TEXT thay vi chay. Khong phai duong"
     echo "  chay ma, nen gia tri la DAU HIEU DA BI XAM NHAP."
 fi
+echo
+echo "=== 23. lua_shared_dict: cau hinh tren DIA vs cai DANG CHAY ==="
+# ── VI SAO CO MUC NAY ────────────────────────────────────────────────
+#
+# `nginx -s reload` KHONG cap phat lai `lua_shared_dict`: zone duoc cap luc
+# MASTER khoi dong. Nen mot thay doi kich thuoc trong `nginx.conf` co the nam
+# tren dia HAI THANG ma khong co hieu luc, va khong mot dong log nao bao.
+#
+# Do 06-10 tren hai may: `nginx.conf` ghi `antibot_cache 64m` nhung master khoi
+# dong tu 24/07 va 10/08. Dict that van 5m, `adm=*dict_error` van xay ra, va hai
+# phep do noi hai dieu trai nhau — endpoint bao `dicterr_total=0` (bo dem trong
+# dict 1m cung chua duoc cap lai) trong khi log co dong moi.
+#
+# So MOC KHOI DONG cua master voi MOC SUA `nginx.conf`. Khong doc kich thuoc
+# dang chay duoc (nginx khong phoi ra), nen day la phep do gian tiep DUY NHAT —
+# va no du: conf moi hon master thi CHAC CHAN co thay doi chua nap.
+NGX_CONF="${POSTDEPLOY_NGINX_CONF:-/usr/local/openresty/nginx/conf/nginx.conf}"
+NGX_PID="${POSTDEPLOY_NGINX_PID:-/usr/local/openresty/nginx/logs/nginx.pid}"
+if [ ! -r "$NGX_CONF" ]; then
+    echo "  KHONG DOC DUOC $NGX_CONF -- khong do duoc"
+elif [ ! -r "$NGX_PID" ]; then
+    echo "  KHONG DOC DUOC $NGX_PID -- khong biet master khoi dong luc nao"
+else
+    _mpid=$(head -1 "$NGX_PID" 2>/dev/null | tr -d ' \r\n')
+    _mstart=$(ps -o lstart= -p "${_mpid:-0}" 2>/dev/null | sed 's/^ *//')
+    if [ -z "$_mstart" ]; then
+        echo "  pid $_mpid KHONG CHAY -- pidfile cu, khong do duoc"
+    else
+        _mepoch=$(date -d "$_mstart" +%s 2>/dev/null || echo 0)
+        _cepoch=$(date -r "$NGX_CONF" +%s 2>/dev/null || echo 0)
+        printf '  master khoi dong : %s\n' "$_mstart"
+        printf '  nginx.conf sua    : %s\n' "$(date -d "@$_cepoch" '+%a %b %e %T %Y' 2>/dev/null)"
+        printf '  cac dict khai bao : %s\n' \
+            "$(grep -c 'lua_shared_dict' "$NGX_CONF" 2>/dev/null)"
+        if [ "${_cepoch:-0}" -gt "${_mepoch:-0}" ]; then
+            _h=$(( (_cepoch - _mepoch) / 3600 ))
+            echo "  *** nginx.conf MOI HON master ${_h}h — moi thay doi"
+            echo "      \`lua_shared_dict\` CHUA CO HIEU LUC. Can \`restart\`,"
+            echo "      \`reload\` KHONG cap phat lai zone. ***"
+        else
+            echo "  OK: master khoi dong SAU lan sua conf gan nhat"
+        fi
+    fi
+fi
+echo "  -- CACH DOC --"
+echo "  conf moi hon master  : co thay doi chua nap. Neu thay doi do la KICH"
+echo "                         THUOC dict thi phai \`restart\`, khong \`reload\`"
+echo "  master moi hon conf  : moi khai bao dict dang co hieu luc"
+echo "  (nginx khong phoi ra kich thuoc dang chay, nen day la phep do gian tiep)"

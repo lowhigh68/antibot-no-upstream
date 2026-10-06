@@ -516,5 +516,45 @@ else
 fi
 rm -rf "$MA"
 
+
+printf '\n── muc 23: conf moi hon master -> canh bao ──\n'
+# Lop loi: mot thay doi `lua_shared_dict` nam tren dia MA KHONG CO HIEU LUC, va
+# khong mot dong log nao bao. Do 06-10 tren hai may (64m tren dia, master tu
+# 24/07 va 10/08 -> dict that van 5m, `adm=*dict_error` van xay ra).
+#
+# BA chieu, vi mot ca mot chieu se pass ke ca khi phep so bi dao.
+M23=$(mktemp -d)
+printf 'lua_shared_dict a 1m;\nlua_shared_dict b 2m;\n' > "$M23/nginx.conf"
+# pid cua CHINH bo test: chac chan dang chay, khoi dong TRUOC khi `touch` conf.
+echo $$ > "$M23/nginx.pid"
+e23() {
+    # PHAI truyen A/L/FS: thieu chung thi script thoat o muc 0
+    # (`khong doc duoc VERSION`, rc=2) va muc 23 KHONG BAO GIO in ra — mot
+    # bo test "pass" tren mot muc chua tung chay.
+    A="$R/A" L="$R/L" FS="$R/fs" \
+    POSTDEPLOY_NGINX_CONF="$M23/nginx.conf" POSTDEPLOY_NGINX_PID="$M23/nginx.pid" \
+    bash "$HERE/postdeploy.sh" 2>&1 | sed -n '/=== 23./,$p'
+}
+
+# Chieu 1: conf MOI HON master -> phai canh bao.
+touch "$M23/nginx.conf"
+OUT=$(e23)
+want  "23 conf moi hon -> canh bao CHUA CO HIEU LUC" 'CHUA CO HIEU LUC'
+want  "23 noi ro can restart"                        'Can .restart.'
+want  "23 dem duoc so dict"                          'cac dict khai bao : 2'
+
+# Chieu 2: conf CU HON master -> KHONG duoc canh bao.
+touch -d '2020-01-01' "$M23/nginx.conf"
+OUT=$(e23)
+nwant "23 conf cu hon -> KHONG canh bao" 'CHUA CO HIEU LUC'
+want  "23 conf cu hon -> bao OK"         'master khoi dong SAU'
+
+# Chieu 3: pid KHONG CHAY -> phai noi "khong do duoc", KHONG im lang bao OK.
+echo 999999 > "$M23/nginx.pid"
+OUT=$(e23)
+want  "23 pid chet -> noi khong do duoc" 'khong do duoc'
+nwant "23 pid chet -> KHONG bao OK"      'master khoi dong SAU'
+rm -rf "$M23"
+
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
