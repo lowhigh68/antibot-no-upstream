@@ -1355,4 +1355,57 @@ eq(zctx.swarm_ratio, nil, "swarm: mau so 0 -> khong ghi ti le, khong chia 0")
 eq(zctx.swarm_host_subnets, nil, "swarm: mau so 0 -> khong ghi mau so")
 
 pool.get, pool.put = real_get, real_put
+
+-- ── Bien cua before() va admit() PHAI lech nhau dung mot don vi ───────
+--
+-- `before()` dung `>= limit`, `admit()` dung `> limit`. Nhin rieng thi trong
+-- nhu bat doi xung, va 08-10 chinh toi da doi `before()` sang `>` cho "khop" —
+-- bo kiem `full host bi shed som` bat ngay, va do la bo kiem DUY NHAT chan viec
+-- do. Hai toan tu doc `count` o HAI thoi diem: `before()` truoc moi incr, nen
+-- "day" la `count == limit`; `admit()` sau incr cua chinh no, nen "day" la
+-- `count == limit + 1`. Cung mot trang thai vat ly, hai cach dem.
+--
+-- Ghim bang HANH VI chu khong bang doc ma nguon: tai DUNG trang thai day,
+-- ca hai cong deu phai chan.
+local inv_cfg = cfg.l7_surge_guard
+cfg.l7_surge_guard = {
+    enabled = true, mode = "enforce", status = 503, retry_after = 2,
+    max_inflight = 2, surge_ratio = 0.75, recover_ratio = 0.50,
+    recovery_seconds = 2,
+    slot_bucket_seconds = 60, slot_retention_seconds = 300,
+    state_ttl = 300, sample_interval = 1,
+}
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 900
+exits = {}
+sgvars("bound.test", "0.100")
+
+local b1, b2 = sgctx("dynamic"), sgctx("dynamic")
+surge.admit(b1)
+surge.admit(b2)
+eq(b2.surge_inflight, 2, "bien: host o DUNG limit (2/2)")
+
+-- Cong SOM phai chan: day roi, va chan o day la de khoi ton WAF/Redis.
+local b3 = sgctx("dynamic")
+local _, b3_before = surge.before(b3)
+eq(b3_before, true, "bien: o DUNG limit, before() PHAI chan (truoc WAF)")
+
+-- Cong MUON cung phai chan cung trang thai do, bang bieu thuc khac.
+local b4 = sgctx("dynamic")
+local _, b4_admit = surge.admit(b4)
+eq(b4_admit, true, "bien: o DUNG limit, admit() PHAI chan (sau incr cua no)")
+eq(fake_ngx.shared.antibot_cache:get("sg:bound.test:slot:15"), 2,
+   "bien: request bi chan o admit() da rollback, khong ro slot")
+
+-- Nha mot slot -> con 1/2 -> ca hai cong phai cho qua.
+surge.after(b1)
+local b5 = sgctx("dynamic")
+local _, b5_before = surge.before(b5)
+eq(b5_before, false, "bien: con cho (1/2) -> before() cho qua")
+local _, b5_admit = surge.admit(b5)
+eq(b5_admit, false, "bien: con cho (1/2) -> admit() cho qua")
+
+surge.after(b5)
+surge.after(b2)
+cfg.l7_surge_guard = inv_cfg
 print(string.format("L7_REGRESSION_OK %d", passed))

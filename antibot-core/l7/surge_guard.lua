@@ -331,6 +331,15 @@ end
 -- Acquire one slot immediately before the request is allowed to continue to
 -- content/upstream.  The (limit + 1) request is the first rejected request;
 -- at exactly `limit` all configured slots are occupied but none is revoked.
+--
+-- `admit()` kiem `count > limit` con `before()` kiem `count >= limit`, va hai
+-- toan tu khac nhau do la DUNG: chung doc `count` o hai thoi diem khac nhau.
+-- `before()` doc TRUOC khi co incr nao, nen `count == limit` nghia la "day";
+-- `admit()` doc SAU incr cua chinh request nay, nen "day" la `count == limit+1`.
+-- Hai bieu thuc mo ta CUNG mot trang thai vat ly. Dung sua mot ben cho
+-- "khop" ben kia — doi `before()` sang `>` lam cong som gan nhu khong bao gio
+-- ban (chi ban khi co slot ro), tuc bo han muc dich "tu choi truoc WAF/Redis",
+-- va bo kiem `full host bi shed som` se bat ngay.
 function _M.admit(ctx)
     local c = conf()
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then
