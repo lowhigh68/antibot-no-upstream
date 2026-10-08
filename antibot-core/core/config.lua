@@ -445,6 +445,42 @@ _M.l7_admission = {
     },
 }
 
+-- Per-host dynamic in-flight surge guard.  This closes the main Lua-only gap
+-- between fixed request-rate budgets and the completed-response circuit
+-- breaker: a small number of long dynamic requests can occupy backend capacity
+-- without exceeding requests/second and before any 502/503/504 exists.
+--
+-- The counter is acquired only after WAF/antibot allows the request to proceed
+-- and is released in log phase.  Static hits, subrequests and locally blocked
+-- requests therefore do not consume slots.  It measures dynamic Nginx request
+-- lifetime, not exact PHP-FPM busy workers; `sgdur` versus `sgup` telemetry is
+-- provided to quantify buffering/slow-client overcount before enforcement.
+--
+-- Shadow is mandatory for the initial rollout.  `max_inflight=20` is a
+-- measurement candidate, not a fleet capacity claim.  Tune it from real per-
+-- host distributions and PHP-FPM/Apache capacity before changing to enforce.
+-- All state reuses `antibot_cache`; no Redis or Nginx configuration is added.
+_M.l7_surge_guard = {
+    enabled          = true,
+    mode             = "shadow", -- shadow | enforce | off
+    status           = 503,
+    retry_after      = 2,
+
+    max_inflight     = 20,
+    surge_ratio      = 0.75, -- NORMAL -> SURGE at 15/20 active requests
+    recover_ratio    = 0.50, -- hysteresis: leave SURGE/SHED at <=10
+    recovery_seconds = 2,
+
+    -- Slot counters rotate by start-time bucket.  This bounds a leaked slot
+    -- after worker crash even when the host remains continuously busy; newer
+    -- traffic cannot refresh an old bucket forever.  Requests older than the
+    -- retention horizon deliberately age out of this Lua proxy.
+    slot_bucket_seconds    = 60,
+    slot_retention_seconds = 300,
+    state_ttl              = 300,
+    sample_interval        = 1, -- at most one ordinary row/host/second
+}
+
 -- Per-host backend circuit breaker.  Unlike admission (pre-set request
 -- budgets), this control learns whether Apache/PHP is actually slow or failing
 -- and temporarily sheds only dynamic work for the affected virtual host.

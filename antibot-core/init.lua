@@ -19,6 +19,7 @@ local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
 local l7_circuit         = require "antibot.l7.circuit_breaker"
+local l7_surge           = require "antibot.l7.surge_guard"
 local detection_layer    = require "antibot.detection"
 local bot_lite_verify    = require "antibot.detection.bot.lite_verify"
 local res_ip_counter     = require "antibot.l7.rate.res_ip_counter"
@@ -41,6 +42,9 @@ local STEPS_ADMISSION = {
     -- Per-host backend health gate.  Admission has already classified static
     -- hit vs dynamic/static-miss, so the breaker never penalizes real assets.
     { layer = l7_circuit,        fn = "before"        },
+    -- Cheap early capacity gate.  The actual slot is acquired only after the
+    -- request survives WAF/detection, immediately before content/upstream.
+    { layer = l7_surge,          fn = "before"        },
     -- Redis ban lookup dung SAU local budget: flood tu mot IP da ban khong duoc
     -- phep bien thanh unlimited Redis traffic.
     { layer = ip_ban_check,      fn = "run"           },
@@ -204,6 +208,14 @@ local function waf_signal(ctx)
     return ctx.waf_body_php
 end
 
+-- Acquire a dynamic in-flight slot at the last common point before content.
+-- Keeping this separate from STEPS_ADMISSION is intentional: a request that
+-- WAF/challenge/ban terminates must never look like backend concurrency.
+local function admit_dynamic(ctx)
+    local _, exit = l7_surge.admit(ctx)
+    return exit == true
+end
+
 function _M.run()
     local ctx = ngx.ctx.antibot or {}
     ngx.ctx.antibot = ctx
@@ -243,6 +255,7 @@ function _M.run()
         -- signature; do do van giu duoc fast-path cho traffic thong thuong.
         local _, xf_exit = xfilter_guard.run(ctx)
         if xf_exit then return end
+        admit_dynamic(ctx)
         return
     end
 
@@ -260,25 +273,34 @@ function _M.run()
     -- `verified`. `whitelisted` là quyết định tường minh của người vận hành
     -- (admin rule, LAN, loopback, ip/url whitelist) và WAF không lật quyết định
     -- đó — ranh giới có nguyên tắc, không phải chỗ nào cũng ép.
-    if ctx.whitelisted then return end
-    if ctx.verified and not waf_signal(ctx) then return end
+    if ctx.whitelisted then
+        admit_dynamic(ctx)
+        return
+    end
+    if ctx.verified and not waf_signal(ctx) then
+        admit_dynamic(ctx)
+        return
+    end
 
     local class = ctx.req_class or "unknown"
+    local exited = false
 
     if class == "resource" then
         if run_steps(STEPS_RESOURCE_PRE, ctx) then return end
         -- Claimed crawler ma lite ASN khong xac minh duoc phai di full lane.
         -- Khong duoc giu bot_score=0 roi vao thang resource enforcement.
         if ctx.bot_lite_needs_full then
-            run_steps(STEPS_FULL_DETECTION, ctx)
+            exited = run_steps(STEPS_FULL_DETECTION, ctx)
         else
-            run_steps(STEPS_RESOURCE_FINAL, ctx)
+            exited = run_steps(STEPS_RESOURCE_FINAL, ctx)
         end
     elseif class == "interaction" then
-        run_steps(STEPS_INTERACTION, ctx)
+        exited = run_steps(STEPS_INTERACTION, ctx)
     else
-        run_steps(STEPS_FULL_DETECTION, ctx)
+        exited = run_steps(STEPS_FULL_DETECTION, ctx)
     end
+
+    if not exited then admit_dynamic(ctx) end
 end
 
 function _M.log()
@@ -286,8 +308,10 @@ function _M.log()
     if not ctx then return end
 
     -- Shared-dict only: legal directly in log phase (unlike Redis/cosocket).
-    -- Run before logger so the elected sample/transition is observable in the
-    -- same antibot.log line.
+    -- Release the in-flight slot before logging; circuit learning then records
+    -- the completed upstream outcome.  Both expose their elected sample or
+    -- transition in this same antibot.log line.
+    l7_surge.after(ctx)
     l7_circuit.after(ctx)
 
     if ctx.req_class ~= "resource" and ctx.identity then

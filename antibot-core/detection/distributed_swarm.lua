@@ -31,6 +31,26 @@ local pool = require "antibot.core.redis_pool"
 
 local WINDOW_TTL = 60   -- HLL tự reset sau 60s không có request mới
 
+-- SHADOW (07-10-2026) — MẪU SỐ, chưa dùng để quyết định.
+--
+-- Khoá `swarm:<host>:<ua_hash>` chỉ đếm TỬ SỐ: bao nhiêu /24 dùng MỘT UA.
+-- Con số đó tỉ lệ với LƯỢNG KHÁCH của site, không tỉ lệ với mức tấn công:
+-- site đông khách dùng UA phổ biến thì mọi khách bị tính vào cùng counter.
+--
+-- Đo 06-10 trên cloud168-123, khách thật `14.231.233.109` (bot_score=0,
+-- upload POST 4,8 MB, một identity 257 lượt): `swarm_attack` trung bình
+-- 75-80% của score ~90 (≈70 điểm / trọng số 120 ⇒ count≈27 trên soft=20),
+-- đẩy eff 52,6 → 85,3. **4 lượt** trong 24.964 vượt ngưỡng block 80, một
+-- trong số đó ghi `banned_id` → 257 lượt chặn → viol≥3 → ngày 07 `ban:<ip>`
+-- TTL 86400 → 9.035 lượt `banned_ip`. Ngày 05 cùng khách cùng swarm nhưng
+-- eff max 54 — THIẾU 1 ĐIỂM so với challenge 55 ⇒ 0 block.
+--
+-- Nâng ngưỡng tuyệt đối chỉ DỜI điểm vỡ. 27/30 là bất thường, 27/500 là
+-- bình thường — cùng một tử số, hai kết luận trái ngược. Nên đo mẫu số:
+-- `swarm:all:<host>` đếm MỌI /24 truy cập host trong cùng cửa sổ, bất kể UA.
+-- Ghi `ctx.swarm_host_subnets` + `ctx.swarm_ratio`, KHÔNG đổi `swarm_attack`.
+-- Quyết ngưỡng tỉ lệ sau khi có phân phối 24h thật.
+
 local THRESHOLDS = {
     navigation    = { soft = 25, hard = 45 },
     interaction   = { soft = 20, hard = 35 },
@@ -71,7 +91,8 @@ function _M.run(ctx)
     if not host or host == "" then return true, false end
 
     local ua_hash = ngx.md5(ua):sub(1, 12)
-    local key = "swarm:" .. host .. ":" .. ua_hash
+    local key     = "swarm:" .. host .. ":" .. ua_hash
+    local all_key = "swarm:all:" .. host   -- SHADOW: mẫu số, mọi UA
 
     local red, err = pool.get()
     if not red then
@@ -79,10 +100,16 @@ function _M.run(ctx)
         return true, false
     end
 
+    -- 6 op / 1 RTT. Thứ tự CỐ ĐỊNH để chỉ số `res` xác định được:
+    --   res[2] = pfcount(key)      tử số (UA này)
+    --   res[5] = pfcount(all_key)  mẫu số (mọi UA trên host)
     red:init_pipeline()
     red:pfadd(key, ip24)
     red:pfcount(key)
     red:expire(key, WINDOW_TTL)
+    red:pfadd(all_key, ip24)
+    red:pfcount(all_key)
+    red:expire(all_key, WINDOW_TTL)
     local res, perr = red:commit_pipeline()
     pool.put(red)
 
@@ -90,6 +117,16 @@ function _M.run(ctx)
 
     local count = tonumber(res[2]) or 0
     ctx.swarm_subnet_count = count
+
+    -- SHADOW: mẫu số + tỉ lệ. KHÔNG dùng để quyết định (xem đầu file).
+    -- `all` luôn >= `count` vì cùng một `ip24` được PFADD vào cả hai khoá
+    -- trong MỘT pipeline, nên tỉ lệ nằm trong (0, 1]. Guard `all > 0` vẫn
+    -- cần: HLL có thể trả 0 nếu Redis lỗi giữa pipeline (fail-open).
+    local all = tonumber(res[5]) or 0
+    if all > 0 then
+        ctx.swarm_host_subnets = all
+        ctx.swarm_ratio        = count / all
+    end
 
     -- Class-aware threshold lookup — bypass scoring quá nặng cho flash crowd
     local th = THRESHOLDS[class] or DEFAULT_TH

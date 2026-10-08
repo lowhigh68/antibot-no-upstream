@@ -537,6 +537,23 @@ function _M.run(ctx)
             ctx.sess_clients, tostring(ctx.sess_shared or false))
     end
 
+    -- SHADOW swarm (detection/distributed_swarm.lua) — MẪU SỐ cho `swarm_attack`.
+    -- `swn` = số /24 dùng ĐÚNG UA này; `swall` = số /24 truy cập host này,
+    -- bất kể UA; `swr` = swn/swall. Luật hiện tại chỉ đọc `swn` (ngưỡng tuyệt
+    -- đối), nên site đông khách dùng UA phổ biến bị tính oan — đo 06-10 trên
+    -- cloud168-123: một khách thật bot_score=0 đạt count≈27/soft=20, eff 52→85.
+    -- 27/30 là bất thường; 27/500 là bình thường. Chỉ in khi module đã CHẠY
+    -- (có mẫu số) để không phình log ở request bỏ qua swarm.
+    -- Phân phối sau 24h:
+    --   grep -oE "swr=[0-9.]+" antibot.log | cut -d= -f2 | sort -n | uniq -c
+    local sw_str = ""
+    if ctx.swarm_host_subnets then
+        sw_str = string.format(" swn=%d swall=%d swr=%.3f",
+            ctx.swarm_subnet_count or 0,
+            ctx.swarm_host_subnets,
+            ctx.swarm_ratio or 0)
+    end
+
     -- Expensive faceted-filter guard telemetry (l7/expensive_filter_guard.lua).
     -- Chỉ append cho request bị coi là faceted-filter tốn kém. combos = distinct
     -- tổ hợp/base/window (metric người-vs-crawler); over = đã vượt combos_threshold.
@@ -595,6 +612,34 @@ function _M.run(ctx)
         admission_str = string.format(" adm_use=%s adm_top=%s",
             tostring(ctx.admission_use),
             tostring(ctx.admission_use_axis or "-"))
+    end
+
+    -- Per-host dynamic in-flight telemetry.  Ordinary rows are sampled once
+    -- per host/second; transitions, simulated/enforced rejects and degraded
+    -- paths are always visible.  `sgdur` is the slot lifetime from late access
+    -- phase to log phase, while `sgup` is Nginx's upstream response time.  A
+    -- large sgdur-sgup gap warns that slow-client/buffering time is inflating
+    -- the Lua-only concurrency proxy before anyone enables enforcement.
+    local surge_str = ""
+    if ctx.surge_sampled or ctx.surge_transition or ctx.surge_would_reject
+       or ctx.surge_degraded or ctx.surge_slot_expired then
+        surge_str = string.format(
+            " sg=%s sgmode=%s sgn=%s sglim=%s sguse=%s sgleft=%s sgwould=%s sgdur=%s sgup=%s sgtrans=%s sgdeg=%s sgexp=%s",
+            tostring(ctx.surge_state or "-"),
+            tostring(ctx.surge_mode or "-"),
+            tostring(ctx.surge_sample_count or ctx.surge_observed
+                or ctx.surge_inflight or "-"),
+            tostring(ctx.surge_limit or "-"),
+            tostring(ctx.surge_use or "-"),
+            tostring(ctx.surge_remaining or "-"),
+            tostring(ctx.surge_would_reject or false),
+            ctx.surge_duration and string.format("%.3f", ctx.surge_duration)
+                or "-",
+            ctx.surge_upstream_time
+                and string.format("%.3f", ctx.surge_upstream_time) or "-",
+            tostring(ctx.surge_transition or "-"),
+            tostring(ctx.surge_degraded or false),
+            tostring(ctx.surge_slot_expired or false))
     end
 
     -- Per-host circuit breaker telemetry.  Emit only for the once-per-second
@@ -684,7 +729,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -794,9 +839,11 @@ function _M.run(ctx)
         auth_str,
         xf_str,
         sc_str,
+        sw_str,
         mm_str,
         waf_str,
         admission_str,
+        surge_str,
         circuit_str
     )
 

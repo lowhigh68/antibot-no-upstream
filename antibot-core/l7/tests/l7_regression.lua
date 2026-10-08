@@ -33,18 +33,32 @@ table.insert(package.loaders, 1, function(name)
     end
     return table.concat(errors, "\n")
 end)
-
 local passed = 0
 
+-- `error()` MOT MINH khong du de `run.sh` thay that bai.
+--
+-- `resty` chay tep nay trong `init_worker_by_lua`, va vong `xpcall` cua no BAT
+-- moi error roi in traceback — nhung thoat voi ma 0. Do 08-10: mot dot bien lam
+-- hong cu phap `distributed_swarm.lua` in ra ERROR day du va `run.sh` van bao
+-- rc=0, nen `|| rc=1` o `run.sh:114` chua bao gio co hieu luc. Cung ho loi voi
+-- `tools/wafdiff` (a714f72): bo kiem bao SACH khi chinh no hong.
+--
+-- `io.stderr` chu khong `print`: o day `print` di qua duong log cua nginx.
+local function die(msg)
+    io.stderr:write("L7_REGRESSION_FAIL: ", tostring(msg), "\n")
+    io.stderr:flush()
+    os.exit(1)
+end
+
 local function ok(value, label)
-    if not value then error("FAIL: " .. label, 2) end
+    if not value then die("FAIL: " .. label) end
     passed = passed + 1
 end
 
 local function eq(actual, expected, label)
     if actual ~= expected then
-        error(string.format("FAIL: %s (got=%s expected=%s)",
-            label, tostring(actual), tostring(expected)), 2)
+        die(string.format("FAIL: %s (got=%s expected=%s)",
+            label, tostring(actual), tostring(expected)))
     end
     passed = passed + 1
 end
@@ -56,28 +70,38 @@ local function read_file(path)
     return s
 end
 
-local syntax_files = {
-    "antibot-core/init.lua",
-    "antibot-core/core/config.lua",
-    "antibot-core/core/req_classifier.lua",
-    "antibot-core/detection/bot/lite_verify.lua",
-    "antibot-core/detection/browser/beacon_handler.lua",
-    "antibot-core/detection/session/session_store.lua",
-    "antibot-core/enforcement/challenge/verify_token.lua",
-    "antibot-core/enforcement/decision/engine.lua",
-    "antibot-core/async/logger.lua",
-    "antibot-core/l7/admission.lua",
-    "antibot-core/l7/circuit_breaker.lua",
-    "antibot-core/l7/init.lua",
-    "antibot-core/l7/expensive_filter_guard.lua",
-    "antibot-core/l7/ban/ip_ban_check.lua",
-    "antibot-core/l7/ban/ban_store.lua",
-    "antibot-core/l7/burst/burst_counter.lua",
-    "antibot-core/l7/burst/burst_decision.lua",
-    "antibot-core/l7/rate/adaptive_limit.lua",
-    "antibot-core/l7/rate/counter.lua",
-    "antibot-core/l7/rate/res_ip_counter.lua",
+-- Duong dan phai di qua `SRC`, KHONG dong cung `antibot-core/`: bo kiem nay
+-- chay o CA HAI noi (repo lan cay da deploy `conf/antibot/`) va chinh
+-- `run.sh:108-111` da ghi ro dieu do. Ban hardcode truoc day lam MOI dong
+-- `loadfile` tra nil khi chay tu cay deploy — ma `ok()` dem nil la FAIL, nen
+-- bo kiem bao 21 loi cu phap gia cho 21 tep hoan toan binh thuong.
+local syntax_rel = {
+    "init.lua",
+    "core/config.lua",
+    "core/req_classifier.lua",
+    "detection/bot/lite_verify.lua",
+    "detection/browser/beacon_handler.lua",
+    "detection/session/session_store.lua",
+    "detection/distributed_swarm.lua",
+    "enforcement/challenge/verify_token.lua",
+    "enforcement/decision/engine.lua",
+    "async/logger.lua",
+    "l7/admission.lua",
+    "l7/circuit_breaker.lua",
+    "l7/surge_guard.lua",
+    "l7/init.lua",
+    "l7/expensive_filter_guard.lua",
+    "l7/ban/ip_ban_check.lua",
+    "l7/ban/ban_store.lua",
+    "l7/burst/burst_counter.lua",
+    "l7/burst/burst_decision.lua",
+    "l7/rate/adaptive_limit.lua",
+    "l7/rate/counter.lua",
+    "l7/rate/res_ip_counter.lua",
 }
+
+local syntax_files = {}
+for i, rel in ipairs(syntax_rel) do syntax_files[i] = SRC .. rel end
 
 for _, path in ipairs(syntax_files) do
     local chunk, err = loadfile(path)
@@ -123,6 +147,9 @@ end
 -- Thieu hai ham nay thi module no o access phase, va mot stub thieu ham cua
 -- production API la mot phep do sai chieu — no bao "qua" vi chua goi tai.
 function Dict:get(key)
+    if self.get_override and self.get_override[key] ~= nil then
+        return self.get_override[key]
+    end
     return self:_live(key)
 end
 function Dict:set(key, value, ttl)
@@ -138,9 +165,15 @@ function Dict:delete(key)
     self.data[key], self.expiry[key] = nil, nil
     return true
 end
+function Dict:expire(key, ttl)
+    if self:_live(key) == nil then return nil, "not found" end
+    self.expiry[key] = clock + ttl
+    return true
+end
 
 local fake_ngx = {
     var = {}, ctx = {}, header = {},
+    is_subrequest = false,
     shared = {
         antibot_cache = Dict.new(),
     },
@@ -335,7 +368,7 @@ local function with_fake_disk(exists_pattern, fn)
         probe_opens = probe_opens + 1
         if exists_pattern and path:find(exists_pattern, 1, true) then
             -- Tra ve mot handle THAT de `fh:close()` chay duoc.
-            return real_open("antibot-core/l7/admission.lua", "r")
+            return real_open(SRC .. "l7/admission.lua", "r")
         end
         return nil
     end
@@ -450,6 +483,193 @@ end)
 
 fake_ngx.var.document_root = nil
 cfg.l7_admission = old_admission
+
+-- Per-host Lua-only dynamic in-flight guard.  A slot is acquired only after
+-- the request has survived local policy and is released exactly once at log.
+local old_surge = cfg.l7_surge_guard
+cfg.l7_surge_guard = {
+    enabled = true, mode = "shadow", status = 503, retry_after = 2,
+    max_inflight = 2, surge_ratio = 0.75, recover_ratio = 0.50,
+    recovery_seconds = 2,
+    slot_bucket_seconds = 60, slot_retention_seconds = 300,
+    state_ttl = 300,
+    sample_interval = 1,
+}
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_stats = Dict.new()
+package.loaded["antibot.l7.surge_guard"] = nil
+local surge = require "antibot.l7.surge_guard"
+
+local function sgvars(host, upstream_time)
+    fake_ngx.var = {
+        server_name = host,
+        host = host,
+        uri = "/index.php",
+        upstream_response_time = upstream_time,
+    }
+end
+
+local function sgctx(group)
+    return {
+        ip = "192.0.2.30",
+        req_class = group == "resource" and "resource" or "navigation",
+        admission_group = group,
+        req = { uri = "/index.php" },
+    }
+end
+
+clock = 600
+exits = {}
+sgvars("surge.test", "0.250")
+
+-- Real static hits and subrequests never occupy a dynamic slot.
+local sg_static = sgctx("resource")
+surge.before(sg_static)
+surge.admit(sg_static)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), nil,
+   "static hit khong chiem surge slot")
+
+fake_ngx.is_subrequest = true
+local sg_sub = sgctx("dynamic")
+surge.admit(sg_sub)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), nil,
+   "subrequest khong bi dem nhu request doc lap")
+fake_ngx.is_subrequest = false
+
+-- Shadow runs the full counter/state machine but never rejects.  Exactly two
+-- slots are valid; request three is the first simulated reject.
+local sg1, sg2, sg3 = sgctx("dynamic"), sgctx("dynamic"), sgctx("dynamic")
+local _, sg1_exit = surge.admit(sg1)
+eq(sg1_exit, false, "surge slot dau tien duoc cap")
+eq(sg1.surge_inflight, 1, "slot dau tien dem bang mot")
+local _, sg2_exit = surge.admit(sg2)
+eq(sg2_exit, false, "dung tran van duoc cap slot")
+eq(sg2.surge_inflight, 2, "dung tran co hai slot")
+local _, sg3_exit = surge.admit(sg3)
+eq(sg3_exit, false, "shadow khong tra 503")
+eq(sg3.surge_would_reject, true, "request limit+1 duoc danh dau shadow")
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), 3,
+   "shadow van do concurrency thuc sau nguong")
+
+-- Release is exactly once.  One ordinary sample/host/second is elected and
+-- carries both request lifetime and upstream time for FP analysis.
+clock = 600.5
+surge.after(sg1)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), 2,
+   "log phase tra mot slot")
+eq(sg1.surge_sampled, true, "mot mau surge duoc bau trong giay")
+eq(sg1.surge_upstream_time, 0.25, "sample doc upstream response time")
+surge.after(sg1)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), 2,
+   "goi after hai lan khong tru hai slot")
+surge.after(sg2)
+surge.after(sg3)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), nil,
+   "tra het slot thi xoa counter")
+
+-- No admit means a WAF/challenge/local block cannot decrement or create state.
+local sg_blocked = sgctx("dynamic")
+surge.after(sg_blocked)
+eq(fake_ngx.shared.antibot_cache:get("sg:surge.test:slot:10"), nil,
+   "request bi chan truoc admit khong cham counter")
+
+-- Recovery hysteresis is observable and becomes normal after the quiet hold.
+clock = 603
+local sg_recovered = sgctx("dynamic")
+surge.admit(sg_recovered)
+eq(sg_recovered.surge_state, "normal", "quiet hold ket thuc recovery")
+surge.after(sg_recovered)
+
+-- A worker crash can miss after().  New traffic must not refresh that leaked
+-- aggregate forever: the old start-time bucket ages out on a busy host.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 900
+sgvars("leak.test", "0.100")
+local leaked = sgctx("dynamic")
+surge.admit(leaked) -- deliberately no after(), simulating an aborted worker
+eq(fake_ngx.shared.antibot_cache:get("sg:leak.test:slot:15"), 1,
+   "slot ro nam trong bucket thoi gian bat dau")
+for minute = 1, 5 do
+    clock = 900 + minute * 60 + 1
+    local live = sgctx("dynamic")
+    surge.admit(live)
+    surge.after(live)
+end
+clock = 1261
+local leak_aged = sgctx("dynamic")
+surge.admit(leak_aged)
+eq(leak_aged.surge_inflight, 1,
+   "slot ro da het han, chi con request moi tren host ban")
+eq(fake_ngx.shared.antibot_cache:get("sg:leak.test:slot:15"), nil,
+   "traffic moi khong refresh bucket ro cu")
+surge.after(leak_aged)
+
+-- Enforce has an atomic late gate: even when several workers all passed the
+-- early read, the limit+1 acquisition is rolled back before returning 503.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.l7_surge_guard.mode = "enforce"
+clock = 700
+exits = {}
+sgvars("enforce.test", "0.100")
+local se1, se2, se3 = sgctx("dynamic"), sgctx("dynamic"), sgctx("dynamic")
+surge.before(se1)
+surge.before(se2)
+surge.before(se3)
+surge.admit(se1)
+surge.admit(se2)
+local _, se3_exit = surge.admit(se3)
+eq(se3_exit, true, "limit+1 bi chan o late atomic gate")
+eq(exits[#exits], 503, "surge enforce tra 503")
+eq(se3.action_reason, "l7_surge:capacity", "503 co capacity reason")
+eq(fake_ngx.shared.antibot_cache:get("sg:enforce.test:slot:11"), 2,
+   "request bi chan duoc rollback, khong ro slot")
+
+-- Once capacity is visibly full, before() rejects prior to WAF/Redis work.
+local se4 = sgctx("dynamic")
+local _, se4_exit = surge.before(se4)
+eq(se4_exit, true, "full host bi shed som")
+eq(fake_ngx.shared.antibot_cache:get("sg:enforce.test:slot:11"), 2,
+   "early shed khong thay doi counter")
+
+-- Host keys are isolated; one saturated virtual host cannot shed another.
+sgvars("other.test", "0.100")
+local other = sgctx("dynamic")
+local _, other_exit = surge.admit(other)
+eq(other_exit, false, "host khac van duoc cap slot")
+eq(fake_ngx.shared.antibot_cache:get("sg:other.test:slot:11"), 1,
+   "counter duoc tach theo server_name")
+
+-- The late atomic gate must use this request's own incr return.  Re-reading a
+-- current bucket that already includes later workers can make several workers
+-- all reject and roll back valid slots at once.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.get_override = {
+    ["sg:atomic.test:slot:14"] = 99,
+}
+clock = 840
+sgvars("atomic.test", "0.100")
+local atomic_ctx = sgctx("dynamic")
+local _, atomic_exit = surge.admit(atomic_ctx)
+eq(atomic_exit, false, "late gate dung gia tri incr rieng cua request")
+eq(atomic_ctx.surge_inflight, 1,
+   "concurrent later increments khong lam request nay tu nhan limit+1")
+fake_ngx.shared.antibot_cache.get_override = nil
+surge.after(atomic_ctx)
+
+-- Shared-dict pressure fails open and is explicitly observable.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.full = true
+cfg.l7_surge_guard.mode = "shadow"
+clock = 800
+sgvars("dict-full.test", nil)
+local sg_degraded = sgctx("dynamic")
+local _, degraded_exit = surge.admit(sg_degraded)
+eq(degraded_exit, false, "surge dict day fail-open")
+eq(sg_degraded.surge_degraded, true, "dict day co telemetry degraded")
+eq(sg_degraded.surge_admitted, nil, "dict day khong tao slot ao")
+
+fake_ngx.shared.antibot_cache.full = nil
+cfg.l7_surge_guard = old_surge
 
 -- Classifier: extension chi duoc coi la resource khi GET/HEAD; Sec-Fetch-Dest
 -- chi la telemetry, khong con la quyen tu chon lane nhe.
@@ -920,7 +1140,7 @@ eq(lctx.bot_score, 0.85, "unverified good-bot claim is not score zero")
 
 -- Integration contracts that are otherwise easy to regress by moving one
 -- early return or restoring a bare `return` in a generated location.
-local init_src = read_file("antibot-core/init.lua")
+local init_src = read_file(SRC .. "init.lua")
 local admission_pos = assert(init_src:find("run_steps%(STEPS_ADMISSION, ctx%)"))
 local verified_pos = assert(init_src:find("check_verified_cookie%(ctx%)", admission_pos))
 local waf_pos = assert(init_src:find("waf_layer%.run_pre%(ctx%)"))
@@ -933,39 +1153,87 @@ local admission_steps = assert(init_src:match(
     "local STEPS_ADMISSION%s*=%s*{(.-)\n}"))
 local local_brake_pos = assert(admission_steps:find("layer%s*=%s*l7_admission"))
 local circuit_pos = assert(admission_steps:find("layer%s*=%s*l7_circuit"))
+local surge_pos = assert(admission_steps:find("layer%s*=%s*l7_surge"))
 local redis_ban_pos = assert(admission_steps:find("layer%s*=%s*ip_ban_check"))
 ok(local_brake_pos < circuit_pos,
    "circuit breaker reuses admission dynamic/static decision")
 ok(circuit_pos < redis_ban_pos,
    "OPEN host sheds work before Redis-backed IP ban lookup")
+ok(circuit_pos < surge_pos and surge_pos < redis_ban_pos,
+   "surge early gate runs before Redis-backed IP ban lookup")
 ok(local_brake_pos < redis_ban_pos,
    "local admission shields Redis-backed IP ban lookup")
 
+local verified_admit_pos = assert(init_src:find("admit_dynamic%(ctx%)", verified_pos))
+ok(verified_admit_pos > waf_pos,
+   "verified fast path acquires surge slot only after WAF")
+ok(init_src:find("if not exited then admit_dynamic%(ctx%) end") ~= nil,
+   "normal pipeline acquires slot only when enforcement did not exit")
+
+local surge_after_pos = assert(init_src:find("l7_surge%.after%(ctx%)"))
 local circuit_after_pos = assert(init_src:find("l7_circuit%.after%(ctx%)"))
 local logger_pos = assert(init_src:find("logger%.run%(ctx%)", circuit_after_pos))
+ok(surge_after_pos < circuit_after_pos,
+   "log phase releases surge slot before circuit learning")
 ok(circuit_after_pos < logger_pos,
    "log-phase circuit telemetry is ready before main logger")
 
-local generator = read_file("nginx/da_to_openresty.sh")
-ok(generator:find("antibot.l7.admission", 1, true) == nil,
-   "generator is not coupled to Lua admission")
-ok(generator:find("limit_conn antibot_conn_", 1, true) == nil,
-   "generator has no admission-specific native connection limits")
-ok(generator:find("circuit_breaker", 1, true) == nil,
-   "generator is not coupled to Lua circuit breaker")
+-- `nginx/` nam NGOAI `antibot-core/`, nen `SRC` khong dan tới được. Tren cay da
+-- deploy (`conf/antibot/`) hai tep nay KHONG ton tai, con trong repo thi co.
+--
+-- Truoc 08-10 chung duoc doc bang duong dan dong cung, nen chay tu `waf/scripts/`
+-- la `read_file` bay `assert` — ma `error` luc do khong lam `resty` thoat khac 0,
+-- nen `run.sh` van bao rc=0. Hai lo cong nhau thanh: bo kiem CHUA BAO GIO chay
+-- 8 assertion nay trong `run.sh`, va cung chua bao gio bao rang no khong chay.
+--
+-- Nay: doc duoc thi kiem, khong doc duoc thi NOI RA. `REPO_ROOT` cho phep chi
+-- dinh tay khi chay tu thu muc khac.
+local repo_root = os.getenv("REPO_ROOT")
+if not repo_root or repo_root == "" then
+    -- `SRC` tro vao `antibot-core/`; repo root la cha cua no.
+    repo_root = SRC:gsub("antibot%-core/?$", "")
+    if repo_root == "" then repo_root = "./" end
+end
+if repo_root:sub(-1) ~= "/" then repo_root = repo_root .. "/" end
 
-local nginx_conf = read_file("nginx/nginx.conf")
-ok(nginx_conf:find("antibot_l7_", 1, true) == nil,
-   "nginx.conf has no admission-specific shared dict")
-ok(nginx_conf:find("limit_conn_zone", 1, true) == nil,
-   "nginx.conf is unchanged by Lua-only admission")
-ok(nginx_conf:find("circuit_breaker", 1, true) == nil,
-   "nginx.conf is unchanged by Lua-only circuit breaker")
+local function try_read(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local s = f:read("*a")
+    f:close()
+    return s
+end
+
+local generator  = try_read(repo_root .. "nginx/da_to_openresty.sh")
+local nginx_conf = try_read(repo_root .. "nginx/nginx.conf")
+
+if not generator or not nginx_conf then
+    io.write("  BO QUA 8 phep kiem `nginx/` — khong doc duoc tu ", repo_root,
+             " (binh thuong khi chay tu cay da deploy; dat REPO_ROOT de kiem)\n")
+else
+    ok(generator:find("antibot.l7.admission", 1, true) == nil,
+       "generator is not coupled to Lua admission")
+    ok(generator:find("limit_conn antibot_conn_", 1, true) == nil,
+       "generator has no admission-specific native connection limits")
+    ok(generator:find("circuit_breaker", 1, true) == nil,
+       "generator is not coupled to Lua circuit breaker")
+    ok(generator:find("surge_guard", 1, true) == nil,
+       "generator is not coupled to Lua surge guard")
+
+    ok(nginx_conf:find("antibot_l7_", 1, true) == nil,
+       "nginx.conf has no admission-specific shared dict")
+    ok(nginx_conf:find("limit_conn_zone", 1, true) == nil,
+       "nginx.conf is unchanged by Lua-only admission")
+    ok(nginx_conf:find("circuit_breaker", 1, true) == nil,
+       "nginx.conf is unchanged by Lua-only circuit breaker")
+    ok(nginx_conf:find("surge_guard", 1, true) == nil,
+       "nginx.conf is unchanged by Lua-only surge guard")
+end
 
 local verify_handler = read_file(
-    "antibot-core/enforcement/challenge/verify_token.lua")
+    SRC .. "enforcement/challenge/verify_token.lua")
 local beacon_handler = read_file(
-    "antibot-core/detection/browser/beacon_handler.lua")
+    SRC .. "detection/browser/beacon_handler.lua")
 ok(verify_handler:find('run_endpoint("verify")', 1, true) ~= nil,
    "verify handler invokes Lua-only endpoint admission")
 ok(beacon_handler:find('run_endpoint("beacon")', 1, true) ~= nil,
@@ -1011,4 +1279,80 @@ eq(fake_ngx.shared.antibot_stats:get("l7adm:dicterr:missing"), nil,
 fake_ngx.shared.antibot_cache.full = nil
 
 
+
+-- ── SHADOW swarm: mau so + ti le ──────────────────────────────────────
+--
+-- Bo kiem nay chay THAT `distributed_swarm.run()` voi mot Redis gia, vi hai
+-- bat bien chi sai duoc trong im lang:
+--   1. `res[5]` la chi so CO DINH. Pipeline co 6 op; doi thu tu (vd dat
+--      `expire` truoc `pfcount`) lam `all` doc nham gia tri 1/0 cua `pfadd`
+--      hay `expire` — ti le van ra mot SO, chi la so sai.
+--   2. `swarm_attack` KHONG duoc doi. Day la buoc shadow; neu mau so lot vao
+--      nhanh quyet dinh thi luat da thay doi ma khong ai duyet.
+local swarm = require "antibot.detection.distributed_swarm"
+local pool  = require "antibot.core.redis_pool"
+
+local fake_pipeline
+local fake_red = {
+    init_pipeline = function() fake_pipeline = {} end,
+    pfadd   = function(_, k, v) fake_pipeline[#fake_pipeline+1] = {"pfadd", k, v} end,
+    pfcount = function(_, k)    fake_pipeline[#fake_pipeline+1] = {"pfcount", k} end,
+    expire  = function(_, k, t) fake_pipeline[#fake_pipeline+1] = {"expire", k, t} end,
+}
+
+local swarm_counts = {}
+function fake_red.commit_pipeline()
+    local out = {}
+    for i, op in ipairs(fake_pipeline) do
+        if op[1] == "pfcount" then
+            out[i] = swarm_counts[op[2]] or 0
+        else
+            out[i] = 1
+        end
+    end
+    return out
+end
+
+local real_get, real_put = pool.get, pool.put
+pool.get = function() return fake_red, nil end
+pool.put = function() end
+
+-- 27 dai /24 dung UA nay, 500 dai /24 truy cap host => ti le 0,054.
+-- Day la hinh dang DO DUOC 06-10: tu so vuot soft=20 nen luat hien tai ban,
+-- nhung mau so cho thay no la 5% luu luong host — khach that, khong phai dan bot.
+swarm_counts["swarm:quatructuyen.vn:" .. ngx.md5("UA-pho-bien"):sub(1, 12)] = 27
+swarm_counts["swarm:all:quatructuyen.vn"] = 500
+
+local sctx = {
+    ip = "14.231.233.109", ua = "UA-pho-bien",
+    req_class = "interaction", req = { host = "quatructuyen.vn" },
+}
+swarm.run(sctx)
+
+eq(sctx.swarm_subnet_count, 27, "swarm: tu so doc tu res[2]")
+eq(sctx.swarm_host_subnets, 500, "swarm: mau so doc tu res[5], KHONG phai res cua pfadd/expire")
+ok(sctx.swarm_ratio and math.abs(sctx.swarm_ratio - 27/500) < 1e-9,
+   "swarm: ti le = tu/mau")
+
+-- Thu tu pipeline la HOP DONG, khong phai chi tiet cai dat.
+eq(fake_pipeline[2][1], "pfcount", "swarm: op 2 phai la pfcount(tu so)")
+eq(fake_pipeline[5][1], "pfcount", "swarm: op 5 phai la pfcount(mau so)")
+eq(fake_pipeline[5][2], "swarm:all:quatructuyen.vn", "swarm: op 5 tren khoa mau so")
+
+-- 27 >= soft 20 nen emerging; gia tri phai y NHU truoc khi co shadow.
+local span = 35 - 20
+ok(math.abs(sctx.swarm_attack - (0.3 + (27 - 20) / span * 0.6)) < 1e-9,
+   "swarm: mau so KHONG duoc doi swarm_attack (buoc shadow)")
+
+-- Mau so = 0 (Redis loi giua pipeline) => khong duoc chia cho 0.
+swarm_counts["swarm:all:quatructuyen.vn"] = 0
+local zctx = {
+    ip = "14.231.233.110", ua = "UA-pho-bien",
+    req_class = "interaction", req = { host = "quatructuyen.vn" },
+}
+swarm.run(zctx)
+eq(zctx.swarm_ratio, nil, "swarm: mau so 0 -> khong ghi ti le, khong chia 0")
+eq(zctx.swarm_host_subnets, nil, "swarm: mau so 0 -> khong ghi mau so")
+
+pool.get, pool.put = real_get, real_put
 print(string.format("L7_REGRESSION_OK %d", passed))

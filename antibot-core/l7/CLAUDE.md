@@ -13,6 +13,7 @@ security signals and reject identities that already have a supported ban.
 | File | Role | Phase |
 |---|---|---|
 | `admission.lua` | Mandatory local fixed-bucket budgets: global, host, host-group, route-shard and IP. Reuses the existing `antibot_cache`; internal endpoint handlers call it directly. Returns 429 only, never writes reputation/ban. **Static MISS is charged to the `dynamic` budget, not `resource`** — it probes `document_root .. uri` on disk (cached, short TTL) because `try_files` sends a miss to `@static_backend` → Apache/PHP, which is dynamic load whatever the extension says |
+| `surge_guard.lua` | Lua-only per-host dynamic in-flight guard. `before()` rejects an already-full host early in enforce mode; `admit()` atomically acquires only after WAF/antibot allows the request; `after()` releases exactly once in log phase. Static hits, subrequests and local blocks do not consume slots. Shadow by default; `sgdur` vs `sgup` exposes slow-client/buffering overcount before enforcement |
 | `circuit_breaker.lua` | Per-host backend health gate. Learns **only** from requests that reached an upstream (`ngx.var.upstream_status`), and only from dynamic ones — so static hits keep being served while an unhealthy PHP path is open. Only hard failures (502/503/504) open the state machine; a slow 200 is recorded as `cbslowcand` but **never** sheds traffic. 503 + `Retry-After`, never a ban |
 | `init.lua` | Per-class Redis L7 orchestrator: `ban_store`, `rate.counter`, `adaptive_limit`, `burst_counter`, `burst_decision` |
 | `ban/ip_ban_check.lua` | Read `ban:<ip>` from Redis. Hit → set `ctx.action="block"`, `ctx.action_reason="banned_ip"`, `ngx.exit(403)` |
@@ -31,6 +32,8 @@ security signals and reject identities that already have a supported ban.
 `admission_limited`, `admission_reason/count/limit/window/group/route_shard`,
 `admission_use/use_axis` (highest budget utilisation, on EVERY line),
 `resource_actual` (false = static miss, charged to the dynamic budget),
+`surge_state/mode/inflight/limit/use/remaining/would_reject/transition/degraded`,
+`surge_duration/upstream_time/sampled/slot_expired` (capacity telemetry, never reputation),
 `circuit_state/mode/cause/would_reject/probe/probe_stale/no_sample/degraded`,
 `circuit_total/rps/slow_ratio/hard_ratio/slow_candidate/open_until/transition`,
 `backend_class`, `banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `ip_surge`,
@@ -46,6 +49,7 @@ security signals and reject identities that already have a supported ban.
 ADMISSION → ctx + fast class + proxy origin
           → local admission      → immediate 429 on capacity budget
           → circuit_breaker.before → 503 while the host backend is OPEN
+          → surge_guard.before   → early 503 if dynamic slots are already full
           → ip_ban_check         → 403 if IP banned
           → WAF pre-scan
           → verified fast path still crosses expensive-filter guard
@@ -57,7 +61,10 @@ FULL/INT → ban_store             → 403 if identity ban is enforceable
          → adaptive_limit        → signal or immediate extreme-rate block
          → burst_counter         → fixed one-second count
          → burst_decision        → burst signal
-LOG      → circuit_breaker.after  → learns from upstream_status, elects one
+ALLOW    → surge_guard.admit      → atomically acquire one dynamic slot only
+                                     after all local block/challenge decisions
+LOG      → surge_guard.after      → release exactly once, sample once/host/sec
+         → circuit_breaker.after  → learns from upstream_status, elects one
                                      evaluator per host/second
 
 RESOURCE → resource counter + lite crawler verification
@@ -151,13 +158,14 @@ policy, not the hard-failure switch.
   uncertain measurement must never become a 429 for a real visitor.
 - **`limit_conn` is a hard no** (operator, 2026-10-04): never add
   `limit_conn`/`limit_conn_zone`/`limit_req` to `nginx.conf` or the vhost
-  generator, under any name. The cost, stated plainly: admission counts
-  **requests**, not **concurrent connections**, so it does not cover "few
-  requests, each holding upstream for a long time" (a 30s DB query, a slow
-  upstream). 100 req/s all pass the budget, yet if each occupies a PHP worker for
-  20s the pool drains with no axis exceeded. The Lua-only replacement is reading
-  real backend state (busy PHP workers) and lowering budgets dynamically — needs
-  measured capacity first.
+  generator, under any name. `surge_guard.lua` now covers the broad missing
+  case — few dynamic requests held concurrently for a long time — without
+  counting the page's static subrequests as backend work. It is still a proxy,
+  not a native/backend truth source: release occurs in log phase, so buffered
+  output and slow clients can keep a slot after PHP has finished. Keep it in
+  shadow until `sgn`, `sgdur` and `sgup` have been measured against real
+  PHP-FPM/Apache capacity. Exact busy-worker control belongs to the application
+  server/OS layer, not to this WAF.
 - `da_to_openresty.sh` needs no change. The three `access_by_lua_block { return; }`
   locations are all deliberate: ACME reads straight from disk and never reaches
   Apache (keeping Lua there breaks certs fleet-wide), `@static_backend` was already
