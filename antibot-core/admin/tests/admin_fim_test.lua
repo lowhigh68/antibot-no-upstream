@@ -30,7 +30,7 @@ assert(body, "khong trich duoc render_fim")
 
 -- Noi dung `$CRITLOG` gia cho moi lan chay. render_fim goi io.open; ta thay no
 -- bang mot io gia doc tu chuoi `logtext`.
-local logtext, log_missing = "", false
+local logtext, log_missing, log_errno = "", false, nil
 local function fake_lines(s)
     local pos = 1
     return function()
@@ -42,9 +42,17 @@ local function fake_lines(s)
         return line
     end
 end
+-- `io.open` tra BA gia tri khi that bai: nil, thong bao, errno. Do duoc bang
+-- `resty` 10-10: ENOENT -> 2, EACCES -> 13. Gia dung ba gia tri do, vi
+-- `render_fim` phan biet nguyen nhan bang chinh errno.
 local fake_io = {
     open = function(_, _)
-        if log_missing then return nil, "No such file or directory" end
+        if log_missing then
+            local en = log_errno or 2
+            local msg = (en == 13) and "Permission denied"
+                                    or "No such file or directory"
+            return nil, "/x: " .. msg, en
+        end
         return {
             lines = function() return fake_lines(logtext) end,
             close = function() end,
@@ -52,10 +60,11 @@ local fake_io = {
     end,
 }
 
-local function run(text, missing)
+local function run(text, missing, errno)
     out = {}
     logtext = text or ""
     log_missing = missing or false
+    log_errno = errno
     -- FIM_CRITLOG / FIM_MAX_LINES la upvalue cap module trong init.lua, ngoai
     -- than ham trich ra. Cap lai trong env de ham chay doc lap. Gia tri CRITLOG
     -- khong dung (io gia bo qua ten); MAX_LINES giu dung 200 nhu ban that.
@@ -78,13 +87,30 @@ end
 
 -- 1. file THIEU -> exists=false, KHAC HAN "sach". Phan biet nay la ca ly do route
 --    ton tai; gop hai cai lai la loi da giet wp_paths.mark() 4 thang.
-local r = run(nil, true)
+local r = run(nil, true, 2)
 eq(r.exists, false, "file thieu -> exists=false")
 eq(type(r.reason), "string", "file thieu co reason")
 
+-- 1b. ENOENT -> `never_run`, KHONG phai "sach" va KHONG phai "mat quyen".
+--     `fim.sh` tao file RONG o moi lan chay (dong 243-245), nen khong co file
+--     la bang chung chac chan rang chua lan chay nao hoan tat -> buoc 1 chua song.
+eq(r.cause, "never_run", "errno 2 -> cause=never_run")
+eq(r.errno, 2, "errno 2 duoc tra nguyen")
+
+-- 1c. EACCES -> `no_permission`. HANH DONG KHAC HAN 1b: can `chgrp nginx`,
+--     khong phai `fim.sh baseline`. Gop hai cai mot cau la de nguoi van hanh doan.
+r = run(nil, true, 13)
+eq(r.exists, false, "khong doc duoc -> exists=false")
+eq(r.cause, "no_permission", "errno 13 -> cause=no_permission")
+eq(r.errno, 13, "errno 13 duoc tra nguyen")
+
 -- 2. file RONG -> exists=true nhung moi con dem = 0 (the se tu an)
+--    DAY LA PHAN BIET QUAN TRONG NHAT: rong = "da chay, SACH THAT", khac han
+--    khong-co-file = "chua chay". Ca hai deu cho the an/khong co dong nao, nhung
+--    mot cai la tin tot con cai kia la buoc 1 chua song. `exists` giu ranh gioi.
 r = run("", false)
-eq(r.exists, true, "file rong -> exists=true")
+eq(r.exists, true, "file rong -> exists=true (da chay, SACH)")
+eq(r.cause, nil, "rong: KHONG co cause (khong phai loi)")
 eq(r.muplug, 0, "rong: muplug=0")
 eq(r.critical, 0, "rong: critical=0")
 eq(r.sections, 0, "rong: sections=0")

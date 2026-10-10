@@ -1560,10 +1560,33 @@ function renderFim(){
     // giet `wp_paths.mark()` 4 thang.
     if(d.exists === false){
       card.style.display=''
-      setText('fim-count','?')
-      setHTML('fim-lines','KHONG DOC DUOC '+ (d.reason||'') +
-        '\n\nfim.sh chua chay lan nao co canh bao, HOAC khong co quyen doc.' +
-        '\nKiem: ls -la /var/log/antibot/fim_critical.log')
+      // HAI nguyen nhan, HAI hanh dong khac nhau. Gop chung mot cau la de nguoi
+      // van hanh doan — ma `fim.sh` tao file RONG o moi lan chay, nen "khong co
+      // file" la bang chung CHAC CHAN rang chua lan nao hoan tat.
+      if(d.cause === 'never_run'){
+        setText('fim-count','CHUA CHAY')
+        setHTML('fim-lines',
+          'fim.sh CHUA CHAY lan nao tren may nay — buoc 1 CHUA SONG.\n\n' +
+          'fim.sh tao file rong o MOI lan chay, nen khong co file = chua lan nao xong.\n' +
+          'Day KHONG phai "sach": chua co gi do ca.\n\n' +
+          'Lam: chay baseline MOT LAN (tay, moi may):\n' +
+          '  /usr/local/openresty/nginx/conf/antibot/waf/scripts/fim.sh baseline\n' +
+          'Roi kiem cron da gan chua.')
+      } else if(d.cause === 'no_permission'){
+        setText('fim-count','MAT DUONG RA')
+        setHTML('fim-lines',
+          'File CO nhung nginx KHONG doc duoc — phat hien van chay, canh bao\n' +
+          'khong toi duoc trang nay. Dung ho loi "canh bao khong den ai".\n\n' +
+          'Lam:\n' +
+          '  chgrp nginx /var/log/antibot/fim_critical.log\n' +
+          '  chmod 0640  /var/log/antibot/fim_critical.log\n\n' +
+          (d.reason||''))
+      } else {
+        setText('fim-count','?')
+        setHTML('fim-lines','KHONG DOC DUOC '+ (d.reason||'') +
+          ' (errno '+ (d.errno===undefined?'-':d.errno) +')' +
+          '\n\nKiem: ls -la /var/log/antibot/fim_critical.log')
+      }
       return
     }
     // `sections` = so khoi `=== ... ===` (SHADOW handler-strip, mu-plugins ton
@@ -2301,14 +2324,29 @@ local FIM_MAX_LINES = 200
 local function render_fim()
     ngx.header["Content-Type"] = "application/json"
 
-    local fh, oerr = io.open(FIM_CRITLOG, "r")
+    local fh, oerr, oerrno = io.open(FIM_CRITLOG, "r")
     if not fh then
         -- PHAN BIET "khong co canh bao" voi "khong doc duoc". Gop hai cai lai la
         -- dung loi da giet `wp_paths.mark()` 4 thang: mot trang bao "sach" trong
         -- khi that ra no khong nhin thay gi. `exists=false` de UI noi duoc dieu
         -- do, thay vi ve mot bang rong.
+        --
+        -- `cause` tach tiep hai nguyen nhan, vi chung la HAI VIEC KHAC NHAU va
+        -- bo chung cung mot cau la lap lai chinh loi gop o tren o mot tang sau:
+        --   ENOENT(2) -> `fim.sh` CHUA CHAY lan nao   -> buoc 1 CHUA SONG
+        --   EACCES(13)-> file co, nginx khong doc duoc -> MAT DUONG RA
+        -- Do duoc tu code `fim.sh` 10-10: dong 243-245 tao `$CRITLOG` RONG o MOI
+        -- lan chay, TRUOC khi quet. Nen "file khong ton tai" la bang chung chac
+        -- chan rang chua lan chay nao hoan tat, chu khong phai "chay roi, sach".
+        -- Hai tinh huong doi hoi hai hanh dong khac nhau cua nguoi van hanh:
+        -- mot cai can `fim.sh baseline`, cai kia can `chgrp nginx`.
+        local cause = "unknown"
+        if oerrno == 2       then cause = "never_run"
+        elseif oerrno == 13  then cause = "no_permission" end
         ngx.say(cjson.encode({
             exists = false,
+            cause  = cause,
+            errno  = oerrno,
             reason = tostring(oerr),
             lines  = setmetatable({}, cjson.array_mt),
         }))
