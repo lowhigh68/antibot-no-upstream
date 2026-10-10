@@ -45,11 +45,38 @@ local WINDOW_TTL = 60   -- HLL tự reset sau 60s không có request mới
 -- TTL 86400 → 9.035 lượt `banned_ip`. Ngày 05 cùng khách cùng swarm nhưng
 -- eff max 54 — THIẾU 1 ĐIỂM so với challenge 55 ⇒ 0 block.
 --
--- Nâng ngưỡng tuyệt đối chỉ DỜI điểm vỡ. 27/30 là bất thường, 27/500 là
--- bình thường — cùng một tử số, hai kết luận trái ngược. Nên đo mẫu số:
+-- Nâng ngưỡng tuyệt đối chỉ DỜI điểm vỡ, nên 07-10 tôi đo mẫu số:
 -- `swarm:all:<host>` đếm MỌI /24 truy cập host trong cùng cửa sổ, bất kể UA.
--- Ghi `ctx.swarm_host_subnets` + `ctx.swarm_ratio`, KHÔNG đổi `swarm_attack`.
--- Quyết ngưỡng tỉ lệ sau khi có phân phối 24h thật.
+--
+-- ĐO XONG 10-10 — GIẢ THUYẾT TỈ LỆ BỊ BÁC BỎ. Giữ lại nguyên văn để không ai
+-- (kể cả tôi) thử lại hướng này.
+--
+-- Giả thuyết: "botnet thay thế phần lớn lưu lượng host, nên `swn/swall` cao;
+-- khách dùng UA phổ biến thì tỉ lệ thấp." Số đo trên cloud168-123, 12 giờ,
+-- 93.205 dòng có `swr=`:
+--   * 8.346 lượt `swarm_attack` bắn: `swn` trung bình **24,9**, `swall` trung
+--     bình **9.929,5** ⇒ `swr ≈ 0,0025`. TẤT CẢ nằm trong bucket `swr < 0,05`.
+--   * Ngược lại, 1.064 lượt có `swr = 1,00` và luật KHÔNG bắn ở đó.
+--   * Một cổng `swr >= 0,15` giữ lại **0 / 8.346** lượt — tức GỠ module, không
+--     phải nới ngưỡng.
+--
+-- Vì sao tỉ lệ không mang thông tin: các lượt `swr` cao đều có `swn` = 1..3 và
+-- `swall` = 1..4 (`phutunglexus.net` 1/1 ×325 lượt, `meily.vn` 2/3 ×115). `swr`
+-- = 1,0 nghĩa là MỘT dải /24 trên tổng MỘT dải — host có đúng một khách trong
+-- 60 giây. Nên `swr` đo ĐỘ ĐÔNG CỦA HOST, không đo tính tập trung của một UA:
+-- `swn` và `swall` cùng tăng theo lượng khách nên tỉ lệ triệt tiêu thông tin.
+-- Và tiền đề cũng sai: một botnet rotate IP tự nó đóng góp vào `swall`, nên tỉ
+-- lệ của nó vẫn thấp khi host có khách thật.
+--
+-- `swn`/`swall`/`swr` được GIỮ trong log: chúng vô hại (cùng pipeline, 0 RTT
+-- thêm) và là phép đo chẩn đoán tốt. Chúng KHÔNG được vào nhánh quyết định.
+--
+-- Trục còn lại chưa thử — và nó đã tự chứng minh trong dữ liệu thật chứ không
+-- phải suy ra rồi mới đo: SỐ IDENTITY trên cùng một UA. Ca FP có `id=52b05ed1`
+-- ổn định suốt 257 lượt; đàn bot ngày 06 có 1.874 identity × 1 lượt block và
+-- `risk` dừng ở 17% vì không identity nào ở lại đủ lâu. Botnet rotate IP mua
+-- được nhiều /24 nhưng không mua được identity có cookie ở lại. Hướng này cần
+-- shadow đo TRƯỚC khi vào quyết định, như mọi hướng khác.
 
 local THRESHOLDS = {
     navigation    = { soft = 25, hard = 45 },

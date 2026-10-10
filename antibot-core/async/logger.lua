@@ -537,14 +537,23 @@ function _M.run(ctx)
             ctx.sess_clients, tostring(ctx.sess_shared or false))
     end
 
-    -- SHADOW swarm (detection/distributed_swarm.lua) — MẪU SỐ cho `swarm_attack`.
-    -- `swn` = số /24 dùng ĐÚNG UA này; `swall` = số /24 truy cập host này,
-    -- bất kể UA; `swr` = swn/swall. Luật hiện tại chỉ đọc `swn` (ngưỡng tuyệt
-    -- đối), nên site đông khách dùng UA phổ biến bị tính oan — đo 06-10 trên
-    -- cloud168-123: một khách thật bot_score=0 đạt count≈27/soft=20, eff 52→85.
-    -- 27/30 là bất thường; 27/500 là bình thường. Chỉ in khi module đã CHẠY
-    -- (có mẫu số) để không phình log ở request bỏ qua swarm.
-    -- Phân phối sau 24h:
+    -- Telemetry swarm (detection/distributed_swarm.lua) — CHAN DOAN, khong phai
+    -- dau vao quyet dinh.
+    --
+    -- `swn`  = so /24 dung DUNG UA nay (chinh la so `swarm_attack` doc)
+    -- `swall` = so /24 truy cap host nay trong cung cua so 60s, bat ke UA
+    -- `swr`  = swn/swall
+    --
+    -- `swr` tung duoc them (07-10) de thu chua FP cua `swarm_attack`. ĐO 10-10
+    -- BAC BO: 8.346 luot `swarm_attack` ban deu co `swr ~ 0,0025` (swn 24,9 /
+    -- swall 9.929,5), con cac luot `swr = 1,00` thi luat KHONG ban — vi chung la
+    -- host VANG (`swn`=1, `swall`=1). `swr` do DO DONG CUA HOST, khong do tinh
+    -- tap trung cua mot UA. Mot cong `swr >= 0,15` giu lai 0/8.346 luot.
+    --
+    -- Giu ba cot vi chung mien phi (cung pipeline, 0 RTT them) va rat huu ich
+    -- khi chan doan mot ca FP: `swn` cao + `swall` cao = khach tren site dong,
+    -- KHONG phai dan bot. Dung dua chung vao nhanh quyet dinh.
+    -- Chi in khi module da CHAY (co mau so), de khong phinh log.
     --   grep -oE "swr=[0-9.]+" antibot.log | cut -d= -f2 | sort -n | uniq -c
     local sw_str = ""
     if ctx.swarm_host_subnets then
