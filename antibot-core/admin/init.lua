@@ -2913,7 +2913,17 @@ local function render_fimwaf()
     local last_scan = 0
     for i, line in ipairs(crit_lines) do
         local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
-        if tail == "" then last_scan = i end   -- khoi QUET (khong co hau to)
+        -- `""` = khoi QUET co phat hien. `[sach]` = lot quet KHONG co phat hien
+        -- nao (`fim.sh` ghi tu 11-10). Ca hai deu la MOT LUOT QUET, nen ca hai
+        -- deu duoc lam `last_scan`.
+        --
+        -- VI SAO `[sach]` PHAI TINH. Truoc khi `fim.sh` ghi dong do, mot lot
+        -- sach khong de lai dau vet nao trong `$CRITLOG`, nen "khoi cuoi" la lan
+        -- cuoi CO PHAT HIEN chu khong phai lan cuoi CHAY — bang dong bang o anh
+        -- chup cu VINH VIEN. Do duoc 11-10: mien tru `.htaccess` da dung
+        -- (`check` tra `+0 dong`) ma bang van hien 39 dong cua khoi `17:01` ghi
+        -- TRUOC khi deploy. `[sach]` la khoi RONG nen no lam bang sach that.
+        if tail == "" or tail == "[sach]" then last_scan = i end
     end
 
     -- Gom theo domain. Mot domain co nhieu dong; giu bac CAO NHAT, tong so file,
@@ -2925,7 +2935,7 @@ local function render_fimwaf()
         -- Cap nhat pham vi khi gap mot tieu de khoi.
         local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
         if tail then
-            if tail == "" then
+            if tail == "" or tail == "[sach]" then
                 in_scope = (idx == last_scan)   -- chi khoi QUET CUOI
             else
                 local keep = false

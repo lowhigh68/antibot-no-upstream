@@ -2440,6 +2440,27 @@ if [ "$total" -eq 0 ]; then
             exit 2
         fi
     fi
+    # ── MOC "DA QUET, SACH" vao $CRITLOG ─────────────────────────────
+    #
+    # VI SAO CAN. `$CRITLOG` truoc ban nay CHI duoc ghi khi co phat hien
+    # (`if [ -n "$critlines" ]` o duoi). Mot lot SACH khong ghi gi, ke ca dong
+    # tieu de. Nen "khoi moi nhat" trong tep do la lan cuoi CO PHAT HIEN, KHONG
+    # phai lan cuoi CHAY — va trang admin doc tep do khong phan biet duoc hai
+    # thu. Do duoc 11-10 tren cloud28-246: sau khi mien tru `.htaccess` hoat
+    # dong (`fim.sh check` tra `+0 dong`), bang van hien 39 dong cua khoi
+    # `2026-10-10 17:01` ghi TRUOC khi deploy — va se hien VINH VIEN, vi khong
+    # con lot nao ghi gi de thay the no.
+    #
+    # Mot dong duy nhat, khong co muc nao de liet ke, nen no khong lam phinh tep
+    # (phep cat vong 400 dong o duoi van du). `[sach]` de ben doc phan biet voi
+    # khoi co phat hien.
+    if [ "$tier" = "full" ] && [ $dry -eq 0 ]; then
+        {
+            echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] [sach] ==="
+        } >> "$CRITLOG" 2>/dev/null || :
+        chgrp nginx "$CRITLOG" 2>/dev/null || :
+        chmod 0640 "$CRITLOG" 2>/dev/null || :
+    fi
     [ "$mu_pending" -eq 1 ] && exit 3
     exit 0
 fi

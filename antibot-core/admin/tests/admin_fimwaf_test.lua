@@ -226,6 +226,46 @@ write(CRIT, "CRITICAL NEW  " .. H .. "khongkhoi.com/public_html/wp-content/uploa
 r = run(nil)
 eq(#r.domains, 1, "khong co tieu de khoi -> van nhan dong")
 
+-- ── 3n. KHOI `[sach]` LA MOT LUOT QUET ──────────────────────────────
+--
+-- Nguoi dung 11-10: sau khi mien tru `.htaccess` hoat dong (`fim.sh check` tra
+-- `+0 dong`), bang VAN hien 39 dong cua khoi `2026-10-10 17:01` ghi TRUOC khi
+-- deploy — va se hien VINH VIEN.
+--
+-- Nguyen nhan: `$CRITLOG` chi duoc ghi khi CO phat hien, nen "khoi cuoi" la lan
+-- cuoi CO PHAT HIEN chu khong phai lan cuoi CHAY. `fim.sh` gio ghi mot dong
+-- `=== <ts> [full] [sach] ===` o MOI lot sach, va ben doc phai coi do la mot
+-- luot quet — khoi RONG nen bang sach THAT.
+write(CRIT, table.concat({
+    "=== 2026-10-10 17:01 [full] ===",
+    "CRITICAL NEW  " .. H .. "cu.com/public_html/wp-content/uploads/.htaccess  sc=20",
+    "=== 2026-10-11 00:20 [full] [sach] ===",
+}, "\n") .. "\n")
+r = run(nil)
+eq(r.available, true, "`[sach]` -> van available")
+eq(#r.domains, 0, "`[sach]` la khoi cuoi -> bang RONG, khoi cu bi bo")
+
+-- 3o. `[sach]` o GIUA, sau no co khoi co phat hien -> phat hien MOI thang.
+write(CRIT, table.concat({
+    "=== 2026-10-11 00:20 [full] [sach] ===",
+    "=== 2026-10-11 00:50 [full] ===",
+    "CRITICAL NEW  " .. H .. "moi.com/public_html/wp-content/uploads/x.php  sc=45",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 1, "`[sach]` roi den khoi co phat hien -> lay khoi sau")
+eq(r.domains[1].domain, "moi.com", "lay domain cua khoi MOI nhat")
+
+-- 3p. Khoi TON DONG van duoc giu du khoi cuoi la `[sach]`: chung bao HIEN TRANG
+--     va co co che chong lap rieng. Mot lot sach KHONG xoa chung khoi bang.
+write(CRIT, table.concat({
+    "=== 2026-10-10 03:00 [full] TON DONG mu-plugins ===",
+    "MUPLUG   NEW  " .. H .. "tondong.com/public_html/wp-content/mu-plugins/z.php  sc=60",
+    "=== 2026-10-11 00:20 [full] [sach] ===",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 1, "`[sach]` KHONG xoa khoi TON DONG")
+eq(r.domains[1].domain, "tondong.com", "ton dong van hien sau lot sach")
+
 -- 4. DIEM quyet dinh thu tu, KHONG phai so file va KHONG phai nhan vi tri.
 --    `b.com` 1 tep 60 diem phai dung TREN `a.com` 5 tep 10 diem.
 --    Day la LOI nguoi dung bat 10-10: ban truoc sap theo nhan `CRITICAL` nen
