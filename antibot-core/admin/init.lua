@@ -1566,11 +1566,18 @@ function renderFim(){
         '\nKiem: ls -la /var/log/antibot/fim_critical.log')
       return
     }
-    var n = (d.muplug||0) + (d.critical||0)
+    // `sections` = so khoi `=== ... ===` (SHADOW handler-strip, mu-plugins ton
+    // dong, md5x3). Phai vao `n`: neu khong, mot phat hien CHI co khoi tieu de
+    // (vi du ca thegioibds — go handler PHP) cho `muplug+critical==0` va the bi
+    // an, dung ho `feedback_alert_reaches_nobody`.
+    var listed = (d.muplug||0) + (d.critical||0)
+    var n = listed + (d.sections||0)
     if(n === 0){ card.style.display='none'; return }
 
     card.style.display=''
-    setText('fim-count', d.muplug ? (d.muplug+' mu-plugins / '+n+' tong') : String(n))
+    setText('fim-count', d.muplug ? (d.muplug+' mu-plugins / '+listed+' tong')
+                                  : (listed>0 ? String(listed)
+                                             : (d.sections||0)+' canh bao cau hinh'))
     // textContent, KHONG innerHTML: moi dong nay chua DUONG DAN FILE do ke tan
     // cong dat ten. Mot ten file chua `<img onerror=...>` se chay trong trang
     // admin dang dang nhap neu dung innerHTML.
@@ -2327,11 +2334,21 @@ local function render_fim()
 
     -- Dem theo BAC, de trang chinh hien duoc mot con so ma khong phai doc het.
     -- Chi dem dong liet ke/gom nhom that (co nhan o dau dong), khong dem dong
-    -- tieu de `=== ... ===` lan dong `[trang thai]`.
-    local muplug, crit = 0, 0
+    -- `[trang thai]`.
+    --
+    -- `sections` dem dong tieu de `=== ... ===`. VI SAO CAN, do duoc tu code
+    -- `fim.sh` 10-10: BA khoi ghi `$CRITLOG` bang tieu de `=== ... ===` + dong
+    -- chi tiet thut le HAI space (SHADOW `h-:php` — chinh chu ky thegioibds,
+    -- ton dong mu-plugins, khuon md5x3), KHONG dong nao mang tien to
+    -- `MUPLUG `/`CRITICAL `. Nen neu mot trong ba la phat hien DUY NHAT thi
+    -- `muplug+critical == 0`, va JS an ca the (`n===0`) — phat hien nam trong
+    -- log nhung VO HINH tren dashboard. Dung lai ho `feedback_alert_reaches_nobody`
+    -- ma chinh the nay sinh ra de bit. Dem tieu de de `n>0` khi co bat ky khoi nao.
+    local muplug, crit, sections = 0, 0, 0
     for i = 1, m do
-        if out[i]:find("^MUPLUG ")        then muplug = muplug + 1
-        elseif out[i]:find("^CRITICAL ")  then crit   = crit + 1 end
+        if     out[i]:find("^MUPLUG ")   then muplug   = muplug + 1
+        elseif out[i]:find("^CRITICAL ") then crit     = crit + 1
+        elseif out[i]:find("^=== ")      then sections = sections + 1 end
     end
 
     ngx.say(cjson.encode({
@@ -2341,6 +2358,7 @@ local function render_fim()
         truncated = (from > 1),
         muplug   = muplug,
         critical = crit,
+        sections = sections,
         lines    = (m > 0) and out or setmetatable({}, cjson.array_mt),
     }))
 end

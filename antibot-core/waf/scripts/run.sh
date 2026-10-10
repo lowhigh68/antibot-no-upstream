@@ -116,6 +116,9 @@ echo "── l7 (admission + circuit breaker) ───────────�
 echo "── admin: duong ra bo dem L7 ──────────────────────────"
 "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
 
+echo "── admin: duong ra FIM (the dashboard) ────────────────"
+"$RESTY" "${ANTIBOT_SRC}admin/tests/admin_fim_test.lua" || rc=1
+
 echo "── secaudit (bo nghiem thu ranh gioi) ────────────────"
 bash "${ANTIBOT_SRC}waf/scripts/secaudit_test.sh" || rc=1
 
