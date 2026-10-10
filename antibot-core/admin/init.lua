@@ -2889,14 +2889,57 @@ local function render_fimwaf()
         return
     end
 
+    -- ── CHI LAY LUOT QUET GAN NHAT, khong gom ca lich su ────────────
+    --
+    -- `$CRITLOG` la log CONG DON (`>>`, giu 400 dong cuoi). Nen mot dong
+    -- `.htaccess sc=20` ghi TRUOC khi mien tru duoc them van nam do mai mai, va
+    -- `fim.sh check` sau do KHONG ghi gi moi ve tep do — no khong con NEW/CHG.
+    -- Do duoc 10-10: buoc 1 ghi `sc=20`, buoc 2 (da mien tru) ghi them `sc=0`,
+    -- ca HAI dong cung ton tai; buoc 3 khong ghi gi.
+    --
+    -- Ban truoc gom MOI dong trong 200 dong cuoi, tuc trinh bay LICH SU nhu
+    -- HIEN TRANG. Day dung la he qua thu hai cua `feedback_alert_reaches_nobody`:
+    -- "may do THAY DOI khong tra loi duoc cau 'dang co gi'".
+    --
+    -- PHAN BIET HAI LOAI KHOI, va day la cho khong duoc cat bua:
+    --   * khoi QUET      `=== <ts> [tier] ===`  -> thay doi cua DUNG luot do.
+    --     Chi lay khoi CUOI: luot truoc da duoc thay the.
+    --   * khoi TON DONG  `=== <ts> [tier] TON DONG mu-plugins ===`,
+    --     `... KHUON XAC THUC md5x3 ===`, `... SHADOW: ... ===`
+    --     -> chung bao HIEN TRANG, co co che chong lap rieng (chi bao khi TAP
+    --     doi). GIU HET. Neu cat theo "khoi cuoi" thi 13 webshell cua
+    --     `thegioibds` — bao mot lan roi nam im — se RUNG khoi bang.
+    local KEEP = { ["TON DONG"] = true, ["KHUON XAC"] = true, ["SHADOW"] = true }
+    local last_scan = 0
+    for i, line in ipairs(crit_lines) do
+        local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
+        if tail == "" then last_scan = i end   -- khoi QUET (khong co hau to)
+    end
+
     -- Gom theo domain. Mot domain co nhieu dong; giu bac CAO NHAT, tong so file,
-    -- va moc thoi gian cua khoi tieu de dung TRUOC no (dong `=== FIM ... ===`).
+    -- va moc thoi gian cua khoi tieu de dung TRUOC no.
     local agg, order = {}, {}
     local cur_ts = nil
-    for _, line in ipairs(crit_lines) do
+    local in_scope = (last_scan == 0)  -- khong co khoi quet nao -> nhan het
+    for idx, line in ipairs(crit_lines) do
+        -- Cap nhat pham vi khi gap mot tieu de khoi.
+        local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
+        if tail then
+            if tail == "" then
+                in_scope = (idx == last_scan)   -- chi khoi QUET CUOI
+            else
+                local keep = false
+                for k in pairs(KEEP) do if tail:find(k, 1, true) then keep = true end end
+                in_scope = keep                 -- khoi TON DONG: giu het
+            end
+        end
+        -- `cur_ts` cap nhat o MOI tieu de, ke ca khoi bi loai: no la moc cua
+        -- khoi dang doc, va dat sau `in_scope` thi mot khoi duoc giu nam sau mot
+        -- khoi bi loai se nhan moc CU.
         local ts = line:match("^=== FIM (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
                 or line:match("^=== (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
         if ts then cur_ts = ts end
+    if in_scope then
         local lab, kind, path, nfile, score, mtime, grouped = parse_fim_line(line)
         if lab and path then
             local dom = path:match("/domains/([^/]+)/") or "(khong ro domain)"
@@ -2941,7 +2984,8 @@ local function render_fimwaf()
             elseif kind == "DEL" then a.deln = a.deln + (nfile or 1) end
             if cur_ts then a.detected = cur_ts end
         end
-    end
+    end   -- if in_scope
+    end   -- for
     -- XEP HANG theo DIEM (`sc=`), khong theo nhan vi tri. `fim.sh` dung nguong
     -- 40 da hieu chinh tu 1.357.213 mau, va `pscore >= 40` DE BEP moi phan nhanh
     -- vi tri (`sev()` dong ~2536 tra `0SCORE` truoc khi xet uploads/wp-includes).

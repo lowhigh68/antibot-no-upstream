@@ -172,6 +172,60 @@ write(CRIT, table.concat({
 r = run(nil)
 eq(r.mt_absent, nil, "co mt= -> KHONG canh bao")
 
+-- ── 3j. CHI LAY LUOT QUET GAN NHAT ──────────────────────────────────
+--
+-- Nguoi dung bat 10-10: "van thay .htaccess o do voi 20 diem sau khi da deploy
+-- va chay fim.sh check". Mien tru DA hoat dong — loi la o day: `$CRITLOG` cong
+-- don (`>>`), nen dong `sc=20` ghi TRUOC khi mien tru van nam do, va `check`
+-- sau do khong ghi gi moi (tep khong con NEW/CHG). Bang gom CA LICH SU roi
+-- trinh bay nhu HIEN TRANG.
+--
+-- Do duoc: buoc 1 ghi sc=20; buoc 2 (da mien tru) ghi them sc=0; CA HAI cung
+-- ton tai; buoc 3 khong ghi gi.
+write(CRIT, table.concat({
+    "=== 2026-10-10 03:00 [full] ===",
+    "CRITICAL CHG  " .. H .. "cu.com/public_html/wp-content/uploads/.htaccess  sc=20",
+    "=== 2026-10-10 09:30 [full] ===",
+    "CRITICAL NEW  " .. H .. "moi.com/public_html/wp-content/uploads/x.php  sc=45",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 1, "chi luot quet CUOI -> 1 domain, khong phai 2")
+eq(r.domains[1].domain, "moi.com", "lay domain cua luot cuoi")
+eq(r.domains[1].score, 45, "diem cua luot cuoi")
+
+-- 3k. Khoi TON DONG phai GIU HET du nam o luot cu. Chung bao HIEN TRANG va co
+--     co che chong lap rieng (chi bao khi TAP doi) — cat theo "khoi cuoi" thi
+--     13 webshell cua `thegioibds` (bao mot lan roi nam im) RUNG khoi bang.
+write(CRIT, table.concat({
+    "=== 2026-10-10 03:00 [full] TON DONG mu-plugins ===",
+    "MUPLUG   NEW  " .. H .. "tondong.com/public_html/wp-content/mu-plugins/z.php  sc=60",
+    "=== 2026-10-10 09:30 [full] ===",
+    "CRITICAL NEW  " .. H .. "moi.com/public_html/wp-content/uploads/x.php  sc=45",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 2, "khoi TON DONG duoc GIU du o luot cu")
+eq(r.domains[1].domain, "tondong.com", "60 diem len dau")
+eq(r.domains[2].domain, "moi.com", "luot cuoi van co")
+
+-- 3l. Khoi SHADOW va KHUON XAC THUC cung thuoc dien GIU.
+write(CRIT, table.concat({
+    "=== 2026-10-10 01:00 [full] KHUON XAC THUC md5x3 ===",
+    "CRITICAL NEW  " .. H .. "pw.com/public_html/wp-content/uploads/s.php  sc=70",
+    "=== 2026-10-10 02:00 [full] SHADOW: thu muc plugin/theme GO handler PHP ===",
+    "CRITICAL CHG  " .. H .. "sh.com/public_html/wp-content/plugins/e/.htaccess  sc=30",
+    "=== 2026-10-10 09:30 [full] ===",
+    "CRITICAL NEW  " .. H .. "moi.com/public_html/wp-content/uploads/x.php  sc=45",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 3, "ca KHUON XAC THUC + SHADOW + luot cuoi")
+
+-- 3m. KHONG co khoi quet nao (log chi co dong le, hoac dinh dang khac) -> nhan
+--     HET. Fail-open o day la dung: tha hien thua hon la hien mot bang rong
+--     trong khi log co du lieu.
+write(CRIT, "CRITICAL NEW  " .. H .. "khongkhoi.com/public_html/wp-content/uploads/x.php  sc=45\n")
+r = run(nil)
+eq(#r.domains, 1, "khong co tieu de khoi -> van nhan dong")
+
 -- 4. DIEM quyet dinh thu tu, KHONG phai so file va KHONG phai nhan vi tri.
 --    `b.com` 1 tep 60 diem phai dung TREN `a.com` 5 tep 10 diem.
 --    Day la LOI nguoi dung bat 10-10: ban truoc sap theo nhan `CRITICAL` nen
