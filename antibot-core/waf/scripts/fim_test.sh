@@ -2674,6 +2674,74 @@ OUT36C=$(e36 check)
 want "36 tap DOI thi bao lai (ca hai thu muc)" \
      "$(printf '%s\n' "$OUT36C" | grep -c 'evil2/Fox-C')" "1"
 
+
+# ── 37. MIEN TRU `.htaccess` do CHINH `uploads_harden.sh` ghi ─────────
+#
+# VI SAO NHOM NAY TON TAI. `uploads_harden.sh` (`b35c980`) tha mot `.htaccess`
+# vao MOI `wp-content/uploads/` de chan thuc thi. Tep do nam thang o uploads/
+# tang 1 nen no an dung truc +20 — tuc antibot bao dong ve chinh tep antibot
+# tao ra. Nguoi dung bat 10-10: "rat nhieu file .htaccess ... la do ban vua tao
+# ra ... the ma gio day no lai roi vao dien rui ro muc 20 diem". Moi may chay
+# cong cu lai them nhieu, va nhieu day cac bao dong THAT xuong duoi.
+#
+# MIEN TRU PHAI HEP. Bon ca duoi ghim ca hai chieu, va ca B la ca quyet dinh:
+# mien tru theo TEN (`.htaccess` trong uploads/) hay theo DAU (mot dong chu
+# thich ai cung viet duoc) deu la lo hong. Nen dieu kien la MOI dong khong rong
+# phai thuoc dung bon dong cua khoi — them mot dong la mat mien tru.
+echo
+echo "── 37. mien tru .htaccess cua uploads_harden (NOI DUNG, khong phai ten) ──"
+S37=$(mktemp -d) || exit 2
+W37="$S37/home/u1/domains/t37.com/public_html"
+U37="$W37/wp-content/uploads"
+mkdir -p "$U37" "$W37/wp-includes" "$S37/state"
+printf '<?php //core' > "$W37/wp-settings.php"
+printf 'x' > "$W37/wp-includes/version.php"
+e37() {
+    FIM_ROOTS="$S37/home/*/domains/*/public_html" FIM_STATE="$S37/state" \
+    FIM_LOG="$S37/fim.log" FIM_CRITLOG="$S37/crit.log" \
+        bash "$HERE/fim.sh" "$@" 2>&1
+}
+# Khoi DUNG y nguyen cai `uploads_harden.sh` ghi. Neu cong cu doi noi dung ma
+# khong sua danh sach trong `fim.sh` thi ca A duoi do ngay — do la Y MUON:
+# hai noi phai khop nhau, giong cap `htaccess_parse.awk` / `upload_content.lua`.
+w37() {
+    {
+        echo '# antibot-uploads-harden'
+        echo '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">'
+        echo '    Require all denied'
+        echo '</FilesMatch>'
+    } > "$U37/.htaccess"
+}
+e37 baseline >/dev/null 2>&1
+
+# A. Noi dung DUNG -> mien tru, sc=0.
+w37
+want "37A .htaccess dung noi dung -> sc=0 (mien tru)" \
+     "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=0"
+e37 check >/dev/null 2>&1
+
+# B. THEM mot dong -> MAT mien tru. Day la ca quan trong nhat: mot ke tan cong
+#    noi them `AddHandler` vao cuoi tep cua antibot phai bi bat lai ngay.
+w37
+echo 'AddHandler application/x-httpd-php .png' >> "$U37/.htaccess"
+want "37B them mot dong la -> sc=20 (MAT mien tru)" \
+     "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
+e37 check >/dev/null 2>&1
+
+# C. Khong co dau -> khong mien tru. Mot `.htaccess` bat ky cua khach (hoac cua
+#    ke tan cong) o uploads/ van an +20 nhu truoc ban nay.
+printf 'Options -Indexes\n' > "$U37/.htaccess"
+want "37C .htaccess KHONG co dau -> sc=20" \
+     "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
+e37 check >/dev/null 2>&1
+
+# D. Mien tru KHONG duoc rong hon mot tep: `.php` o uploads/ tang 1 van +20.
+printf '<?php eval($_POST[1]);' > "$U37/shell.php"
+want "37D shell.php tang 1 van sc=20 (mien tru khong lan)" \
+     "$(e37 check | grep -oE 'uploads/shell\.php  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
+
+rm -rf "$S37"
+
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

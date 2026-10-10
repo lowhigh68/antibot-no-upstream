@@ -2122,7 +2122,11 @@ SZSAME=$(mktemp) || exit 2
 PWFILE=$(mktemp) || exit 2
 FRAGFILE=$(mktemp) || exit 2
 CLFILE=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+# Danh sach `.htaccess` do CHINH `uploads_harden.sh` ghi ra, da XAC MINH NOI
+# DUNG (bon dieu kien — xem khoi sinh no o duoi). Chi o tier day: tier nong
+# khong quet `uploads/` nen khong co tep nao de mien tru.
+HARDFILE=$(mktemp) || exit 2
+trap 'rm -f "$new_scan" "$diff_out" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE" "$HARDFILE"' EXIT
 # NGOAI khoi `tier = full`: 17 file cach ly nam o tang 0 webroot, ma `scan_hot`
 # CO quet tang 0 — thieu o day thi tier nong lai cham 25 diem cho chung.
 core_like_list > "$CLFILE" || :
@@ -2329,6 +2333,46 @@ if [ "$tier" = "full" ]; then
     # che cong diem — truc nhieu van dung duoc, khong phai bo di.
     grep -rlE "'ba'\s*\.|'base'\s*\.\s*'64|'str'\s*\.\s*'rev'|'str'\s*\.\s*'_'" \
         $ROOTS --include='*.php' 2>/dev/null | sort > "$FRAGFILE" || :
+
+    # ── TEP DO CHINH ANTIBOT GHI RA (`uploads_harden.sh`) ────────────
+    #
+    # VI SAO CAN. `uploads_harden.sh` (ban `b35c980`) ghi mot `.htaccess` vao
+    # moi `wp-content/uploads/` de chan thuc thi. Tep do nam THANG o uploads/
+    # tang 1 nen no an +20 o truc ngay duoi — tuc antibot bao dong ve chinh tep
+    # antibot vua tao. Moi may chay cong cu do lai them nhieu, va nhieu day DAY
+    # CAC BAO DONG THAT XUONG DUOI. Ho loi "canh bao khong den ai" o dang khac:
+    # khong phai canh bao khong toi, ma la canh bao thuc chim trong canh bao gia.
+    #
+    # DIEU KIEN MIEN TRU — theo NOI DUNG, khong theo ten:
+    #   1. ten dung la `.htaccess`, VA
+    #   2. nam trong `wp-content/uploads/`, VA
+    #   3. co dong dau `# antibot-uploads-harden`, VA
+    #   4. MOI dong khac rong deu thuoc tap ba dong cua khoi do.
+    #
+    # Dieu (4) la cho quan trong. Mien tru theo TEN (`.htaccess` trong uploads/)
+    # la mot lo hong: ke tan cong chi can dat tung ten do. Mien tru theo DAU mot
+    # minh cung the — dau la mot dong chu thich, ai cung viet duoc. Nen phai
+    # khop TOAN BO noi dung: them MOT dong la mat mien tru va diem quay lai.
+    #
+    # Do 10-10: `htaccess_parse.awk` tra RONG cho tep nay, tuc khong token nguy
+    # hiem nao. Nen day khong phai "tin vi antibot tao ra" ma la "do duoc vo hai".
+    : > "$HARDFILE"
+    while IFS= read -r _hf; do
+        [ -n "$_hf" ] || continue
+        # `grep -qx` khop CA DONG, nen mot dong `# antibot-uploads-harden x` hay
+        # dong co khoang trang khac se KHONG khop.
+        grep -qxF '# antibot-uploads-harden' "$_hf" 2>/dev/null || continue
+        # Dem dong khong rong KHONG thuoc tap cho phep. `grep -c` tra 0 thi tep
+        # chi chua dung bon dong do.
+        _extra=$(grep -vE '^[[:space:]]*$' "$_hf" 2>/dev/null \
+                 | grep -cvxF -e '# antibot-uploads-harden' \
+                     -e '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">' \
+                     -e '    Require all denied' \
+                     -e '</FilesMatch>' || :)
+        [ "${_extra:-1}" -eq 0 ] && printf '%s\n' "$_hf" >> "$HARDFILE"
+    done <<HARDEOF
+$(find $ROOTS -path '*/wp-content/uploads/.htaccess' -type f 2>/dev/null)
+HARDEOF
 fi
 
 total=$(wc -l < "$diff_out")
@@ -2414,10 +2458,10 @@ chgs=$(mktemp) || exit 2
 # Tep cau hinh BI XOA. Tach khoi `chgs` vi huong xu ly NGUOC: `chgs` -> SETEX,
 # cai nay -> DEL. Tron chung lai la phai doan huong tu noi dung.
 dels=$(mktemp) || exit 2
-trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$dels" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE"' EXIT
+trap 'rm -f "$new_scan" "$diff_out" "$marks" "$chgs" "$dels" "$SZSAME" "$PWFILE" "$FRAGFILE" "$CLFILE" "$HARDFILE"' EXIT
 
 report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCHG" \
-             -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" \
+             -v pwfile="$PWFILE" -v fragfile="$FRAGFILE" -v szfile="$SZSAME" -v hardfile="$HARDFILE" \
              -v clfile="$CLFILE" -v chgfile="$chgs" -v delfile="$dels" \
              -v ncfile="$NEWCOUNT" -v ncmin="$NEW_MIN_N" -v ccfile="$CHGCOUNT" -v ccmin="$CHG_MIN_N" -v ccnow="$(date +%s)" \
              -v ccwin="$CHG_WINDOW_DAYS" '
@@ -2477,6 +2521,11 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         if (fragfile != "") while ((getline _x < fragfile) > 0) if (_x != "") fraghit[_x] = 1
         if (clfile   != "") while ((getline _x < clfile)   > 0) if (_x != "") corelike[_x] = 1
         if (szfile   != "") while ((getline _x < szfile)   > 0) if (_x != "") samesize[_x] = 1
+        # Tep do CHINH `uploads_harden.sh` ghi ra, da xac minh NOI DUNG o shell
+        # (bon dieu kien). awk chi doc DANH SACH: phep xac minh can `grep -qxF`
+        # tren tung dong nen lam o shell re hon, va cung ngon ngu voi chinh cong
+        # cu da ghi tep do.
+        if (hardfile != "") while ((getline _x < hardfile) > 0) if (_x != "") hardok[_x] = 1
 
         # Tap DONG cac file .php WordPress core dat o webroot tang 0. Danh sach
         # nam trong core, khong phu thuoc plugin nao — cung loai bat bien da cho
@@ -2625,7 +2674,19 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
 
         # 20 — uploads/ tang 1. Do 20-09: ~424 file .php trong uploads/ toan
         # dan -> CHI 5 file nam thang o tang 1. Ty le loc 98,8%.
-        if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php") s += 20
+        #
+        # NGOAI LE: `.htaccess` do CHINH `uploads_harden.sh` ghi ra. Cong cu do
+        # (`b35c980`) tha mot tep vao MOI `wp-content/uploads/` de chan thuc thi,
+        # va tep do nam thang o tang 1 nen an dung +20 nay — tuc antibot bao dong
+        # ve chinh tep antibot tao. Moi may chay cong cu lai them nhieu, day cac
+        # bao dong THAT xuong duoi.
+        #
+        # `hardok` KHONG phai mien tru theo ten hay theo dau: shell da kiem MOI
+        # dong khong rong cua tep phai thuoc dung bon dong cua khoi. Them mot
+        # dong la ra khoi bang nay va diem +20 quay lai ngay. Do 10-10:
+        # `htaccess_parse.awk` tra RONG cho noi dung do, tuc khong token nguy
+        # hiem nao — "do duoc vo hai", khong phai "tin vi antibot tao ra".
+        if (p ~ /\/wp-content\/uploads\/[^\/]+$/ && b != "index.php" && !(p in hardok)) s += 20
 
         # 15 — webroot tang 0, ten khong thuoc core WordPress. Tap dong: core co
         # dung ~13 file .php o day. Do 186-126: 78 dong, 21 la
