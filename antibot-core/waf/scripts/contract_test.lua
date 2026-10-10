@@ -2746,5 +2746,39 @@ do
     end
 end
 
+
+-- ── Tin hieu DA GAC khong duoc song lai trong im lang ────────────────
+--
+-- `swarm_attack` bi gac 10-10-2026: do tren BA may khac kien truc, 13 gio,
+-- 5.596 luot chan vao khach that va **0** luot vao bot (khong UA bot/scanner
+-- nao dat `swn >= 10`). Ba nguong da thu va loai: tuyet doi, ti le `swn/swall`
+-- (cong 0,15 giu lai 0/8.346), va `n_id/swn` (khac nhau theo kien truc site).
+--
+-- Hai cho PHAI cung gac, va day la ly do co bo kiem nay: trong so 0 o
+-- `compute.lua` KHONG chan duoc `ban_store_write.lua`, vi file do doc
+-- `ctx.swarm_attack` TRUC TIEP, bo qua bang trong so. De nguyen mot cho thi
+-- tin hieu da gac van ghi `ban:<ip>` 24h — dung duong da gay FP khoa khach
+-- 8,5 gio ngay 06-10.
+io.write("\nhop dong: tin hieu da GAC phai gac o MOI noi doc no\n")
+
+local sw_w = compute:match("\n%s*swarm_attack%s*=%s*([%d%.]+)")
+if not sw_w then
+    bad("  SAI  khong tim thay `swarm_attack` trong DEFAULT_WEIGHTS\n")
+elseif tonumber(sw_w) ~= 0 then
+    bad(string.format(
+        "  SAI  `swarm_attack` trong so = %s, phai la 0 (da gac 10-10).\n" ..
+        "       Bat lai CHI KHI co truc phan biet duoc bot trong du lieu THAT.\n",
+        sw_w))
+else
+    pass = pass + 1; io.write("  OK   `swarm_attack` trong so 0 o DEFAULT_WEIGHTS\n")
+end
+
+local bsw = slurp(SRC .. "enforcement/ban/ban_store_write.lua")
+if bsw:match("swarm_active%s*=.-ctx%.swarm_attack") then
+    bad("  SAI  `ban_store_write.lua` van doc `ctx.swarm_attack` lam bang chung\n" ..
+        "       ban. Trong so 0 KHONG chan duoc duong nay — no doc truc tiep.\n")
+else
+    pass = pass + 1; io.write("  OK   `ban_store_write.lua` khong con dung `swarm_attack` lam bang chung ban\n")
+end
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

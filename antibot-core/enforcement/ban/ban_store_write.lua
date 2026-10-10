@@ -39,14 +39,26 @@ function _M.run(ctx)
     local ctx_ttl = (ttl and ttl > 0) and ttl or 86400
 
     local ip_risk_val   = ctx.ip_risk or 0.0
-    -- HAI cơ chế swarm KHÁC NHAU, phải check cả hai:
+    -- HAI cơ chế swarm KHÁC NHAU — và chỉ còn MỘT được dùng ở đây.
     --   ctx.swarm       (cluster/swarm_detect) = uri_cluster>50 OR ip_cluster>30
-    --   ctx.swarm_attack (distributed_swarm)    = distinct /24 per domain+ua, =1.0 khi HARD
-    -- Attack "nhiều IP × 1 request" (residential-proxy botnet) fire ctx.swarm_attack=1.0
-    -- nhưng KHÔNG set ctx.swarm (ip_cluster thấp vì mỗi IP chỉ 1 hit). Chỉ đọc
-    -- ctx.swarm → trượt hoàn toàn loại swarm này. >=1.0 = ngưỡng "DISTRIBUTED ATTACK"
-    -- đã xác nhận (count>=hard, vd navigation 45 /24) → an toàn FP, không dính emerging/flash-crowd.
-    local swarm_active  = ctx.swarm == true or (ctx.swarm_attack or 0) >= 1.0
+    --   ctx.swarm_attack (distributed_swarm)    = distinct /24 per domain+ua
+    --
+    -- `ctx.swarm_attack` ĐÃ BỊ GÁC 10-10-2026 (trọng số 0 ở `compute.lua`), nên
+    -- nó KHÔNG được dùng làm bằng chứng ban ở đây nữa. Trọng số 0 một mình
+    -- KHÔNG đủ: dòng này đọc `ctx.swarm_attack` TRỰC TIẾP, bỏ qua bảng trọng
+    -- số, nên nếu để nguyên thì tín hiệu đã gác vẫn ghi `ban:<ip>` 24h.
+    --
+    -- Chú thích cũ ở đây khẳng định `>=1.0` là "an toàn FP, không dính
+    -- emerging/flash-crowd" vì nó đòi `count >= hard`. Số đo bác bỏ: 10-10 trên
+    -- cloud183-139, `no1computer.vn|Mac` đạt `swn = 326` — gấp **9,3 lần**
+    -- hard=35 — với 7.577 identity, tức ~23 identity trên mỗi /24. Hard không
+    -- phải rào FP; với site đông khách dùng UA phổ biến nó bị vượt bằng lưu
+    -- lượng bình thường. Cùng cửa sổ, KHÔNG một UA bot/scanner nào đạt
+    -- `swn >= 10` trên cả ba máy đo.
+    --
+    -- `ctx.swarm` (cluster) GIỮ NGUYÊN: nó đếm tập trung URI/IP, một phép đo
+    -- khác, chưa có phản ví dụ.
+    local swarm_active  = ctx.swarm == true
 
     -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
     -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.

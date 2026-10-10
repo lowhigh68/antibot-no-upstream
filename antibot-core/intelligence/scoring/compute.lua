@@ -115,7 +115,40 @@ local DEFAULT_WEIGHTS = {
 
     wp_attack_score     = 80,
 
-    swarm_attack        = 120,
+    -- swarm_attack: GÁC — trọng số 0 từ 10-10-2026.
+    --
+    -- Đo trên BA máy khác kiến trúc (171-96 WordPress, 183-139 code tay,
+    -- 168-123 hỗn hợp), cùng cửa sổ 13 giờ ngày 10-10:
+    --   * 5.596 lượt bị chặn trên các nhóm `domain|UA` mà số identity chứng
+    --     minh là khách thật (2.314 `quatructuyen.vn|Windows` với 2.155
+    --     identity; 2.540 `no1computer.vn|Mac` với 7.577 identity; 742
+    --     `msmobile.vn|Mac` với 3.190 identity);
+    --   * **0 lượt** vào bot: không một UA scanner/bot/crawler nào đạt
+    --     `swn >= 10` trên bất kỳ máy nào trong ba máy.
+    --
+    -- Tín hiệu đo sai thứ ngay từ định nghĩa. Khoá `swarm:<host>:<ua_hash>`
+    -- đếm số /24 dùng MỘT UA; với UA phổ biến (Mac/Windows Chrome) trên site
+    -- đông khách, con số đó tỉ lệ với LƯỢNG KHÁCH. `no1computer.vn` đạt
+    -- `swn=326` — gấp 9,3 lần hard=35 — với 7.577 identity, tức ~23 identity
+    -- trên mỗi /24. Botnet rotate IP cho hình dạng NGƯỢC LẠI: nhiều /24, ít
+    -- identity (ngày 06 trên 168-123: 1.874 identity × 1 lượt block).
+    --
+    -- Ba ngưỡng đã thử và loại:
+    --   tuyệt đối (soft/hard)   — bắn ở 25/9.930 dải, ca FP khoá khách 8,5 giờ
+    --   tỉ lệ `swn/swall`       — cổng 0,15 giữ lại 0/8.346 lượt (xem
+    --                             `detection/distributed_swarm.lua`)
+    --   `n_id/swn`              — khác nhau theo kiến trúc site (WordPress sinh
+    --                             nhiều identity/IP hơn code tay), không có
+    --                             ngưỡng dùng chung được
+    -- Không ngưỡng nào chữa được vì bản thân phép đếm không phân biệt.
+    --
+    -- Trọng số 0 chứ KHÔNG gỡ module: `ctx.swarm_attack` vẫn được tính và
+    -- `swn`/`swall`/`swr` vẫn vào antibot.log, nên vẫn chẩn đoán được và bật
+    -- lại chỉ là đổi một số. Cùng cách xử lý `canvas_change`.
+    --
+    -- Bật lại CHỈ KHI có trục phân biệt được bot trong dữ liệu THẬT trước —
+    -- không phải một ngưỡng mới nghe hợp lý.
+    swarm_attack        = 0,
 
     -- waf_wp_path: luật đường dẫn WordPress KHÔNG chặn (waf/wordpress/paths.lua).
     -- Hai luật chặn ở đó thoát ngay tại access phase nên không bao giờ tới đây;
