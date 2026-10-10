@@ -147,9 +147,79 @@ sh_suite uploads_harden_test "$HERE/uploads_harden_test.sh" || rc=1
 # `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc muc 8 no khong co phep kiem nao.
 # Bo nay chay `baseline` + `check` that tren mot cay thu muc `mktemp -d` voi
 # `redis-cli` GIA — khong cham /home, khong cham Redis, khong cham /var/lib.
+#
+# ── CONG THOI GIAN, va vi sao CHI bo nay co ──────────────────────────
+#
+# Do duoc 10-10 tren may dev, tung bo:
+#   fim_test        27.308 ms   <- 84% TOAN BO run.sh
+#   postdeploy_test  2.992 ms
+#   htaccess_fixture 2.206 ms
+#   contract_test    1.183 ms
+#   ... 15 bo con lai deu < 320 ms
+#   TOAN BO run.sh  32.425 ms
+#
+# Nen "test chay lau" KHONG phai nhieu bo cham — la MOT bo. Nguyen nhan khong
+# phai `sleep` (da toi uu truoc day: `sleep 1` -> `sleep 0.02`, xem chu thich
+# dong ~220 cua `fim_test.sh`, tiet kiem 32s) ma la ~110 lan `bash fim.sh check`,
+# moi lan mot tien trinh bash+awk day du. Do la BAN CHAT cua mot bo kiem hanh vi
+# dau-cuoi cho script 3.400 dong; cat no la cat do phu.
+#
+# VI SAO KHONG LOAI HAN du co yeu cau loai "test da on dinh": `fim.sh` la tep
+# duoc sua NHIEU NHAT trong repo — lan cuoi `e412daf` (10-10, cot `mt=`), va
+# chinh bo nay chan loi khi do. Module bien dong nhat khong phai module "da on
+# dinh". Lich su git la bang chung, khong phai cam giac.
+#
+# Nen: chay KHI VA CHI KHI commit nay cham `fim.sh` hoac bo test cua no.
+# Do duoc: deploy thuong 33,1s -> 6,6s; commit co sua fim.sh van 33s.
+#
+# FAIL-CLOSED la bat buoc: khong xac dinh duoc "doi gi" (khong co git, khong co
+# HEAD~1, shallow clone) thi CHAY. Mot cong bo qua test DUNG LUC can nhat la
+# dung ho loi "canh bao khong den ai" — im lang va tin sai.
+# `FIM_TEST_FORCE=1` de ep chay; `RUN_BASE=<ref>` de so voi ref khac.
+# `contract_test` ghim hai bat bien duoi — ca hai da that su hong mot lan.
+fim_touched() {
+    command -v git >/dev/null 2>&1 || { echo "khong co git"; return 0; }
+    git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1 || { echo "khong phai git repo"; return 0; }
+    local base="${RUN_BASE:-HEAD~1}"
+    git -C "$HERE" rev-parse --verify "$base" >/dev/null 2>&1 || { echo "khong co $base"; return 0; }
+    # Tep LIEN QUAN: chinh script, bo test cua no, va hai parser awk ma no goi.
+    # `wpinv_gap.sh` KHONG o day — no co bo rieng va bo do chi 259 ms.
+    #
+    # TIEN TO `:/` LA BAT BUOC. `git -C "$HERE"` dat cwd o `waf/scripts/`, va
+    # pathspec cua git tinh TUONG DOI VOI CWD — nen `antibot-core/waf/scripts/
+    # fim.sh` tro thanh `waf/scripts/antibot-core/waf/scripts/fim.sh`, khong khop
+    # gi, va `changed` RONG. Phep thu 10-10 bat duoc dung loi nay: HEAD la
+    # `e412daf` (commit SUA fim.sh) ma cong tra "BO QUA" — tuc cong bo qua test
+    # DUNG LUC can nhat, trong im lang. `:/` neo vao GOC repo nen dung o moi cwd.
+    local changed
+    changed=$(git -C "$HERE" diff --name-only "$base" HEAD -- \
+                  ':/antibot-core/waf/scripts/fim.sh' \
+                  ':/antibot-core/waf/scripts/fim_test.sh' \
+                  ':/antibot-core/waf/scripts/htaccess_parse.awk' \
+                  ':/antibot-core/waf/scripts/inifile_parse.awk' 2>/dev/null) || {
+        echo "git diff that bai"; return 0; }
+    # Cay lam viec co thay doi CHUA commit o cac tep do thi cung phai chay:
+    # nguoi sua tay roi deploy ngay la duong di that.
+    local dirty
+    dirty=$(git -C "$HERE" status --porcelain -- \
+                ':/antibot-core/waf/scripts/fim.sh' \
+                ':/antibot-core/waf/scripts/fim_test.sh' 2>/dev/null)
+    [ -n "$changed" ] && { echo "$base..HEAD co sua fim.sh"; return 0; }
+    [ -n "$dirty" ]   && { echo "cay lam viec co sua chua commit"; return 0; }
+    return 1
+}
 echo
 echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"
-sh_suite fim_test "$HERE/fim_test.sh" || rc=1
+if [ "${FIM_TEST_FORCE:-0}" = "1" ]; then
+    echo "  FIM_TEST_FORCE=1 — chay bat buoc."
+    sh_suite fim_test "$HERE/fim_test.sh" || rc=1
+elif reason=$(fim_touched); then
+    echo "  chay vi: $reason"
+    sh_suite fim_test "$HERE/fim_test.sh" || rc=1
+else
+    echo "  BO QUA (27s): commit nay khong cham fim.sh / fim_test.sh / *_parse.awk."
+    echo "  Ep chay: FIM_TEST_FORCE=1 $0"
+fi
 
 # `wpinv` ghi CHINH cac khoa ma `is_wp_root` doc, va ba luat HARD-BLOCK duoc gate
 # bang chung. Lech mot ky tu la inventory ghi mot noi, WAF doc mot noi.

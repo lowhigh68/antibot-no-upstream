@@ -2780,5 +2780,56 @@ if bsw:match("swarm_active%s*=.-ctx%.swarm_attack") then
 else
     pass = pass + 1; io.write("  OK   `ban_store_write.lua` khong con dung `swarm_attack` lam bang chung ban\n")
 end
+-- ── CONG THOI GIAN cua `fim_test` trong `run.sh` ────────────────────
+--
+-- `fim_test` chiem 27,3s / 32,4s (84%) nen `run.sh` chi chay no khi commit cham
+-- `fim.sh`. Mot cong BO QUA SAI thi im lang va tin sai — nen hai bat bien duoi
+-- phai duoc ghim, va ca hai deu da that su hong mot lan:
+--
+--   1. PATHSPEC `:/`. `git -C "$HERE"` dat cwd o `waf/scripts/`, va pathspec cua
+--      git tinh TUONG DOI VOI CWD. Thieu `:/` thi `antibot-core/waf/scripts/
+--      fim.sh` thanh `waf/scripts/antibot-core/...`, khong khop gi, `changed`
+--      RONG -> cong BO QUA du commit CO sua `fim.sh`. Phep thu 10-10 bat duoc
+--      dung ca nay tren `e412daf` (commit sua fim.sh) truoc khi kip commit.
+--   2. FAIL-CLOSED. Khong co git / khong phai repo / khong co ref -> phai
+--      `return 0` (CHAY). Doi thanh `return 1` la cong tat tren may khong co
+--      git, trong im lang.
+io.write("\nhop dong: cong thoi gian cua `fim_test` phai fail-closed\n")
+
+local runsh = slurp(SRC .. "waf/scripts/run.sh")
+local gate  = runsh:match("fim_touched%(%)%s*{(.-)\n}")
+if not gate then
+    bad("  SAI  khong tim thay ham `fim_touched` trong `run.sh`\n")
+else
+    -- 1. moi pathspec `fim.sh`/`fim_test.sh` trong cong phai co tien to `:/`
+    local bare = 0
+    for ps in gate:gmatch("'([^']*fim[^']*%.sh)'") do
+        if not ps:match("^:/") then bare = bare + 1 end
+    end
+    if bare > 0 then
+        bad(string.format(
+            "  SAI  %d pathspec trong `fim_touched` thieu tien to `:/`.\n" ..
+            "       `git -C \"$HERE\"` dat cwd o waf/scripts/ nen pathspec tinh\n" ..
+            "       tuong doi voi CWD -> khong khop -> cong BO QUA du co sua.\n", bare))
+    else
+        pass = pass + 1
+        io.write("  OK   pathspec trong `fim_touched` deu neo goc repo (`:/`)\n")
+    end
+
+    -- 2. ba nhanh "khong xac dinh duoc" phai tra 0 (CHAY), khong phai 1
+    local closed = true
+    for _, pat in ipairs({ "khong co git", "khong phai git repo", "git diff that bai" }) do
+        local line = gate:match("[^\n]*" .. pat .. "[^\n]*")
+        if not line or not line:match("return 0") then closed = false end
+    end
+    if not closed then
+        bad("  SAI  nhanh \"khong xac dinh duoc\" cua `fim_touched` khong `return 0`.\n" ..
+            "       Khong biet co sua gi thi phai CHAY, khong duoc bo qua.\n")
+    else
+        pass = pass + 1
+        io.write("  OK   `fim_touched` fail-closed: khong xac dinh duoc thi CHAY\n")
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
