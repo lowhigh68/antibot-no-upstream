@@ -131,9 +131,24 @@ bash "${ANTIBOT_SRC}waf/scripts/secaudit_test.sh" || rc=1
 #
 # Can `date -d`, `find -newermt`, `zcat` — co san tren fleet lan WSL. Neu mai chay
 # o cho thieu chung thi bo nay do va do la dung: `postdeploy.sh` cung se sai o do.
+#
+# CONG THOI GIAN, cung khuon voi `fim_test` (xem `touched` o tren). Do 10-10
+# tren may nguoi dung: bo nay 142 GIAY — cham hon ca `fim_test`. Nguyen nhan la
+# 25 luot `redis-cli --scan` keyspace THAT (nam lan chay x nam scan). Bo test da
+# duoc tro sang stub `redis-cli` nen con 2,1s, nhung van gac vi no chay
+# `postdeploy.sh` nam lan va tren may co du lieu that moi lan doc lai cua so log.
 echo
 echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
-sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
+if [ "${POSTDEPLOY_TEST_FORCE:-0}" = "1" ]; then
+    echo "  POSTDEPLOY_TEST_FORCE=1 — chay bat buoc."
+    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
+elif reason=$(postdeploy_touched); then
+    echo "  chay vi: $reason"
+    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
+else
+    echo "  BO QUA: commit nay khong cham postdeploy.sh / postdeploy_test.sh / wafstat.sh."
+    echo "  Ep chay: POSTDEPLOY_TEST_FORCE=1 $0"
+fi
 
 # `uploads_harden.sh` GHI vao thu muc cua khach, nen no la ban duy nhat trong cay
 # nay co the pha du lieu nguoi dung. Bo kiem chay CHINH no tren mot cay `mktemp -d`
@@ -177,36 +192,54 @@ sh_suite uploads_harden_test "$HERE/uploads_harden_test.sh" || rc=1
 # dung ho loi "canh bao khong den ai" — im lang va tin sai.
 # `FIM_TEST_FORCE=1` de ep chay; `RUN_BASE=<ref>` de so voi ref khac.
 # `contract_test` ghim hai bat bien duoi — ca hai da that su hong mot lan.
-fim_touched() {
+#   touched <nhan> <duong-dan-tuong-doi-goc-repo>...
+#
+# TIEN TO `:/` DUOC THEM TU DONG o day. `git -C "$HERE"` dat cwd o
+# `waf/scripts/`, va pathspec cua git tinh TUONG DOI VOI CWD — nen
+# `antibot-core/waf/scripts/fim.sh` tro thanh
+# `waf/scripts/antibot-core/waf/scripts/fim.sh`, khong khop gi, va `changed`
+# RONG. Phep thu 10-10 bat duoc dung loi nay: HEAD la `e412daf` (commit SUA
+# fim.sh) ma cong tra "BO QUA" — tuc cong bo qua test DUNG LUC can nhat, trong
+# im lang. Them `:/` trong HAM chu khong o tung cho goi: mot cho goi quen la lo
+# hong y nhu cu, va `contract_test` chi kiem duoc mot khuon.
+touched() {
+    local label="$1"; shift
     command -v git >/dev/null 2>&1 || { echo "khong co git"; return 0; }
     git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1 || { echo "khong phai git repo"; return 0; }
     local base="${RUN_BASE:-HEAD~1}"
     git -C "$HERE" rev-parse --verify "$base" >/dev/null 2>&1 || { echo "khong co $base"; return 0; }
-    # Tep LIEN QUAN: chinh script, bo test cua no, va hai parser awk ma no goi.
-    # `wpinv_gap.sh` KHONG o day — no co bo rieng va bo do chi 259 ms.
-    #
-    # TIEN TO `:/` LA BAT BUOC. `git -C "$HERE"` dat cwd o `waf/scripts/`, va
-    # pathspec cua git tinh TUONG DOI VOI CWD — nen `antibot-core/waf/scripts/
-    # fim.sh` tro thanh `waf/scripts/antibot-core/waf/scripts/fim.sh`, khong khop
-    # gi, va `changed` RONG. Phep thu 10-10 bat duoc dung loi nay: HEAD la
-    # `e412daf` (commit SUA fim.sh) ma cong tra "BO QUA" — tuc cong bo qua test
-    # DUNG LUC can nhat, trong im lang. `:/` neo vao GOC repo nen dung o moi cwd.
+    local specs=() p
+    for p in "$@"; do specs+=(":/$p"); done
     local changed
-    changed=$(git -C "$HERE" diff --name-only "$base" HEAD -- \
-                  ':/antibot-core/waf/scripts/fim.sh' \
-                  ':/antibot-core/waf/scripts/fim_test.sh' \
-                  ':/antibot-core/waf/scripts/htaccess_parse.awk' \
-                  ':/antibot-core/waf/scripts/inifile_parse.awk' 2>/dev/null) || {
+    changed=$(git -C "$HERE" diff --name-only "$base" HEAD -- "${specs[@]}" 2>/dev/null) || {
         echo "git diff that bai"; return 0; }
     # Cay lam viec co thay doi CHUA commit o cac tep do thi cung phai chay:
     # nguoi sua tay roi deploy ngay la duong di that.
     local dirty
-    dirty=$(git -C "$HERE" status --porcelain -- \
-                ':/antibot-core/waf/scripts/fim.sh' \
-                ':/antibot-core/waf/scripts/fim_test.sh' 2>/dev/null)
-    [ -n "$changed" ] && { echo "$base..HEAD co sua fim.sh"; return 0; }
-    [ -n "$dirty" ]   && { echo "cay lam viec co sua chua commit"; return 0; }
+    dirty=$(git -C "$HERE" status --porcelain -- "${specs[@]}" 2>/dev/null)
+    [ -n "$changed" ] && { echo "$base..HEAD co sua $label"; return 0; }
+    [ -n "$dirty" ]   && { echo "cay lam viec co sua $label chua commit"; return 0; }
     return 1
+}
+# Giu ten cu cho `contract_test` va cho de doc tai cho goi.
+# `wpinv_gap.sh` KHONG o day — no co bo rieng va bo do chi 259 ms.
+fim_touched() {
+    touched "fim.sh" \
+        'antibot-core/waf/scripts/fim.sh' \
+        'antibot-core/waf/scripts/fim_test.sh' \
+        'antibot-core/waf/scripts/htaccess_parse.awk' \
+        'antibot-core/waf/scripts/inifile_parse.awk'
+}
+# `postdeploy_test` do duoc 142 GIAY tren may nguoi dung 10-10 — cham hon
+# `fim_test` (27s) va la bo cham nhat ca `run.sh`. Sau khi tro `redis-cli` sang
+# stub no con 2,1s, nhung van gac: no chay `postdeploy.sh` NAM lan, va tren may
+# co du lieu that moi lan deu doc lai cua so log.
+postdeploy_touched() {
+    touched "postdeploy.sh" \
+        'antibot-core/waf/scripts/postdeploy.sh' \
+        'antibot-core/waf/scripts/postdeploy_test.sh' \
+        'antibot-core/waf/scripts/wafstat.sh' \
+        'antibot-core/waf/scripts/inifile_parse.awk'
 }
 echo
 echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"

@@ -14,9 +14,47 @@
 # Ma thoat: 0 = moi con so khop, 1 = co lech.
 set -u
 export LC_ALL=C
+
+# ── REDIS: bo nay chay tren FIXTURE, KHONG duoc cham Redis that ──────
+#
+# Do duoc 10-10 tren may nguoi dung: bo nay mat 142 GIAY (`fim_test` chi 27s),
+# va no tro thanh bo cham nhat ca `run.sh`. Nguyen nhan: no chay
+# `postdeploy.sh` NAM lan, moi lan script do goi `redis-cli --scan` NAM lan
+# (`waf:fimcfg:*` bon lan + `waf:fimchg:*` mot lan) = 25 luot quet TOAN BO
+# keyspace Redis that. Tren may dev khong co Redis nen moi luot tra ngay va
+# phep do o day chi ra 3 giay — dung ho loi `feedback_measure_before_conclude`:
+# do mot moi truong roi phat bieu ve moi truong khac.
+#
+# `postdeploy.sh:607` da co diem noi `POSTDEPLOY_REDIS_CLI`. Tro no vao mot
+# STUB tra RONG ngay.
+#
+# KHONG tro vao mot duong dan KHONG TON TAI: `postdeploy.sh:899` gac bang
+# `command -v "$RCLI"`, nen mot duong dan khong ton tai lam no di nhanh
+# "thieu '<lenh>' — khong doc duoc khoa" va TOAN BO nhanh chinh cua muc 22
+# khong chay. Da thu 10-10 va assertion "22 co CACH DOC" do ngay — do la
+# assertion DUNG (no gac nhanh in ra huong dan doc), nen phai cho nhanh chinh
+# chay voi du lieu RONG chu khong lam nhanh do im.
+#
+# Cung khong dung `redis-cli -p <cong rong>`: no CHO timeout.
+#
+# Muc nao CAN du lieu Redis THAT thi phai dung Redis TAM rieng (nhu `deploy.sh`
+# lam o cong 6399), khong phai instance dang phuc vu.
 HERE=$(cd "$(dirname "$0")" && pwd)
+_RSTUB=$(mktemp /var/tmp/pdrcli.XXXXXX) || exit 2
+cat > "$_RSTUB" <<'RSTUB'
+#!/bin/sh
+# Stub `redis-cli` cho bo test: tra RONG, ma thoat 0, KHONG cham mang.
+# `--scan` -> khong dong nao; `GET` -> rong; `PING` -> PONG de cac phep kiem
+# "co song khong" di duoc nhanh binh thuong.
+for a in "$@"; do
+    case "$a" in PING|ping) echo PONG; exit 0 ;; esac
+done
+exit 0
+RSTUB
+chmod 0755 "$_RSTUB"
+export POSTDEPLOY_REDIS_CLI="${POSTDEPLOY_TEST_RCLI:-$_RSTUB}"
 R=$(mktemp -d /var/tmp/pdtest.XXXXXX)
-trap 'rm -rf "$R"' EXIT
+trap 'rm -rf "$R"; rm -f "$_RSTUB"' EXIT
 mkdir -p "$R/A" "$R/L" "$R/E"
 ln -s "$HERE/.." "$R/A/waf"
 
@@ -537,7 +575,16 @@ e23() {
 }
 
 # Chieu 1: conf MOI HON master -> phai canh bao.
-touch "$M23/nginx.conf"
+#
+# `+1 minute` chu khong `touch` tran. `ps -o lstart=` chi co do phan giai GIAY,
+# nen khi bo test khoi dong va `touch` roi vao CUNG MOT GIAY thi phep so
+# "conf moi hon master" that bai — hai assertion duoi do KHONG ON DINH.
+# Da thay that 10-10: chung do trong `run.sh` roi lan chay sau lai xanh, con
+# chay rieng thi luon xanh. Lo nay CO SAN; no lo ra khi `run.sh` duoc lam nhanh
+# hon (cong thoi gian cho `fim_test`/`postdeploy_test`) nen bo test khoi dong
+# gan hon voi luc `touch`. Dat mtime o TUONG LAI mot phut giu dung HUONG cua
+# phep so ma khong phai `sleep`.
+touch -d '+1 minute' "$M23/nginx.conf"
 OUT=$(e23)
 want  "23 conf moi hon -> canh bao CHUA CO HIEU LUC" 'CHUA CO HIEU LUC'
 want  "23 noi ro can restart"                        'Can .restart.'

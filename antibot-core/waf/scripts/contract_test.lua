@@ -2797,23 +2797,21 @@ end
 io.write("\nhop dong: cong thoi gian cua `fim_test` phai fail-closed\n")
 
 local runsh = slurp(SRC .. "waf/scripts/run.sh")
-local gate  = runsh:match("fim_touched%(%)%s*{(.-)\n}")
+local gate  = runsh:match("\ntouched%(%)%s*{(.-)\n}")
 if not gate then
-    bad("  SAI  khong tim thay ham `fim_touched` trong `run.sh`\n")
+    bad("  SAI  khong tim thay ham `touched` trong `run.sh`\n")
 else
-    -- 1. moi pathspec `fim.sh`/`fim_test.sh` trong cong phai co tien to `:/`
-    local bare = 0
-    for ps in gate:gmatch("'([^']*fim[^']*%.sh)'") do
-        if not ps:match("^:/") then bare = bare + 1 end
-    end
-    if bare > 0 then
-        bad(string.format(
-            "  SAI  %d pathspec trong `fim_touched` thieu tien to `:/`.\n" ..
+    -- 1. `touched` phai TU them `:/` vao moi pathspec. Kiem o HAM chu khong o
+    --    tung cho goi: mot cho goi quen tien to la lo hong y nhu cu, va de o
+    --    ham thi chi co MOT khuon phai dung.
+    if not gate:match('specs%+=%("?:/%$p"?%)') then
+        bad("  SAI  `touched` khong tu them tien to `:/` vao pathspec.\n" ..
             "       `git -C \"$HERE\"` dat cwd o waf/scripts/ nen pathspec tinh\n" ..
-            "       tuong doi voi CWD -> khong khop -> cong BO QUA du co sua.\n", bare))
+            "       tuong doi voi CWD -> khong khop -> cong BO QUA du co sua.\n" ..
+            "       Da hong that 10-10 tren `e412daf`.\n")
     else
         pass = pass + 1
-        io.write("  OK   pathspec trong `fim_touched` deu neo goc repo (`:/`)\n")
+        io.write("  OK   `touched` tu neo pathspec vao goc repo (`:/`)\n")
     end
 
     -- 2. ba nhanh "khong xac dinh duoc" phai tra 0 (CHAY), khong phai 1
@@ -2823,11 +2821,36 @@ else
         if not line or not line:match("return 0") then closed = false end
     end
     if not closed then
-        bad("  SAI  nhanh \"khong xac dinh duoc\" cua `fim_touched` khong `return 0`.\n" ..
+        bad("  SAI  nhanh \"khong xac dinh duoc\" cua `touched` khong `return 0`.\n" ..
             "       Khong biet co sua gi thi phai CHAY, khong duoc bo qua.\n")
     else
         pass = pass + 1
-        io.write("  OK   `fim_touched` fail-closed: khong xac dinh duoc thi CHAY\n")
+        io.write("  OK   `touched` fail-closed: khong xac dinh duoc thi CHAY\n")
+    end
+
+    -- 3. MOI cong phai di qua `touched`, khong tu goi `git` rieng. Mot cong viet
+    --    tay lai la mot cho co the quen `:/` hay quen fail-closed.
+    --
+    -- Kiem THAN ham, BO dong khai bao: ten ham `postdeploy_touched() {` tu no da
+    -- chua chuoi "touched", nen `body:match("touched")` tren ca khoi LUON dung
+    -- va phep kiem thanh vo dung. Dot bien 10-10 (doi mot cong sang tu goi
+    -- `git diff`) KHONG bi bat vi dung loi nay — bat buoc phai cat dong dau.
+    local own = 0
+    for name, body in runsh:gmatch("\n(%w+_touched)%(%)%s*{\n(.-)\n}") do
+        if name ~= "touched" then
+            -- Than hop le: goi `touched "<nhan>"`. Than SAI: tu chay `git`.
+            if body:match("git%s") or not body:match("touched%s+\"") then
+                own = own + 1
+            end
+        end
+    end
+    if own > 0 then
+        bad(string.format(
+            "  SAI  %d ham `*_touched` khong goi `touched` dung chung.\n" ..
+            "       Moi cong viet tay la mot cho co the quen `:/`/fail-closed.\n", own))
+    else
+        pass = pass + 1
+        io.write("  OK   moi cong `*_touched` deu dung chung ham `touched`\n")
     end
 end
 
