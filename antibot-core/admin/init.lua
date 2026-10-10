@@ -1473,13 +1473,11 @@ tr:hover td{background:#1c2129}
         Nguồn: <b>fim.sh</b> (cron, ngoài luồng request). Gom theo <b>domain</b> từ
         đường dẫn <code>/home/&lt;user&gt;/domains/&lt;domain&gt;/</code> — cùng phép ghép
         mà fim.sh dùng làm khoá Redis, nên subdomain/alias tự đúng.<br>
-        <b>Điểm</b> là trục xếp hạng: <code>sc=</code> của fim.sh — cộng điểm theo
-        bất biến (khuôn mật khẩu webshell +50, <code>uploads/YYYY/MM</code> +25,
-        mu-plugins +25, tên core bị chèn ký tự +25…), ngưỡng <b>40</b> hiệu chỉnh
-        từ 1.357.213 mẫu. Lấy điểm <b>cao nhất</b> trong domain, không phải tổng.<br>
-        <b>Vùng</b> là cột riêng, không trộn vào điểm: nhãn
-        <code>CRITICAL</code> của fim.sh chỉ nghĩa "nằm trong uploads/ wp-includes/
-        wp-admin/" nên mọi site WordPress đều có — vị trí không phải mức độ.
+        <b>Điểm</b> là trục xếp hạng, lấy <b>cao nhất</b> trong domain (không phải
+        tổng). Bảng "Điểm nghĩa là gì" bên dưới liệt kê từng mức ứng với thay đổi nào.<br>
+        <b>Thư mục</b> là cột riêng, không trộn vào điểm: vị trí không phải mức độ.
+        Một tệp trong <code>wp-includes/</code> có thể chỉ là bản cập nhật WordPress
+        bình thường.
       </div>
     </div>
 
@@ -1490,20 +1488,77 @@ tr:hover td{background:#1c2129}
       <div id="wf-empty" style="display:none;font-size:13px;color:#8b949e"></div>
       <table id="wf-table">
         <thead><tr>
-          <th title="sc= cao nhat trong domain. >=40 la nguong bao dong cua fim.sh">Điểm</th>
+          <th title="Diem cao nhat cua mot tep trong domain nay. Xem bang y nghia ben duoi.">Điểm</th>
           <th>Domain</th>
-          <th title="File co diem cao nhat — khong phai bam vao moi biet">Nặng nhất</th>
-          <th title="Vi tri trong webroot. Thong tin ngu canh, KHONG phai muc do">Vùng</th>
-          <th>File</th>
-          <th title="NEW / CHG / DEL">N·C·D</th>
-          <th title="mtime moi nhat — LUC FILE DOI">File đổi lúc</th>
-          <th title="Dong tieu de === FIM === — LUC fim.sh CHAY, khac luc file doi">Phát hiện lúc</th>
+          <th title="Tep co diem cao nhat — de khong phai bam vao moi biet la tep nao">Tệp đáng ngờ nhất</th>
+          <th title="Thu muc chua tep do, tinh tu goc web (public_html)">Thư mục</th>
+          <th title="Tong so tep co thay doi trong domain">Tổng tệp</th>
+          <th title="Tep MOI xuat hien (chua tung co trong manifest)">Mới</th>
+          <th title="Tep DA CO nhung noi dung/kich thuoc/mtime doi">Sửa</th>
+          <th title="Tep BIEN MAT so voi manifest">Mất</th>
+          <th title="Thoi diem sua tep gan nhat (mtime tren dia)">Sửa lần cuối</th>
+          <th title="Thoi diem fim.sh quet va ghi nhan — KHAC luc tep bi sua">fim.sh ghi nhận</th>
         </tr></thead>
         <tbody id="t-wf-dom"></tbody>
       </table>
+      <div id="wf-mt-note" style="display:none;font-size:11px;margin-top:8px;
+           padding:8px 10px;border-radius:6px;background:rgba(210,153,34,.12);
+           color:#d29922"></div>
       <div style="font-size:11px;color:#8b949e;margin-top:8px">
-        Khoảng cách giữa <b>File đổi lúc</b> và <b>Phát hiện lúc</b> là độ trễ của
-        chu kỳ quét. Cách nhau nhiều ngày = file đã đổi từ lâu mà baseline mới ghi nhận.
+        <b>Sửa lần cuối</b> là mtime của tệp trên đĩa; <b>fim.sh ghi nhận</b> là lúc
+        cron quét thấy. Hai cột cách nhau nhiều ngày nghĩa là tệp đã đổi từ lâu mà
+        chu kỳ quét mới phát hiện.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Điểm nghĩa là gì</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
+        Điểm là <b>cộng dồn</b>: một tệp có thể ăn nhiều mức cùng lúc (ví dụ tệp
+        <code>.php</code> mới trong <code>wp-content/uploads/2026/01/</code> ăn 25,
+        nếu tên còn giống tệp core bị chèn ký tự thì +25 nữa = 50).
+        Không có mức nào một mình chứng minh tệp độc hại — ngưỡng
+        <b>40</b> là mức fim.sh coi là đủ để báo động.
+      </div>
+      <table>
+        <thead><tr><th>Điểm</th><th>Nghĩa</th><th>Ví dụ tệp nào ăn mức này</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag tag-red">+50</span></td>
+              <td>Nội dung có khuôn mật khẩu webshell</td>
+              <td><code>md5(md5(md5(</code> trong tệp — đo 5 máy: 2 tệp, cả 2 là webshell thật</td></tr>
+          <tr><td><span class="tag tag-red">+25</span></td>
+              <td>Tệp <code>.php</code> trong thư mục media</td>
+              <td><code>wp-content/uploads/2026/01/x.php</code> — nơi chỉ nên có ảnh</td></tr>
+          <tr><td><span class="tag tag-red">+25</span></td>
+              <td>Tệp trong <code>wp-content/mu-plugins/</code></td>
+              <td>WordPress <code>include</code> mọi <code>.php</code> ở đây trên <b>mọi</b> request — không cần ai gọi tới</td></tr>
+          <tr><td><span class="tag tag-red">+25</span></td>
+              <td>Tên tệp core bị chèn một ký tự</td>
+              <td><code>wp-sett1ings.php</code>, <code>wp-cro1n.php</code> — bản sao trước khi sửa tệp thật</td></tr>
+          <tr><td><span class="tag tag-orange">+20</span></td>
+              <td>Tệp lạ ngay trong <code>wp-content/uploads/</code> (tầng 1)</td>
+              <td>Gồm cả <code>.htaccess</code>. Lọc 98,8%: đo 20-09 có ~424 tệp <code>.php</code> trong uploads toàn dàn, chỉ 5 nằm thẳng tầng 1</td></tr>
+          <tr><td><span class="tag tag-orange">+20</span></td>
+              <td>Thư mục plugin có hậu tố hex ngẫu nhiên</td>
+              <td><code>wp-helper-d698ed/</code> — không ai đặt tên plugin kiểu này</td></tr>
+          <tr><td><span class="tag tag-blue">+15</span></td>
+              <td>Tệp <code>.php</code> lạ ở gốc web, tên không thuộc core</td>
+              <td>Core WordPress có đúng ~13 tệp <code>.php</code> ở tầng 0</td></tr>
+          <tr><td><span class="tag tag-blue">+15</span></td>
+              <td>Thư mục con lạ ở <code>wp-content/</code> tầng 1</td>
+              <td>Core chỉ tạo <code>plugins/ themes/ uploads/ upgrade/ languages/</code></td></tr>
+          <tr><td><span class="tag tag-blue">+10</span></td>
+              <td>Tên hàm ghép từ mảnh chuỗi, hoặc sửa mà kích thước không đổi</td>
+              <td>Trục yếu có nhiễu (22/23 là thư viện LESS hợp lệ) nên trọng số thấp — chỉ góp khi cộng dồn</td></tr>
+          <tr><td><span class="tag tag-gray">−20</span></td>
+              <td><b>Trừ</b>: tệp trạng thái đã biết, đổi liên tục</td>
+              <td>Cache, log, datastore — đổi mỗi lượt quét là bình thường</td></tr>
+        </tbody>
+      </table>
+      <div style="font-size:11px;color:#8b949e;margin-top:10px">
+        Ngưỡng 40 hiệu chỉnh từ <b>1.357.213</b> mẫu tệp thật trên dàn máy.
+        <b>0 điểm không chứng minh tệp lành</b> — chỉ nghĩa là không khớp trục nào
+        đang có; một PHP tối giản vẫn đạt 0.
       </div>
     </div>
 
@@ -1514,11 +1569,11 @@ tr:hover td{background:#1c2129}
       <table>
         <thead><tr>
           <th>Điểm</th>
-          <th>Loại</th>
-          <th>Vùng</th>
-          <th>Đường dẫn</th>
-          <th title="mtime — LUC FILE DOI">File đổi lúc</th>
-          <th title="LUC fim.sh CHAY">Phát hiện lúc</th>
+          <th title="Moi = chua tung co; Sua = da co nhung doi; Mat = bien mat">Thay đổi</th>
+          <th title="Thu muc tinh tu goc web">Thư mục</th>
+          <th>Đường dẫn đầy đủ</th>
+          <th title="mtime tren dia">Sửa lần cuối</th>
+          <th title="Luc fim.sh quet thay">fim.sh ghi nhận</th>
         </tr></thead>
         <tbody id="t-wf-detail"></tbody>
       </table>
@@ -1687,7 +1742,7 @@ function wfCell(row, text, mono){
 // Mau theo DIEM, khong theo nhan vi tri. Nguong 40 la cua fim.sh (hieu chinh
 // tu 1.357.213 mau); >=40 mot minh de bep moi phan nhanh vi tri trong `sev()`.
 // Duoi 40 KHONG phai "an toan" — la "chua du mot minh de bao dong".
-function wfScore(sc, ungraded){
+function wfScore(sc, ungraded, band, why){
   var s = document.createElement('span')
   if(sc === undefined || sc === null){
     // KHONG in 0: "chua cham diem" khac "da cham, 0 diem".
@@ -1700,10 +1755,16 @@ function wfScore(sc, ungraded){
   s.className = 'tag ' + (sc >= 40 ? 'tag-red' : sc >= 20 ? 'tag-orange'
                         : sc > 0 ? 'tag-blue' : 'tag-gray')
   s.textContent = String(sc)
-  s.title = sc >= 40 ? 'Vuot nguong bao dong 40 cua fim.sh'
-          : sc > 0   ? 'Co tin hieu nhung chua du 40 diem'
-                     : 'Khong khop tin hieu nao dang co'
+  // `band`/`band_why` tu server (chi server biet cac truc cua `pscore`).
+  s.title = (band ? band + ' — ' : '') + (why || '')
   return s
+}
+// Dich NEW/CHG/DEL thanh tieng nguoi. Nhan goc la cua `fim.sh`, khong phai cua
+// nguoi doc dashboard.
+function wfKind(k){
+  return k === 'NEW' ? 'Mới'
+       : k === 'CHG' ? 'Sửa'
+       : k === 'DEL' ? 'Mất' : (k || '—')
 }
 // Epoch -> ngay gio doc duoc. `fim.sh` in epoch THO (`mt=`) vi `strftime` la
 // gawk-only va script goi `awk` khong dinh danh — dinh dang o day thay vi o do.
@@ -1762,13 +1823,20 @@ function renderWafFim(domain){
       // DIEM dung cot dau: do la truc xep hang.
       var ts = document.createElement('td')
       ts.appendChild(wfScore(x.score > 0 ? x.score : (x.ungraded > 0 ? null : x.score),
-                             x.ungraded > 0))
+                             x.ungraded > 0, x.band, x.band_why))
       tr.appendChild(ts)
       var td = document.createElement('td')
       var a = document.createElement('a')
       a.href = 'javascript:void(0)'
       a.className = 'mono'
+      // Mau TRANG tuong minh: mac dinh cua <a> trong trang nay la xanh nhat,
+      // doc kem tren o bang. Gach chan khi hover de van ro la bam duoc.
+      a.style.color = '#e6edf3'
+      a.style.textDecoration = 'none'
+      a.onmouseover = function(){ a.style.textDecoration = 'underline' }
+      a.onmouseout  = function(){ a.style.textDecoration = 'none' }
       a.textContent = x.domain
+      a.title = 'Bam de xem tung tep cua domain nay'
       a.onclick = function(){ renderWafFim(x.domain) }
       td.appendChild(a); tr.appendChild(td)
       // TEP NANG NHAT — tra loi "file nao" ma khong phai bam. Chi ten tep, day
@@ -1783,13 +1851,39 @@ function renderWafFim(domain){
         tw.textContent = '—'
       }
       tr.appendChild(tw)
-      wfCell(tr, (x.zones_list && x.zones_list.length) ? x.zones_list.join(' ') : '—')
+      // Thu muc: in CO dau `/`, moi thu muc mot dong khi co nhieu.
+      var tz = document.createElement('td')
+      tz.className = 'mono'
+      tz.style.fontSize = '11px'
+      tz.textContent = (x.zones_list && x.zones_list.length)
+                       ? x.zones_list.join('\n') : '—'
+      tz.style.whiteSpace = 'pre-line'
+      tr.appendChild(tz)
       wfCell(tr, x.files)
-      wfCell(tr, x.newn + '·' + x.chgn + '·' + x.deln)
+      // BA cot rieng thay vi `N·C·D` — mot nhan viet tat chi nguoi viet hieu.
+      // 0 in thanh `·` cho de doc: mat chu y vao con so khac 0.
+      wfCell(tr, x.newn > 0 ? x.newn : '·')
+      wfCell(tr, x.chgn > 0 ? x.chgn : '·')
+      wfCell(tr, x.deln > 0 ? x.deln : '·')
       wfCell(tr, wfTime(x.mtime), true)
       wfCell(tr, x.detected, true)
       tb.appendChild(tr)
     })
+
+    // Cot "Sua lan cuoi" TRONG het: noi ro VI SAO thay vi de nguoi doc doan.
+    // `mt=` chi co tu `e412daf`; log cu khong co cot do.
+    var mtn = document.getElementById('wf-mt-note')
+    if(mtn){
+      if(d.mt_absent){
+        mtn.style.display = ''
+        mtn.textContent = 'Cột "Sửa lần cuối" trống vì log hiện tại do bản fim.sh '
+          + 'trước ghi — cột mtime chỉ có từ bản 10-10. Nó sẽ có dữ liệu sau lần '
+          + 'fim.sh check kế tiếp (cron 30 phút), hoặc chạy ngay: '
+          + 'waf/scripts/fim.sh check'
+      } else {
+        mtn.style.display = 'none'
+      }
+    }
 
     // Chi tiet: chi ve khi server da tra (tuc nguoi dung da bam mot domain).
     var card = document.getElementById('wf-detail-card')
@@ -1818,10 +1912,12 @@ function renderWafFim(domain){
     det.forEach(function(x){
       var tr = document.createElement('tr')
       var ts = document.createElement('td')
-      ts.appendChild(wfScore(x.score, x.score === undefined || x.score === null))
+      ts.appendChild(wfScore(x.score, x.score === undefined || x.score === null,
+                             x.band, x.band_why))
       tr.appendChild(ts)
-      wfCell(tr, x.kind)
-      wfCell(tr, x.zone)
+      wfCell(tr, wfKind(x.kind))
+      var dz = wfCell(tr, x.zone, true)
+      dz.style.fontSize = '11px'
       // Duong dan DAY DU o day — day moi la cho tra loi "file nao".
       var tp = wfCell(tr, x.path, true)
       tp.style.fontSize = '11px'
@@ -2705,15 +2801,42 @@ local FIM_RANK = {
 -- wp-admin/" — thuan VI TRI. Moi site WordPress deu co cap nhat trong
 -- `wp-includes/`, nen xep hang theo nhan do lam MOI domain thanh CRITICAL va
 -- cot do khong con phan biet duoc gi (nguoi dung bat 10-10).
+-- Tra ve duong dan THAT trong webroot, co dau `/`, de nguoi doc nhan ra ngay
+-- thay vi mot nhan viet lien khong dau. Thu tu quan trong: `mu-plugins/` nam
+-- TRONG `wp-content/` nen phai xet truoc.
 local function fim_zone(path)
-    if path:find("/wp-content/mu-plugins/", 1, true) then return "mu-plugins" end
-    if path:find("/wp-content/uploads/",    1, true) then return "uploads"    end
-    if path:find("/wp-includes/",           1, true) then return "wp-includes" end
-    if path:find("/wp-admin/",              1, true) then return "wp-admin"   end
-    if path:find("/wp-content/plugins/",    1, true) then return "plugins"    end
-    if path:find("/wp-content/themes/",     1, true) then return "themes"     end
-    if path:match("/public_html/[^/]+$")            then return "webroot"     end
-    return "khac"
+    if path:find("/wp-content/mu-plugins/", 1, true) then return "wp-content/mu-plugins/" end
+    if path:find("/wp-content/uploads/",    1, true) then return "wp-content/uploads/"    end
+    if path:find("/wp-content/plugins/",    1, true) then return "wp-content/plugins/"    end
+    if path:find("/wp-content/themes/",     1, true) then return "wp-content/themes/"     end
+    if path:find("/wp-includes/",           1, true) then return "wp-includes/"  end
+    if path:find("/wp-admin/",              1, true) then return "wp-admin/"     end
+    if path:find("/wp-content/",            1, true) then return "wp-content/"   end
+    if path:match("/public_html/[^/]+$")            then return "(goc web)"      end
+    return "(khac)"
+end
+
+-- DIEN GIAI mot moc diem thanh cau nguoi doc hieu duoc. Bang nay la BAN SAO CO
+-- Y cua cac truc trong `pscore()` (`fim.sh` ~dong 2614-2747) — khong the goi
+-- sang awk, nen phai nhac lai. Doi trong so ben do thi SUA CA O DAY.
+--
+-- Diem la CONG DON, khong loai tru nhau: mot tep co the an 25 + 20. Nen o day
+-- chi suy ra duoc bang CHAN DUOI ("it nhat phai co truc nay"), va dieu do la du
+-- cho cau hoi "20 diem nghia la gi".
+local FIM_SCORE_BANDS = {
+    { min = 50, label = "RAT NANG",  why = "co khuon mat khau webshell trong noi dung (do 5 may: 2 tep, ca 2 la webshell)" },
+    { min = 40, label = "BAO DONG",  why = "vuot nguong 40 cua fim.sh — mot minh du de bao dong, de bep moi nhan vi tri" },
+    { min = 25, label = "DANG NGO",  why = "vi du: tep moi trong uploads/YYYY/MM, trong mu-plugins, hoac ten tep core bi chen mot ky tu" },
+    { min = 15, label = "CO TIN HIEU", why = "vi du: tep la o uploads/ tang 1, ten thu muc plugin co hau to hex, tep la o goc web" },
+    { min = 1,  label = "YEU",       why = "khop mot truc trong so thap — mot minh KHONG du bao dong, chi gop phan khi cong don" },
+    { min = 0,  label = "0 diem",    why = "khong khop truc nao dang co. KHONG chung minh tep lanh — chi nghia la fim.sh khong co tin hieu nao cho no" },
+}
+local function fim_band(sc)
+    if not sc then return nil end
+    for _, b in ipairs(FIM_SCORE_BANDS) do
+        if sc >= b.min then return b.label, b.why end
+    end
+    return nil
 end
 
 -- Tach mot dong bao cao. Tra nil neu khong phai dong liet ke — dong tieu de
@@ -2839,10 +2962,26 @@ local function render_fimwaf()
         a.zseen, a.worst_sc = nil, nil
     end
 
+    -- Dien giai moc diem + cho biet CO dong nao mang `mt=` khong.
+    --
+    -- `mt_absent` ton tai vi mot cot TRONG khong noi duoc vi sao no trong. Cot
+    -- `mt=` chi co tu `e412daf` (10-10), nen moi dong ghi boi ban `fim.sh`
+    -- TRUOC do khong co — va nguoi doc se tuong giao dien hong. Phan biet
+    -- "khong co du lieu" voi "chua co du lieu VI SAO": y nhu `exists=false` o
+    -- tren phan biet never_run voi no_permission.
+    local any_mt = false
+    for _, a in ipairs(order) do
+        a.band, a.band_why = fim_band(a.score > 0 and a.score or (a.ungraded > 0 and nil or a.score))
+        if a.mtime then any_mt = true end
+    end
+
     local res = {
         available  = true,
         domains    = (#order > 0) and order or setmetatable({}, cjson.array_mt),
         crit_shown = #crit_lines,
+        -- true = KHONG dong nao co `mt=` -> log duoc ghi boi ban fim.sh cu,
+        -- phai chay lai `fim.sh check` moi co. KHAC "co ma rong".
+        mt_absent  = (#order > 0) and (not any_mt) or nil,
     }
 
     -- CHI TIET: chi doc `fim.log` khi nguoi dung DA bam vao mot domain. Doc tep
@@ -2866,10 +3005,12 @@ local function render_fimwaf()
                 if line:find(needle, 1, true) then
                     local lab, kind, path, nfile, score, mtime = parse_fim_line(line)
                     if lab and path then
+                        local bd, bw = fim_band(score)
                         det[#det + 1] = { ts = ts, label = lab, kind = kind,
                                           path = path, score = score,
                                           mtime = mtime, files = nfile,
-                                          zone = fim_zone(path) }
+                                          zone = fim_zone(path),
+                                          band = bd, band_why = bw }
                     end
                 end
             end

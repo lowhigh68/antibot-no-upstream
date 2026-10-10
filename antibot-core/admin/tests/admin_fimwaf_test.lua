@@ -31,11 +31,15 @@ local tl  = src:match("(local function tail_lines%(path, want%).-\nend\n)")
 local fz  = src:match("(local function fim_zone%(path%).-\nend\n)")
 local pf  = src:match("(local function parse_fim_line%(s%).-\nend\n)")
 local rk  = src:match("(local FIM_RANK = %b{})")
+local sb  = src:match("(local FIM_SCORE_BANDS = %b{})")
+local fb  = src:match("(local function fim_band%(sc%).-\nend\n)")
 local body= src:match("(local function render_fimwaf%(%).-\nend\n)")
 assert(tl,   "khong trich duoc tail_lines")
 assert(fz,   "khong trich duoc fim_zone")
 assert(pf,   "khong trich duoc parse_fim_line")
 assert(rk,   "khong trich duoc FIM_RANK")
+assert(sb,   "khong trich duoc FIM_SCORE_BANDS")
+assert(fb,   "khong trich duoc fim_band")
 assert(body, "khong trich duoc render_fimwaf")
 
 local tmpdir = os.getenv("TMPDIR") or "/tmp"
@@ -71,8 +75,8 @@ local function run(domain, crit_path, full_path, chunk)
         FIMWAF_CHUNK  = chunk or (256 * 1024),
     }
     local chunk = assert(loadstring(
-        tl .. "\n" .. rk .. "\n" .. fz .. "\n" .. pf .. "\n" ..
-        body .. "\nreturn render_fimwaf"))
+        tl .. "\n" .. rk .. "\n" .. sb .. "\n" .. fb .. "\n" ..
+        fz .. "\n" .. pf .. "\n" .. body .. "\nreturn render_fimwaf"))
     setfenv(chunk, env)
     chunk()()
     return cjson.decode(out[1])
@@ -132,14 +136,41 @@ eq(r.domains[1].worst,
 --     "file doi luc nao" vs "fim.sh chay luc nao".
 eq(r.domains[1].mtime, 1760086400, "mtime = MOI NHAT trong domain")
 
--- 3e. VUNG tach rieng khoi diem: `uploads` va `webroot` deu phai co mat.
-eq(#r.domains[1].zones_list, 2, "a.com co HAI vung")
-eq(r.domains[1].zones_list[1], "uploads", "vung dau: uploads")
-eq(r.domains[1].zones_list[2], "webroot", "vung hai: webroot (.htaccess tang 0)")
+-- 3e. THU MUC tach rieng khoi diem, va in CO dau `/` — mot nhan viet lien
+--     khong dau ("uploads", "webroot") doc nhu giay nhap, nguoi dung bat 10-10.
+eq(#r.domains[1].zones_list, 2, "a.com co HAI thu muc")
+eq(r.domains[1].zones_list[1], "wp-content/uploads/", "thu muc dau, CO dau /")
+eq(r.domains[1].zones_list[2], "(goc web)", "tep tang 0 -> `(goc web)`, khong phai `webroot`")
+
+-- 3g. DIEN GIAI moc diem: 45 phai ra bang "BAO DONG" (>= 40), kem ly do.
+--     Cot diem tran khong tra loi duoc "20 diem nghia la gi" (cau cua nguoi dung).
+eq(r.domains[1].band, "BAO DONG", "45 diem -> bang BAO DONG")
+eq(type(r.domains[1].band_why), "string", "co ly do kem theo")
 
 -- 3f. Truong lam viec KHONG duoc gui di.
 eq(r.domains[1].zseen, nil, "`zseen` bi loai truoc khi gui")
 eq(r.domains[1].worst_sc, nil, "`worst_sc` bi loai truoc khi gui")
+
+-- 3h. `mt_absent`: log CO dong nhung KHONG dong nao mang `mt=` (log do ban
+--     `fim.sh` TRUOC `e412daf` ghi). Cot "Sua lan cuoi" se trong, va giao dien
+--     PHAI noi duoc vi sao — nguoi dung gap dung ca nay 10-10 va hoi "sao khong
+--     thay du lieu nao". Mot cot trong khong tu giai thich duoc.
+write(CRIT, table.concat({
+    "=== FIM 2026-10-10 03:00 [full] -- x ===",
+    "CRITICAL NEW  " .. H .. "old.com/public_html/wp-content/uploads/x.php  sc=45",
+}, "\n") .. "\n")
+r = run(nil)
+eq(r.mt_absent, true, "khong dong nao co mt= -> mt_absent=true")
+eq(r.domains[1].mtime, nil, "va mtime cua domain la nil")
+
+-- 3i. Co it nhat MOT dong mang `mt=` -> KHONG canh bao. Canh bao sai cung te
+--     nhu khong canh bao: no day nguoi doc di chay lenh khong can thiet.
+write(CRIT, table.concat({
+    "=== FIM 2026-10-10 03:00 [full] -- x ===",
+    "CRITICAL NEW  " .. H .. "new.com/public_html/wp-content/uploads/x.php  sc=45  mt=1760000000",
+}, "\n") .. "\n")
+r = run(nil)
+eq(r.mt_absent, nil, "co mt= -> KHONG canh bao")
 
 -- 4. DIEM quyet dinh thu tu, KHONG phai so file va KHONG phai nhan vi tri.
 --    `b.com` 1 tep 60 diem phai dung TREN `a.com` 5 tep 10 diem.
@@ -211,7 +242,8 @@ eq(r.detail[1].kind, "NEW", "tep 45 diem la NEW")
 eq(r.detail[2].score, 1, "tep 1 diem xuong duoi du no MOI hon")
 eq(r.detail[1].ts, "2026-10-10 07:00", "chi tiet co moc phat hien")
 eq(r.detail[1].mtime, 1760000000, "chi tiet co mtime")
-eq(r.detail[1].zone, "uploads", "chi tiet co vung")
+eq(r.detail[1].zone, "wp-content/uploads/", "chi tiet co thu muc, CO dau /")
+eq(r.detail[1].band, "BAO DONG", "chi tiet co dien giai moc diem")
 
 -- 7b. ROUTINE CHI co trong `fim.log`, khong co trong critical — day la ca ly do
 --     dung HAI nguon. Neu chi dung critical thi dong `CHG` nay bien mat.
