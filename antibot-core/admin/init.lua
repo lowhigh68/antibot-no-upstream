@@ -1064,6 +1064,7 @@ tr:hover td{background:#1c2129}
     <div class="tab" onclick="showTab('domains')">🌐 Domains</div>
     <div class="tab" onclick="showTab('devices')">📱 Devices</div>
     <div class="tab" onclick="showTab('fleet')">🎯 Fleet Detection</div>
+    <div class="tab" onclick="showTab('waffim')">🛡️ WAF</div>
   </div>
 
   <!-- -->
@@ -1465,6 +1466,56 @@ tr:hover td{background:#1c2129}
     </div>
   </div>
 
+  <div id="tab-waffim" class="pane">
+    <div class="card">
+      <h2>🛡️ Giám sát toàn vẹn file — theo domain</h2>
+      <div style="font-size:12px;color:#8b949e;line-height:1.6">
+        Nguồn: <b>fim.sh</b> (cron, ngoài luồng request). Bảng dưới gom theo
+        <b>domain</b> từ đường dẫn <code>/home/&lt;user&gt;/domains/&lt;domain&gt;/</code> —
+        cùng phép ghép mà fim.sh dùng làm khoá Redis, nên subdomain/alias tự đúng.<br>
+        Bảng lấy từ <code>fim_critical.log</code> (đã lọc CRITICAL/MUPLUG).
+        Bấm một domain → chi tiết lấy từ <code>fim.log</code> (đầy đủ, có cả
+        <b>CHG</b> — đổi <code>.htaccess</code> là chữ ký thường gặp của site bị chiếm).<br>
+        Bậc: <b>MUPLUG</b> = mu-plugins (chạy không cần request) ·
+        <b>CRITICAL</b> = uploads/ wp-includes/ wp-admin/ · <b>HIGH</b>/<b>SCORE</b> = còn lại.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Domain có nguy cơ <span id="wf-dom-count" class="tag tag-red">0</span>
+        <span style="font-size:11px;font-weight:400;color:#8b949e;margin-left:8px"
+              id="wf-src">—</span></h2>
+      <div id="wf-empty" style="display:none;font-size:13px;color:#8b949e"></div>
+      <table id="wf-table">
+        <thead><tr>
+          <th>Domain</th>
+          <th>Bậc cao nhất</th>
+          <th>File</th>
+          <th>NEW</th>
+          <th>CHG</th>
+          <th>DEL</th>
+          <th>Lần cuối</th>
+        </tr></thead>
+        <tbody id="t-wf-dom"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="wf-detail-card" style="display:none">
+      <h2>Chi tiết — <span id="wf-detail-dom" class="mono"></span>
+        <span id="wf-detail-n" class="tag tag-blue">0</span></h2>
+      <div style="font-size:11px;color:#8b949e;margin-bottom:8px" id="wf-detail-note"></div>
+      <table>
+        <thead><tr>
+          <th>Thời điểm</th>
+          <th>Bậc</th>
+          <th>Loại</th>
+          <th>Đường dẫn</th>
+        </tr></thead>
+        <tbody id="t-wf-detail"></tbody>
+      </table>
+    </div>
+  </div>
+
 <script>
 // ── Helpers ───────────────────────────────────────────────────
 function tag(score){
@@ -1611,9 +1662,132 @@ function renderFim(){
   .catch(()=>{})
 }
 
+// ── Tab WAF: giam sat file theo domain ────────────────────────
+//
+// MOI o cay DOM, khong phai chuoi HTML. Duong dan file do KE TAN CONG dat ten,
+// nen mot ten chua `<img onerror=...>` se chay trong trang admin DANG DANG NHAP
+// neu dung innerHTML. `esc()` o tren thieu `>` nen cung khong du tin de dua vao
+// o day — `textContent` thi khong co duong nao sot.
+function wfCell(row, text, mono){
+  var td = document.createElement('td')
+  td.textContent = (text === undefined || text === null) ? '—' : String(text)
+  if(mono) td.className = 'mono'
+  row.appendChild(td)
+  return td
+}
+function wfTag(label){
+  // Bac cao -> do. Giu dung bac cua fim.sh, khong phat minh nhan moi.
+  var cls = label === 'MUPLUG'   ? 'tag-red'
+          : label === 'CRITICAL' ? 'tag-red'
+          : label === 'HIGH'     ? 'tag-orange'
+          : label === 'SCORE'    ? 'tag-blue' : 'tag-gray'
+  var s = document.createElement('span')
+  s.className = 'tag ' + cls
+  s.textContent = label || '—'
+  return s
+}
+function renderWafFim(domain){
+  var url = '/antibot-admin/fimwaf' +
+            (domain ? ('?domain=' + encodeURIComponent(domain)) : '')
+  fetch(url, {credentials:'include'})
+  .then(r => r.ok ? r.json() : null)
+  .then(d => {
+    var tb = document.getElementById('t-wf-dom')
+    var empty = document.getElementById('wf-empty')
+    if(!tb || !d) return
+
+    // PHAN BIET ba trang thai, y nhu the o Overview. "Khong co domain nao" va
+    // "chua chay fim lan nao" la HAI viec khac nhau cua nguoi van hanh.
+    if(d.available === false){
+      tb.innerHTML = ''
+      document.getElementById('wf-table').style.display = 'none'
+      empty.style.display = ''
+      setText('wf-dom-count','0')
+      if(d.cause === 'never_run'){
+        empty.textContent = 'fim.sh CHUA CHAY lan nao tren may nay — buoc 1 chua song. '
+          + 'Day KHONG phai "sach". Chay baseline mot lan (tay, moi may): '
+          + 'waf/scripts/fim.sh baseline'
+      } else if(d.cause === 'no_permission'){
+        empty.textContent = 'File co nhung nginx KHONG doc duoc — phat hien van chay, '
+          + 'canh bao khong toi duoc trang nay. Lam: chgrp nginx + chmod 0640 '
+          + '/var/log/antibot/fim_critical.log'
+      } else {
+        empty.textContent = 'KHONG DOC DUOC: ' + (d.reason||'') +
+          ' (errno ' + (d.errno===undefined?'-':d.errno) + ')'
+      }
+      return
+    }
+
+    document.getElementById('wf-table').style.display = ''
+    setText('wf-src', 'fim_critical.log · ' + (d.crit_shown||0) + ' dong soi')
+    var doms = d.domains || []
+    setText('wf-dom-count', String(doms.length))
+    tb.innerHTML = ''
+    if(doms.length === 0){
+      empty.style.display = ''
+      empty.textContent = 'Khong co domain nao dang bao dong — fim.sh da chay va SACH.'
+    } else {
+      empty.style.display = 'none'
+    }
+    doms.forEach(function(x){
+      var tr = document.createElement('tr')
+      var td = document.createElement('td')
+      // Bam vao domain -> tai chi tiet. Dung <a> de ro la bam duoc.
+      var a = document.createElement('a')
+      a.href = 'javascript:void(0)'
+      a.className = 'mono'
+      a.textContent = x.domain
+      a.onclick = function(){ renderWafFim(x.domain) }
+      td.appendChild(a); tr.appendChild(td)
+      var tl = document.createElement('td'); tl.appendChild(wfTag(x.label)); tr.appendChild(tl)
+      wfCell(tr, x.files)
+      wfCell(tr, x.newn)
+      wfCell(tr, x.chgn)
+      wfCell(tr, x.deln)
+      wfCell(tr, x.last, true)
+      tb.appendChild(tr)
+    })
+
+    // Chi tiet: chi ve khi server da tra (tuc nguoi dung da bam mot domain).
+    var card = document.getElementById('wf-detail-card')
+    if(!card) return
+    if(d.domain === undefined){ card.style.display = 'none'; return }
+    card.style.display = ''
+    setText('wf-detail-dom', d.domain)
+    var dt = document.getElementById('t-wf-detail')
+    dt.innerHTML = ''
+    if(d.detail_error){
+      setText('wf-detail-n','!')
+      setText('wf-detail-note','KHONG DOC DUOC fim.log: ' + d.detail_error +
+        ' (errno ' + (d.detail_errno===undefined?'-':d.detail_errno) + ')' +
+        ' — bang o tren van dung, chi phan chi tiet thieu.')
+      return
+    }
+    var det = d.detail || []
+    setText('wf-detail-n', String(det.length))
+    setText('wf-detail-note', 'fim.log · ' + (d.detail_scanned||0) +
+      ' dong cuoi duoc soi · moi nhat len dau')
+    if(det.length === 0){
+      setText('wf-detail-note', 'Khong thay dong nao cho domain nay trong ' +
+        (d.detail_scanned||0) + ' dong cuoi cua fim.log. ' +
+        'Co the phat hien da cu hon cua so do.')
+    }
+    det.forEach(function(x){
+      var tr = document.createElement('tr')
+      wfCell(tr, x.ts, true)
+      var tl = document.createElement('td'); tl.appendChild(wfTag(x.label)); tr.appendChild(tl)
+      wfCell(tr, x.kind)
+      wfCell(tr, x.path, true)
+      dt.appendChild(tr)
+    })
+  })
+  .catch(()=>{})
+}
+
 // ── Main data load ─────────────────────────────────────────────
 function load(){
   renderFim()
+  renderWafFim()
   fetch('/antibot-admin/data', {credentials:'include'})
   .then(r=>{
     if(!r.ok) throw new Error('HTTP '+r.status)
@@ -2401,6 +2575,197 @@ local function render_fim()
     }))
 end
 
+-- ── /antibot-admin/fimwaf: tab WAF — giam sat file theo DOMAIN ────────
+--
+-- VI SAO CAN MOT ENDPOINT RIENG, khong mo rong `/fim`. `/fim` tra N dong CUOI
+-- cua `fim_critical.log` nguyen van, de ve the canh bao o Overview. Tab WAF hoi
+-- cau KHAC: "domain nao dang co nguy co, va trong domain do file nao doi".
+-- Cung mot nguon nhung khac phep gom, khac thang do, khac kich thuoc tra ve —
+-- tron vao mot endpoint thi moi ben keo no theo mot huong roi ca hai sai.
+--
+-- HAI NGUON, HAI VAI (nguoi dung chot 10-10):
+--   BANG tong hop   <- `fim_critical.log`  (nho, da loc, `fim.sh` cat o 400 dong)
+--   CHI TIET domain <- `fim.log`           (day du: NEW/CHG/DEL, co lich su)
+-- Vi sao khong dung mot nguon: `fim_critical.log` KHONG co `CHG`, ma `CHG` tren
+-- `.htaccess` chinh la chu ky `thegioibds` (`h-:php` -> .php tai ve dang text).
+-- Con `fim.log` thi KHONG tu cat, co the hang chuc MB — khong duoc nap het.
+--
+-- DINH DANG DONG, doc tu `fim.sh` 10-10 (dong 2921 va 2931):
+--   "%-8s %-3s %s  sc=%d\n"        -> CRITICAL NEW  /duong/dan  sc=45
+--   "%-8s %-3s %4d file trong %s"  -> MUPLUG   NEW     4 file trong /thu/muc
+-- Nhan o cot 1, loai (NEW/CHG/DEL) o cot 2. `crit=` trong `fim.sh` neo dau dong
+-- nen thu tu nay la HOP DONG, khong phai tinh co.
+--
+-- DOMAIN lay tu duong dan, KHONG tu `Host:`: `/home/<user>/domains/<domain>/`.
+-- Day la cung phep ghep ma `fim.sh` dung lam khoa Redis (`document_root` ..
+-- `script_path`), nen subdomain/pointer/alias tu dung. Bat bang mau
+-- `/domains/([^/]+)/` chu khong tach chuoi theo vi tri: webroot cua subdomain
+-- la THU MUC CON cua public_html.
+local FIM_FULLLOG  = "/var/log/antibot/fim.log"
+local FIMWAF_TAIL  = 4096          -- so dong cuoi cua `fim.log` duoc soi
+local FIMWAF_CHUNK = 256 * 1024    -- doc nguoc tung khoi, khong nap ca tep
+
+-- Doc N dong CUOI ma khong nap ca tep: nhay ve cuoi roi lui tung khoi cho den
+-- khi du dong. `fim.log` khong tu cat nen nap het la rui ro THAT, khong phai
+-- phong xa — mot tep 50 MB se lam worker giu RAM do trong suot cu goi.
+local function tail_lines(path, want)
+    local fh, oerr, oerrno = io.open(path, "r")
+    if not fh then return nil, oerr, oerrno end
+    local size = fh:seek("end")
+    local buf, pos = "", size
+    while pos > 0 do
+        local step = (pos >= FIMWAF_CHUNK) and FIMWAF_CHUNK or pos
+        pos = pos - step
+        fh:seek("set", pos)
+        buf = fh:read(step) .. buf
+        local _, nl = buf:gsub("\n", "")
+        if nl > want then break end
+    end
+    fh:close()
+    local lines = {}
+    for line in buf:gmatch("[^\n]+") do lines[#lines + 1] = line end
+    -- KHONG can bo dong dau du khoi cuoi cung doc duoc co the bi cat GIUA dong.
+    -- Ban dau cua ham nay CO mot `table.remove(lines, 1)` o day; dot bien 10-10
+    -- go no ra ma test van xanh, va phep do truc tiep cho thay vi sao:
+    --   * Khi vong `break`: mot KHOI chua NHIEU dong (256 KB vs ~80 byte/dong),
+    --     nen buffer vuot `want` ngay o khoi lam no vuot — do thuc 206 dong cho
+    --     `want=200`. Phep cat `from` ngay duoi loai dong khuyet cung voi cac
+    --     dong du khac.
+    --   * Khi vong chay het tep: `pos == 0`, dong dau la dong THAT, khong duoc bo.
+    -- Nen nhanh do khong bao gio doi ket qua. Bat bien can giu la `FIMWAF_CHUNK`
+    -- PHAI lon hon do dai mot dong — dung thi mot khoi luon mang du dong de cat.
+    local from = #lines - want + 1
+    if from < 1 then from = 1 end
+    local out = {}
+    for i = from, #lines do out[#out + 1] = lines[i] end
+    return out
+end
+
+-- Bac theo nhan, de sap domain. So CANG CAO cang nguy. Giu DUNG thu tu thang do
+-- cua `fim.sh` (`0SCORE < 1MUPLUG < 2CRITICAL < 3HIGH < 4ROUTINE`) nhung DAO
+-- chieu: o `fim.sh` so nho la nang (de `sort` dua len dau), o day so lon la
+-- nang (de `table.sort` giam dan). KHONG phat minh thang do moi.
+local FIM_RANK = {
+    MUPLUG = 5, CRITICAL = 4, HIGH = 3, SCORE = 2, ROUTINE = 1,
+}
+
+-- Tach mot dong bao cao thanh (nhan, loai, duong_dan, so_file). Tra nil neu
+-- khong phai dong liet ke — dong tieu de `=== ... ===`, dong `!!`, dong thut le.
+local function parse_fim_line(s)
+    local lab, kind, rest = s:match("^(%u+)%s+(%u+)%s+(.+)$")
+    if not lab or not FIM_RANK[lab] then return nil end
+    -- Dong GOM NHOM: "   4 file trong /thu/muc  (ghi chu)". So file la bang
+    -- chung MANH hon mot file le, nen phai dem dung chu khong tinh la 1.
+    local nfile, dir = rest:match("^%s*(%d+) file trong (%S+)")
+    if nfile then return lab, kind, dir, tonumber(nfile) end
+    -- Dong mot file: duong dan la token dau, `sc=` o CUOI (hop dong cua fim.sh).
+    local path = rest:match("^(%S+)")
+    return lab, kind, path, 1
+end
+
+local function render_fimwaf()
+    ngx.header["Content-Type"] = "application/json"
+
+    -- `?domain=` -> che do CHI TIET, doc `fim.log` loc theo domain do.
+    -- KHONG cho duong dan tuy y: chi nhan ten domain roi TU ghep mau. Nguoi
+    -- dung da qua Basic-auth, nhung mot tham so di thang vao mau Lua la cho de
+    -- chen ky tu lop (`%`, `(`) lam treo worker hoac lam mau khop sai.
+    local want_dom = ngx.var.arg_domain
+    if want_dom and not want_dom:match("^[%w%.%-_]+$") then want_dom = nil end
+
+    -- NGUON BANG: `fim_critical.log`. Phan biet ba trang thai y nhu `/fim` —
+    -- khong co tep (ENOENT) la "CHUA CHAY lan nao", KHAC "da chay, sach".
+    -- `fim.sh:243-245` tao tep RONG o moi lan chay nen phan biet nay chac chan.
+    local crit_lines, cerr, cerrno = tail_lines(FIM_CRITLOG, FIM_MAX_LINES)
+    if not crit_lines then
+        local cause = "unknown"
+        if cerrno == 2      then cause = "never_run"
+        elseif cerrno == 13 then cause = "no_permission" end
+        ngx.say(cjson.encode({
+            available = false, cause = cause, errno = cerrno,
+            reason  = tostring(cerr),
+            domains = setmetatable({}, cjson.array_mt),
+        }))
+        return
+    end
+
+    -- Gom theo domain. Mot domain co nhieu dong; giu bac CAO NHAT, tong so file,
+    -- va moc thoi gian cua khoi tieu de dung TRUOC no (dong `=== FIM ... ===`).
+    local agg, order = {}, {}
+    local cur_ts = nil
+    for _, line in ipairs(crit_lines) do
+        local ts = line:match("^=== FIM (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
+                or line:match("^=== (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
+        if ts then cur_ts = ts end
+        local lab, kind, path, nfile = parse_fim_line(line)
+        if lab and path then
+            local dom = path:match("/domains/([^/]+)/") or "(khong ro domain)"
+            local a = agg[dom]
+            if not a then
+                a = { domain = dom, rank = 0, label = "", files = 0,
+                      newn = 0, chgn = 0, deln = 0, last = cur_ts }
+                agg[dom] = a
+                order[#order + 1] = a
+            end
+            if FIM_RANK[lab] > a.rank then a.rank, a.label = FIM_RANK[lab], lab end
+            a.files = a.files + (nfile or 1)
+            if     kind == "NEW" then a.newn = a.newn + (nfile or 1)
+            elseif kind == "CHG" then a.chgn = a.chgn + (nfile or 1)
+            elseif kind == "DEL" then a.deln = a.deln + (nfile or 1) end
+            if cur_ts then a.last = cur_ts end
+        end
+    end
+    -- Nguy cao len tren: bac truoc, roi so file.
+    table.sort(order, function(x, y)
+        if x.rank ~= y.rank then return x.rank > y.rank end
+        return x.files > y.files
+    end)
+
+    local res = {
+        available  = true,
+        domains    = (#order > 0) and order or setmetatable({}, cjson.array_mt),
+        crit_shown = #crit_lines,
+    }
+
+    -- CHI TIET: chi doc `fim.log` khi nguoi dung DA bam vao mot domain. Doc tep
+    -- lon moi lan ve bang la phi, va day la tep KHONG tu cat.
+    if want_dom then
+        local full, ferr, ferrno = tail_lines(FIM_FULLLOG, FIMWAF_TAIL)
+        if not full then
+            -- Bang van hien. Phan biet "domain nay sach trong fim.log" voi
+            -- "khong doc duoc fim.log" — gop lai la ve mot bang sach trong khi
+            -- that ra khong nhin thay gi.
+            res.detail_error = tostring(ferr)
+            res.detail_errno = ferrno
+        else
+            -- `find` voi `plain=true`: khong bien ten domain thanh mau. Dau `-`
+            -- va `.` trong domain la ky tu lop Lua, nen cach nay vua dung vua re.
+            local needle = "/domains/" .. want_dom .. "/"
+            local det, ts = {}, nil
+            for _, line in ipairs(full) do
+                local t = line:match("^=== FIM (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
+                if t then ts = t end
+                if line:find(needle, 1, true) then
+                    local lab, kind, path = parse_fim_line(line)
+                    if lab and path then
+                        det[#det + 1] = { ts = ts, label = lab, kind = kind,
+                                          path = path }
+                    end
+                end
+            end
+            -- Moi nhat len dau: cau nguoi doc hoi la "vua co gi".
+            local rev = {}
+            for i = #det, 1, -1 do rev[#rev + 1] = det[i] end
+            res.domain         = want_dom
+            res.detail         = (#rev > 0) and rev or setmetatable({}, cjson.array_mt)
+            res.detail_scanned = #full
+        end
+    end
+
+    ngx.say(cjson.encode(res))
+end
+
+
 -- Doc bo dem telemetry cua khung WAF V2.
 --
 -- VI SAO CAN MOT ENDPOINT. `waf/telemetry.lua` ghi vao `antibot_cache` tu duong
@@ -2543,6 +2908,11 @@ function _M.router()
     end
     if uri == "/antibot-admin/fim" then
         return render_fim()
+    end
+    -- Tab WAF. Dat canh `/fim` vi cung nguon, nhung la endpoint RIENG: `/fim`
+    -- ve the canh bao o Overview, `/fimwaf` ve bang theo domain + chi tiet.
+    if uri == "/antibot-admin/fimwaf" then
+        return render_fimwaf()
     end
     if uri == "/antibot-admin/l7" then
         return render_l7()
