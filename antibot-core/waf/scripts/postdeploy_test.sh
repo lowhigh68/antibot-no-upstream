@@ -556,5 +556,58 @@ want  "23 pid chet -> noi khong do duoc" 'khong do duoc'
 nwant "23 pid chet -> KHONG bao OK"      'master khoi dong SAU'
 rm -rf "$M23"
 
+# ── Muc 24 + 25: dau cung hoa uploads/ ────────────────────────────────────
+#
+# Hai muc nay doc thu muc CUA KHACH, nen bo kiem phai chay CHINH chung tren
+# fixture qua `POSTDEPLOY_HOME` — khong mo phong lai vong lap.
+#
+# Dap an tinh TAY tren fixture duoi:
+#   up1 (site-a): .htaccess CO dau        -> muc 24 dem vao "co dau"
+#   up2 (site-b): .htaccess KHONG co dau  -> "MAT" (co tep nhung thieu dau)
+#   up3 (site-c): khong co .htaccess      -> "MAT"
+#   => co dau: 1   mat dau: 2
+#   up2 chua `shell.php` va `anh.jpg`     -> muc 25 dem 1 (chi .php)
+printf '\n── muc 24+25: dau cung hoa uploads/ ──\n'
+M24=$(mktemp -d)
+mkup() { mkdir -p "$M24/home/$1/domains/$2/public_html/wp-content/uploads"
+         echo "$M24/home/$1/domains/$2/public_html/wp-content/uploads"; }
+up1=$(mkup uA site-a.vn); up2=$(mkup uB site-b.vn); up3=$(mkup uC site-c.vn)
+printf '# antibot-uploads-harden\n<FilesMatch "x">\nRequire all denied\n</FilesMatch>\n' > "$up1/.htaccess"
+printf 'RewriteEngine On\n' > "$up2/.htaccess"     # co tep, THIEU dau
+printf 'noi-dung\n' > "$up2/shell.php"             # tep thuc thi duoc
+printf 'anh\n'      > "$up2/anh.jpg"               # tep an toan, KHONG duoc dem
+
+e2425() {
+    A="$R/A" L="$R/L" FS="$R/fs" POSTDEPLOY_HOME="$M24/home" \
+    bash "$HERE/postdeploy.sh" 2>&1 | sed -n '/── 24\./,$p'
+}
+OUT=$(e2425)
+
+want  "24 dem dung 1 co dau / 2 mat"  'co dau: 1   mat dau: 2'
+want  "24 bao thu muc THIEU DAU"      'MAT  .*site-b\.vn'
+want  "24 bao thu muc KHONG co tep"   'MAT  .*site-c\.vn'
+nwant "24 KHONG bao thu muc da co dau" 'MAT  .*site-a\.vn'
+want  "24 chi duong chay TAY"          'uploads_harden\.sh --apply'
+
+want  "25 dem dung 1 tep thuc thi duoc" '\*\*\* 1 tep thuc thi duoc'
+want  "25 in ten tep do"                 'shell\.php'
+nwant "25 KHONG dem anh"                 'anh\.jpg'
+nwant "25 khong bao 0 khi co tep"        '0 tep — dung ky vong'
+
+# Chieu nguoc: uploads/ SACH -> phai bao "0 tep", khong im lang.
+rm -f "$up2/shell.php"
+OUT=$(e2425)
+want  "25 uploads sach -> bao 0 tep"  '0 tep — dung ky vong'
+nwant "25 sach -> KHONG canh bao"     '\*\*\* [0-9]+ tep thuc thi duoc'
+
+# Chieu nguoc muc 24: TAT CA co dau -> khong dong MAT nao.
+printf '# antibot-uploads-harden\n' >> "$up2/.htaccess"
+printf '# antibot-uploads-harden\n'  > "$up3/.htaccess"
+OUT=$(e2425)
+want  "24 tat ca co dau -> 3/0"       'co dau: 3   mat dau: 0'
+nwant "24 tat ca co dau -> khong MAT" 'MAT  '
+nwant "24 tat ca co dau -> khong chi dan chay tay" 'uploads_harden\.sh --apply'
+rm -rf "$M24"
+
 printf '\npostdeploy_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

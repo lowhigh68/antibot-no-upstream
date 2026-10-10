@@ -129,6 +129,15 @@ echo
 echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
 sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
 
+# `uploads_harden.sh` GHI vao thu muc cua khach, nen no la ban duy nhat trong cay
+# nay co the pha du lieu nguoi dung. Bo kiem chay CHINH no tren mot cay `mktemp -d`
+# qua `UPLOADS_HARDEN_ROOT` — khong cham /home — va ghim hai bat bien dat nhat:
+# `>>` chu khong `>` (mot `>` xoa cau hinh rewrite cua khach), va mac dinh la
+# CHE DO IN RA (mot lan chay quen `--apply` khong duoc ghi gi).
+echo
+echo "── uploads_harden.sh (cung hoa uploads/) ─────────────"
+sh_suite uploads_harden_test "$HERE/uploads_harden_test.sh" || rc=1
+
 # `fim.sh` quyet dinh cai gi DEN DUOC WAF, va truoc muc 8 no khong co phep kiem nao.
 # Bo nay chay `baseline` + `check` that tren mot cay thu muc `mktemp -d` voi
 # `redis-cli` GIA — khong cham /home, khong cham Redis, khong cham /var/lib.

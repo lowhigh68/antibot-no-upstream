@@ -976,3 +976,67 @@ echo "  conf moi hon master  : co thay doi chua nap. Neu thay doi do la KICH"
 echo "                         THUOC dict thi phai \`restart\`, khong \`reload\`"
 echo "  master moi hon conf  : moi khai bao dict dang co hieu luc"
 echo "  (nginx khong phoi ra kich thuoc dang chay, nen day la phep do gian tiep)"
+
+echo
+echo "── 24. uploads/ CON dau cung hoa khong ────────────────────────"
+# `.htaccess` do `uploads_harden.sh` ghi nam trong thu muc CUA KHACH, nen khach
+# hoac mot plugin co the xoa no bat cu luc nao — va khi do lo mo lai trong im
+# lang. Muc nay CHI DOC: no bao thu muc mat dau, khong tu va.
+#
+# `uploads_harden.sh` chay TAY mot lan moi may (cung ly le `fim.sh baseline`),
+# nen "MAT" o day nghia la can chay lai TAY, khong phai mot loi tu dong.
+#
+# Vi sao khong dung `fim.sh`: rang buoc cung cua nguoi dung — `fim.sh` KHONG
+# duoc xoa/chmod/di chuyen tep. Mot may do co quyen ghi vao thu muc khach thi
+# moi bug cua no thanh mot su co du lieu.
+# `POSTDEPLOY_HOME` ton tai de `postdeploy_test.sh` chay duoc muc 24/25 tren
+# fixture. Khong co no thi bo kiem phai mo phong lai vong lap — va mo phong la
+# thu da lam lot ba ban deploy hong (xem `feedback_contract_emulation`).
+_uh_mark='# antibot-uploads-harden'
+_uh_co=0; _uh_mat=0
+while IFS= read -r _d; do
+    [ -d "$_d" ] || continue
+    if [ -f "$_d/.htaccess" ] && grep -qF "$_uh_mark" "$_d/.htaccess" 2>/dev/null; then
+        _uh_co=$((_uh_co + 1))
+    else
+        _uh_mat=$((_uh_mat + 1))
+        printf '  MAT  %s\n' "$_d"
+    fi
+done < <(find "${POSTDEPLOY_HOME:-/home}" -maxdepth 6 -type d -name uploads -path '*wp-content*' 2>/dev/null)
+printf '  co dau: %s   mat dau: %s\n' "$_uh_co" "$_uh_mat"
+if [ "$_uh_mat" -gt 0 ]; then
+    echo "  -> chay TAY: \$ANTIBOT_DIR/waf/scripts/uploads_harden.sh         (xem truoc)"
+    echo "               \$ANTIBOT_DIR/waf/scripts/uploads_harden.sh --apply (ghi that)"
+fi
+if [ "$_uh_co" = "0" ] && [ "$_uh_mat" = "0" ]; then
+    echo "  (khong co thu muc wp-content/uploads nao tren may nay)"
+fi
+
+echo
+echo "── 25. tep THUC THI DUOC trong uploads/ ───────────────────────"
+# `uploads/` la noi plugin/theme ghi HOP PHAP, nen `fim.sh` co chu y KHONG soi
+# tung tep o day (xem chu thich `fim.sh` quanh dong 1935): do 10-10 tren
+# cloud168-123 co ~180 tep moi/ngay va 1.502 tep moi/7 ngay — toan la anh khach
+# upload. Soi tung tep o day la on.
+#
+# Nhung dem theo DUOI THUC THI DUOC thi khac han: cung phep do, cung ngay, ket
+# qua la **0**. Nen moi lan khac 0 la tin hieu THAT, khong phai nhieu. Day la
+# phep do re nhat con lai sau khi `.htaccess` da chan duong HTTP — vi `.htaccess`
+# KHONG chan `include()` lan LFI (PHP doc tep qua filesystem, Apache khong tham
+# gia), nen mot tep `.php` xuat hien o day van la viec can biet.
+_ex_n=0
+while IFS= read -r _f; do
+    _ex_n=$((_ex_n + 1))
+    [ "$_ex_n" -le 20 ] && printf '  %s\n' "$_f"
+done < <(find "${POSTDEPLOY_HOME:-/home}" -maxdepth 9 -path '*wp-content/uploads*' -type f \
+             \( -name '*.php'   -o -name '*.php[0-9]' -o -name '*.phtml' \
+                -o -name '*.phar' -o -name '*.inc'   -o -name '*.cgi' \) \
+             2>/dev/null)
+if [ "$_ex_n" = "0" ]; then
+    echo "  0 tep — dung ky vong"
+else
+    printf '  *** %s tep thuc thi duoc trong uploads/ ***\n' "$_ex_n"
+    [ "$_ex_n" -gt 20 ] && echo "      (chi in 20 dong dau)"
+    echo '      .htaccess chan duong HTTP, nhung KHONG chan include()/LFI.'
+    echo "      Soi tung tep: tep cua plugin hop phap hay webshell?"
+fi
