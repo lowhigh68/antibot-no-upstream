@@ -2704,14 +2704,13 @@ e37() {
 # Khoi DUNG y nguyen cai `uploads_harden.sh` ghi. Neu cong cu doi noi dung ma
 # khong sua danh sach trong `fim.sh` thi ca A duoi do ngay — do la Y MUON:
 # hai noi phai khop nhau, giong cap `htaccess_parse.awk` / `upload_content.lua`.
-w37() {
-    {
-        echo '# antibot-uploads-harden'
-        echo '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">'
-        echo '    Require all denied'
-        echo '</FilesMatch>'
-    } > "$U37/.htaccess"
+w37c() {   # IN khoi ra stdout (de ghep voi noi dung khac)
+    echo '# antibot-uploads-harden'
+    echo '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">'
+    echo '    Require all denied'
+    echo '</FilesMatch>'
 }
+w37() { w37c > "$U37/.htaccess"; }
 e37 baseline >/dev/null 2>&1
 
 # A. Noi dung DUNG -> mien tru, sc=0.
@@ -2720,19 +2719,65 @@ want "37A .htaccess dung noi dung -> sc=0 (mien tru)" \
      "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=0"
 e37 check >/dev/null 2>&1
 
-# B. THEM mot dong -> MAT mien tru. Day la ca quan trong nhat: mot ke tan cong
-#    noi them `AddHandler` vao cuoi tep cua antibot phai bi bat lai ngay.
+# B. THEM mot dong CO TOKEN -> MAT mien tru. Day la ca quan trong nhat: mot ke
+#    tan cong noi `AddHandler` vao cuoi tep cua antibot phai bi bat lai ngay.
 w37
 echo 'AddHandler application/x-httpd-php .png' >> "$U37/.htaccess"
-want "37B them mot dong la -> sc=20 (MAT mien tru)" \
+want "37B them dong CO TOKEN -> sc=20 (MAT mien tru)" \
      "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
 e37 check >/dev/null 2>&1
 
-# C. Khong co dau -> khong mien tru. Mot `.htaccess` bat ky cua khach (hoac cua
-#    ke tan cong) o uploads/ van an +20 nhu truoc ban nay.
-printf 'Options -Indexes\n' > "$U37/.htaccess"
+# B2. NOI DUNG CUA KHACH co san + khoi antibot noi them -> VAN mien tru.
+#     DAY LA CA THAT, do 10-10 tren may nguoi dung: 78 luot bao dong gia, va tep
+#     mau `achaubook.com/.../uploads/.htaccess` co dau cua antibot NHUNG con hai
+#     dong cua khach tu truoc (`<FilesMatch \.php$>` + TAB `SetHandler none`).
+#     `uploads_harden.sh` dung `>>` (CO Y) nen khoi NOI THEM vao noi dung san co.
+#     Dieu kien cu ("chi chua dung bon dong") gan nhu khong bao gio dung tren
+#     fleet -> mien tru thanh ma chet. Nen phep xet la: TRU khoi cua antibot roi
+#     hoi `htaccess_parse.awk` phan con lai co token nguy hiem khong.
+#     `SetHandler none` TAT handler — cung huong voi `Require all denied` — nen
+#     parser tra rong va tep duoc mien.
+{ printf '<FilesMatch \\.php$>\n\tSetHandler none\n</FilesMatch>\n'; w37c; } > "$U37/.htaccess"
+want "37B2 noi dung KHACH vo hai + khoi antibot -> sc=0 (VAN mien)" \
+     "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=0"
+e37 check >/dev/null 2>&1
+
+# B3 va C dung THU MUC RIENG, khong dung lai `$U37`.
+#
+# VI SAO: cac ca tren da lam `$U37/.htaccess` doi nhieu lan lien tiep, nen no
+# vao `$PREVCHG` va an truc `-20` (tep trang thai doi hai lan lien tiep). Diem
+# ra 0 thay vi 20 — KHONG phai loi cua mien tru ma la hai ca khong doc lap.
+# Do duoc 10-10: chay rieng thi ca hai ra dung sc=20.
+# Moi ca mot domain rieng thi `$PREVCHG` khong lan sang nhau.
+w37b3() {
+    local d="$S37/home/u1/domains/b3.com/public_html"
+    mkdir -p "$d/wp-content/uploads" "$d/wp-includes"
+    printf '<?php //core' > "$d/wp-settings.php"
+    printf 'x' > "$d/wp-includes/version.php"
+    printf '%s' "$d/wp-content/uploads/.htaccess"
+}
+F37B3=$(w37b3)
+printf 'Options -Indexes\n' > "$F37B3"      # co trong manifest truoc
+e37 baseline >/dev/null 2>&1
+# B3. Chi co DAU, khong co khoi, va co token -> KHONG mien. Dau la mot dong chu
+#     thich ai cung viet duoc; neu dau mot minh mua duoc mien tru thi ke tan cong
+#     chi can them no vao dau tep webshell.
+printf '# antibot-uploads-harden\nAddHandler application/x-httpd-php .jpg\n' > "$F37B3"
+want "37B3 chi co DAU + token -> sc=20 (dau khong mua duoc mien tru)" \
+     "$(e37 check | grep -oE 'b3\.com[^ ]*uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
+e37 check >/dev/null 2>&1
+
+# C. Khong co dau -> khong xet den. Mot `.htaccess` bat ky cua khach o uploads/
+#    van an +20 nhu truoc ban nay — mien tru CHI danh cho tep antibot da ghi.
+#    Domain RIENG, cung ly do voi B3.
+dC="$S37/home/u1/domains/c37.com/public_html"
+mkdir -p "$dC/wp-content/uploads" "$dC/wp-includes"
+printf '<?php //core' > "$dC/wp-settings.php"
+printf 'x' > "$dC/wp-includes/version.php"
+e37 baseline >/dev/null 2>&1
+printf 'Options -Indexes\nAddHandler application/x-httpd-php .gif\n' > "$dC/wp-content/uploads/.htaccess"
 want "37C .htaccess KHONG co dau -> sc=20" \
-     "$(e37 check | grep -oE 'uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
+     "$(e37 check | grep -oE 'c37\.com[^ ]*uploads/\.htaccess  sc=[0-9]+' | grep -oE 'sc=[0-9]+')" "sc=20"
 e37 check >/dev/null 2>&1
 
 # D. Mien tru KHONG duoc rong hon mot tep: `.php` o uploads/ tang 1 van +20.

@@ -2346,30 +2346,45 @@ if [ "$tier" = "full" ]; then
     # DIEU KIEN MIEN TRU — theo NOI DUNG, khong theo ten:
     #   1. ten dung la `.htaccess`, VA
     #   2. nam trong `wp-content/uploads/`, VA
-    #   3. co dong dau `# antibot-uploads-harden`, VA
-    #   4. MOI dong khac rong deu thuoc tap ba dong cua khoi do.
+    #   3. co dong `# antibot-uploads-harden`, VA
+    #   4. phan CON LAI sau khi tru khoi do KHONG sinh token nguy hiem nao.
     #
-    # Dieu (4) la cho quan trong. Mien tru theo TEN (`.htaccess` trong uploads/)
-    # la mot lo hong: ke tan cong chi can dat tung ten do. Mien tru theo DAU mot
-    # minh cung the — dau la mot dong chu thich, ai cung viet duoc. Nen phai
-    # khop TOAN BO noi dung: them MOT dong la mat mien tru va diem quay lai.
+    # VI SAO (4) KHONG PHAI "chi chua dung bon dong". Ban dau toi dat dieu kien
+    # do, va do duoc 10-10 tren may that: 78 luot, va tep mau
+    # `achaubook.com/.../uploads/.htaccess` co DAU cua antibot NHUNG con hai dong
+    # cua KHACH tu truoc:
+    #     <FilesMatch \.php$>
+    #     <TAB>SetHandler none
+    # `uploads_harden.sh` dung `>>` (CO Y — `>` se xoa cau hinh cua khach), nen
+    # khoi cua antibot NOI THEM vao noi dung san co. Phan lon `uploads/.htaccess`
+    # tren fleet DA co noi dung, nen dieu kien "chi chua bon dong" gan nhu khong
+    # bao gio dung — mien tru thanh ma chet va 78 bao dong gia o lai.
     #
-    # Do 10-10: `htaccess_parse.awk` tra RONG cho tep nay, tuc khong token nguy
-    # hiem nao. Nen day khong phai "tin vi antibot tao ra" ma la "do duoc vo hai".
+    # VA KHONG DUOC NOI THANH "co dau thi mien". Dau la mot dong chu thich, ai
+    # cung viet duoc: ke tan cong them `# antibot-uploads-harden` vao dau tep
+    # webshell la thoat. Day la lo hong, khong phai tien loi.
+    #
+    # CACH DUNG: tru khoi cua antibot ra, roi hoi CHINH `htaccess_parse.awk`
+    # phan con lai co token nguy hiem khong. Tai dung cong cu DA CO thay vi viet
+    # mot danh sach cho phep moi — va `htaccess_fixture_test.sh` (267 assertion)
+    # dang gac chinh parser do. Do 10-10: ca khoi cua antibot VA hai dong
+    # `SetHandler none` cua khach deu tra RONG, tuc vo hai DO DUOC; con `h+:php`
+    # hay `@ft-` cua mot tep bi cay se ra token va MAT mien tru ngay.
     : > "$HARDFILE"
     while IFS= read -r _hf; do
         [ -n "$_hf" ] || continue
-        # `grep -qx` khop CA DONG, nen mot dong `# antibot-uploads-harden x` hay
-        # dong co khoang trang khac se KHONG khop.
+        # `grep -qxF` khop CA DONG: `# antibot-uploads-harden x` KHONG khop.
         grep -qxF '# antibot-uploads-harden' "$_hf" 2>/dev/null || continue
-        # Dem dong khong rong KHONG thuoc tap cho phep. `grep -c` tra 0 thi tep
-        # chi chua dung bon dong do.
-        _extra=$(grep -vE '^[[:space:]]*$' "$_hf" 2>/dev/null \
-                 | grep -cvxF -e '# antibot-uploads-harden' \
-                     -e '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">' \
-                     -e '    Require all denied' \
-                     -e '</FilesMatch>' || :)
-        [ "${_extra:-1}" -eq 0 ] && printf '%s\n' "$_hf" >> "$HARDFILE"
+        # Tru khoi cua antibot, roi do phan con lai bang parser that.
+        # `grep -vxF` nen mot dong chi KHAC khoang trang se con lai va duoc do.
+        _rest=$(grep -vxF -e '# antibot-uploads-harden' \
+                    -e '<FilesMatch "\.([Pp][Hh][Pp][0-9]?|[Pp][Hh][Tt][Mm][Ll]|[Pp][Hh][Aa][Rr]|[Ii][Nn][Cc]|[Cc][Gg][Ii]|[Pp][Ll]|[Pp][Yy]|[Ss][Hh])$">' \
+                    -e '    Require all denied' \
+                    -e '</FilesMatch>' "$_hf" 2>/dev/null \
+                | awk -f "$HTA_AWK" 2>/dev/null)
+        # RONG = khong token nguy hiem nao -> mien tru. Co token -> giu nguyen
+        # +20, va do la dung: mot `uploads/.htaccess` BAT lai PHP phai bi bao.
+        [ -z "$_rest" ] && printf '%s\n' "$_hf" >> "$HARDFILE"
     done <<HARDEOF
 $(find $ROOTS -path '*/wp-content/uploads/.htaccess' -type f 2>/dev/null)
 HARDEOF
