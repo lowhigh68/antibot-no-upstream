@@ -3511,6 +3511,31 @@ if [ -n "$critlines" ]; then
         tail -n 400 "$CRITLOG" > "$CRITLOG.tmp" 2>/dev/null &&
             mv "$CRITLOG.tmp" "$CRITLOG" || rm -f "$CRITLOG.tmp"
     fi
+elif [ "$tier" = "full" ] && [ $dry -eq 0 ]; then
+    # ── MOC "DA QUET, KHONG CO PHAT HIEN" ────────────────────────────
+    #
+    # Co THAY DOI (nen khong di nhanh `total -eq 0` o tren) nhung KHONG dong nao
+    # dang bao — vi du moi thay doi deu la cap nhat plugin, hoac deu duoc mien
+    # tru. Truoc ban nay nhanh do khong ghi gi, nen "khoi moi nhat" trong
+    # `$CRITLOG` dung yen o lan cuoi CO PHAT HIEN.
+    #
+    # Do duoc 11-10 tren cloud28-246: sau khi mien tru `.htaccess` hoat dong,
+    # `fim.sh check` chay nhieu lan ma khoi cuoi VAN la `2026-10-10 17:01` cua
+    # HOM TRUOC, mang du 39 dong `.htaccess sc=20`. Trang admin doc khoi cuoi nen
+    # hien chung MAI — dung lo ma `b972998` dinh dong nhung dat moc SAI NHANH
+    # (chi o `total -eq 0`, con ca nay la `total > 0` + `critlines` rong).
+    #
+    # Hai nhanh, mot muc dich: `$CRITLOG` phai co dau vet cua MOI lot quet, de
+    # "khoi cuoi" nghia la lan cuoi CHAY chu khong phai lan cuoi CO PHAT HIEN.
+    {
+        echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] [sach] ==="
+    } >> "$CRITLOG" 2>/dev/null || :
+    chgrp nginx "$CRITLOG" 2>/dev/null || :
+    chmod 0640 "$CRITLOG" 2>/dev/null || :
+    if [ "$(wc -l < "$CRITLOG" 2>/dev/null || echo 0)" -gt 400 ]; then
+        tail -n 400 "$CRITLOG" > "$CRITLOG.tmp" 2>/dev/null &&
+            mv "$CRITLOG.tmp" "$CRITLOG" || rm -f "$CRITLOG.tmp"
+    fi
 fi
 
 # stdout — tuc mail cua cron — CHI khi co gi dang chu y. Cap nhat plugin dinh ky

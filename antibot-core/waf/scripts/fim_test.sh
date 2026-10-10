@@ -2787,6 +2787,62 @@ want "37D shell.php tang 1 van sc=20 (mien tru khong lan)" \
 
 rm -rf "$S37"
 
+# ── 38. MOC `[sach]` trong $CRITLOG o MOI lot khong co phat hien ──────
+#
+# VI SAO NHOM NAY TON TAI. `$CRITLOG` truoc day CHI duoc ghi khi co phat hien,
+# nen "khoi moi nhat" trong do la lan cuoi CO PHAT HIEN chu khong phai lan cuoi
+# CHAY. Trang admin doc khoi cuoi -> no dong bang o anh chup cu VINH VIEN.
+#
+# Do duoc 11-10 tren cloud28-246: mien tru `.htaccess` da dung (`check` tra
+# `+0 dong`) ma khoi cuoi VAN la `2026-10-10 17:01` cua HOM TRUOC, mang du 39
+# dong `.htaccess sc=20` — va bang hien chung mai.
+#
+# HAI NHANH phai ghi moc, va `b972998` chi dat o nhanh THU NHAT nen chua du:
+#   (a) `total -eq 0`  — khong thay doi nao
+#   (b) `total > 0` MA `critlines` rong — co thay doi nhung khong dong nao dang
+#       bao (moi thay doi la cap nhat plugin, hoac deu duoc mien tru). DAY la
+#       ca that cua nguoi dung.
+echo
+echo "── 38. moc [sach] o moi lot khong co phat hien ──"
+S38=$(mktemp -d) || exit 2
+W38="$S38/home/u1/domains/t38.com/public_html"
+P38="$W38/wp-content/plugins/mot-plugin"
+mkdir -p "$P38" "$W38/wp-includes" "$S38/state"
+printf '<?php //core' > "$W38/wp-settings.php"
+printf 'x' > "$W38/wp-includes/version.php"
+printf '<?php // v1\n' > "$P38/p.php"
+e38() {
+    FIM_ROOTS="$S38/home/*/domains/*/public_html" FIM_STATE="$S38/state" \
+    FIM_LOG="$S38/fim.log" FIM_CRITLOG="$S38/crit.log" \
+        bash "$HERE/fim.sh" "$@" 2>&1
+}
+c38() { grep -c '\[sach\]' "$S38/crit.log" 2>/dev/null || echo 0; }
+e38 baseline >/dev/null 2>&1
+
+# (a) khong thay doi nao -> phai co moc
+e38 check >/dev/null 2>&1
+want "38a lot KHONG thay doi -> ghi moc [sach]" "$(c38)" "1"
+
+# (b) CO thay doi (plugin doi, bac ROUTINE) nhung KHONG phat hien -> phai co moc
+printf '<?php // v2\n' > "$P38/p.php"
+e38 check >/dev/null 2>&1
+want "38b lot CO thay doi ma KHONG phat hien -> ghi moc [sach]" "$(c38)" "2"
+
+# (c) CO phat hien that -> KHONG ghi moc, ghi khoi binh thuong
+mkdir -p "$W38/wp-content/uploads"
+printf '<?php eval($_POST[1]);' > "$W38/wp-content/uploads/shell.php"
+e38 check >/dev/null 2>&1
+want "38c lot CO phat hien -> KHONG them moc [sach]" "$(c38)" "2"
+want "38c va khoi do co dong shell.php" \
+     "$(grep -c 'uploads/shell\.php' "$S38/crit.log" 2>/dev/null || echo 0)" "1"
+
+# (d) `--dry` KHONG duoc ghi gi: no la "xem thu".
+printf '<?php // v3\n' > "$P38/p.php"
+e38 check --dry >/dev/null 2>&1
+want "38d --dry KHONG ghi moc" "$(c38)" "2"
+
+rm -rf "$S38"
+
 rm -rf "$S"
 printf '\nfim_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
