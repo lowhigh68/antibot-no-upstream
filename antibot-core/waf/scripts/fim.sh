@@ -2836,6 +2836,24 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         if (p ~ /\/wp-content\/(plugins|themes)\//) return bulk ? "0.35" : "0.75"
         return bulk ? "0.5" : "1.0"
     }
+    # `mt=` cho mot duong dan, hoac chuoi RONG neu khong biet mtime.
+    #
+    # IN EPOCH THO, KHONG `strftime`. `strftime` la gawk-only, va script nay goi
+    # `awk` KHONG DINH DANH — tren may chi co mawk/BWK awk thi no hong CAM (dung
+    # ly le da lam `asorti` bi loai o dong ~1609). Ben doc (`admin/init.lua`,
+    # `date -d @`) dinh dang duoc tu epoch, nen khong mat gi.
+    #
+    # `%T@` cua `find` la giay epoch co phan thap phan (`1760...0.123`); `int()`
+    # cat phan le. Khong cat thi cot mang mot do chinh xac gia.
+    #
+    # Khong co mtime thi tra RONG, KHONG tra `mt=0`: `0` la mot epoch CO THAT
+    # (1970-01-01) cho mot dieu KHONG DO DUOC — dung ho loi "gop khong-do-duoc
+    # voi gia-tri-0" ma ca lop nay duoc viet de tranh.
+    function mtstr(p,   v) {
+        v = mt[p]
+        if (v == "") return ""
+        return sprintf("  mt=%d", int(v))
+    }
     # File DAU TIEN la `$new_scan` (dinh dang `duong|kich thuoc|mtime`), chi de
     # thu bang `iswp`: webroot nao CO `wp-includes/version.php` tren dia. Do la
     # cong nhan CMS cho tin hieu "webroot tang 0 ten la" — khong doan theo ten
@@ -2849,6 +2867,16 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
         # webroot TANG 0, co o CA HAI tier, va WordPress khong chay duoc neu
         # thieu no.
         if ($1 ~ /\/public_html\/wp-settings\.php$/) iswp[wproot($1)] = 1
+        # MTIME cho cot `mt=`. Tap du lieu DA NAM SAN o day (`$3` = `%T@` cua
+        # `find`), nen khong them mot phep `stat` nao — cung ly le voi cot `sc=`
+        # (chu thich dong 1254). Chi giu cho tep CO trong `new_scan`, tuc NEW/CHG;
+        # `DEL` thi tep khong con nen khong co mtime, va cot se trong.
+        #
+        # VI SAO CAN. Nguoi doc dashboard hoi "domain nay doi lan cuoi ngay nao".
+        # Dong tieu de `=== FIM ... ===` chi tra loi "fim.sh CHAY luc nao" — hai
+        # cau khac nhau, va khoang cach giua chung chinh la cua so mu: tep doi tu
+        # hom truoc ma gio moi phat hien thi do la do tre cua chu ky quet.
+        mt[$1] = $3
         next
     }
     {
@@ -2927,9 +2955,16 @@ report=$(awk -F'|' -v max="$GROUP_MAX" -v markfile="$marks" -v prevfile="$PREVCH
                 # dinh dang nay: `sort` o cuoi pipeline (sap theo bac, phai giu
                 # tien to o dau) va `crit=` doc bang grep neo dau dong
                 # CRITICAL/HIGH — chen vao dau dong la hong ca hai.
+                #
+                # `mt=` di SAU `sc=`, cung ly le: them vao CUOI thi khong cho nao
+                # dang doc bi anh huong. Dinh dang `YYYY-MM-DD HH:MM` khong co
+                # dau cach o cuoi de `%s` cuoi cung van la truong doc duoc.
+                # Tep khong co mtime (DEL — tep da bien mat) thi bo cot han chu
+                # KHONG in `mt=-`: mot cot rong doc duoc la "khong ap dung", con
+                # `-` thi de bi doc thanh "da do, khong co".
                 for (i = 1; i < m; i++)
-                    printf "%-8s %-3s %s  sc=%d\n", \
-                           lbl(f[1]), f[2], L[i], pscore(L[i], f[2])
+                    printf "%-8s %-3s %s  sc=%d%s\n", \
+                           lbl(f[1]), f[2], L[i], pscore(L[i], f[2]), mtstr(L[i])
             }
             if (markfile != "" && (k in allnew)) {
                 m = split(allnew[k], L, "\n")

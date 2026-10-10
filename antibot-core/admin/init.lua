@@ -1470,34 +1470,41 @@ tr:hover td{background:#1c2129}
     <div class="card">
       <h2>🛡️ Giám sát toàn vẹn file — theo domain</h2>
       <div style="font-size:12px;color:#8b949e;line-height:1.6">
-        Nguồn: <b>fim.sh</b> (cron, ngoài luồng request). Bảng dưới gom theo
-        <b>domain</b> từ đường dẫn <code>/home/&lt;user&gt;/domains/&lt;domain&gt;/</code> —
-        cùng phép ghép mà fim.sh dùng làm khoá Redis, nên subdomain/alias tự đúng.<br>
-        Bảng lấy từ <code>fim_critical.log</code> (đã lọc CRITICAL/MUPLUG).
-        Bấm một domain → chi tiết lấy từ <code>fim.log</code> (đầy đủ, có cả
-        <b>CHG</b> — đổi <code>.htaccess</code> là chữ ký thường gặp của site bị chiếm).<br>
-        Bậc: <b>MUPLUG</b> = mu-plugins (chạy không cần request) ·
-        <b>CRITICAL</b> = uploads/ wp-includes/ wp-admin/ · <b>HIGH</b>/<b>SCORE</b> = còn lại.
+        Nguồn: <b>fim.sh</b> (cron, ngoài luồng request). Gom theo <b>domain</b> từ
+        đường dẫn <code>/home/&lt;user&gt;/domains/&lt;domain&gt;/</code> — cùng phép ghép
+        mà fim.sh dùng làm khoá Redis, nên subdomain/alias tự đúng.<br>
+        <b>Điểm</b> là trục xếp hạng: <code>sc=</code> của fim.sh — cộng điểm theo
+        bất biến (khuôn mật khẩu webshell +50, <code>uploads/YYYY/MM</code> +25,
+        mu-plugins +25, tên core bị chèn ký tự +25…), ngưỡng <b>40</b> hiệu chỉnh
+        từ 1.357.213 mẫu. Lấy điểm <b>cao nhất</b> trong domain, không phải tổng.<br>
+        <b>Vùng</b> là cột riêng, không trộn vào điểm: nhãn
+        <code>CRITICAL</code> của fim.sh chỉ nghĩa "nằm trong uploads/ wp-includes/
+        wp-admin/" nên mọi site WordPress đều có — vị trí không phải mức độ.
       </div>
     </div>
 
     <div class="card">
-      <h2>Domain có nguy cơ <span id="wf-dom-count" class="tag tag-red">0</span>
+      <h2>Domain theo điểm nguy hiểm <span id="wf-dom-count" class="tag tag-red">0</span>
         <span style="font-size:11px;font-weight:400;color:#8b949e;margin-left:8px"
               id="wf-src">—</span></h2>
       <div id="wf-empty" style="display:none;font-size:13px;color:#8b949e"></div>
       <table id="wf-table">
         <thead><tr>
+          <th title="sc= cao nhat trong domain. >=40 la nguong bao dong cua fim.sh">Điểm</th>
           <th>Domain</th>
-          <th>Bậc cao nhất</th>
+          <th title="File co diem cao nhat — khong phai bam vao moi biet">Nặng nhất</th>
+          <th title="Vi tri trong webroot. Thong tin ngu canh, KHONG phai muc do">Vùng</th>
           <th>File</th>
-          <th>NEW</th>
-          <th>CHG</th>
-          <th>DEL</th>
-          <th>Lần cuối</th>
+          <th title="NEW / CHG / DEL">N·C·D</th>
+          <th title="mtime moi nhat — LUC FILE DOI">File đổi lúc</th>
+          <th title="Dong tieu de === FIM === — LUC fim.sh CHAY, khac luc file doi">Phát hiện lúc</th>
         </tr></thead>
         <tbody id="t-wf-dom"></tbody>
       </table>
+      <div style="font-size:11px;color:#8b949e;margin-top:8px">
+        Khoảng cách giữa <b>File đổi lúc</b> và <b>Phát hiện lúc</b> là độ trễ của
+        chu kỳ quét. Cách nhau nhiều ngày = file đã đổi từ lâu mà baseline mới ghi nhận.
+      </div>
     </div>
 
     <div class="card" id="wf-detail-card" style="display:none">
@@ -1506,10 +1513,12 @@ tr:hover td{background:#1c2129}
       <div style="font-size:11px;color:#8b949e;margin-bottom:8px" id="wf-detail-note"></div>
       <table>
         <thead><tr>
-          <th>Thời điểm</th>
-          <th>Bậc</th>
+          <th>Điểm</th>
           <th>Loại</th>
+          <th>Vùng</th>
           <th>Đường dẫn</th>
+          <th title="mtime — LUC FILE DOI">File đổi lúc</th>
+          <th title="LUC fim.sh CHAY">Phát hiện lúc</th>
         </tr></thead>
         <tbody id="t-wf-detail"></tbody>
       </table>
@@ -1675,16 +1684,35 @@ function wfCell(row, text, mono){
   row.appendChild(td)
   return td
 }
-function wfTag(label){
-  // Bac cao -> do. Giu dung bac cua fim.sh, khong phat minh nhan moi.
-  var cls = label === 'MUPLUG'   ? 'tag-red'
-          : label === 'CRITICAL' ? 'tag-red'
-          : label === 'HIGH'     ? 'tag-orange'
-          : label === 'SCORE'    ? 'tag-blue' : 'tag-gray'
+// Mau theo DIEM, khong theo nhan vi tri. Nguong 40 la cua fim.sh (hieu chinh
+// tu 1.357.213 mau); >=40 mot minh de bep moi phan nhanh vi tri trong `sev()`.
+// Duoi 40 KHONG phai "an toan" — la "chua du mot minh de bao dong".
+function wfScore(sc, ungraded){
   var s = document.createElement('span')
-  s.className = 'tag ' + cls
-  s.textContent = label || '—'
+  if(sc === undefined || sc === null){
+    // KHONG in 0: "chua cham diem" khac "da cham, 0 diem".
+    s.className = 'tag tag-gray'
+    s.textContent = ungraded ? 'gom nhóm' : '—'
+    s.title = 'Dong gom nhom: fim.sh gop N file thanh mot dong nen khong co diem'
+             + ' dai dien. Bam vao domain de xem tung file.'
+    return s
+  }
+  s.className = 'tag ' + (sc >= 40 ? 'tag-red' : sc >= 20 ? 'tag-orange'
+                        : sc > 0 ? 'tag-blue' : 'tag-gray')
+  s.textContent = String(sc)
+  s.title = sc >= 40 ? 'Vuot nguong bao dong 40 cua fim.sh'
+          : sc > 0   ? 'Co tin hieu nhung chua du 40 diem'
+                     : 'Khong khop tin hieu nao dang co'
   return s
+}
+// Epoch -> ngay gio doc duoc. `fim.sh` in epoch THO (`mt=`) vi `strftime` la
+// gawk-only va script goi `awk` khong dinh danh — dinh dang o day thay vi o do.
+function wfTime(ep){
+  if(!ep) return '—'
+  var d = new Date(ep * 1000)
+  function p(n){ return (n<10?'0':'')+n }
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+
+         ' '+p(d.getHours())+':'+p(d.getMinutes())
 }
 function renderWafFim(domain){
   var url = '/antibot-admin/fimwaf' +
@@ -1731,20 +1759,35 @@ function renderWafFim(domain){
     }
     doms.forEach(function(x){
       var tr = document.createElement('tr')
+      // DIEM dung cot dau: do la truc xep hang.
+      var ts = document.createElement('td')
+      ts.appendChild(wfScore(x.score > 0 ? x.score : (x.ungraded > 0 ? null : x.score),
+                             x.ungraded > 0))
+      tr.appendChild(ts)
       var td = document.createElement('td')
-      // Bam vao domain -> tai chi tiet. Dung <a> de ro la bam duoc.
       var a = document.createElement('a')
       a.href = 'javascript:void(0)'
       a.className = 'mono'
       a.textContent = x.domain
       a.onclick = function(){ renderWafFim(x.domain) }
       td.appendChild(a); tr.appendChild(td)
-      var tl = document.createElement('td'); tl.appendChild(wfTag(x.label)); tr.appendChild(tl)
+      // TEP NANG NHAT — tra loi "file nao" ma khong phai bam. Chi ten tep, day
+      // du o cot duong dan khi bam vao; `title` giu ca duong de xem nhanh.
+      var tw = document.createElement('td')
+      if(x.worst){
+        tw.className = 'mono'
+        tw.style.fontSize = '11px'
+        tw.textContent = x.worst.replace(/^.*\//, '')
+        tw.title = x.worst
+      } else {
+        tw.textContent = '—'
+      }
+      tr.appendChild(tw)
+      wfCell(tr, (x.zones_list && x.zones_list.length) ? x.zones_list.join(' ') : '—')
       wfCell(tr, x.files)
-      wfCell(tr, x.newn)
-      wfCell(tr, x.chgn)
-      wfCell(tr, x.deln)
-      wfCell(tr, x.last, true)
+      wfCell(tr, x.newn + '·' + x.chgn + '·' + x.deln)
+      wfCell(tr, wfTime(x.mtime), true)
+      wfCell(tr, x.detected, true)
       tb.appendChild(tr)
     })
 
@@ -1774,10 +1817,17 @@ function renderWafFim(domain){
     }
     det.forEach(function(x){
       var tr = document.createElement('tr')
-      wfCell(tr, x.ts, true)
-      var tl = document.createElement('td'); tl.appendChild(wfTag(x.label)); tr.appendChild(tl)
+      var ts = document.createElement('td')
+      ts.appendChild(wfScore(x.score, x.score === undefined || x.score === null))
+      tr.appendChild(ts)
       wfCell(tr, x.kind)
-      wfCell(tr, x.path, true)
+      wfCell(tr, x.zone)
+      // Duong dan DAY DU o day — day moi la cho tra loi "file nao".
+      var tp = wfCell(tr, x.path, true)
+      tp.style.fontSize = '11px'
+      tp.style.wordBreak = 'break-all'
+      wfCell(tr, wfTime(x.mtime), true)
+      wfCell(tr, x.ts, true)
       dt.appendChild(tr)
     })
   })
@@ -2649,18 +2699,45 @@ local FIM_RANK = {
     MUPLUG = 5, CRITICAL = 4, HIGH = 3, SCORE = 2, ROUTINE = 1,
 }
 
--- Tach mot dong bao cao thanh (nhan, loai, duong_dan, so_file). Tra nil neu
--- khong phai dong liet ke — dong tieu de `=== ... ===`, dong `!!`, dong thut le.
+-- VUNG trong webroot, tach RIENG khoi diem. `fim.sh` noi thang trong chu thich
+-- `sev()`: "mot bac duy nhat phai vua la 'o dau' vua la 'la gi', nen no khong
+-- the la ca hai". Nhan `CRITICAL` CHI co nghia "nam trong uploads/ wp-includes/
+-- wp-admin/" — thuan VI TRI. Moi site WordPress deu co cap nhat trong
+-- `wp-includes/`, nen xep hang theo nhan do lam MOI domain thanh CRITICAL va
+-- cot do khong con phan biet duoc gi (nguoi dung bat 10-10).
+local function fim_zone(path)
+    if path:find("/wp-content/mu-plugins/", 1, true) then return "mu-plugins" end
+    if path:find("/wp-content/uploads/",    1, true) then return "uploads"    end
+    if path:find("/wp-includes/",           1, true) then return "wp-includes" end
+    if path:find("/wp-admin/",              1, true) then return "wp-admin"   end
+    if path:find("/wp-content/plugins/",    1, true) then return "plugins"    end
+    if path:find("/wp-content/themes/",     1, true) then return "themes"     end
+    if path:match("/public_html/[^/]+$")            then return "webroot"     end
+    return "khac"
+end
+
+-- Tach mot dong bao cao. Tra nil neu khong phai dong liet ke — dong tieu de
+-- `=== ... ===`, dong `!!`, dong thut le cua khoi SHADOW.
+--
+-- Dinh dang (doc tu `fim.sh` 10-10, hai cho in):
+--   "%-8s %-3s %s  sc=%d[  mt=%d]"        mot file
+--   "%-8s %-3s %4d file trong %s  (ghi chu)"  gom nhom (KHONG co sc=/mt=)
 local function parse_fim_line(s)
     local lab, kind, rest = s:match("^(%u+)%s+(%u+)%s+(.+)$")
     if not lab or not FIM_RANK[lab] then return nil end
-    -- Dong GOM NHOM: "   4 file trong /thu/muc  (ghi chu)". So file la bang
-    -- chung MANH hon mot file le, nen phai dem dung chu khong tinh la 1.
+    -- Dong GOM NHOM: so file la bang chung MANH hon mot file le, phai dem dung.
+    -- Nhom nay khong mang `sc=`: `fim.sh` gom N file thanh mot dong nen khong co
+    -- mot diem nao dai dien duoc. Tra `nil` cho score chu KHONG tra 0 — 0 la
+    -- "da cham, khong dang ngo", con day la "khong cham tung tep".
     local nfile, dir = rest:match("^%s*(%d+) file trong (%S+)")
-    if nfile then return lab, kind, dir, tonumber(nfile) end
-    -- Dong mot file: duong dan la token dau, `sc=` o CUOI (hop dong cua fim.sh).
-    local path = rest:match("^(%S+)")
-    return lab, kind, path, 1
+    if nfile then
+        return lab, kind, dir, tonumber(nfile), nil, nil, true
+    end
+    -- Dong mot file. `sc=`/`mt=` o CUOI (hop dong cua fim.sh), nen bat tu cuoi.
+    local path  = rest:match("^(%S+)")
+    local score = tonumber(rest:match("sc=(%d+)"))
+    local mtime = tonumber(rest:match("mt=(%d+)"))
+    return lab, kind, path, 1, score, mtime, false
 end
 
 local function render_fimwaf()
@@ -2697,29 +2774,70 @@ local function render_fimwaf()
         local ts = line:match("^=== FIM (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
                 or line:match("^=== (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
         if ts then cur_ts = ts end
-        local lab, kind, path, nfile = parse_fim_line(line)
+        local lab, kind, path, nfile, score, mtime, grouped = parse_fim_line(line)
         if lab and path then
             local dom = path:match("/domains/([^/]+)/") or "(khong ro domain)"
             local a = agg[dom]
             if not a then
-                a = { domain = dom, rank = 0, label = "", files = 0,
-                      newn = 0, chgn = 0, deln = 0, last = cur_ts }
+                -- `zseen` la map CHONG TRUNG, khong serialize (cjson se bien
+                -- map rong thanh `{}` chu khong `[]`, va JS doi mang). `zones_list`
+                -- moi la cai gui di.
+                a = { domain = dom, score = 0, files = 0,
+                      newn = 0, chgn = 0, deln = 0,
+                      zseen = {}, zones_list = setmetatable({}, cjson.array_mt),
+                      worst = nil, worst_sc = -1, mtime = nil,
+                      detected = cur_ts, ungraded = 0 }
                 agg[dom] = a
                 order[#order + 1] = a
             end
-            if FIM_RANK[lab] > a.rank then a.rank, a.label = FIM_RANK[lab], lab end
+            -- DIEM la truc xep hang: lay CAO NHAT trong domain, khong phai tong.
+            -- Tong se lam 50 tep cap nhat 0 diem vuot mot webshell 75 diem —
+            -- dung cai sai ma ban truoc mac khi sap theo so tep.
+            if score and score > a.score then a.score = score end
+            -- Tep NANG NHAT, de nguoi doc biet NGAY file nao ma khong phai bam.
+            -- Day la cau "khong xac dinh duoc chinh xac file nao" cua nguoi dung.
+            if score and score > a.worst_sc then
+                a.worst_sc, a.worst = score, path
+            end
+            -- Dong gom nhom khong co `sc=`: dem rieng de cot diem khong noi doi
+            -- la "da cham het". Mot domain chi co dong gom se co `score=0` MA
+            -- `ungraded>0` — hai thu khac nhau, hien thi phai noi duoc.
+            if grouped then a.ungraded = a.ungraded + 1 end
+            -- MTIME moi nhat: "file doi lan cuoi ngay nao" (cau cua nguoi dung).
+            -- KHAC `detected` = luc `fim.sh` chay. Khoang cach giua hai cai la
+            -- do tre cua chu ky quet.
+            if mtime and (not a.mtime or mtime > a.mtime) then a.mtime = mtime end
+            local z = fim_zone(path)
+            if not a.zseen[z] then
+                a.zseen[z] = true
+                a.zones_list[#a.zones_list + 1] = z
+            end
             a.files = a.files + (nfile or 1)
             if     kind == "NEW" then a.newn = a.newn + (nfile or 1)
             elseif kind == "CHG" then a.chgn = a.chgn + (nfile or 1)
             elseif kind == "DEL" then a.deln = a.deln + (nfile or 1) end
-            if cur_ts then a.last = cur_ts end
+            if cur_ts then a.detected = cur_ts end
         end
     end
-    -- Nguy cao len tren: bac truoc, roi so file.
+    -- XEP HANG theo DIEM (`sc=`), khong theo nhan vi tri. `fim.sh` dung nguong
+    -- 40 da hieu chinh tu 1.357.213 mau, va `pscore >= 40` DE BEP moi phan nhanh
+    -- vi tri (`sev()` dong ~2536 tra `0SCORE` truoc khi xet uploads/wp-includes).
+    -- Nen diem la thang do THAT; nhan chi la vung.
+    --
+    -- Domain chi co dong GOM NHOM (khong diem) van phai thay duoc: dua len theo
+    -- so dong chua cham, sau moi domain co diem.
     table.sort(order, function(x, y)
-        if x.rank ~= y.rank then return x.rank > y.rank end
+        if x.score ~= y.score then return x.score > y.score end
+        if x.ungraded ~= y.ungraded then return x.ungraded > y.ungraded end
         return x.files > y.files
     end)
+
+    -- Bo truong lam viec truoc khi gui: `zseen` la map chong trung (cjson se
+    -- bien map rong thanh `{}` lam JS doi mang bi nham) va `worst_sc` chi de so
+    -- sanh trong vong tren. Gui thu khong ai doc la moi cho lech ve sau.
+    for _, a in ipairs(order) do
+        a.zseen, a.worst_sc = nil, nil
+    end
 
     local res = {
         available  = true,
@@ -2746,16 +2864,33 @@ local function render_fimwaf()
                 local t = line:match("^=== FIM (%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)")
                 if t then ts = t end
                 if line:find(needle, 1, true) then
-                    local lab, kind, path = parse_fim_line(line)
+                    local lab, kind, path, nfile, score, mtime = parse_fim_line(line)
                     if lab and path then
                         det[#det + 1] = { ts = ts, label = lab, kind = kind,
-                                          path = path }
+                                          path = path, score = score,
+                                          mtime = mtime, files = nfile,
+                                          zone = fim_zone(path) }
                     end
                 end
             end
-            -- Moi nhat len dau: cau nguoi doc hoi la "vua co gi".
+            -- DIEM cao len dau, roi moi den moi-nhat. Cau nguoi doc hoi khi da
+            -- bam vao mot domain la "trong domain nay cai nao dang lo", chu
+            -- khong phai "cai nao vua xay ra" — mot webshell 75 diem tu hom qua
+            -- quan trong hon mot `readme.txt` 0 diem 5 phut truoc.
+            --
+            -- `det` dang theo thu tu TEP (cu -> moi), nen dao truoc roi sap on
+            -- dinh: trong cung muc diem, moi nhat van len tren.
             local rev = {}
             for i = #det, 1, -1 do rev[#rev + 1] = det[i] end
+            -- `table.sort` KHONG on dinh, nen gan khoa thu tu truoc khi sap de
+            -- hai tep cung diem giu dung thu tu moi-truoc.
+            for i, x in ipairs(rev) do x._i = i end
+            table.sort(rev, function(p, q)
+                local ps, qs = p.score or -1, q.score or -1
+                if ps ~= qs then return ps > qs end
+                return p._i < q._i
+            end)
+            for _, x in ipairs(rev) do x._i = nil end
             res.domain         = want_dom
             res.detail         = (#rev > 0) and rev or setmetatable({}, cjson.array_mt)
             res.detail_scanned = #full

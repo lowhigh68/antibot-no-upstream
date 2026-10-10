@@ -28,10 +28,12 @@ local src = io.open(SRC .. "admin/init.lua"):read("a")
 
 -- Trich ba manh: hai ham phu + ham chinh. Chung nam lien nhau trong init.lua.
 local tl  = src:match("(local function tail_lines%(path, want%).-\nend\n)")
+local fz  = src:match("(local function fim_zone%(path%).-\nend\n)")
 local pf  = src:match("(local function parse_fim_line%(s%).-\nend\n)")
 local rk  = src:match("(local FIM_RANK = %b{})")
 local body= src:match("(local function render_fimwaf%(%).-\nend\n)")
 assert(tl,   "khong trich duoc tail_lines")
+assert(fz,   "khong trich duoc fim_zone")
 assert(pf,   "khong trich duoc parse_fim_line")
 assert(rk,   "khong trich duoc FIM_RANK")
 assert(body, "khong trich duoc render_fimwaf")
@@ -69,7 +71,8 @@ local function run(domain, crit_path, full_path, chunk)
         FIMWAF_CHUNK  = chunk or (256 * 1024),
     }
     local chunk = assert(loadstring(
-        tl .. "\n" .. rk .. "\n" .. pf .. "\n" .. body .. "\nreturn render_fimwaf"))
+        tl .. "\n" .. rk .. "\n" .. fz .. "\n" .. pf .. "\n" ..
+        body .. "\nreturn render_fimwaf"))
     setfenv(chunk, env)
     chunk()()
     return cjson.decode(out[1])
@@ -98,36 +101,61 @@ eq(r.available, true, "tep rong -> available=true (da chay, SACH)")
 eq(#r.domains, 0, "tep rong -> 0 domain")
 eq(r.cause, nil, "tep rong -> KHONG co cause")
 
--- 3. Trich DOMAIN tu duong dan, va gom theo domain.
---    `a.com` co 2 file (1 NEW + 1 CHG), `b.com` co 1 NEW.
+-- 3. Trich DOMAIN tu duong dan, va gom theo domain. `mt=` la epoch THO
+--    (`fim.sh` in epoch vi `strftime` la gawk-only).
+--    1760000000 = 2025-10-09, 1760086400 = 2025-10-10.
 write(CRIT, table.concat({
     "=== FIM 2026-10-10 03:00 [full] -- 3 thay doi, 3 dang chu y ===",
-    "CRITICAL NEW  " .. H .. "a.com/public_html/wp-content/uploads/x.php  sc=45",
-    "CRITICAL CHG  " .. H .. "a.com/public_html/.htaccess  sc=30",
-    "HIGH     NEW  " .. H .. "b.com/public_html/t.php  sc=20",
+    "CRITICAL NEW  " .. H .. "a.com/public_html/wp-content/uploads/x.php  sc=45  mt=1760000000",
+    "CRITICAL CHG  " .. H .. "a.com/public_html/.htaccess  sc=30  mt=1760086400",
+    "HIGH     NEW  " .. H .. "b.com/public_html/t.php  sc=20  mt=1760000000",
 }, "\n") .. "\n")
 r = run(nil)
 eq(#r.domains, 2, "hai domain")
-eq(r.domains[1].domain, "a.com", "a.com len dau (nhieu file hon)")
+eq(r.domains[1].domain, "a.com", "a.com len dau (diem cao hon)")
 eq(r.domains[1].files, 2, "a.com: 2 file")
 eq(r.domains[1].newn, 1, "a.com: 1 NEW")
 eq(r.domains[1].chgn, 1, "a.com: 1 CHG")
-eq(r.domains[1].last, "2026-10-10 03:00", "lay moc tu dong tieu de")
+eq(r.domains[1].detected, "2026-10-10 03:00", "`detected` = moc dong tieu de")
 eq(r.domains[2].domain, "b.com", "b.com thu hai")
 
--- 4. BAC quyet dinh thu tu, KHONG phai so file. `b.com` 1 file MUPLUG phai
---    dung TREN `a.com` 5 file HIGH — mu-plugins chay khong can request nen
---    nang hon, dung thang do cua `fim.sh`.
+-- 3b. DIEM: lay CAO NHAT trong domain, khong phai tong. 45 va 30 -> 45.
+--     Tong (75) se lam mot domain nhieu tep diem thap vuot mot webshell that.
+eq(r.domains[1].score, 45, "diem = CAO NHAT (45), khong phai tong (75)")
+
+-- 3c. TEP NANG NHAT: tra loi "file nao" ma khong phai bam vao domain.
+eq(r.domains[1].worst,
+   H .. "a.com/public_html/wp-content/uploads/x.php",
+   "`worst` = tep co diem cao nhat")
+
+-- 3d. MTIME: lay MOI NHAT, va KHAC `detected`. Day la hai cau hoi khac nhau —
+--     "file doi luc nao" vs "fim.sh chay luc nao".
+eq(r.domains[1].mtime, 1760086400, "mtime = MOI NHAT trong domain")
+
+-- 3e. VUNG tach rieng khoi diem: `uploads` va `webroot` deu phai co mat.
+eq(#r.domains[1].zones_list, 2, "a.com co HAI vung")
+eq(r.domains[1].zones_list[1], "uploads", "vung dau: uploads")
+eq(r.domains[1].zones_list[2], "webroot", "vung hai: webroot (.htaccess tang 0)")
+
+-- 3f. Truong lam viec KHONG duoc gui di.
+eq(r.domains[1].zseen, nil, "`zseen` bi loai truoc khi gui")
+eq(r.domains[1].worst_sc, nil, "`worst_sc` bi loai truoc khi gui")
+
+-- 4. DIEM quyet dinh thu tu, KHONG phai so file va KHONG phai nhan vi tri.
+--    `b.com` 1 tep 60 diem phai dung TREN `a.com` 5 tep 10 diem.
+--    Day la LOI nguoi dung bat 10-10: ban truoc sap theo nhan `CRITICAL` nen
+--    moi domain WordPress deu CRITICAL va cot do khong phan biet duoc gi.
 local t = { "=== FIM 2026-10-10 04:00 [full] -- x ===" }
 for i = 1, 5 do
-    t[#t+1] = "HIGH     NEW  " .. H .. "a.com/public_html/f" .. i .. ".php  sc=10"
+    t[#t+1] = "CRITICAL NEW  " .. H .. "a.com/public_html/wp-includes/f" .. i .. ".php  sc=10"
 end
-t[#t+1] = "MUPLUG   NEW  " .. H .. "b.com/public_html/wp-content/mu-plugins/z.php  sc=60"
+t[#t+1] = "HIGH     NEW  " .. H .. "b.com/public_html/wp-content/mu-plugins/z.php  sc=60"
 write(CRIT, table.concat(t, "\n") .. "\n")
 r = run(nil)
-eq(r.domains[1].domain, "b.com", "MUPLUG 1 file > HIGH 5 file")
-eq(r.domains[1].label, "MUPLUG", "nhan bac cao nhat")
+eq(r.domains[1].domain, "b.com", "60 diem (nhan HIGH) > 5 tep 10 diem (nhan CRITICAL)")
+eq(r.domains[1].score, 60, "diem cao nhat len dau")
 eq(r.domains[2].files, 5, "a.com van dem du 5")
+eq(r.domains[2].score, 10, "a.com diem 10 du nhan la CRITICAL")
 
 -- 5. Dong GOM NHOM: "4 file trong <dir>" phai dem 4, KHONG phai 1. Day la hinh
 --    dang vu 20-09 (mot dot nhieu file vao mu-plugins) nen dem sai la bo sot
@@ -140,6 +168,12 @@ r = run(nil)
 eq(#r.domains, 1, "dong gom nhom: 1 domain")
 eq(r.domains[1].domain, "c.com", "trich domain tu dong gom nhom")
 eq(r.domains[1].files, 4, "dong gom nhom dem 4 file, KHONG phai 1")
+-- 5b. Dong gom nhom KHONG co `sc=`, nen `score` phai o 0 MA `ungraded` > 0.
+--     Hai thu khac nhau: "da cham, 0 diem" vs "chua cham tung tep". Hien thi
+--     phai noi duoc, neu khong nguoi doc tuong domain nay sach.
+eq(r.domains[1].score, 0, "dong gom nhom: score=0 (khong co sc=)")
+eq(r.domains[1].ungraded, 1, "dong gom nhom: ungraded=1 -> 'chua cham tung tep'")
+eq(r.domains[1].worst, nil, "dong gom nhom: khong co tep nang nhat")
 
 -- 6. Dong KHONG phai liet ke phai bi BO QUA: tieu de, `!!`, dong thut le cua
 --    khoi SHADOW. Neu chung lot vao thi bang co domain rac.
@@ -162,21 +196,26 @@ write(CRIT, table.concat({
 }, "\n") .. "\n")
 write(FULL, table.concat({
     "=== FIM 2026-10-10 07:00 [full] -- 3 thay doi ===",
-    "CRITICAL NEW  " .. H .. "a.com/public_html/wp-content/uploads/x.php  sc=45",
-    "ROUTINE  CHG  " .. H .. "a.com/public_html/wp-content/plugins/p/readme.txt  sc=1",
+    "CRITICAL NEW  " .. H .. "a.com/public_html/wp-content/uploads/x.php  sc=45  mt=1760000000",
+    "ROUTINE  CHG  " .. H .. "a.com/public_html/wp-content/plugins/p/readme.txt  sc=1  mt=1760086400",
     "HIGH     NEW  " .. H .. "zz.com/public_html/other.php  sc=20",
 }, "\n") .. "\n")
 r = run("a.com")
 eq(r.domain, "a.com", "tra ve ten domain da chon")
 eq(#r.detail, 2, "chi 2 dong cua a.com (bo zz.com)")
--- Moi nhat len dau: dong ROUTINE o SAU trong tep nen phai ra TRUOC.
-eq(r.detail[1].kind, "CHG", "moi nhat len dau")
-eq(r.detail[2].kind, "NEW", "dong cu xuong duoi")
-eq(r.detail[1].ts, "2026-10-10 07:00", "chi tiet co moc thoi gian")
+-- DIEM len dau, KHONG phai moi nhat. Cau nguoi doc hoi sau khi bam vao mot
+-- domain la "cai nao dang lo", chu khong phai "cai nao vua xay ra": mot tep 45
+-- diem tu hom qua quan trong hon `readme.txt` 1 diem 5 phut truoc.
+eq(r.detail[1].score, 45, "diem cao len dau (45 truoc 1)")
+eq(r.detail[1].kind, "NEW", "tep 45 diem la NEW")
+eq(r.detail[2].score, 1, "tep 1 diem xuong duoi du no MOI hon")
+eq(r.detail[1].ts, "2026-10-10 07:00", "chi tiet co moc phat hien")
+eq(r.detail[1].mtime, 1760000000, "chi tiet co mtime")
+eq(r.detail[1].zone, "uploads", "chi tiet co vung")
 
 -- 7b. ROUTINE CHI co trong `fim.log`, khong co trong critical — day la ca ly do
 --     dung HAI nguon. Neu chi dung critical thi dong `CHG` nay bien mat.
-eq(r.detail[1].label, "ROUTINE", "fim.log co ROUTINE (critical thi khong)")
+eq(r.detail[2].label, "ROUTINE", "fim.log co ROUTINE (critical thi khong)")
 
 -- 8. Domain KHONG co trong fim.log -> detail rong, nhung KHONG phai loi.
 r = run("khongcodomainnay.com")
