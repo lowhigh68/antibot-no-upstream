@@ -2841,6 +2841,42 @@ printf '<?php // v3\n' > "$P38/p.php"
 e38 check --dry >/dev/null 2>&1
 want "38d --dry KHONG ghi moc" "$(c38)" "2"
 
+# ── (e) LOT CHI CO `HIGH` — khong duoc dan nhan `[sach]` ──────────────
+#
+# VI SAO CA NAY TON TAI, va vi sao nhom 38 cu KHONG bat duoc no. Hai bo loc
+# khac nhau va nhom nay chi dung mot:
+#     `crit`      (fim.sh 3104) dem `CRITICAL|HIGH` + `SCORE` + `MUPLUG`
+#     `critlines` (fim.sh 3465) CHI bat `CRITICAL|MUPLUG` — khong co `HIGH`
+# Nen mot lot chi co `HIGH` cho `critlines` RONG (-> nhanh ghi moc) va
+# `crit > 0` (-> `exit 1`) CUNG LUC. Ban truoc ghi `[sach]`, tuc dan nhan SACH
+# cho mot lot CO phat hien.
+#
+# Do duoc 12-10 tren cloud171-96: lot `20:57` bao `19 thay doi, 4 dang chu y`
+# (4 dong `HIGH NEW` trong `temp/caches/` cua butkythuatso.com), `rc=1`, nhung
+# `$CRITLOG` ghi `[sach]` — tab WAF doc tep do nen hien SACH.
+#
+# 38b dung `ROUTINE` (plugin doi) nen `crit` CUNG bang 0 -> hai bo loc trung
+# nhau, ca lech khong bao gio xuat hien. Day la ly do ca (e) phai dung mot bac
+# `HIGH` THAT, khong phai `ROUTINE`.
+#
+# `temp/caches/<x>/*.php` la duong dan cho `HIGH`: tep `.php` MOI ngoai cac vung
+# core/uploads/mu-plugins. Neu `fim.sh` doi cach phan bac thi `want` dau tien
+# duoi day do ngay, va do la Y MUON — phep thu nay neo HAI dieu: co bac `HIGH`,
+# va moc KHONG phai `[sach]`.
+mkdir -p "$W38/temp/caches/5"
+printf '<?php // cache\n' > "$W38/temp/caches/5/article_15B1CF7F.php"
+out38e=$(e38 check); rc38e=$?
+want "38e lot co HIGH -> bao cao ghi 'dang chu y'" \
+     "$(printf '%s\n' "$out38e" | grep -cE 'dang chu y')" "1"
+want "38e lot co HIGH -> rc=1 (co phat hien)" "$rc38e" "1"
+want "38e lot co HIGH -> KHONG them moc [sach]" "$(c38)" "2"
+want "38e lot co HIGH -> ghi moc [ngoai pham vi: N]" \
+     "$(grep -c '\[ngoai pham vi: [0-9]\+\]' "$S38/crit.log" 2>/dev/null || echo 0)" "1"
+# SO phai dung, khong chi dung dang: 1 dong HIGH -> N=1. Mot bo dem sai se cho
+# dang dung ma so sai, va bang se noi doi theo kieu khac.
+want "38e so trong moc = so dong HIGH" \
+     "$(sed -n 's/.*\[ngoai pham vi: \([0-9]\+\)\].*/\1/p' "$S38/crit.log" | tail -1)" "1"
+
 rm -rf "$S38"
 
 rm -rf "$S"

@@ -3527,8 +3527,36 @@ elif [ "$tier" = "full" ] && [ $dry -eq 0 ]; then
     #
     # Hai nhanh, mot muc dich: `$CRITLOG` phai co dau vet cua MOI lot quet, de
     # "khoi cuoi" nghia la lan cuoi CHAY chu khong phai lan cuoi CO PHAT HIEN.
+    #
+    # NHUNG `[sach]` KHONG duoc dan cho moi lot `critlines` rong. `crit` (dong
+    # 3104) dem `CRITICAL|HIGH` + `SCORE` + `MUPLUG`, con `critlines` (3465) CHI
+    # bat `CRITICAL|MUPLUG` — `HIGH` khong co trong do, va do la CO Y: tep nay la
+    # so CRITICAL/MUPLUG. Nen mot lot chi co `HIGH` cho `critlines` RONG va
+    # `crit > 0` cung luc, va ban truoc ghi `[sach]` o day — dan nhan SACH cho
+    # mot lot CO phat hien, mau thuan voi `exit 1` ma chinh lot do tra ve.
+    #
+    # Do duoc 12-10 tren cloud171-96: lot 20:57 bao `19 thay doi, 4 dang chu y`
+    # (4 dong HIGH NEW trong `temp/caches/` cua butkythuatso.com), `rc=1`, nhung
+    # `$CRITLOG` ghi `[sach]`. Tab WAF doc tep nay nen hien SACH cho mot may vua
+    # bao 4 tep `.php` moi — dung benh [[feedback_alert_reaches_nobody]]: phat
+    # hien CO, duong ra KHONG.
+    #
+    # `[sach]` giu nguyen khi that su khong con bac nao; con lai ghi SO da thay
+    # ma tep nay khong chua, de ben doc biet phai mo bao cao day (`$LOG`).
+    #
+    # DUNG `$crit` TRUC TIEP, khong tru `muplug`. Ban nhap cua chung toi viet
+    # `crit - muplug` "de khong dem hai lan", nhung phep tru do la MA CHET:
+    # `critlines` (3465) CO bat `^MUPLUG `, nen he co mot dong MUPLUG thi
+    # `critlines` khac rong va nhanh nay KHONG BAO GIO chay. Tai day `muplug`
+    # luon bang 0. Mot dot bien bo phep tru di khong lam hong phep thu nao —
+    # do la cach phat hien ra no, chu khong phai phep thu yeu.
+    _oth=$crit
     {
-        echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] [sach] ==="
+        if [ "$_oth" -gt 0 ]; then
+            echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] [ngoai pham vi: $_oth] ==="
+        else
+            echo "=== $(date '+%Y-%m-%d %H:%M') [$tier] [sach] ==="
+        fi
     } >> "$CRITLOG" 2>/dev/null || :
     chgrp nginx "$CRITLOG" 2>/dev/null || :
     chmod 0640 "$CRITLOG" 2>/dev/null || :

@@ -2910,20 +2910,35 @@ local function render_fimwaf()
     --     doi). GIU HET. Neu cat theo "khoi cuoi" thi 13 webshell cua
     --     `thegioibds` — bao mot lan roi nam im — se RUNG khoi bang.
     local KEEP = { ["TON DONG"] = true, ["KHUON XAC"] = true, ["SHADOW"] = true }
+
+    -- MOT phep thu duy nhat cho "tieu de nay la mot LUOT QUET", dung o CA HAI
+    -- vong duoi. Hai ban sao cua cung dieu kien da la cach lo 12-10 sinh ra:
+    -- `fim.sh` them mot dang moc thu ba va chi mot trong hai cho duoc sua thi
+    -- bang dong bang tro lai.
+    --
+    --   `""`                   = khoi QUET co phat hien (dang goc)
+    --   `[sach]`               = lot quet khong con bac nao (tu 11-10)
+    --   `[ngoai pham vi: N]`   = lot quet CO N bac ma tep nay khong chua, vi
+    --                            `$CRITLOG` chi gom CRITICAL/MUPLUG con `HIGH`
+    --                            thi khong (tu 12-10)
+    --
+    -- Ca BA deu la mot luot quet, nen ca ba deu duoc lam `last_scan`.
+    --
+    -- VI SAO PHAI TINH. Truoc khi `fim.sh` ghi cac dong do, mot lot khong co
+    -- phat hien khong de lai dau vet nao trong `$CRITLOG`, nen "khoi cuoi" la
+    -- lan cuoi CO PHAT HIEN chu khong phai lan cuoi CHAY — bang dong bang o anh
+    -- chup cu VINH VIEN. Do duoc 11-10: mien tru `.htaccess` da dung (`check`
+    -- tra `+0 dong`) ma bang van hien 39 dong cua khoi `17:01` ghi TRUOC khi
+    -- deploy.
+    local function is_scan_head(tail)
+        return tail == "" or tail == "[sach]"
+            or tail:find("^%[ngoai pham vi: %d+%]$") ~= nil
+    end
+
     local last_scan = 0
     for i, line in ipairs(crit_lines) do
         local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
-        -- `""` = khoi QUET co phat hien. `[sach]` = lot quet KHONG co phat hien
-        -- nao (`fim.sh` ghi tu 11-10). Ca hai deu la MOT LUOT QUET, nen ca hai
-        -- deu duoc lam `last_scan`.
-        --
-        -- VI SAO `[sach]` PHAI TINH. Truoc khi `fim.sh` ghi dong do, mot lot
-        -- sach khong de lai dau vet nao trong `$CRITLOG`, nen "khoi cuoi" la lan
-        -- cuoi CO PHAT HIEN chu khong phai lan cuoi CHAY — bang dong bang o anh
-        -- chup cu VINH VIEN. Do duoc 11-10: mien tru `.htaccess` da dung
-        -- (`check` tra `+0 dong`) ma bang van hien 39 dong cua khoi `17:01` ghi
-        -- TRUOC khi deploy. `[sach]` la khoi RONG nen no lam bang sach that.
-        if tail == "" or tail == "[sach]" then last_scan = i end
+        if tail and is_scan_head(tail) then last_scan = i end
     end
 
     -- Gom theo domain. Mot domain co nhieu dong; giu bac CAO NHAT, tong so file,
@@ -2935,7 +2950,7 @@ local function render_fimwaf()
         -- Cap nhat pham vi khi gap mot tieu de khoi.
         local tail = line:match("^=== %d%d%d%d%-%d%d%-%d%d %d%d:%d%d %[%w+%]%s*(.-)%s*===$")
         if tail then
-            if tail == "" or tail == "[sach]" then
+            if is_scan_head(tail) then
                 in_scope = (idx == last_scan)   -- chi khoi QUET CUOI
             else
                 local keep = false

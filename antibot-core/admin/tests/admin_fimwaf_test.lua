@@ -266,6 +266,43 @@ r = run(nil)
 eq(#r.domains, 1, "`[sach]` KHONG xoa khoi TON DONG")
 eq(r.domains[1].domain, "tondong.com", "ton dong van hien sau lot sach")
 
+-- ── 3q. MOC `[ngoai pham vi: N]` CUNG LA MOT LUOT QUET ───────────────
+--
+-- `fim.sh` (12-10) ghi dang moc THU BA: mot lot co `HIGH` nhung `$CRITLOG` chi
+-- gom `CRITICAL|MUPLUG` nen `critlines` rong. Ghi `[sach]` o do la dan nhan
+-- SACH cho mot lot CO phat hien (`rc=1`) — do duoc tren cloud171-96 lot 20:57.
+--
+-- Ben doc phai coi no la mot LUOT QUET y nhu `[sach]`: khong thi `last_scan`
+-- khong tien, va bang dong bang o khoi cu — dung lo ma 3n vua sua.
+write(CRIT, table.concat({
+    "=== 2026-10-10 17:01 [full] ===",
+    "CRITICAL NEW  " .. H .. "cu.com/public_html/wp-content/uploads/.htaccess  sc=20",
+    "=== 2026-10-12 20:57 [full] [ngoai pham vi: 4] ===",
+}, "\n") .. "\n")
+r = run(nil)
+eq(r.available, true, "`[ngoai pham vi]` -> van available")
+eq(#r.domains, 0, "`[ngoai pham vi]` la khoi cuoi -> khoi CU bi bo, bang RONG")
+
+-- 3r. Khoi TON DONG van giu khi khoi cuoi la `[ngoai pham vi]` — y nhu 3p.
+write(CRIT, table.concat({
+    "=== 2026-10-10 03:00 [full] TON DONG mu-plugins ===",
+    "MUPLUG   NEW  " .. H .. "tondong.com/public_html/wp-content/mu-plugins/z.php  sc=60",
+    "=== 2026-10-12 20:57 [full] [ngoai pham vi: 4] ===",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 1, "`[ngoai pham vi]` KHONG xoa khoi TON DONG")
+
+-- 3s. Moc KHONG dung dang (`[ngoai pham vi]` thieu so) KHONG duoc tinh la luot
+--     quet: neu `fim.sh` doi dang ma ben doc nhan bua thi mot khoi TON DONG se
+--     bi coi la luot quet va BIEN MAT khoi bang. Day la phep thu NGUOC chieu.
+write(CRIT, table.concat({
+    "=== 2026-10-10 03:00 [full] TON DONG mu-plugins ===",
+    "MUPLUG   NEW  " .. H .. "tondong.com/public_html/wp-content/mu-plugins/z.php  sc=60",
+    "=== 2026-10-12 20:57 [full] [ngoai pham vi] ===",
+}, "\n") .. "\n")
+r = run(nil)
+eq(#r.domains, 1, "moc sai dang -> khong thanh luot quet, TON DONG con nguyen")
+
 -- 4. DIEM quyet dinh thu tu, KHONG phai so file va KHONG phai nhan vi tri.
 --    `b.com` 1 tep 60 diem phai dung TREN `a.com` 5 tep 10 diem.
 --    Day la LOI nguoi dung bat 10-10: ban truoc sap theo nhan `CRITICAL` nen
