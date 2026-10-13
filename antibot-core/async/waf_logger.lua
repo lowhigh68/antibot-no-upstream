@@ -474,10 +474,15 @@ function _M.run(ctx)
     --
     -- Bon cot duoi day khong phai dac diem moi, chung la thu policy DA TINH va
     -- da nam san tren tung `hit` (`policy.lua:140-155`) — logger chi khong in
-    -- ra. `wscore`/`wact`/`pver` thi o cap request nen giong nhau moi dong.
+    -- ra. `wscore`/`wact`/`would`/`wreason`/`wrmode`/`pver` thi o cap request
+    -- nen giong nhau moi dong. `wreason` la rule THANG o truc gia dinh; khong
+    -- duoc suy no tu `rule=` cua dong hit hien tai, vi mot request co the co
+    -- nhieu hit nhung chi co mot candidate tao ra `would=block`.
     local dec   = ctx.waf_decision or {}
     local wact  = dec.action or "-"          -- policy DA lam gi
     local wwould = dec.would_action or "-"   -- policy SE lam gi neu enforce
+    local wreason = dec.would_reason or "-"  -- rule gay ra phan quyet gia dinh
+    local wrmode = dec.would_rule_mode or "-" -- mode cua CHINH rule do
     local wscore = tonumber(dec.score)
     local wscore_s = wscore and string.format("%.2f", wscore) or "-"
     local pver  = (ctx.waf_v2 or {}).version or "-"
@@ -499,7 +504,8 @@ function _M.run(ctx)
             "[%s] [waf] ts=%d rid=%s id=%s domain=%s ip=%s rule=%s target=%s"
             .. " sev=%s pl=%d matched=%s score=%.2f action=%s class=%s"
             .. " richness=%s wpauth=%d vfy=%d status=%d exists=%s final=%s fim=%s"
-            .. " mode=%s exc=%s wact=%s would=%s wscore=%s pver=%s\n",
+            .. " mode=%s exc=%s wact=%s would=%s wreason=%s wrmode=%s"
+            .. " wscore=%s pver=%s\n",
             stamp,
             now,
             req_id(ctx),
@@ -561,6 +567,8 @@ function _M.run(ctx)
             scrub(hexc, 40),
             wact,
             wwould,
+            scrub(wreason, 80),
+            scrub(wrmode, 16),
             wscore_s,
             scrub(pver, 16)))
     end

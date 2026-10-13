@@ -761,13 +761,56 @@ do
         end
         eq("runtime_config.lua qua validator", ok_v, true)
 
-        -- Ban dang deploy PHAI khong doi phan quyet: giai doan nay chi bat duong
-        -- cau hinh, khong doi chinh sach. Neu mot ngay nao do doi that thi test
-        -- nay phai duoc sua CO Y — do la muc dich cua no.
+        -- P1.1 doi CO Y dung MOT verdict co confidence cao. Ghim danh sach cu
+        -- the de mot lan "promote tat ca correlation" khong lot qua validator.
+        --
+        -- Ban dau P1.1 promote HAI rule; `upload_php_double_content` ha ve shadow
+        -- 13-10 sau khi do cot `rule=` tren CA 6 MAY: tien de `upload_php_double`
+        -- ban **0**, tuc chua ai upload tep double-extension nao trong 7 ngay.
+        -- Promote mot duong chua tung co luu luong la bat chan ma rui ro FP khong
+        -- do duoc — khac han "FP = 0". Con `upload_php_executable_content` co 131
+        -- luot / 17 domain / 5 may, `wpauth=1` bang **0**.
+        eq("runtime_config: moc telemetry P1", runtime.version, "2.1-p1")
         eq("runtime_config: mode van enforce", runtime.mode, "enforce")
         eq("runtime_config: score_enforcement van tat",
            runtime.score_enforcement, false)
         eq("runtime_config: chua co exception nao", #(runtime.exceptions or {}), 0)
+        eq("P1.1: executable+PHP tag duoc enforce",
+           ((runtime.correlations or {}).upload_php_executable_content or {}).mode,
+           "enforce")
+        eq("P1.1: double-extension KHONG promote (tien de ban 0 tren 6/6 may)",
+           (runtime.correlations or {}).upload_php_double_content, nil)
+        eq("P1.1: apache handler khong promote toan fleet",
+           (runtime.correlations or {}).upload_apache_handler_content, nil)
+        eq("P1.1: user.ini autoload khong promote toan fleet",
+           (runtime.correlations or {}).upload_user_ini_autoload_content, nil)
+
+        local active = config.resolve(config.compile(runtime), "a.test")
+        local function verdict_for(rule_id)
+            local stx = policy.begin({},
+                { host = "a.test", uri = "/upload", method = "POST" }, active)
+            policy.emit(stx, rule_id,
+                { target = "MULTIPART_PART", matched = "slot=1" })
+            return policy.decide(stx)
+        end
+        local p1a = verdict_for("upload_php_executable_content")
+        eq("P1.1 runtime: executable composite chan that", p1a.action, "block")
+        eq("P1.1 runtime: executable reason dung", p1a.reason,
+           "upload_php_executable_content")
+        -- `double` phai o CUNG trang thai voi hai rule shadow con lai: khong
+        -- chan, nhung VAN ghi would-block + `wrmode=shadow` de telemetry 20b
+        -- thay no khi co luu luong that.
+        local p1b = verdict_for("upload_php_double_content")
+        eq("P1.1 runtime: double composite KHONG chan", p1b.action, "allow")
+        eq("P1.1 runtime: double van would-block", p1b.would_action, "block")
+        eq("P1.1 runtime: double van shadow", p1b.would_rule_mode, "shadow")
+        local p1c = verdict_for("upload_apache_handler_content")
+        eq("P1.1 runtime: apache handler van allow", p1c.action, "allow")
+        eq("P1.1 runtime: apache handler van would-block", p1c.would_action, "block")
+        eq("P1.1 runtime: apache handler van shadow", p1c.would_rule_mode, "shadow")
+        local p1d = verdict_for("upload_user_ini_autoload_content")
+        eq("P1.1 runtime: user.ini autoload van allow", p1d.action, "allow")
+        eq("P1.1 runtime: user.ini autoload van shadow", p1d.would_rule_mode, "shadow")
 
         -- ── `score_enforcement = false` VAN tinh va VAN ghi diem ───────────
         --

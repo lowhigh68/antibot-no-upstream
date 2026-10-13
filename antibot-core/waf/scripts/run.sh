@@ -125,31 +125,6 @@ echo "── admin: tab WAF (bang theo domain) ───────────
 echo "── secaudit (bo nghiem thu ranh gioi) ────────────────"
 bash "${ANTIBOT_SRC}waf/scripts/secaudit_test.sh" || rc=1
 
-# `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve so
-# trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Chay bang
-# bash chu khong resty (no kiem mot script shell).
-#
-# Can `date -d`, `find -newermt`, `zcat` — co san tren fleet lan WSL. Neu mai chay
-# o cho thieu chung thi bo nay do va do la dung: `postdeploy.sh` cung se sai o do.
-#
-# CONG THOI GIAN, cung khuon voi `fim_test` (xem `touched` o tren). Do 10-10
-# tren may nguoi dung: bo nay 142 GIAY — cham hon ca `fim_test`. Nguyen nhan la
-# 25 luot `redis-cli --scan` keyspace THAT (nam lan chay x nam scan). Bo test da
-# duoc tro sang stub `redis-cli` nen con 2,1s, nhung van gac vi no chay
-# `postdeploy.sh` nam lan va tren may co du lieu that moi lan doc lai cua so log.
-echo
-echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
-if [ "${POSTDEPLOY_TEST_FORCE:-0}" = "1" ]; then
-    echo "  POSTDEPLOY_TEST_FORCE=1 — chay bat buoc."
-    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
-elif reason=$(postdeploy_touched); then
-    echo "  chay vi: $reason"
-    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
-else
-    echo "  BO QUA: commit nay khong cham postdeploy.sh / postdeploy_test.sh / wafstat.sh."
-    echo "  Ep chay: POSTDEPLOY_TEST_FORCE=1 $0"
-fi
-
 # `uploads_harden.sh` GHI vao thu muc cua khach, nen no la ban duy nhat trong cay
 # nay co the pha du lieu nguoi dung. Bo kiem chay CHINH no tren mot cay `mktemp -d`
 # qua `UPLOADS_HARDEN_ROOT` — khong cham /home — va ghim hai bat bien dat nhat:
@@ -241,6 +216,24 @@ postdeploy_touched() {
         'antibot-core/waf/scripts/wafstat.sh' \
         'antibot-core/waf/scripts/inifile_parse.awk'
 }
+
+# `postdeploy.sh` la mot lenh DO, va mot lenh do hong khong bao loi — no tra ve
+# so trong-co-ly. Bo nay sinh log GIA co dap an biet truoc roi doi chieu. Dat
+# khoi CHAY sau dinh nghia `postdeploy_touched`; bash khong hoist ham va ban cu
+# goi ham truoc khi dinh nghia, bao `command not found` roi bo qua suite.
+echo
+echo "── postdeploy.sh (bao cao tu kiem) ───────────────────"
+if [ "${POSTDEPLOY_TEST_FORCE:-0}" = "1" ]; then
+    echo "  POSTDEPLOY_TEST_FORCE=1 — chay bat buoc."
+    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
+elif reason=$(postdeploy_touched); then
+    echo "  chay vi: $reason"
+    sh_suite postdeploy_test "$HERE/postdeploy_test.sh" || rc=1
+else
+    echo "  BO QUA: commit nay khong cham postdeploy.sh / postdeploy_test.sh / wafstat.sh."
+    echo "  Ep chay: POSTDEPLOY_TEST_FORCE=1 $0"
+fi
+
 echo
 echo "── fim.sh (muc 8: tep cau hinh bi sua) ───────────────"
 if [ "${FIM_TEST_FORCE:-0}" = "1" ]; then

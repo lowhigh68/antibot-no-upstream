@@ -208,10 +208,11 @@ add("corr_new_direct_executable", "correlation", "decision", "generic", "block",
 -- dung nhan toan cuc — `waf/init.lua` phat chung tu `parts`, khong qua bang
 -- `CORRELATIONS`.
 --
--- `mode = "shadow"`: KHONG chan gi hom nay, ke ca khi `mode` toan cuc la `enforce`.
--- Promote can so lieu tu `postdeploy.sh` muc 11 (bao nhieu luot "cung part" vs "hai
--- part khac nhau") va cot `auth` cua `wafstat` muc 0c — cung cong da dat cho moi
--- correlation truoc.
+-- Registry giu `mode = "shadow"` lam mac dinh an toan. Runtime production P1.1
+-- chi override hai rule PHP executable/double-extension sang `enforce`; Apache
+-- handler va `.user.ini` autoload van shadow. Tach hai lop nhu vay de rollback
+-- tung rule ma khong doi detector, va de moi deployment khong co runtime config
+-- van fail ve chinh sach it FP nhat.
 --
 -- `family = "correlation"` nen `policy.lua` KHONG cong diem cua chung vao
 -- `state.score`: chung la phan quyet duoc suy ra tu fact DA duoc cham diem, va cong

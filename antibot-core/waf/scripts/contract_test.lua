@@ -2793,6 +2793,19 @@ end
 -- chu thich quanh do, nen mot bo kiem `match("swn=")` van XANH du dong
 -- `string.format` da bi xoa. Da thu bang dot bien: doi `swn=%d` thanh `swnX=%d`
 -- KHONG bi bat. Phai neo vao chinh dong sinh ra cot.
+-- P1.0: logger WAF phai xuat candidate CAUSAL cua truc gia dinh. Chi co
+-- `would=block` tren moi hit la khong du: bao cao se gan nham phan quyet request
+-- cho tat ca `rule=` va dem mot request nhieu lan.
+local wlg = slurp(SRC .. "async/waf_logger.lua") or ""
+if wlg:match("dec%.would_reason") and wlg:match("dec%.would_rule_mode") and
+   wlg:match("would=%%s%s+wreason=%%s%s+wrmode=%%s") then
+    pass = pass + 1
+    io.write("  OK   waf_logger xuat wreason/wrmode causal\n")
+else
+    bad("  SAI  waf_logger thieu `wreason`/`wrmode` causal.\n" ..
+        "       Khong duoc suy would-block tu `rule=` cua tung dong hit.\n")
+end
+
 local lg = slurp(SRC .. "async/logger.lua") or ""
 if lg:match('"%s*swn=%%d%s+swall=%%d%s+swr=%%%.3f"') then
     pass = pass + 1; io.write("  OK   chuoi dinh dang `swn=%d swall=%d swr=%.3f` van con\n")
@@ -2826,6 +2839,25 @@ end
 io.write("\nhop dong: cong thoi gian cua `fim_test` phai fail-closed\n")
 
 local runsh = slurp(SRC .. "waf/scripts/run.sh")
+
+-- Bash doc file tu tren xuong: ham goi truoc dong dinh nghia KHONG duoc hoist.
+-- Ban cu goi `postdeploy_touched` truoc dinh nghia; shell bao command-not-found
+-- trong command substitution, nhanh `else` bo qua suite, nhung `run.sh` van 0.
+-- Ghim thu tu cho ca hai cong de loi nay khong quay lai khi sap xep file.
+for _, name in ipairs({ "postdeploy_touched", "fim_touched" }) do
+    local def  = runsh:find("\n" .. name .. "() {", 1, true)
+    local call = runsh:find("reason=$(" .. name .. "); then", 1, true)
+    if not def or not call or def >= call then
+        bad(string.format(
+            "  SAI  `%s` phai duoc dinh nghia TRUOC khi goi trong run.sh.\n" ..
+            "       Bash khong hoist ham; sai thu tu co the bo qua suite ma van rc=0.\n",
+            name))
+    else
+        pass = pass + 1
+        io.write(string.format("  OK   `%s` duoc dinh nghia truoc khi goi\n", name))
+    end
+end
+
 local gate  = runsh:match("\ntouched%(%)%s*{(.-)\n}")
 if not gate then
     bad("  SAI  khong tim thay ham `touched` trong `run.sh`\n")

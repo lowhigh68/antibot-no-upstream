@@ -126,7 +126,12 @@ echo "[$N] [waf] ts=4 rid=r22 id=- domain=h.test ip=8.8.8.8 rule=wp_theme_direct
 # exists=0 -> muc 7 KHONG dem
 echo "[$N] [waf] ts=5 rid=r23 id=- domain=h.test ip=8.8.8.8 rule=wp_root_unknown target=URI sev=notice pl=0 matched=/none.php score=25.00 action=signal class=navigation richness=- wpauth=0 vfy=0 status=404 exists=0 final=block fim=0 mode=enforce exc=- wact=allow would=allow wscore=25.00 pver=2.0"
 # MOT request vua co than VUA khop luat -> rid trung
-echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_executable_content target=MULTIPART_PART sev=notice pl=0 matched=slot=1_upload_php_ext+php_tag score=100.00 action=block class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=monitor fim=0 mode=shadow exc=- wact=allow would=block wscore=50.00 pver=2.0"
+# CUNG request co ba hit nhung chi candidate `upload_php_executable_content`
+# tao ra would=block. Bao cao causal phai dem MOT request cho candidate, khong
+# gan nham phan quyet request cho hai signal va khong dem ba lan.
+echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_ext target=MULTIPART_FILENAME sev=notice pl=0 matched=shell.php score=40.00 action=signal class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=monitor fim=0 mode=enforce exc=- wact=allow would=block wreason=upload_php_executable_content wrmode=shadow wscore=50.00 pver=2.1-p1"
+echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=body_php_code target=BODY_FILE sev=notice pl=0 matched=php_tag score=50.00 action=signal class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=monitor fim=0 mode=enforce exc=- wact=allow would=block wreason=upload_php_executable_content wrmode=shadow wscore=50.00 pver=2.1-p1"
+echo "[$N] [waf] ts=6 rid=r10 id=- domain=e.test ip=1.2.3.4 rule=upload_php_executable_content target=MULTIPART_PART sev=notice pl=0 matched=slot=1_upload_php_ext+php_tag score=100.00 action=block class=interaction richness=- wpauth=0 vfy=0 status=200 exists=- final=monitor fim=0 mode=shadow exc=- wact=allow would=block wreason=upload_php_executable_content wrmode=shadow wscore=50.00 pver=2.1-p1"
 
 # ── Muc 13: tep cau hinh vua bi sua (muc 8 cua roadmap) ──
 # `matched` la TEN TEP CAU HINH (hang so trong ma), khong phai duong dan.
@@ -210,7 +215,7 @@ nwant() { if printf '%s\n' "$OUT" | grep -qE "$2"; then
 echo "postdeploy_test: doi chieu voi dap an tinh tay"
 
 # ── Muc 0: cua so, va dong TRUOC moc deploy phai bi loai ───────────────────
-want  "0 so dong"              'dong \[waf\] 18   dong \[waf-body\] 19'
+want  "0 so dong"              'dong \[waf\] 20   dong \[waf-body\] 19'
 want  "0 rid tren >1 dong"     'rid tren >1 dong: 1   request co CA dong luat lan dong than: 1'
 nwant "0 loai dong truoc moc"  'old\.test'
 
@@ -241,6 +246,23 @@ want  "8 fntr_hdr"             'fntr_hdr +1'
 # `nwant` quet TOAN BO output, nen khong dung duoc cho `spill_big`: muc 5 in chuoi do
 # mot cach HOP LE (than urlencoded khong soi duoc). Phai kiem TRONG PHAM VI muc 8.
 sect() { printf '%s\n' "$OUT" | sed -n "/=== $1\./,/=== $2\./p"; }
+
+# P1.0: ba dong hit cua r10 chi duoc tinh MOT lan cho `wreason` thang. Day la
+# phep kiem chong hoi quy quan trong: dem theo `rule=` se gan nham would=block
+# cho hai signal; quen dedupe theo rid se dem candidate ba lan.
+S20=$(sect 20b 21)
+if [ "$(printf '%s\n' "$S20" | grep -cE '^  upload_php_executable_content +1 +1 +1 +0 +0 +0$')" -eq 1 ]; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' "20b phai dem dung 1 causal request cho upload_php_executable_content"
+fi
+if printf '%s\n' "$S20" | grep -qE '^  (upload_php_ext|body_php_code) '; then
+    fail=$((fail+1)); printf 'HONG  %s\n' "20b gan would=block nham cho rule hit thay vi wreason"
+else
+    pass=$((pass+1))
+fi
+want "20b co huong dan FP" 'wpa > 0.*KHONG promote toan fleet'
+
 if sect 8 9 | grep -qE 'spill_big|fntr_len'; then
     fail=$((fail+1)); printf 'HONG  8 chi multipart va chi ma FN_INCOMPLETE\n      muc 8 KHONG duoc chua spill_big (urlencoded) hay fntr_len\n'
 else pass=$((pass+1)); fi

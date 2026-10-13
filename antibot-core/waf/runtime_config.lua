@@ -32,6 +32,10 @@
 --                          khac khong tin duoc).
 
 return {
+    -- Moc telemetry cua dot chot P1. P1.0 them `wreason`/`wrmode`, P1.1 promote
+    -- hai composite upload o duoi; pver rieng tranh tron voi schema 2.0.
+    version = "2.1-p1",
+
     -- `enforce` = luat nao co `mode = "enforce"` thi duoc chan.
     -- `shadow`  = tinh du phan quyet nhung KHONG chan gi (cot `would=` van ghi).
     -- `observe` = chi thu thap su kien.
@@ -93,22 +97,15 @@ return {
     -- nen C khong mo duoc bang so lieu — mot vong tron (cho so lieu, ma cong
     -- tat thi khong sinh so). Doi lai, moi luat `enforce` van chan day du.
     --
-    -- NEU sau nay mo lai giai doan do, bat B truoc va bat buoc co BA thu, khong
-    -- thi `would=block` khong truy duoc nguon:
-    --   1. them `wreason=` (hoac tuong duong) de phan biet `would=block` den tu
-    --      NGUONG TONG voi den tu mot trong 7 correlation shadow — hien hai thu
-    --      do ghi cung mot gia tri;
-    --   2. dat moc/version telemetry (`pver=`) tai thoi diem bat;
-    --   3. tach du lieu TRUOC/SAU moc khi dem — cot `would=` doi nghia tai do,
-    --      nen so hai ben khong so sanh duoc.
+    -- P1.0 da them `wreason=`/`wrmode=` va moc `pver=2.1-p1`, nen neu sau nay
+    -- mo lai giai doan do thi telemetry da truy duoc candidate causal. Van phai
+    -- bat B truoc, tach du lieu theo moc va doc `score_threshold` truoc C.
     -- Thu tu: bat B -> do 7 ngay -> doc `would=block` do `score_threshold` ->
     -- kiem `wpauth=1` (co admin that nao bi khop khong) -> roi moi quyet C.
     score_enforcement = false,
 
-    -- Khong co override nao. De rong chu khong xoa: cho de them khi co so lieu,
-    -- va de `policy_test.lua` co duong di qua nhanh nay.
-    --
-    -- Vi du (DUNG bo comment ma khong do truoc):
+    -- Override phai hep, truy nguoc duoc va co test verdict. Vi du cau hinh
+    -- per-domain/exception (DUNG bo comment ma khong do truoc):
     --   rules = { arg_traversal = { mode = "shadow" } },
     --   domains = { ["shop.example.com"] = { profiles = { wordpress = false } } },
     --   exceptions = {
@@ -121,9 +118,53 @@ return {
     --   `MULTIPART_FILENAME` (ten tep); query string la `ARGS`. Bo `target` thi
     --   exception ap cho moi target. (Vi du tren da loi thoi tu V7: `../` trong
     --   noi dung tep nay la `body_file_traversal`, observe.)
-    rules        = {},
+    -- P1.1: CHI promote MOT composite, va chi khi bang chung nam tren CUNG mot
+    -- multipart part: ten co duoi PHP thuc thi VA chinh tep do co PHP tag. Day
+    -- KHONG chan theo ten don le, cung khong chan khi PHP tag nam o mot form
+    -- field/part KHAC (do la dieu hai correlation toan-request cu lam, va la ly
+    -- do chung khong promote duoc).
+    --
+    -- SO DO 13-10-2026, cot `rule=` tren CA 6 MAY, cua so 7 ngay:
+    --
+    --   rule                              | khop | domain | wpauth=1
+    --   upload_php_executable_content      |  131 |     17 |        0
+    --   upload_php_double_content          |    0 |      0 |        0
+    --   upload_apache_handler_content      |    0 |      0 |        0
+    --   upload_user_ini_autoload_content   |    0 |      0 |        0
+    --
+    --   tien de                            | khop
+    --   upload_php_ext                     |  262
+    --   upload_php_double                  |    0
+    --   upload_apache_config               |    0
+    --   upload_user_ini                    |    0
+    --
+    -- `upload_php_executable_content`: 131/262 = 50% so lan co TEN tep PHP thi
+    -- NOI DUNG cung co PHP tag. Khong phai ca hiem, va **0 luot** cham chinh chu
+    -- WordPress (`wpauth=1`) tren 17 domain / 5 may. Do la co so de enforce.
+    --
+    -- BA rule con lai GIU SHADOW, va ly do khac nhau — dung gop lam mot:
+    --
+    --   * `upload_php_double_content`: tien de `upload_php_double` ban **0 tren
+    --     6/6 may**. Khong phai "dieu kien thu hai hep" ma la CHUA AI upload tep
+    --     double-extension nao. Ban dau P1.1 promote ca rule nay; ha ve shadow
+    --     13-10 vi promote mot duong CHUA TUNG co luu luong la bat chan ma rui
+    --     ro FP khong do duoc — khac han "FP = 0". Promote lai khi tien de co so.
+    --
+    --   * `.htaccess` handler va `.user.ini` autoload: tien de cung ban 0, VA
+    --     chung co duong su dung HOP LE tren shared host (migration, deployment
+    --     tooling, plugin backup/restore). Hai ly do doc lap, nen chung o shadow
+    --     lau hon hai rule tren.
+    --
+    -- GIU trong registry (khong go): day la ban 0 vi CHUA AI THU, khac
+    -- `swarm_attack` ban 5.596 luot SAI. Hai tinh trang nguoc nhau.
+    --
+    -- Registry van mac dinh shadow cho ca bon; override nay la chinh sach deploy
+    -- co y, va rollback mot rule chi can xoa dong cua no khoi bang nay.
+    rules = {},
+    correlations = {
+        upload_php_executable_content = { mode = "enforce" },
+    },
     families     = {},
-    correlations = {},
     exceptions   = {},
     domains      = {},
 

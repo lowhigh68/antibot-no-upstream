@@ -34,8 +34,9 @@ ls -l "$LOG"* 2>/dev/null
 
 echo
 echo "=== 0b. Phan quyet policy V2 (chi co tu ban af0040f tro di) ==="
-# Sau `af0040f` moi dong `[waf]` mang them sau cot: mode= exc= wact= would=
-# wscore= pver=. Dong CU khong co chung, nen muc nay tu bao ra co bao nhieu dong
+# Sau P1.0 moi dong `[waf]` mang them tam cot: mode= exc= wact= would=
+# wreason= wrmode= wscore= pver=. Dong CU khong co du schema causal, nen muc nay
+# tu bao ra co bao nhieu dong
 # doc duoc — thieu buoc do se chia cho mot mau nho hon thuc te ma khong biet.
 V2=$(grep -F '[waf]' "$LOG" | grep -c ' pver=')
 TOT=$(grep -cF '[waf]' "$LOG")
@@ -118,6 +119,22 @@ grep -F '[waf]' "$LOG" | grep -F ' pver=' | awk '
 # request, va ca hai deu `final=block status=403` — `wscore=90` da du nguong voi
 # `class=auth_endpoint x1.5`. Nen chung khong phai "se chan"; chung la "da chan".
 f["wact"]=="allow" && f["would"]=="block" && f["final"]!="block" {
+    # Schema P1.0: `would` la phan quyet cap request; `wreason` moi la rule tao
+    # phan quyet do. Cac dong schema cu khong du bang chung causal de promote.
+    if (f["wreason"]=="" || f["wreason"]=="-" || f["wrmode"]=="") {
+        old_schema++
+        next
+    }
+    if (f["wrmode"]!="shadow") next
+
+    # Logger lap phan quyet request tren moi hit. Dem mot lan theo
+    # (request-id, causal-rule), khong dem moi dong hit.
+    rid = f["rid"]
+    if (rid=="" || rid=="-") rid = "line:" NR
+    reason = f["wreason"]
+    req = rid SUBSEP reason
+    if (req in req_seen) next
+    req_seen[req] = 1
     # HAI THUOC KHAC NHAU, khong gop thanh mot `auth`:
     #
     #   `wpauth=1`      co cookie `wordpress_logged_in_` — bang chung TRUC TIEP la
@@ -129,20 +146,27 @@ f["wact"]=="allow" && f["would"]=="block" && f["final"]!="block" {
     # trong body vao `auth_endpoint`, `richness=0.56` nhung `wpauth=0`. Gop hai thuoc
     # lam mot webshell dem nhu mot FP — dung ho loi da ghi trong memory: thuoc dung
     # la dem trong tap CO COOKIE THAT, khong phai tap co diem cao.
-    c[f["rule"]]++
-    if (f["wpauth"]=="1") a[f["rule"]]++
-    if (f["richness"]!="-" && f["richness"]+0 >= 0.5) rich[f["rule"]]++
-    if (f["vfy"]=="1") vf[f["rule"]]++
+    c[reason]++
+    if (f["wpauth"]=="1") a[reason]++
+    if (f["richness"]!="-" && f["richness"]+0 >= 0.5) rich[reason]++
+    if (f["vfy"]=="1") vf[reason]++
     # SO NGUON KHAC NHAU, khong phai so luot. Dem /24 chu khong dem IP: mot ke gui
     # doi IP trong cung dai la mot nguon.
-    split(f["ip"], o, ".")
-    net = o[1] "." o[2] "." o[3]
-    if (!((f["rule"] SUBSEP net) in seen)) {
-        seen[f["rule"], net] = 1
-        srcs[f["rule"]]++
+    ipa = f["ip"]
+    if (ipa ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+        split(ipa, o, ".")
+        net = o[1] "." o[2] "." o[3]
+    } else {
+        net = ipa
+    }
+    if (!((reason SUBSEP net) in seen)) {
+        seen[reason, net] = 1
+        srcs[reason]++
     }
 }
 END{
+    if (old_schema)
+        printf "  CANH BAO: %d dong would-block thieu wreason/wrmode da bi loai (schema cu)\n", old_schema
     if (!length(c)) { print "  (khong co dong nao - chua luat nao o che do bong ban)"; exit }
     # HAI NGUONG, va nguong thu hai moi la nguong that.
     #
@@ -162,8 +186,8 @@ END{
     # Dem /24 chu khong dem IP: mot ke gui doi IP trong cung dai van la mot nguon.
     MIN_N   = 30
     MIN_SRC = 5
-    printf "  %-24s %7s %5s %5s %5s %6s  %s\n",
-           "rule", "se chan", "wpa", "rich", "vfy", "nguon", "ket luan"
+    printf "  %-36s %7s %5s %5s %5s %6s  %s\n",
+           "would_reason (causal)", "se chan", "wpa", "rich", "vfy", "nguon", "ket luan"
     for (k in c) {
         if (srcs[k] < MIN_SRC)
             kl = sprintf("CHI %d nguon (/24) - mau KHONG dai dien", srcs[k])
@@ -182,7 +206,7 @@ END{
         else
             kl = sprintf("n=%d tu %d nguon, 0 wpa 0 rich 0 vfy - DU de xet enforce",
                          c[k], srcs[k])
-        printf "  %-24s %7d %5d %5d %5d %6d  %s\n",
+        printf "  %-36s %7d %5d %5d %5d %6d  %s\n",
                k, c[k], a[k]+0, rich[k]+0, vf[k]+0, srcs[k], kl
     }
 }'

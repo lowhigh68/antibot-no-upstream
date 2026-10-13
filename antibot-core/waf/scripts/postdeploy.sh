@@ -748,7 +748,7 @@ echo "  dat nguong > 0 ma HIGH NEW khong giam  : thu muc dat nguong KHAC thu muc
 echo "  mot thu muc trong uploads/ dat nguong  : nguong gom KHONG ha o do (thiet ke) — xem no"
 
 echo
-echo "── 20. CORRELATION dang SHADOW: so lieu de promote ─────────────"
+echo "── 20. FACT multipart: dau vao cua correlation (KHONG phai verdict) ──"
 # ── VI SAO CO MUC NAY ────────────────────────────────────────────────
 #
 # Review 4 giai doan P1 muc 1 noi: "Dung so lieu `postdeploy.sh` de promote lan
@@ -757,13 +757,13 @@ echo "── 20. CORRELATION dang SHADOW: so lieu de promote ──────�
 # CO ba rule `shadow` — nhung khong co duong ra so lieu, nen khong ai promote duoc
 # gi ca. Dung lop "canh bao dung ma khong ai mo" (fim.sh bao 13 lan vao mail cron).
 #
-# Muc nay KHONG quyet dinh gi. No chi tra lo so de nguoi van hanh thay:
+# Muc nay KHONG dung de promote. No chi tra lo so de nguoi van hanh thay:
 #   · bao nhieu lan moi luat ban trong cua so
 #   · co bao nhieu DOMAIN va IP rieng biet -> mot domain chiem het = nghi FP cuc bo
 #   · ban ket qua cuoi (`final=`) la gi -> neu da bi chan boi luat khac thi promote
 #     khong doi gi, con `allow` het thi promote la mot thay doi THAT
 #
-# Promote khi nao la quyet dinh cua nguoi van hanh, khong phai cua script.
+# Verdict causal dung de promote nam o muc 20b.
 if [ -z "$WF" ]; then
     echo "  khong co waf.log sau moc deploy -> KHONG DO DUOC (khac 0 lan ban)"
 else
@@ -809,6 +809,56 @@ else
     echo "  pf=ok == lan                 : moi lan ban deu co bang chung than -> co co so promote"
     echo "  0 lan ban sau >1 ngay        : luat chua gap luu luong thuc -> chua co co so promote"
 fi
+
+echo
+echo "=== 20b. SHADOW CAUSAL: candidate that su se chan request ==="
+# Bang 20a o tren mo ta FACT trong multipart (`uprule=`); no huu ich de biet
+# parser da thay gi, nhung KHONG noi rule nao thang phan quyet. Bang nay doc
+# `wreason`/`wrmode` tu policy, loai request da bi tang khac block, va gop moi
+# (rid, wreason) mot lan. Day moi la so lieu dung de promote tung rule.
+grep -F '] [waf] ' "$W" | awk "$P"'
+f["wact"] == "allow" && f["would"] == "block" && f["final"] != "block" {
+    if (f["wreason"] == "" || f["wreason"] == "-" || f["wrmode"] == "") {
+        old++
+        next
+    }
+    if (f["wrmode"] != "shadow") next
+    rid = f["rid"]
+    if (rid == "" || rid == "-") rid = "line:" NR
+    r = f["wreason"]
+    rk = rid SUBSEP r
+    if (rk in req) next
+    req[rk] = 1
+
+    n[r]++
+    if (f["wpauth"] == "1") wp[r]++
+    if (f["richness"] != "-" && f["richness"] + 0 >= 0.5) rich[r]++
+    if (f["vfy"] == "1") vfy[r]++
+    dm = f["domain"]
+    if (dm != "" && !((r SUBSEP dm) in sd)) { sd[r, dm] = 1; nd[r]++ }
+    ip = f["ip"]
+    if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+        split(ip, o, "."); net = o[1] "." o[2] "." o[3]
+    } else net = ip
+    if (!((r SUBSEP net) in ss)) { ss[r, net] = 1; ns[r]++ }
+}
+END {
+    if (old)
+        printf "  CANH BAO: %d dong would-block schema cu bi loai (thieu wreason/wrmode)\n", old
+    if (!length(n)) {
+        print "  (khong co candidate shadow causal nao trong cua so)"
+        exit
+    }
+    printf "  %-36s %6s %6s %6s %5s %5s %5s\n",
+           "would_reason", "luot", "domain", "/24", "wpa", "rich", "vfy"
+    for (r in n)
+        printf "  %-36s %6d %6d %6d %5d %5d %5d\n",
+               r, n[r], nd[r]+0, ns[r]+0, wp[r]+0, rich[r]+0, vfy[r]+0
+}'
+echo "  -- CACH DOC --"
+echo "  wpa > 0                    : co chinh chu WordPress -> KHONG promote toan fleet"
+echo "  rich/vfy > 0 nhung wpa = 0 : can doc tay; day chua tu dong la FP"
+echo "  luot/domain/nguon qua it    : giu shadow, khong suy rong tu mot ke tan cong"
 
 echo
 echo "=== 21. Static MISS theo DOMAIN (admission: resource candidate vs thuc te) ==="
