@@ -142,13 +142,41 @@ local DEFAULT_WEIGHTS = {
     --                             ngưỡng dùng chung được
     -- Không ngưỡng nào chữa được vì bản thân phép đếm không phân biệt.
     --
-    -- Trọng số 0 chứ KHÔNG gỡ module: `ctx.swarm_attack` vẫn được tính và
-    -- `swn`/`swall`/`swr` vẫn vào antibot.log, nên vẫn chẩn đoán được và bật
-    -- lại chỉ là đổi một số. Cùng cách xử lý `canvas_change`.
+    -- ── TRỤC THỨ TƯ cũng loại (12-10-2026) → GỠ KHỎI BẢNG NÀY ──────────
     --
-    -- Bật lại CHỈ KHI có trục phân biệt được bot trong dữ liệu THẬT trước —
-    -- không phải một ngưỡng mới nghe hợp lý.
-    swarm_attack        = 0,
+    -- Trục cuối được thử là **số identity trên cùng một UA** — chính trục mà
+    -- `project_swarm_ratio_refuted` tự đề xuất ("botnet mua được nhiều /24 nhưng
+    -- không mua được identity có cookie ở lại"). Đo 3 máy, log đầy ngày 11-10
+    -- (166k/202k/84k dòng), điều kiện đăng ký TRƯỚC: tồn tại `K` mà ≥80% UA bot
+    -- vượt `K` và ≤1% UA khách thật vượt `K`.
+    --
+    -- Không có `K` nào, và nó thất bại ở CẢ HAI đầu:
+    --   * trên 171-96 **cùng một UA** (`Chrome/151 Win`) đứng đầu CẢ HAI bảng:
+    --     1.457 identity toàn log, trong đó **757** là khách có cookie thật
+    --     (`rown>0`). Mọi `K` bắt được nó đều cắt 757 khách — nhóm khách ĐÔNG
+    --     NHẤT máy đó, không phải 1%;
+    --   * bot thật thì số THẤP: `Googlebot` 446, `AhrefsBot` 960, `YandexBot`
+    --     109 trên 28-246 — dưới `Chrome/151` (7.473) một bậc. Bot AI trên
+    --     171-96 (`Claude-SearchBot` 67, `PerplexityBot` 73) nằm dưới MỌI ngưỡng
+    --     còn bắt được Chrome.
+    --
+    -- BỐN trục chết vì CÙNG MỘT nguyên nhân cấu trúc: `id=` là `ctx.identity`,
+    -- băm CÓ IP. Nên mọi đại lượng dựng từ (UA × IP × host) tăng theo LƯỢNG
+    -- KHÁCH trước khi tăng theo tính bất thường. Đó không phải lỗi chọn công
+    -- thức — nên KHÔNG tìm trục thứ năm.
+    --
+    -- GIỮ TELEMETRY: `detection/distributed_swarm.lua` vẫn chạy và vẫn đặt
+    -- `ctx.swarm_attack`, `swn`/`swall`/`swr` vẫn vào antibot.log. Người dùng
+    -- chốt 11-10: "giữ telemetry, gỡ tính toán". Cột `swn` cao + `swall` cao vẫn
+    -- là bằng chứng hữu ích khi chẩn đoán FP (= site đông khách, KHÔNG phải đàn
+    -- bot) — xem `feedback_ban_ctx_first`.
+    --
+    -- Bật lại cần một trục phân biệt được bot trong dữ liệu THẬT trước, và sau
+    -- bốn lần thất bại thì gánh nặng chứng minh nằm ở phía đề xuất.
+    --
+    -- `canvas_change` (`project_dead_signals`) là ca KHÁC: nó trọng số 50 mà
+    -- vĩnh viễn bằng 0 vì ghi theo identity đọc theo ip — một tín hiệu CHƯA bao
+    -- giờ chạy, không phải một tín hiệu đã đo và đã loại.
 
     -- waf_wp_path: luật đường dẫn WordPress KHÔNG chặn (waf/wordpress/paths.lua).
     -- Hai luật chặn ở đó thoát ngay tại access phase nên không bao giờ tới đây;
@@ -374,9 +402,11 @@ local function get_signal(name, ctx)
         return safe_val(ctx.wp_attack_score)
     end
 
-    if name == "swarm_attack" then
-        return safe_val(ctx.swarm_attack)
-    end
+    -- `swarm_attack` GỠ khỏi đây 12-10 cùng với `DEFAULT_WEIGHTS` (bốn trục đều
+    -- loại — xem chú thích ở bảng trọng số). `ctx.swarm_attack` VẪN được
+    -- `distributed_swarm.lua` đặt, nhưng không còn đường nào đưa nó vào
+    -- `ctx.score`: `compute` chỉ đi qua `DEFAULT_WEIGHTS`, nên gỡ ở bảng là đủ,
+    -- và gỡ cả nhánh này để không ai tưởng tín hiệu còn được đọc.
 
     if name == "waf_wp_path" then
         return safe_val(ctx.waf_wp_path)

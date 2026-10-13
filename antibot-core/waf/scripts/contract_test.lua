@@ -2761,16 +2761,45 @@ end
 -- 8,5 gio ngay 06-10.
 io.write("\nhop dong: tin hieu da GAC phai gac o MOI noi doc no\n")
 
-local sw_w = compute:match("\n%s*swarm_attack%s*=%s*([%d%.]+)")
-if not sw_w then
-    bad("  SAI  khong tim thay `swarm_attack` trong DEFAULT_WEIGHTS\n")
-elseif tonumber(sw_w) ~= 0 then
-    bad(string.format(
-        "  SAI  `swarm_attack` trong so = %s, phai la 0 (da gac 10-10).\n" ..
-        "       Bat lai CHI KHI co truc phan biet duoc bot trong du lieu THAT.\n",
-        sw_w))
+-- 12-10: truc THU TU (identity-per-UA) cung loai → `swarm_attack` GO HAN khoi
+-- `DEFAULT_WEIGHTS` va khoi `get_signal()`. Bo kiem doi tu "trong so = 0" sang
+-- "KHONG CO MAT": mot dong `= 0` nam lai trong bang la mot tin hieu dang cho
+-- ai do doi thanh so khac, con vang mat thi phai them lai CO Y.
+local sw_w = compute:match("\n%s*swarm_attack%s*=")
+if sw_w then
+    bad("  SAI  `swarm_attack` van con trong `DEFAULT_WEIGHTS`.\n" ..
+        "       BON truc da loai (tuyet doi, `swr`, `n_id/swn`, identity/UA) va\n" ..
+        "       ca bon chet vi CUNG mot nguyen nhan: moi dai luong dung tu\n" ..
+        "       (UA x IP x host) tang theo LUONG KHACH truoc khi tang theo tinh\n" ..
+        "       bat thuong. Them lai can mot truc phan biet duoc bot trong du\n" ..
+        "       lieu THAT, do TRUOC khi viet ma.\n")
 else
-    pass = pass + 1; io.write("  OK   `swarm_attack` trong so 0 o DEFAULT_WEIGHTS\n")
+    pass = pass + 1; io.write("  OK   `swarm_attack` khong con trong DEFAULT_WEIGHTS\n")
+end
+
+-- `get_signal()` cung khong duoc con nhanh doc no: gi chi mot trong hai cho thi
+-- nguoi doc ma khong noi duoc tin hieu con song hay khong.
+if compute:match('name%s*==%s*"swarm_attack"') then
+    bad("  SAI  `get_signal()` van co nhanh doc `swarm_attack` du bang trong so\n" ..
+        "       khong con no — mot nhanh khong ai goi, de nguoi sau tin la con dung.\n")
+else
+    pass = pass + 1; io.write("  OK   `get_signal()` khong con nhanh `swarm_attack`\n")
+end
+
+-- TELEMETRY PHAI CON: nguoi dung chot 11-10 "giu telemetry, go tinh toan". Neu
+-- ai go luon cot log thi mat kha nang chan doan FP (`swn` cao + `swall` cao =
+-- site dong khach, KHONG phai dan bot) va mat luon kha nang do lai sau nay.
+-- Kiem CHUOI DINH DANG, khong kiem chuoi `swn=` tran: `swn=` xuat hien trong CA
+-- chu thich quanh do, nen mot bo kiem `match("swn=")` van XANH du dong
+-- `string.format` da bi xoa. Da thu bang dot bien: doi `swn=%d` thanh `swnX=%d`
+-- KHONG bi bat. Phai neo vao chinh dong sinh ra cot.
+local lg = slurp(SRC .. "async/logger.lua") or ""
+if lg:match('"%s*swn=%%d%s+swall=%%d%s+swr=%%%.3f"') then
+    pass = pass + 1; io.write("  OK   chuoi dinh dang `swn=%d swall=%d swr=%.3f` van con\n")
+else
+    bad("  SAI  chuoi dinh dang cot `swn`/`swall`/`swr` da mat khoi logger.\n" ..
+        "       Go TINH TOAN thi duoc, go TELEMETRY thi khong: do la thu duy\n" ..
+        "       nhat con lai cua module, va la thu cho phep do lai sau nay.\n")
 end
 
 local bsw = slurp(SRC .. "enforcement/ban/ban_store_write.lua")
