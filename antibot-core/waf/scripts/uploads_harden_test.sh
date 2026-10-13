@@ -151,6 +151,49 @@ else
     ok "goc khong ton tai -> thoat loi"
 fi
 
+echo "── 7. WordPress LONG trong thu muc con (site da ngu) ─────────"
+#
+# VI SAO NHOM NAY TON TAI. `maxdepth 6` tim duoc 29/43 thu muc uploads tren
+# cloud186-126 (do 13-10) — **14 thu muc bi bo HOAN TOAN**, khong co `.htaccess`
+# nao, tuc chay PHP duoc va khong chan gi. Tat ca deu la cai dat WordPress THU
+# HAI trong cung docroot cua site da ngu:
+#     public_html/en/wp-content/uploads      (va `cn/`, `vi/`, `vn/`, `Eng/`)
+#     public_html/origin/wp-content/uploads  (4 site)
+#     public_html/en-old/`, `en__2873314/`
+#
+# Fixture cu CHI co duong chuan `public_html/wp-content/uploads`, nen ca suite
+# XANH voi `maxdepth 6` — dung lo `feedback_fixture_khong_dai_dien`: fixture
+# mang gia dinh cua nguoi viet (mot WP mot docroot) nen no luon PASS.
+#
+# Dem do bang `find` THAT, khong dem tay: duong chuan depth 6, them mot tang
+# thu muc ngon ngu thanh depth 7.
+mkn() {  # mkn <user> <domain> <thu-muc-con>
+    mkdir -p "$T/home/$1/domains/$2/public_html/$3/wp-content/uploads"
+    echo "$T/home/$1/domains/$2/public_html/$3/wp-content/uploads"
+}
+N1="$(mkn userC site-c.vn en)"
+N2="$(mkn userC site-c.vn origin)"
+N3="$(mkn userD site-d.vn en__2873314)"
+
+out="$(run --apply)"
+for p in "$N1" "$N2" "$N3"; do
+    if [ -f "$p/.htaccess" ] && grep -q '# antibot-uploads-harden' "$p/.htaccess"; then
+        ok "WP long duoc hardening: ${p#"$T/home/"}"
+    else
+        bad "WP long BI BO QUA: ${p#"$T/home/"}  (maxdepth qua thap?)"
+    fi
+done
+
+# Va KHONG duoc queu ra ngoai: mot thu muc `uploads` KHONG nam duoi `wp-content`
+# thi khong phai uploads cua WordPress — `-path '*wp-content*'` phai chan no.
+mkdir -p "$T/home/userE/domains/site-e.vn/public_html/files/uploads"
+run --apply >/dev/null
+if [ -f "$T/home/userE/domains/site-e.vn/public_html/files/uploads/.htaccess" ]; then
+    bad "ghi vao thu muc uploads KHONG thuoc wp-content — queu qua rong"
+else
+    ok "thu muc uploads ngoai wp-content KHONG bi cham"
+fi
+
 echo
 printf 'uploads_harden_test: %d qua, %d hong\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

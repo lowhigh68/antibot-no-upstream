@@ -117,7 +117,31 @@ while IFS= read -r d; do
     chmod 0644 "$ht" 2>/dev/null || :
     printf '  DA GHI  %s\n' "$ht"
     n_done=$((n_done + 1))
-done < <(find "$SEARCH_ROOT" -maxdepth 6 -type d -name uploads -path '*wp-content*' 2>/dev/null)
+# ── `-maxdepth 8`, KHONG phai 6 ─────────────────────────────────────────────
+#
+# Do 13-10 tren cloud186-126: `maxdepth 6` tim duoc **29** thu muc uploads,
+# nhung may do co **43**. Muoi bon thu muc bi bo qua HOAN TOAN — khong tep
+# `.htaccess` nao, tuc chay PHP duoc va khong chan gi.
+#
+# `find -maxdepth` dem tu DOI SO goc, tuc `/home` = 0. Do bang `find` that
+# (khong dem tay — lan dau toi dem tay va ra sai):
+#     /home/u/domains/d.vn/public_html/wp-content/uploads        -> depth 6
+#     /home/u/domains/d.vn/public_html/en/wp-content/uploads     -> depth 7
+# Mot tang thu muc ngon ngu day no tu 6 len 7, vuot tran 6 nen bi bo HOAN TOAN.
+#
+# 14 thu muc bi bo deu la cai dat WordPress THU HAI trong cung docroot:
+#     public_html/en/wp-content/uploads       (va `cn/`, `vi/`, `vn/`, `Eng/`)
+#     public_html/origin/wp-content/uploads   (4 site: ban goc truoc khi dich)
+#     public_html/en-old/wp-content/uploads
+#     public_html/en__2873314/wp-content/uploads
+# Day la site da ngu — moi thu muc ngon ngu la mot WP rieng, uploads rieng.
+#
+# 8 chu khong 7: chua them mot tang du phong cho `public_html/sub/en/wp-content/
+# uploads`, va `-path '*wp-content*'` da chan viec queu them thu muc khong lien
+# quan. Khong de ngo (`maxdepth` bo han) vi `/home` co the chua backup cua khach
+# voi cay rat sau — mot `find` khong tran tren shared hosting la mot phep quet
+# khong gioi han thoi gian.
+done < <(find "$SEARCH_ROOT" -maxdepth 8 -type d -name uploads -path '*wp-content*' 2>/dev/null)
 
 echo
 if [ "$APPLY" = "0" ]; then
