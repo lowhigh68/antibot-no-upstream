@@ -768,6 +768,36 @@ do
         eq("runtime_config: score_enforcement van tat",
            runtime.score_enforcement, false)
         eq("runtime_config: chua co exception nao", #(runtime.exceptions or {}), 0)
+
+        -- ── `score_enforcement = false` VAN tinh va VAN ghi diem ───────────
+        --
+        -- Ba assertion duoi ghim dung hai dieu nguoi dung sua trong mo ta cua
+        -- toi 13-10, vi ca hai deu de hieu sai thanh "tat het":
+        --   (a) `state.score` VAN duoc cong — `policy.lua` cong khong dieu kien;
+        --   (b) `false` CHI vo hieu `score_candidate()`, nen khong sinh
+        --       `score_threshold` va khong doi `would_*`;
+        --   (c) luat hard-block `enforce` VAN chan — `enforce_candidate` doc lap
+        --       voi co nay. "Khong chan boi tong diem" KHAC "khong chan".
+        --
+        -- Khong de cho chu thich mot minh ghim viec nay: repo nay co tien le chu
+        -- thich sai co he thong ([[feedback_read_code_not_comments]]), va mot
+        -- chu thich sai o DUNG cho nay se dan nguoi doc sau den ket luan
+        -- "score_enforcement=false la ma ngu, go di" — chinh ket luan toi da dua
+        -- ra va phai rut lai.
+        local st = policy.begin({}, { host = "a.test", uri = "/x", method = "GET" },
+            { mode = "enforce", score_enforcement = false,
+              threshold_mode = "shadow", thresholds = { block = 100 },
+              rules = {}, families = {}, correlations = {}, exceptions = {} })
+        -- Hai luat 50 diem cung ban -> tong 100, DU nguong.
+        policy.emit(st, "arg_null_byte",   { target = "ARGS", matched = "%00" })
+        policy.emit(st, "arg_php_wrapper", { target = "ARGS", matched = "php://" })
+        local d = policy.decide(st)
+        eq("A: state.score VAN duoc tinh du score_enforcement=false",
+           st.score >= 100, true)
+        eq("A: diem VAN ra duoc `wscore` (dec.score khac nil)",
+           d.score ~= nil, true)
+        eq("A: KHONG sinh score_threshold",
+           (d.would_reason == "score_threshold"), false)
     end
 end
 
