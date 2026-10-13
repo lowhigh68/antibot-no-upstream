@@ -265,28 +265,19 @@ local function reconcile_state(dict, ctx, c, host, count, t)
     return new_state, limit
 end
 
-local function reject(ctx, c, state, count, limit)
-    set_ctx(ctx, {
-        surge_state        = state,
-        surge_mode         = c.mode,
-        surge_inflight     = count,
-        surge_limit        = limit,
-        surge_use          = math.floor((count / limit) * 100),
-        surge_would_reject = true,
-        action             = "throttled",
-        action_reason      = "l7_surge:capacity",
-    })
-
-    ngx.header["Retry-After"]  = tostring(c.retry_after or 2)
-    ngx.header["Cache-Control"] = "no-store"
-    ngx.header["Content-Type"] = "text/plain"
-    ngx.header["X-Bot-Action"] = "throttled"
-    ngx.header["X-L7-Surge"]   = state
-    ngx.status = tonumber(c.status) or 503
-    ngx.say("Service temporarily unavailable.")
-    ngx.exit(tonumber(c.status) or 503)
-    return true, true
-end
+-- `reject()` DA GO 12-10 cung voi hai nhanh `enforce` goi no — khong con noi
+-- goi nao. No tung dat `action = "throttled"` + `action_reason =
+-- "l7_surge:capacity"` roi `ngx.exit(503)` kem `Retry-After`.
+--
+-- Go CA HAM chu khong de lai: mot ham `reject` khong ai goi, trong mot module
+-- mang ten "guard", la moi de nguoi sau tin rang module nay con chan. Cap
+-- `action`/`action_reason` cua no cung khong con xuat hien trong log, nen mot
+-- truy van `reason=l7_surge:capacity` gio dung bang 0 — DO LA Y MUON, khong
+-- phai cot chet.
+--
+-- Muon bat lai: can CA ba thu — `mode = "enforce"` o `config.lua`, dung lai ham
+-- nay, va mot phep do MOI bac bo so cu (787 luot 503 tren domain da FP,
+-- admission chan 0). Thu ba la thu kho nhat, va do la chu y.
 
 local function max_upstream_time(raw)
     if not raw or raw == "" or raw == "-" then return nil end
@@ -302,29 +293,28 @@ end
 -- still terminate the request; doing so would count blocked work as backend
 -- concurrency.  It only rejects a host that is already at capacity in enforce
 -- mode.  admit() remains the atomic authority for races between workers.
+-- ── NHANH `enforce` DA GO 12-10-2026 — do xong, ket luan KHONG enforce ──
+--
+-- Phep do (ba may, cung cua so): `sgn` dinh **111** so voi `max_inflight = 20`;
+-- **787 luot** se bi 503, va chung roi tren dung domain DA co FP; con admission
+-- (phanh tai CHINH, `project_l7_admission`) chan **0** o p99 12/80. Tuc nguong
+-- nay ban khach that truoc khi no cham mot bot nao.
+--
+-- Nang `max_inflight` len ~150 chi de telemetry im — khong phai mot phep do.
+--
+-- Giu `mode = "shadow"` chu KHONG dat `"off"`: `off` thoat o dau `admit()`
+-- TRUOC khi dem, nen no giet ca telemetry. Nguoi dung chot 11-10 la "go TINH
+-- TOAN, giu telemetry", nen cot `sgn=/sgwould=/sglim=` phai con ghi.
+--
+-- `before()` gio khong lam gi ngoai tra `true`: o shadow no da `return true,
+-- false` ngay (nhanh `c.mode ~= "enforce"`), nen GO than ham khong doi hanh vi
+-- mot request nao. Giu lai ham de `init.lua` khong phai doi diem goi.
 function _M.before(ctx)
     local c = conf()
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then
         return true, false
     end
-    -- Shadow cannot reject here, and the request may still be blocked by WAF.
-    -- Defer all measurement to admit() to avoid a duplicate six-key read on
-    -- every production request during rollout.
-    if c.mode ~= "enforce" then return true, false end
-
-    local dict = dictionary()
-    if not dict then
-        if ctx then ctx.surge_degraded = true end
-        return true, false
-    end
-
-    local host = safe_host()
-    local t = now()
-    local count = total_inflight(dict, host, c, t)
-    local state, limit = reconcile_state(dict, ctx, c, host, count, t)
-    if c.mode == "enforce" and count >= limit then
-        return reject(ctx, c, state, count, limit)
-    end
+    -- Moi phep do don ve `admit()`: mot lan doc sau khoa moi request, khong hai.
     return true, false
 end
 
@@ -383,26 +373,22 @@ function _M.admit(ctx)
     local count = total_inflight(dict, host, c, t, bucket_count)
     local state, limit = reconcile_state(dict, ctx, c, host, count, t)
 
+    -- `sgwould=` la GIA TRI CON LAI cua module sau khi go nhanh enforce (12-10):
+    -- no tra loi "neu bat thi bao nhieu luot bi 503" ma khong 503 ai. Dat NGOAI
+    -- moi nhanh mode, nen no song du module khong con quyet dinh gi.
+    --
+    -- NHANH `enforce` DA GO. No tung: rollback phep cong atomic cua CHINH request
+    -- nay, dat `surge_released` de log phase khong tru lan hai, roi `reject(...)`
+    -- voi state `"shed"`. Ca khoi do chi chay khi `c.mode == "enforce"`, va
+    -- `config.lua` chua bao gio dat gia tri do tren production — nen go no KHONG
+    -- doi hanh vi mot request nao dang chay.
+    --
+    -- Ly do go thay vi de ngu: mot nhanh quyet dinh khong bao gio chay la no, va
+    -- repo nay da co tien le chu thich bien ho cho nhanh DA GO
+    -- (`feedback_read_code_not_comments` ca 5). So do: 787 luot se 503 tren dung
+    -- domain da FP, admission chan 0 — `project_shadow_het_han` muc 2.
     if count > limit then
         if ctx then ctx.surge_would_reject = true end
-        if c.mode == "enforce" then
-            -- This request did not get a slot.  Roll its atomic increment back
-            -- now; log phase must not decrement it a second time.
-            local remaining, rollback_err = decrement(
-                dict, request_slot_key, ttl)
-            if remaining == nil or rollback_err then
-                log_dict_error("rollback", rollback_err)
-                if ctx then ctx.surge_degraded = true end
-            end
-            local total_remaining = total_inflight(dict, host, c, t)
-            if ctx then
-                ctx.surge_admitted = false
-                ctx.surge_released = true
-                ctx.surge_remaining = total_remaining
-            end
-            reconcile_state(dict, ctx, c, host, total_remaining, t)
-            return reject(ctx, c, "shed", count, limit)
-        end
     end
     return true, false
 end

@@ -604,8 +604,20 @@ eq(fake_ngx.shared.antibot_cache:get("sg:leak.test:slot:15"), nil,
    "traffic moi khong refresh bucket ro cu")
 surge.after(leak_aged)
 
--- Enforce has an atomic late gate: even when several workers all passed the
--- early read, the limit+1 acquisition is rolled back before returning 503.
+-- ── NHANH `enforce` DA GO 12-10: `surge_guard` KHONG con tu choi ai ──
+--
+-- CHIN assertion cu o day ghim hanh vi 503 (late atomic gate + rollback + early
+-- shed). Chung da duoc THAY, khong phai xoa: cac assertion duoi ghim dung dieu
+-- NGUOC lai, va do moi la hop dong hien tai.
+--
+-- Vi sao go: do ba may — `sgn` dinh 111 vs `max_inflight = 20`, 787 luot se 503
+-- tren dung domain DA co FP, con admission (phanh CHINH) chan 0 o p99 12/80.
+-- Xem `project_shadow_het_han` muc 2.
+--
+-- Phep thu nay dat `mode = "enforce"` CO Y du khong ai dat gia tri do tren
+-- production: no chung minh rang NGAY CA khi ai do bat lai bang config, module
+-- cung khong con duong 503 nao — vi ham `reject()` da bi go khoi tep. Mot phep
+-- thu chi chay o `shadow` se khong phat hien duoc viec nhanh enforce bi hoi sinh.
 fake_ngx.shared.antibot_cache = Dict.new()
 cfg.l7_surge_guard.mode = "enforce"
 clock = 700
@@ -618,18 +630,18 @@ surge.before(se3)
 surge.admit(se1)
 surge.admit(se2)
 local _, se3_exit = surge.admit(se3)
-eq(se3_exit, true, "limit+1 bi chan o late atomic gate")
-eq(exits[#exits], 503, "surge enforce tra 503")
-eq(se3.action_reason, "l7_surge:capacity", "503 co capacity reason")
-eq(fake_ngx.shared.antibot_cache:get("sg:enforce.test:slot:11"), 2,
-   "request bi chan duoc rollback, khong ro slot")
+eq(se3_exit, false, "limit+1 KHONG con bi chan: nhanh enforce da go")
+eq(#exits, 0, "khong con `ngx.exit(503)` nao tu surge_guard")
+eq(se3.action_reason, nil, "khong con dat `l7_surge:capacity`")
+-- TELEMETRY PHAI CON: do la gia tri duy nhat con lai cua module.
+eq(se3.surge_would_reject, true,
+   "`sgwould=` VAN duoc dat — go tinh toan, GIU telemetry")
+eq(se3.surge_inflight, 3, "`sgn=` van dem dung so request dang chay")
 
--- Once capacity is visibly full, before() rejects prior to WAF/Redis work.
+-- `before()` cung khong con shed som.
 local se4 = sgctx("dynamic")
 local _, se4_exit = surge.before(se4)
-eq(se4_exit, true, "full host bi shed som")
-eq(fake_ngx.shared.antibot_cache:get("sg:enforce.test:slot:11"), 2,
-   "early shed khong thay doi counter")
+eq(se4_exit, false, "`before()` khong con shed som")
 
 -- Host keys are isolated; one saturated virtual host cannot shed another.
 sgvars("other.test", "0.100")
@@ -1365,8 +1377,21 @@ pool.get, pool.put = real_get, real_put
 -- "day" la `count == limit`; `admit()` sau incr cua chinh no, nen "day" la
 -- `count == limit + 1`. Cung mot trang thai vat ly, hai cach dem.
 --
--- Ghim bang HANH VI chu khong bang doc ma nguon: tai DUNG trang thai day,
--- ca hai cong deu phai chan.
+-- ── 12-10: NHANH `enforce` DA GO, nen bien nay khong con QUAN SAT duoc ──
+--
+-- Khi khong con duong 503 thi ca hai cong deu cho qua, va phep lech `>=` vs `>`
+-- tro thanh khong the ghim bang HANH VI. Day la mot MAT MAT THAT cua ban go, va
+-- ghi ro o day thay vi de bo kiem im lang:
+--
+--   · Neu ai bat lai enforce (can CA `mode = "enforce"` VA dung lai ham
+--     `reject()` da go), bo kiem nay se KHONG con bat duoc viec doi `before()`
+--     sang `>` — dung loi 08-10 ma chinh no tung chan.
+--   · Nguoi bat lai phai doc `project_shadow_het_han` muc 2 va dung lai ca
+--     khoi assertion 503 cu (xem git `c4af3a1`..HEAD cho ban day du).
+--
+-- Thay vao do, ghim nhung gi CON dung sau khi go: `sgn=` dem dung, `sgwould=`
+-- bat dung o `count > limit`, va KHONG cong nao chan. Ba dieu do la hop dong
+-- hien tai cua module.
 local inv_cfg = cfg.l7_surge_guard
 cfg.l7_surge_guard = {
     enabled = true, mode = "enforce", status = 503, retry_after = 2,
@@ -1385,25 +1410,27 @@ surge.admit(b1)
 surge.admit(b2)
 eq(b2.surge_inflight, 2, "bien: host o DUNG limit (2/2)")
 
--- Cong SOM phai chan: day roi, va chan o day la de khoi ton WAF/Redis.
+-- Cong SOM: day roi NHUNG khong con chan — nhanh enforce da go.
 local b3 = sgctx("dynamic")
 local _, b3_before = surge.before(b3)
-eq(b3_before, true, "bien: o DUNG limit, before() PHAI chan (truoc WAF)")
+eq(b3_before, false, "bien: o DUNG limit, before() KHONG con chan")
 
--- Cong MUON cung phai chan cung trang thai do, bang bieu thuc khac.
+-- Cong MUON: cung vay, va KHONG rollback vi khong co gi bi tu choi.
 local b4 = sgctx("dynamic")
 local _, b4_admit = surge.admit(b4)
-eq(b4_admit, true, "bien: o DUNG limit, admit() PHAI chan (sau incr cua no)")
-eq(fake_ngx.shared.antibot_cache:get("sg:bound.test:slot:15"), 2,
-   "bien: request bi chan o admit() da rollback, khong ro slot")
+eq(b4_admit, false, "bien: o DUNG limit, admit() KHONG con chan")
+eq(b4.surge_would_reject, true,
+   "bien: `sgwould=` VAN bat o `count > limit` — telemetry con nguyen")
+eq(fake_ngx.shared.antibot_cache:get("sg:bound.test:slot:15"), 3,
+   "bien: khong rollback nua, slot cua b4 duoc giu (3/2 — qua limit)")
 
--- Nha mot slot -> con 1/2 -> ca hai cong phai cho qua.
+-- Nha mot slot -> con 2/2 -> van cho qua, va `sgwould=` TAT vi khong qua limit.
 surge.after(b1)
 local b5 = sgctx("dynamic")
 local _, b5_before = surge.before(b5)
-eq(b5_before, false, "bien: con cho (1/2) -> before() cho qua")
+eq(b5_before, false, "bien: before() cho qua")
 local _, b5_admit = surge.admit(b5)
-eq(b5_admit, false, "bien: con cho (1/2) -> admit() cho qua")
+eq(b5_admit, false, "bien: admit() cho qua")
 
 surge.after(b5)
 surge.after(b2)
