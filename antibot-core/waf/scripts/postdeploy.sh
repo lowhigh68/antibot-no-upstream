@@ -344,14 +344,15 @@ echo "=== 13. Muc 8: thu muc cua tep dang bi goi CO cau hinh doi handler ==="
 # `fim_config_changed` / `waf:fimchg:` ngay 02-10: khoa mang TRANG THAI DANG TON TAI
 # chu khong phai su kien "vua doi"). Luat la `observe` diem 0.
 #
-# Doc CA HAI ten luat: `waf.log` trong cua so nay co the con dong `fim_config_changed`
-# ghi TRUOC khi deploy. HAN CHOT 09-10-2026: bo ten cu.
+# Ten luat cu `fim_config_changed` DA GO khoi phep loc 12-10. Ly do go duoc: khong
+# con NOI NAO GHI ten do (grep toan `antibot-core/` chi con chu thich), va `waf.log`
+# xoay vong 7 ngay nen moi dong mang ten cu da roi khoi cua so tu ~09-10.
 #
 # So sanh voi `fim=` (nhom `fimnew`) o cung cua so: hai nhom DOC LAP, va ty le giua
 # chung la con so quyet dinh co nang diem nhom moi hay khong. `.htaccess` bi ghi lai
 # HOP LE boi LiteSpeed Cache / Wordfence / doi permalink, nen mot so lon o day KHONG
 # phai tin xau — no la ly do de KHONG bat.
-grep -F '[waf]' "$W" | grep -E 'rule=fim_config_(active|changed)' | awk "$P"'
+grep -F '[waf]' "$W" | grep -F 'rule=fim_config_active' | awk "$P"'
 {
     s = (f["smp"] == "") ? 1 : f["smp"] + 0
     tot += s
@@ -361,7 +362,7 @@ grep -F '[waf]' "$W" | grep -E 'rule=fim_config_(active|changed)' | awk "$P"'
 }
 END {
     if (!tot) {
-        print "  (khong co luot nao — hoac fim.sh chua bao `fimchg`, hoac khong co"
+        print "  (khong co luot nao — hoac fim.sh chua ghi `fimcfg`, hoac khong co"
         print "   request nao goi tep PHP trong thu muc vua doi cau hinh)"
         exit
     }
@@ -619,18 +620,16 @@ RAUTH=()
 if ! command -v "$RCLI" >/dev/null 2>&1; then
     echo "  thieu '$RCLI' — khong doc duoc khoa"
 else
-    # DEM CA HAI tien to: `fimcfg:` la dang moi (02-10), `fimchg:` la dang cu con
-    # song het TTL. In RIENG hai so de thay phep di tru da xong chua — neu `fimchg:`
-    # con > 0 sau mot lot `fim.sh check` thi reconcile KHONG don duoc chung, va do la
-    # mot loi can biet. HAN CHOT 09-10-2026: bo dong `fimchg:`.
-    nkey=$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | wc -l)
-    nold=$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimchg:*' 2>/dev/null | wc -l)
+    # Tien to cu `fimchg:` DA GO khoi muc nay 12-10, sau khi do `--scan` tra 0 tren
+    # CA 6 MAY. Khong dem lai no: mot so `0` vinh vien chi lam nguoi doc tuong day
+    # la phep do dang chay.
+    #
+    # `grep -c '^waf:'` thay `wc -l`: `wc -l` dem CA dong loi cua `redis-cli` thanh
+    # khoa. Do la cach mot phep do sai suyt lot 11-10 — `redis-cli` chay KHONG xac
+    # thuc tra `NOAUTH...` roi `wc -l` bien no thanh "1 khoa", con khi `--scan` bi
+    # tu choi hoan toan thi ra "0 khoa" trong y nhu "khong con khoa nao".
+    nkey=$("$RCLI" "${RAUTH[@]}" -n "$RDB" --scan --pattern 'waf:fimcfg:*' 2>/dev/null | grep -c '^waf:')
     echo "  khoa waf:fimcfg:* dang song : $nkey"
-    echo "  khoa waf:fimchg:* (dang CU) : $nold  (mong 0 sau mot lot check)"
-    if [ "${nold:-0}" -gt 0 ]; then
-        echo "  !! $nold khoa dang CU van song — reconcile chua don duoc chung."
-        echo "     Kiem \$STATE/statekeys.full.txt co dang \`waf:fimcfg:\` khong."
-    fi
     if [ "$nkey" -eq 0 ]; then
         echo "  -- 0 khoa: hoac may nay khong co thu muc nao doi handler (hop le), hoac"
         echo "     tier full chua chay lan nao sau ban nay. Kiem bang muc duoi."

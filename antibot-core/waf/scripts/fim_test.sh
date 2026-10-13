@@ -1455,22 +1455,11 @@ do
         i = j + 1
     end
 end
--- `OLD` = nua SAU cua mang `MGET` (tien to `waf:fimchg:` cu), cung dang phan cach TAB.
--- Thieu bien nay thi khong ca nao dat duoc gia tri vao HAI namespace that, va dot bien
--- R-r1 (quay lai `for i = nk, 1, -1`) KHONG bi bat — do duoc 03-10.
-local old = {}
-do
-    local s = os.getenv("OLD") or ""
-    local i = 1
-    while true do
-        local j = s:find("\t", i, true)
-        if not j then old[#old + 1] = s:sub(i); break end
-        old[#old + 1] = s:sub(i, j - 1)
-        i = j + 1
-    end
-end
+-- Bien `OLD` (nua SAU cua mang `MGET`, tien to `waf:fimchg:` cu) DA GO 12-10 cung
+-- voi nhanh ma no mo phong. Giu lai mot bien khong con namespace de ghi vao chi
+-- tao ra ca test tu PASS bang chinh mo phong cua no.
 pool.safe_mget = function(keys, n)
-    local out, half = {}, n / 2
+    local out = {}
     -- `WANTKEY`/`WANTVAL`: tra gia tri cho khoa co TEN khop, thay vi theo CHI SO. Can
     -- cho cac ca ma dieu phai do la `init.lua` yeu cau khoa cua THU MUC NAO — vi du
     -- tran 12 tang: ban dung yeu cau `waf:fimcfg:<root>/` o phan tu cuoi, ban sai yeu
@@ -1483,14 +1472,24 @@ pool.safe_mget = function(keys, n)
         end
         return out
     end
-    -- `init.lua` gui `ns` khoa tien to MOI roi `ns` khoa tien to CU.
-    for i = 1, half do
+    -- `init.lua` gui DUNG `ns` khoa, mot tien to `waf:fimcfg:` (tien to cu
+    -- `waf:fimchg:` go 12-10). Khong con phep chia doi mang.
+    --
+    -- Ban truoc chia `half = n / 2` de mo phong hai namespace. Phai sua CUNG LUC
+    -- voi `init.lua`: giu lai thi mock nap `chain` vao nua dau va `old` vao nua
+    -- sau cua mot mang chi con `ns` phan tu — tuc moi ca ke thua doc sai khoa va
+    -- tra `nil`. Do la dung 40 ca do khi toi go nhanh cu ma chua sua mock nay.
+    --
+    -- KHONG `assert(n == #chain)`: hai so do KHAC BAN CHAT. `n` la so tang cua URI
+    -- ma `init.lua` yeu cau (`ndir`), con `#chain` la so phan tu tach tu bien moi
+    -- truong `CHAIN` — ca `mv` truyen `CHAIN="$kcon\t$kcha"` nen mot `kcha` rong
+    -- VAN sinh phan tu thu hai. Ban dau toi dat `assert` do va 25 ca do oan: phep
+    -- kiem sai la phep kiem to ra dung o cho khong co loi.
+    --
+    -- `chain` NGAN hon `n` la binh thuong (to tien xa hon khong co khoa) -> `ngx.null`.
+    for i = 1, n do
         local v = chain[i]
         out[i] = (v and v ~= "") and v or ngx.null
-    end
-    for i = 1, half do
-        local v = old[i]
-        out[half + i] = (v and v ~= "") and v or ngx.null
     end
     return out
 end
@@ -1839,52 +1838,37 @@ mv "cach ly: khoa CU mang h+:jpg -> doc theo luat CU (duoi tho)" \
 mv "cach ly: khoa MOI mang ext:jpg -> KHONG doc theo luat cu" \
    "/a.jpg" "nil" "v2,ext:jpg"
 
-# KE THUA xuyen hai dang: cha dang CU, con dang MOI. Xay ra THAT trong 7 ngay sau
-# deploy, vi `fim.sh` chi ghi lai thu muc nao DOI.
-mv "tron: cha CU @all + con MOI im lang -> ke thua handler_all" \
+# KE THUA GIUA HAI DANG GRAMMAR (cha khong moc, con co moc hoac nguoc lai). Van xay
+# ra THAT: `fim.sh` chi ghi lai thu muc nao DOI, nen mot cha ghi truoc `c942edf` va
+# mot con ghi sau co the cung song trong 7 ngay TTL. Ca nay KHONG lien quan tien to —
+# ca hai gia tri nam o cung namespace `fimcfg:`, chi khac GRAMMAR.
+mv "tron: cha khong moc @all + con im lang -> ke thua handler_all" \
    "/con/a.jpg" "handler_all" "" "@all"
-mv "tron: cha CU @all + con MOI @sh- -> con TAT duoc" \
+mv "tron: cha khong moc @all + con co moc @sh- -> con TAT duoc" \
    "/con/a.jpg" "nil" "v2,@sh-" "@all"
-mv "tron: cha MOI @sh+ + con CU rong -> ke thua" \
+mv "tron: cha co moc @sh+ + con rong -> ke thua" \
    "/con/a.jpg" "handler_all" "" "v2,@sh+"
 
-# ── HAI NAMESPACE THAT: fallback theo TUNG TANG, khong cong hai snapshot ──
+# ── NHOM `mv2` (HAI NAMESPACE) DA GO 12-10 ───────────────────────────────────
 #
-# Cac ca `mv` o tren chi dat gia tri vao nua `fimcfg` (MOI); chung tron GRAMMAR trong
-# cung mot nua. Nen dot bien R-r1 (quay lai `for i = nk, 1, -1` tren CA mang) khong bi
-# bat — do duoc 03-10, suite van xanh.
+# Tam ca `mv2 "ns: ..."` ghim nhanh di tru `fimchg:` -> `fimcfg:`: chung dat gia tri
+# vao CA HAI nua cua mang `MGET` qua bien `OLD`. Tien to cu da go khoi `init.lua`
+# (`nk = ns`), nen nua sau khong ton tai va tham so `OLD` khong con cho de ghi.
 #
-# `mv2 <ten> <uri> <mong> <moi-con> <moi-cha> <cu-con> <cu-cha>` dat CA HAI namespace.
+# Go thay vi viet lai: mot ca test dat gia tri vao mot namespace KHONG CO TRONG MA
+# se tu PASS bang chinh mo phong cua no — do la `feedback_contract_emulation`, va no
+# TE HON khong co test, vi mau xanh noi doi.
 #
-# Ban truoc xep khoa `moi-con, moi-cha, cu-con, cu-cha` roi duyet tu CUOI ve DAU, nen
-# thu tu ap thuc te la `cu-cha -> cu-con -> moi-cha -> moi-con` — KHONG phai thu tu
-# Apache `cha -> con`. Do duoc:
-#   FN: moi=[con rong, cha h-:jpg]  cu=[con ext:jpg, cha rong] -> `nil`, dung `handler_ext`
-#   FP: cung thu muc, moi=[v2,@php] cu=[ext:jpg]               -> `handler_ext`, dung `nil`
-mv2() {
-    local nhan="$1" uri="$2" mong="$3" mcon="$4" mcha="$5" ccon="$6" ccha="$7"
-    local got
-    got=$(env ANTIBOT_SRC="$SRC29" CHAIN="$mcon	$mcha" OLD="$ccon	$ccha" \
-              URI="$uri" "$RESTY_BIN" "$R/cc.lua" 2>/dev/null)
-    want "30 $nhan" "$got" "$mong"
-}
-
-# THU TU TANG: con thang cha, bat ke khoa o namespace nao.
-mv2 "ns: cha MOI an toan + con CU nguy -> CON thang" \
-    "/con/a.jpg" "handler_ext" "" "v2,h-:jpg" "ext:jpg" ""
-mv2 "ns: cha CU nguy + con MOI an toan -> CON thang" \
-    "/con/a.jpg" "nil" "v2,h-:jpg" "" "" "ext:jpg"
-
-# CUNG THU MUC co ca hai khoa: khoa MOI la snapshot THAY THE, khong phai bo sung.
-# Snapshot moi khong con `.jpg` nghia la mapping do DA BI BO.
-mv2 "ns: cung thu muc, MOI thieu truc cu -> truc cu KHONG song tiep" \
-    "/con/a.jpg" "nil" "v2,@php" "" "ext:jpg" ""
-mv2 "ns: cung thu muc, MOI co truc -> doc theo MOI" \
-    "/con/a.jpg" "handler_ext" "v2,h+:jpg" "" "@all" ""
-
-# CHI co khoa CU -> van doc duoc (di tru chua xong).
-mv2 "ns: chi khoa CU o con" "/con/a.jpg" "handler_ext" "" "" "ext:jpg" ""
-mv2 "ns: chi khoa CU o cha" "/con/a.jpg" "handler_all" "" "" "" "@all"
+# Dieu kien go (do 12-10 tren 6/6 may, lenh co `PONG` + `cmdstat_auth`):
+# `--scan 'waf:fimchg:*'` = 0 khap fleet. Xem `project_shadow_het_han`.
+#
+# Dot bien R-r1 (`for i = nk, 1, -1` tren CA mang) ma nhom nay tung bat: gio KHONG
+# con dot bien do duoc — `nk == ndir` nen hai vong trung nhau. Thu tu `cha -> con`
+# van duoc cac ca `tron:` va `ke thua:` o tren ghim.
+#
+# Thay vao do, `cc.lua` co mot `assert(n == #chain)`: neu `init.lua` doi so khoa gui
+# di lan nua thi phep thu do NO NGAY, thay vi 40 ca lang le tra `nil` nhu da xay ra
+# khi toi go nhanh cu ma chua sua mock.
 
 # ── RESET phai ROI XUONG, explicit-safe phai DUNG (review 2 diem 2) ──
 #

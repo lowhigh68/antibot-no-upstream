@@ -2854,5 +2854,37 @@ else
     end
 end
 
+-- ── `fim_config_active`: MOT tien to khoa, khong phai hai ─────────────────
+--
+-- Tien to cu `waf:fimchg:` go 12-10-2026 sau khi do `--scan` = 0 tren CA 6 MAY.
+-- Phep kiem nay o day vi ca HAI bo test hanh vi (`fim_test` muc 30,
+-- `policy_test`) KHONG bat duoc dot bien `nk = ns * 2`: mock cua chung dem
+-- `ngx.null` cho moi chi so vuot `#chain`, nen xin THEM khoa la vo hinh.
+--
+-- Hau qua cua dot bien do la im lang nhung that: moi request di qua tang nay se
+-- `MGET` GAP DOI so khoa can thiet tren HOT PATH — dung cai chi phi ma ban go
+-- nay ton tai de loai bo. Mot phep kiem CAU TRUC la cho duy nhat bat duoc.
+do
+    local src = slurp(SRC .. "waf/init.lua") or ""
+    local nk = src:match("\n%s*nk%s*=%s*ns%s*%*%s*2\n")
+    if nk then
+        bad("  SAI  `waf/init.lua` dat `nk = ns * 2` — xin GAP DOI so khoa `MGET`\n" ..
+            "       tren hot path, nhung chi con MOT tien to (`waf:fimcfg:`).\n" ..
+            "       Khong bo test hanh vi nao bat duoc dieu nay: mock cua chung\n" ..
+            "       tra `ngx.null` cho chi so vuot `#chain`.\n")
+    else
+        pass = pass + 1
+        io.write("  OK   `fim_config_active` xin DUNG `ns` khoa, mot tien to\n")
+    end
+    -- Va tien to cu khong duoc quay lai duoi dang chuoi ghep khoa.
+    if src:match('"waf:fimchg:"') then
+        bad("  SAI  `waf/init.lua` lai ghep khoa `waf:fimchg:` — tien to do da go\n" ..
+            "       12-10 sau khi do 0 khoa tren ca 6 may.\n")
+    else
+        pass = pass + 1
+        io.write("  OK   khong con ghep khoa tien to cu `waf:fimchg:`\n")
+    end
+end
+
 io.write(string.format("\n%d qua, %d hong\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

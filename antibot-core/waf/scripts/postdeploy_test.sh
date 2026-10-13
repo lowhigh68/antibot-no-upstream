@@ -20,7 +20,8 @@ export LC_ALL=C
 # Do duoc 10-10 tren may nguoi dung: bo nay mat 142 GIAY (`fim_test` chi 27s),
 # va no tro thanh bo cham nhat ca `run.sh`. Nguyen nhan: no chay
 # `postdeploy.sh` NAM lan, moi lan script do goi `redis-cli --scan` NAM lan
-# (`waf:fimcfg:*` bon lan + `waf:fimchg:*` mot lan) = 25 luot quet TOAN BO
+# (`waf:fimcfg:*` bon lan + `waf:fimchg:*` mot lan; tu 12-10 chi con BON lan vi
+# tien to cu da go, nen con 20 luot) = 25 luot quet TOAN BO
 # keyspace Redis that. Tren may dev khong co Redis nen moi luot tra ngay va
 # phep do o day chi ra 3 giay — dung ho loi `feedback_measure_before_conclude`:
 # do mot moi truong roi phat bieu ve moi truong khac.

@@ -1061,24 +1061,29 @@ do
     end
     -- KE THUA: `chain` la mang gia tri theo THU TU KHOA — `chain[1]` la thu muc cua
     -- request, phan tu sau la to tien cang xa. `false` nghia la khong co khoa.
-    -- `chain` cap theo CHI SO (1 = thu muc cua request, cang lon cang xa goc). Tu
-    -- 02-10 ben doc gui `ns*2` khoa trong MOT `MGET` — `ns` khoa `fimcfg:` roi `ns`
-    -- khoa `fimchg:` (dang cu, giai doan di tru) — nen chi so thang chi phu tien to
-    -- MOI. Do la dung cho moi ca ke thua.
+    -- `chain` cap theo CHI SO (1 = thu muc cua request, cang lon cang xa goc). Ben
+    -- doc gui DUNG `ns` khoa `fimcfg:` trong mot `MGET` (tien to cu `fimchg:` go
+    -- 12-10), nen chi so anh xa 1-1 sang khoa — khong con phep chia doi mang.
     --
-    -- `chain_old` cap tien to CU: `chain_old[i]` ung voi khoa thu `ns + i`. Can no de
-    -- kiem nhanh di tru, thu se CHAY TREN PRODUCTION tuan nay.
-    local function with_chain(chain, fn, chain_old)
+    -- Tham so `chain_old` (cap tien to cu) da go cung luc: khong con nua sau de cap.
+    local function with_chain(chain, fn)
         pool.safe_mget = function(keys, n)
             local out = {}
-            -- `n` la TONG; nua dau la tien to moi, nua sau la tien to cu.
-            local half = n / 2
+            -- `n` khoa, MOT tien to (`fimcfg:`), xep con -> cha. Tien to cu da go
+            -- 12-10 nen KHONG con phep chia doi mang.
+            --
+            -- Ban truoc hardcode `half = n / 2` de mo phong hai tien to. Phai sua
+            -- CUNG LUC voi `init.lua`: neu giu lai, mock se chi nap `chain[i]` cho
+            -- nua dau va `ngx.null` cho nua sau, tuc MOI ca ke thua am tham doc sai
+            -- khoa — test van chay, van PASS/FAIL theo mot luat KHAC luat that.
+            -- Dung ho loi `feedback_contract_emulation`: mo phong lech khoi ma that.
+            --
+            -- KHONG `assert(n == #chain)`: `n` la so TANG cua URI ma `init.lua` yeu
+            -- cau, con `#chain` la do dai mang ca test truyen vao — mot `chain`
+            -- NGAN hon `n` la hop le (to tien xa hon khong co khoa) va phai thanh
+            -- `ngx.null`. Dat `assert` do lam 25 ca do oan trong chinh lan sua nay.
             for i = 1, n do
-                if i <= half then
-                    out[i] = chain[i] or ngx.null
-                else
-                    out[i] = (chain_old and chain_old[i - half]) or ngx.null
-                end
+                out[i] = chain[i] or ngx.null
             end
             return out
         end
@@ -1136,7 +1141,7 @@ do
     -- VAN khong phu duoc `uploads/a.jpg` vi manifest chi liet ke duoi PHP).
     --
     -- `chain[1]` = thu muc CUA REQUEST, phan tu sau la to tien cang xa.
-    local function chain_for(chain, uri, chain_old)
+    local function chain_for(chain, uri)
         local got
         with_chain(chain, function()
             local ctx = {}
@@ -1154,7 +1159,7 @@ do
                     got = ctx.waf_hits[i].matched
                 end
             end
-        end, chain_old)
+        end)
         return got
     end
     -- To tien bat, thu muc cua request KHONG co khoa -> VAN phai bao.
@@ -1202,31 +1207,22 @@ do
     -- Tat o CHINH thu muc cua request cung phai co hieu luc (khong chi khi ke thua).
     eq("truc: `-@all` mot minh -> khong bao gi",
        chain_for({ "-@all" }, "/uploads/a.jpg"), nil)
-    -- ── GIAI DOAN DI TRU `fimchg:` -> `fimcfg:` (02-10) ──────────────
+    -- ── GIAI DOAN DI TRU `fimchg:` -> `fimcfg:` — DA KET THUC 12-10 ──
     --
-    -- Khoa doi tien to vi no mang TRANG THAI DANG TON TAI, khong phai su kien "vua
-    -- doi". Ben doc gui CA HAI tien to trong MOT `MGET` (`ns` khoa moi + `ns` khoa
-    -- cu), nen khoa cu con song het TTL van duoc phat hien.
+    -- BAY ca `di tru:` o day da duoc GO cung voi nhanh ma chung ghim, dung nhu chu
+    -- thich cu dan: "HAN CHOT 09-10-2026: bo nhanh cu, va khi do bo ca cac ca duoi".
     --
-    -- Nhanh nay SE CHAY TREN PRODUCTION tuan nay, nen phai co test.
-    -- HAN CHOT 09-10-2026: bo nhanh cu, va khi do bo ca cac ca duoi.
-    eq("di tru: CHI co khoa CU -> van bao",
-       chain_for({ false }, "/uploads/a.jpg", { "ext:jpg" }), "handler_ext")
-    eq("di tru: khoa CU o TO TIEN -> van ke thua",
-       chain_for({ false, false }, "/a/b.jpg", { false, "ext:jpg" }), "handler_ext")
-    -- Khoa MOI thang khi ca hai ton tai: vong merge duyet nguoc nen nua dau (moi)
-    -- duoc ap SAU nua sau (cu).
-    eq("di tru: khoa MOI thang khoa CU (moi TAT, cu BAT)",
-       chain_for({ "rm:jpg" }, "/uploads/a.jpg", { "ext:jpg" }), nil)
-    eq("di tru: khoa MOI thang khoa CU (moi BAT, cu TAT)",
-       chain_for({ "ext:jpg" }, "/uploads/a.jpg", { "rm:jpg" }), "handler_ext")
-    -- `@phpini` o khoa CU, o CHINH thu muc cua request: phai nhan. Ban dau toi chi
-    -- xet `i == 1` nen vi tri `ndir + 1` (thu muc cua request, tien to CU) bi coi la
-    -- ke thua va bi loai OAN.
-    eq("di tru: `@phpini` o khoa CU cua CHINH thu muc -> nhan",
-       chain_for({ false }, "/uploads/a.php", { "@phpini" }), "autoload_phpini")
-    eq("di tru: `@phpini` o khoa CU cua TO TIEN -> KHONG ke thua",
-       chain_for({ false, false }, "/a/b.php", { false, "@phpini" }), nil)
+    -- Go test cung luc voi nhanh la CO Y, khong phai bo sot: cac ca do goi
+    -- `chain_for(..., {<khoa cu>})` tuc tham so thu tu — no mo phong nua sau cua
+    -- mang `MGET`. Khi `init.lua` chi con gui `ns` khoa thi nua sau khong ton tai,
+    -- nen giu lai chung se la test kiem mot duong ma KHONG CO TRONG MA — tu PASS
+    -- bang chinh mo phong cua no, dung ho loi `feedback_contract_emulation`.
+    --
+    -- Dieu kien go (do 12-10, lenh co `PONG` + `cmdstat_auth` + `grep -c '^waf:'`):
+    -- `--scan 'waf:fimchg:*'` = **0 tren ca 6 may**. Xem `project_shadow_het_han`.
+    --
+    -- Cac ca `ke thua:` duoi day KHONG lien quan di tru — chung ghim phep ke thua
+    -- theo chuoi thu muc, va GIU NGUYEN.
     eq("ke thua: `@phpini` o CHA KHONG ke thua",
        chain_for({ false, "@phpini" }, "/uploads/a.php"), nil)
     eq("ke thua: `@phpini` o CHINH thu muc thi co",

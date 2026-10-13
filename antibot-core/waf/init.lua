@@ -644,14 +644,25 @@ local function fim_config_active(uri, rt)
     -- nhieu thu muc VUA DOI cau hinh" va "co bao nhieu thu muc DANG co cau hinh
     -- nguy hiem" — va do la dieu nguoi dung bat 01-10.
     --
-    -- Doc CA HAI tien to trong CUNG mot `MGET` chu khong hai lan: khoa `fimchg:` cu
-    -- con song het TTL 7 ngay, va bo doc chung ngay thi 12 thu muc da danh dau MAT
-    -- phat hien cho tới lot `fim.sh` tiep theo. Chuoi moi xep TRUOC chuoi cu, va
-    -- vong merge duyet NGUOC nen khoa MOI duoc ap SAU — tuc khoa moi thang khi ca
-    -- hai cung ton tai.
+    -- TIEN TO CU `fimchg:` DA GO (12-10-2026), nen `nk = ns` chu khong `ns * 2`.
     --
-    -- HAN CHOT 09-10-2026 (7 ngay tu 02-10): bo nhanh `fimchg:`, va khi do `nk`
-    -- tro lai mot nua.
+    -- Ban truoc doc CA HAI tien to trong cung mot `MGET`, vi khoa cu con song het
+    -- TTL 7 ngay va bo doc chung ngay thi nhung thu muc da danh dau MAT phat hien
+    -- cho tới lot `fim.sh` tiep theo.
+    --
+    -- Da do tren CA 6 MAY 12-10: `--scan 'waf:fimchg:*'` = **0** khap fleet. Phep
+    -- do nay phai lam DUNG moi tin duoc — lan truoc cung ngay no tra `0` tren 6/6
+    -- trong khi `redis-cli` chay KHONG xac thuc (`NOAUTH`), tuc "bi tu choi" chu
+    -- khong phai "khong co khoa"; bang chung no rac la `fimnew:` cung ra 0 o 5/6
+    -- may du khoa do dang duoc ghi. Lan do that co `PONG` + `cmdstat_auth` + dem
+    -- bang `grep -c '^waf:'` de dong loi khong hoa thanh khoa.
+    --
+    -- 186-126 la may duy nhat con 15 khoa (luc 11-10), tat ca la `cgi-bin/` cung
+    -- MOT TTL — mot lot quet ghi ~04-10, tuc SAU ngay doi ten. Chung MO COI: co
+    -- che tu don (`fim.sh` ~968) dung `comm -23` giua `$STATE/statekeys.<tier>.txt`
+    -- va tap muon, nen no CHI xoa duoc khoa CO trong statekeys — 15 khoa do khong
+    -- co trong do (`statekeys.full.txt` chi mang `fimcfg:21`, `fimchg:0`). TTL 7
+    -- ngay da tu ket thuc chung ~11-10 17:00.
     local keys, nk, ndir = nil, 0, 0
     -- `depth_cut`: co tang NAO bi bo khong. Phai o NGOAI `do` block de nhan tra ve
     -- doc duoc — mot URI dai bat thuong khong duoc im lang.
@@ -702,8 +713,7 @@ local function fim_config_active(uri, rt)
             ndir = ns
             keys = {}
             for i = 1, ns do keys[i] = "waf:fimcfg:" .. root .. segs[i] end
-            for i = 1, ns do keys[ns + i] = "waf:fimchg:" .. root .. segs[i] end
-            nk = ns * 2
+            nk = ns
         end
     end
     if not keys then return nil end
@@ -748,29 +758,31 @@ local function fim_config_active(uri, rt)
     end
 
     local h, t, flag = nil, nil, nil
-    -- `keys` xep `ns` khoa MOI (con -> cha) roi `ns` khoa CU (con -> cha). Ban truoc
-    -- duyet `i = nk, 1, -1` tren CA mang, nen thu tu ap thuc te la
-    --     cu-cha -> cu-con -> moi-cha -> moi-con
-    -- KHONG phai thu tu Apache `cha -> con`. Do duoc 03-10 bang chinh `init.lua`:
+    -- `keys` gio chi xep `ns` khoa `fimcfg:` (con -> cha), va vong duyet NGUOC nen
+    -- thu tu ap la `cha -> con` — DUNG thu tu Apache doc cau hinh.
+    --
+    -- ── VI SAO NHANH DU PHONG `vals[ndir + i]` DA BIEN MAT ───────────
+    --
+    -- Ban truoc xep `ns` khoa MOI roi `ns` khoa CU trong cung mot `MGET`, va moi
+    -- tang chon MOT value (moi neu co, nguoc lai cu). Khi go tien to cu thi nua
+    -- sau cua mang KHONG CON, nen doc `vals[ndir + i]` luon tra `nil` — phai go
+    -- cung luc, khong de lai lam "luoi an toan": no khong con luoi nao ca.
+    --
+    -- Lich su de lai o day vi no la lo THAT, do duoc 03-10 bang chinh `init.lua`:
+    -- ban dau duyet `i = nk, 1, -1` tren CA mang nen thu tu thuc la
+    -- `cu-cha -> cu-con -> moi-cha -> moi-con`, KHONG phai `cha -> con`:
     --
     --   FN: NEW=[con rong, cha v2,h-:jpg]  OLD=[con ext:jpg, cha rong]
     --       -> `nil`, dung phai `handler_ext` (Apache lay con, va con CU bat .jpg)
     --   FP: NEW=[con v2,@php]  OLD=[con ext:jpg]  cung mot thu muc
     --       -> `handler_ext`, dung phai `nil` (snapshot MOI khong con .jpg)
     --
-    -- Hai loi khac nhau: cai dau la THU TU TANG, cai sau la hai snapshot cua CUNG mot
-    -- thu muc duoc cong lai. Marker `v2` chi chon GRAMMAR cho tung value, no khong lam
-    -- khoa moi THAY THE khoa cu.
-    --
-    -- Nay: moi tang chon MOT value (moi neu co, nguoc lai cu), roi duyet tu CHA xuong
-    -- CON. Van mot `MGET` — chi doi cach ghep cap truoc khi reducer nhan token.
+    -- Hai loi khac nhau: cai dau la THU TU TANG, cai sau la hai snapshot cua CUNG
+    -- mot thu muc duoc cong lai. Ghi lai de khong ai dung lai loi ghep hai nguon
+    -- snapshot vao mot `MGET` roi duyet phang.
     for i = ndir, 1, -1 do
         local v = vals[i]
         if v == ngx.null or v == "" then v = nil end
-        if not v then
-            local o = vals[ndir + i]
-            if o ~= ngx.null and o ~= "" then v = o end
-        end
         if v then
             -- ── MOC PHIEN BAN TRONG GIA TRI ──────────────────────────
             --
@@ -782,9 +794,12 @@ local function fim_config_active(uri, rt)
             -- Nay `fim.sh` ghi `v2|<token,...>`. Co moc -> CHI nhanh moi; khong co ->
             -- CHI nhanh di tru. Hai luat KHONG bao gio cham nhau.
             --
-            -- Khong dung mot TIEN TO KHOA thu ba (`waf:fimcfg:v2:`) vi `MGET` hien gui
-            -- `ns * 2` khoa; them mot tien to thanh `ns * 3` tren HOT PATH moi request.
-            -- Moc trong gia tri khong ton them khoa nao.
+            -- Khong dung mot TIEN TO KHOA thu ba (`waf:fimcfg:v2:`) vi no THEM khoa
+            -- vao `MGET` tren HOT PATH moi request: luc viet dong nay `MGET` gui
+            -- `ns * 2` khoa va tien to thu ba lam no thanh `ns * 3`. Nay con `ns`
+            -- (tien to cu da go 12-10), nen them se thanh `ns * 2` — re hon truoc
+            -- nhung van la GAP DOI so khoa de mang mot thong tin chi can MOT token
+            -- trong gia tri. Ket luan khong doi: moc trong gia tri khong ton khoa nao.
             --
             -- Moc la mot TOKEN `v2` o DAU danh sach, khong phai tien to `v2|`:
             -- `gen_resp` trong `fim.sh` tach dong `<toks>|<thu-muc>/` bang dau `|` DAU
