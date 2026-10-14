@@ -35,6 +35,7 @@
 local _M  = {}
 local ckreg = require "antibot.core.cookie_registry"
 local pool = require "antibot.core.redis_pool"
+local identity_mod = require "antibot.core.fingerprint.identity"
 
 -- Calibration từ observation thực tế:
 --   - Anonymous first visit:                bytes 0,    n 0,    r=0.0
@@ -96,7 +97,20 @@ function _M.compute(ctx)
     -- Phân biệt này là toàn bộ bản vá bên dưới.
     local r_own = r
 
-    local id = ctx.identity or ctx.ip or ""
+    -- Build the early client identity only at the point where richness needs
+    -- it: normalized UA + IP.  At this pipeline position full fingerprint has
+    -- not run yet, so the old `ctx.identity or ctx.ip` expression normally
+    -- chose raw IP and shared trust across every user behind a CGNAT/office
+    -- NAT.  Delaying this hash also keeps admission-rejected requests cheap.
+    --
+    -- Do not read the legacy `richness:max:<raw-ip>` key during migration: it
+    -- contains exactly the cross-client trust this change removes.  Those
+    -- keys expire naturally after RICHNESS_TTL.
+    local id = ctx.early_identity
+    if not id or id == "" then
+        id = identity_mod.build_from(ctx.ip or "", ctx.ua or "")
+        ctx.early_identity = id
+    end
     if id ~= "" then
         local key    = "richness:max:" .. id
         local stored = tonumber(pool.safe_get(key)) or 0

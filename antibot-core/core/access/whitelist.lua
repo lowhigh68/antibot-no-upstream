@@ -4,6 +4,7 @@ local identity_mod = require "antibot.core.fingerprint.identity"
 local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+local verified_human = require "antibot.core.access.verified_human"
 
 local ANTIBOT_PATHS = {
     "/antibot/verify",
@@ -104,18 +105,6 @@ local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     return device_id
 end
 
-local function extend_to_current_id(cookie, ip, ua, ttl)
-    if not ip or ip == "" or ip == "127.0.0.1" or ip == "::1" then return end
-    local current_id = identity_mod.build_from(ip, ua)
-    if not current_id or current_id == "" or current_id == cookie then return end
-    local already = pool.safe_get("verified:" .. current_id)
-    if already == "1" then return end
-    pool.safe_set("verified:" .. current_id, "1", ttl)
-    ngx.log(ngx.DEBUG,
-        "[whitelist] ip_change_extend cookie=", cookie:sub(1,8),
-        " new_id=", current_id:sub(1,8), " ip=", ip)
-end
-
 function _M.check(ctx)
     local uri = ngx.var.uri or "/"
     local ip  = ctx.ip or ""
@@ -157,21 +146,13 @@ function _M.check(ctx)
     -- 5. Cookie-based verified session — PRIMARY, IP-independent.
     -- Sliding window TTL renewal.
     local cookie = ngx.var.cookie_antibot_fp
-    if not ua_is_bot and cookie and cookie ~= "" then
-        local verified = pool.safe_get("verified:" .. cookie)
-        if verified == "1" then
-            ctx.verified = true
-            ctx.identity = cookie
-            ctx.fp_light = cookie
-
-            pool.safe_set("verified:" .. cookie, "1", verified_ttl)
-            pool.safe_set("beacon:" .. cookie, "1", 600)
-            pcall(extend_to_current_id, cookie, ip, ua, verified_ttl)
-
-            ngx.log(ngx.DEBUG, "[whitelist] cookie_verified id=",
-                    cookie:sub(1,8), " ip=", ip)
-            return true, "cookie_verified"
-        end
+    local cookie_verified, cookie_id = verified_human.check_cookie(ctx, {
+        renew = true, mark_beacon = true, extend = true,
+    })
+    if cookie_verified then
+        ngx.log(ngx.DEBUG, "[whitelist] cookie_verified id=",
+                cookie_id:sub(1,8), " ip=", ip)
+        return true, "cookie_verified"
     end
 
     -- 6. Device fingerprint — SECONDARY, /16-bound (NOT IP-independent).
