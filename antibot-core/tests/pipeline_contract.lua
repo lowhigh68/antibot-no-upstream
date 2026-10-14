@@ -1,0 +1,330 @@
+-- Contract test cho root orchestration (`antibot-core/init.lua`).
+-- Tat ca dependency duoc thay bang spy nho de ghim thu tu admission/WAF,
+-- trust fast-path, capacity slot va log-phase release.
+
+local pass, fail = 0, 0
+
+local function ok(cond, name)
+    if cond then pass = pass + 1 else
+        fail = fail + 1
+        io.stderr:write("FAIL: ", name, "\n")
+    end
+end
+
+local function eq(got, want, name)
+    ok(got == want, name .. " (got=" .. tostring(got)
+        .. " want=" .. tostring(want) .. ")")
+end
+
+local scenario, events, counts, worker_id
+local function event(name) events[#events + 1] = name end
+local function event_count(name)
+    local n = 0
+    for i = 1, #events do if events[i] == name then n = n + 1 end end
+    return n
+end
+local function event_pos(name)
+    for i = 1, #events do if events[i] == name then return i end end
+end
+local function before(a, b, name)
+    local pa, pb = event_pos(a), event_pos(b)
+    ok(pa ~= nil and pb ~= nil and pa < pb, name)
+end
+local function exit_for(name) return scenario.exit_at == name end
+local function layer(name, method, hook)
+    local t = {}
+    t[method or "run"] = function(ctx)
+        event(name)
+        if hook then hook(ctx) end
+        return true, exit_for(name)
+    end
+    return t
+end
+
+-- Root dependencies. Loading init.lua below binds only these spies, never
+-- Redis/DNS/filesystem.
+package.loaded["antibot.core.ctx"] = layer("ctx.init", "init", function(ctx)
+    ctx.ip = "203.0.113.10"
+    ctx.ua = ngx.var.http_user_agent or ""
+    ctx.req = { uri = ngx.var.uri or "/", host = ngx.var.host or "example.test" }
+end)
+package.loaded["antibot.core.req_classifier"] = {
+    run_fast = function(ctx)
+        event("classifier.fast")
+        ctx.req_class = scenario.class or "navigation"
+        ctx.admission_group = scenario.group
+            or (ctx.req_class == "resource" and "resource" or "dynamic")
+        return true, false
+    end,
+    run = function() event("classifier.full"); return true, false end,
+}
+package.loaded["antibot.core.proxy_origin"] = layer("proxy", "run")
+package.loaded["antibot.core.session_richness"] = layer("richness", "run")
+package.loaded["antibot.core.iprep"] = layer("iprep", "check")
+package.loaded["antibot.core.fingerprint.asn"] = layer("asn", "run")
+package.loaded["antibot.core.fingerprint.device_classifier"] = layer("device", "run")
+package.loaded["antibot.core.access"] = {
+    run = function(ctx)
+        event("access")
+        if scenario.whitelist then
+            ctx.whitelisted = true
+            ctx.action = "allow"
+            ctx.action_reason = "ip_whitelist"
+            return true, true
+        end
+        return true, false
+    end,
+}
+package.loaded["antibot.core.fingerprint"] = layer(
+    "fingerprint", "run", function(ctx)
+        ctx.identity = ctx.identity or "identity-normal"
+        ctx.fp_light = ctx.fp_light or ctx.identity
+    end)
+package.loaded["antibot.transport"] = layer("transport", "run")
+package.loaded["antibot.l7"] = layer("l7", "run")
+package.loaded["antibot.detection"] = layer("detection", "run")
+package.loaded["antibot.intelligence"] = layer("intelligence", "run")
+package.loaded["antibot.enforcement"] = layer("enforcement", "run", function(ctx)
+    if scenario.exit_at == "enforcement" then
+        ctx.action = "block"
+        ctx.action_reason = "test_block"
+    end
+end)
+
+package.loaded["antibot.l7.admission"] = layer("admission", "run")
+package.loaded["antibot.l7.circuit_breaker"] = {
+    before = function() event("circuit.before"); return true, exit_for("circuit.before") end,
+    after = function() event("circuit.after") end,
+}
+package.loaded["antibot.l7.surge_guard"] = {
+    before = function() event("surge.before"); return true, exit_for("surge.before") end,
+    admit = function(ctx)
+        event("surge.admit")
+        if ctx.admission_group ~= "dynamic" or ngx.is_subrequest then
+            return true, false
+        end
+        if not ctx.surge_admitted then
+            ctx.surge_admitted = true
+            counts.admitted = counts.admitted + 1
+        end
+        if scenario.exit_at == "surge.admit" then return false, true end
+        return true, false
+    end,
+    after = function(ctx)
+        event("surge.after")
+        if ctx.surge_admitted and not ctx.surge_released then
+            ctx.surge_released = true
+            counts.released = counts.released + 1
+        end
+    end,
+}
+
+package.loaded["antibot.detection.fleet"] = {
+    run = function() event("fleet.run"); return true, false end,
+    aggregate = function() event("fleet.aggregate") end,
+    start_timer = function() counts.fleet_timer = counts.fleet_timer + 1 end,
+}
+package.loaded["antibot.detection.fleet.check_block"] = layer("fleet.block", "run")
+package.loaded["antibot.l7.ban.ip_ban_check"] = layer("ipban", "run")
+package.loaded["antibot.detection.ip_tour"] = layer("iptour", "run")
+package.loaded["antibot.l7.expensive_filter_guard"] = layer("xfilter", "run")
+package.loaded["antibot.detection.bot.lite_verify"] = layer("bot.lite", "run")
+package.loaded["antibot.l7.rate.res_ip_counter"] = layer("res.counter", "run")
+package.loaded["antibot.async.risk_update"] = {
+    run = function() counts.risk_calls = counts.risk_calls + 1 end,
+}
+package.loaded["antibot.async.intel_reporter"] = {
+    report = function() counts.intel_reports = counts.intel_reports + 1 end,
+}
+package.loaded["antibot.async.logger"] = { run = function() event("logger") end }
+package.loaded["antibot.async.waf_logger"] = {
+    run = function() event("waf.logger") end,
+    run_body = function() event("waf.bodylog") end,
+    ensure = function() counts.waf_ensure = counts.waf_ensure + 1 end,
+}
+package.loaded["antibot.core.cookie_registry"] = {
+    learn = function() event("cookie.learn") end,
+}
+package.loaded["antibot.async.memory_guard"] = {
+    start = function() counts.memory_starts = counts.memory_starts + 1 end,
+}
+package.loaded["antibot.core.goodbot_seed"] = { run = function() end }
+package.loaded["antibot.waf.runtime_config"] = {}
+package.loaded["antibot.waf"] = {
+    run_pre = function() event("waf.pre"); return scenario.waf_block == true end,
+    run_log = function() event("waf.log") end,
+    configure = function() return true end,
+}
+package.loaded["antibot.core.redis_pool"] = {
+    safe_get = function(key)
+        event("redis.get:" .. key)
+        if scenario.verified_cookie and key == "verified:verified-cookie" then return "1" end
+        return nil
+    end,
+    safe_set = function(key) event("redis.set:" .. key); return true end,
+}
+
+-- `core.access.verified_human` — resolver cua duong fast-path (`init.lua:33`).
+--
+-- PHAI co spy: bo kiem nay `loadfile` truc tiep `init.lua`, KHONG dat
+-- `package.path` tro vao `antibot-core/`, nen MOI `require` trong root phai co
+-- mot entry o `package.loaded`. Thieu mot cai thi ca bo kiem NO ngay o
+-- `require` (`antibot.so not found`) chu khong fail mot assertion — tuc
+-- `run.sh` tra rc=1 ma KHONG in dong ket qua nao.
+--
+-- Do la cach lo 14-10 xuat hien: `init.lua` them `require` module moi va danh
+-- sach spy khong di theo. Mot bo kiem spy-based chi an toan khi hai danh sach
+-- do cung nhip — `contract_test.lua` ghim dieu nay bang mot assertion rieng.
+--
+-- Spy giu DUNG hop dong cua ban that: `check_cookie(ctx, opts)` tra
+-- `(true, cookie)` khi cookie da verified, `(false, reason)` khi khong; va dat
+-- `ctx.verified`/`identity`/`fp_light`. Nhanh `crawler_claim` duoc mo phong
+-- bang `scenario.bot_claim_ua` de root co the kiem rang mot UA tu nhan la
+-- crawler KHONG di qua cua nguoi.
+package.loaded["antibot.core.access.verified_human"] = {
+    check_cookie = function(ctx, opts)
+        event("verified_human.check")
+        -- Nhan dien claim crawler TU UA, dung nhu ban that (`ua_claim`): cac ca
+        -- test dat `scenario.ua = "Googlebot/2.1"` chu khong dat mot co rieng,
+        -- vi do la cach request that mang bang chung — UA la thu duy nhat co.
+        local ua = (ctx and ctx.ua) or ngx.var.http_user_agent or ""
+        if ua:lower():find("bot", 1, true)
+           or ua:lower():find("spider", 1, true)
+           or ua:lower():find("crawler", 1, true) then
+            if ctx then ctx.verified_human_rejected_bot_claim = true end
+            return false, "crawler_claim"
+        end
+        local cookie = ngx.var.cookie_antibot_fp
+        if not cookie or cookie == "" then return false, "missing" end
+        if not scenario.verified_cookie then return false, "unverified" end
+        ctx.verified = true
+        ctx.identity = cookie
+        ctx.fp_light = cookie
+        if opts and opts.renew then event("verified_human.renew") end
+        return true, cookie
+    end,
+}
+
+ngx = {
+    DEBUG = 0, INFO = 1, WARN = 2, ERR = 3, null = {},
+    ctx = {}, var = {}, header = {}, is_subrequest = false,
+    log = function() end,
+    exit = function(code) counts.exit_code = code; return code end,
+    time = function() return 1700000000 end,
+    worker = { id = function() return worker_id end },
+    timer = {
+        at = function(_, fn, ...)
+            counts.timer_at = counts.timer_at + 1
+            fn(false, ...)
+            return true
+        end,
+    },
+    resp = { get_headers = function() return {} end },
+}
+
+local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
+if src:sub(-1) ~= "/" then src = src .. "/" end
+local root = assert(loadfile(src .. "init.lua"))()
+
+local function reset(s)
+    scenario = s or {}
+    events = {}
+    counts = {
+        admitted = 0, released = 0, risk_calls = 0, intel_reports = 0,
+        timer_at = 0, memory_starts = 0, fleet_timer = 0, waf_ensure = 0,
+    }
+    worker_id = 1
+    ngx.ctx = {}
+    ngx.header = {}
+    ngx.is_subrequest = scenario.subrequest == true
+    ngx.var = {
+        uri = scenario.uri or "/index.php", host = "example.test",
+        server_name = "example.test", remote_addr = "203.0.113.10",
+        http_user_agent = scenario.ua or "Mozilla/5.0 Test",
+        cookie_antibot_fp = scenario.verified_cookie and "verified-cookie" or nil,
+    }
+end
+
+reset()
+root.run()
+eq(counts.admitted, 1, "dynamic thuong nhan dung mot slot")
+eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
+before("admission", "waf.pre", "admission chay truoc WAF")
+before("waf.pre", "access", "WAF chay truoc trust/access")
+before("access", "detection", "access chay truoc detection")
+before("enforcement", "surge.admit", "chi admit sau enforcement")
+
+reset({ whitelist = true })
+root.run()
+eq(ngx.ctx.antibot.action, "allow", "whitelist van allow")
+eq(counts.admitted, 1, "whitelist dynamic van nhan capacity slot")
+eq(event_count("surge.admit"), 1, "whitelist admit dung mot lan")
+eq(event_count("iptour"), 0, "whitelist khong chay post-access detection")
+eq(event_count("detection"), 0, "whitelist khong chay full detection")
+before("access", "surge.admit", "whitelist chi admit sau access verdict")
+
+reset({ verified_cookie = true })
+root.run()
+eq(counts.admitted, 1, "verified fast-path nhan mot slot")
+eq(event_count("fleet.aggregate"), 1, "verified fast-path van nuoi fleet")
+eq(event_count("classifier.full"), 0, "verified fast-path khong tra full classifier")
+eq(event_count("access"), 0, "verified fast-path khong lap access lookup")
+eq(event_count("detection"), 0, "verified fast-path khong chay detection")
+before("waf.pre", "fleet.aggregate", "WAF chay truoc verified resolver")
+before("fleet.aggregate", "surge.admit", "verified proof co truoc capacity admit")
+
+reset({ verified_cookie = true, ua = "Googlebot/2.1" })
+root.run()
+ok(ngx.ctx.antibot.verified ~= true,
+   "crawler claim khong duoc nhan verified-human cookie")
+eq(ngx.ctx.antibot.verified_human_rejected_bot_claim, true,
+   "crawler cookie rejection co provenance")
+eq(event_count("fleet.aggregate"), 0,
+   "crawler claim khong vao human fast-path fleet shortcut")
+eq(event_count("classifier.full"), 1,
+   "crawler claim quay ve full classifier")
+eq(event_count("detection"), 1,
+   "crawler claim di qua bot verification lane")
+eq(counts.admitted, 1,
+   "crawler claim chi nhan slot sau full enforcement")
+
+reset({ waf_block = true })
+root.run()
+eq(counts.admitted, 0, "WAF block khong nhan slot")
+eq(event_count("access"), 0, "WAF block khong vao trust pipeline")
+reset({ exit_at = "admission" })
+root.run()
+eq(counts.admitted, 0, "admission block khong nhan slot")
+eq(event_count("waf.pre"), 0, "admission block dung truoc WAF")
+reset({ exit_at = "enforcement" })
+root.run()
+eq(counts.admitted, 0, "enforcement block khong nhan slot")
+eq(event_count("surge.admit"), 0, "enforcement exit khong goi admit")
+
+reset({ class = "resource", group = "resource" })
+root.run()
+eq(counts.admitted, 0, "resource khong chiem dynamic slot")
+reset({ subrequest = true })
+root.run()
+eq(counts.admitted, 0, "subrequest khong chiem dynamic slot")
+
+reset()
+root.run()
+root.log()
+root.log()
+eq(counts.released, 1, "slot release dung mot lan du log bi goi lap")
+eq(counts.risk_calls, 2, "moi log invocation goi risk_update dung mot lan")
+eq(counts.timer_at, 0, "root khong tao timer boc ngoai risk_update")
+
+reset()
+worker_id = 1
+root.init_worker()
+eq(counts.memory_starts, 0, "worker khac 0 khong chay memory guard")
+reset()
+worker_id = 0
+root.init_worker()
+eq(counts.memory_starts, 1, "worker 0 chay memory guard dung mot lan")
+eq(counts.fleet_timer, 1, "worker 0 van khoi dong fleet timer")
+
+io.write(string.format("pipeline_contract: %d qua, %d hong\n", pass, fail))
+if fail > 0 then os.exit(1) end

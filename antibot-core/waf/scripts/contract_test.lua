@@ -2323,7 +2323,19 @@ do
         end
 
         append_steps("STEPS_ADMISSION")
-        local has_common = append_steps("STEPS_COMMON")
+
+        -- Root pipeline tach access ra khoi bang common de mot whitelist allow
+        -- co the `surge.admit()` truoc terminal return.  Thu tu ngu nghia van
+        -- la PRE -> access -> POST; contract phai mo hinh dung luong thuc thay
+        -- vi ep code quay lai mot bang duy nhat va tai tao lo capacity.
+        local has_pre = append_steps("STEPS_COMMON_PRE_ACCESS")
+        local has_access = ini:find("access_layer%.run%(ctx%)") ~= nil
+        if has_access then
+            n = n + 1
+            order.access_layer = order.access_layer or n
+        end
+        local has_post = append_steps("STEPS_COMMON_POST_ACCESS")
+        local has_common = has_pre and has_access and has_post
 
         -- Cac bang sau COMMON: gan vi tri > moi buoc cua COMMON.
         local after = n
@@ -2341,7 +2353,7 @@ do
         end
 
         if not has_common then
-            bad("  SAI  khong trich duoc STEPS_COMMON tu init.lua\n")
+            bad("  SAI  khong trich duoc PRE -> access -> POST tu init.lua\n")
         else
             -- 3) canh gac: co -> { noi GHI (bien layer), cac noi DOC }
             -- 3) Canh gac: co -> { w = buoc GHI (bien layer trong STEPS_*),
@@ -2944,6 +2956,47 @@ do
     else
         pass = pass + 1
         io.write("  OK   khong con ghep khoa tien to cu `waf:fimchg:`\n")
+    end
+end
+
+-- ── `pipeline_contract` phai co spy cho MOI `require` cua root ───────────
+--
+-- `tests/pipeline_contract.lua` `loadfile` truc tiep `antibot-core/init.lua` va
+-- KHONG dat `package.path`, nen moi `require "antibot.*"` trong root phai co mot
+-- entry `package.loaded[...]`. Thieu MOT cai thi ca bo kiem NO ngay o `require`
+-- (`antibot.so not found`) chu khong fail mot assertion — `run.sh` tra rc=1
+-- nhung KHONG in dong ket qua nao, nen doc output se thay "thieu mot bo kiem"
+-- thay vi "mot bo kiem hong".
+--
+-- Do la dung ca 14-10: `init.lua` them `require
+-- "antibot.core.access.verified_human"` va danh sach spy khong di theo. Phep
+-- kiem nay bat lop loi do, khong phai mot ca cu the.
+do
+    local root_src = slurp(SRC .. "init.lua") or ""
+    local spy_src  = slurp(SRC .. "tests/pipeline_contract.lua") or ""
+    if root_src == "" or spy_src == "" then
+        bad("  SAI  khong doc duoc `init.lua` hoac `tests/pipeline_contract.lua`\n")
+    else
+        local missing = {}
+        -- Chi xet `require` o CAP MODULE (dau dong, gan vao local): nhung
+        -- `require` nam trong than ham chay lazy va co the khong bao gio cham
+        -- trong bo kiem.
+        for mod in root_src:gmatch('\n%s*local%s+[%w_]+%s*=%s*require%s*"(antibot%.[%w_%.]+)"') do
+            if not spy_src:find('package.loaded["' .. mod .. '"]', 1, true) then
+                missing[#missing + 1] = mod
+            end
+        end
+        if #missing > 0 then
+            bad(string.format(
+                "  SAI  `pipeline_contract.lua` thieu spy cho %d module ma\n" ..
+                "       `init.lua` require o cap module:\n", #missing)
+                .. "         " .. table.concat(missing, "\n         ") .. "\n" ..
+                "       Thieu spy = bo kiem NO o `require`, KHONG fail assertion:\n" ..
+                "       `run.sh` rc=1 ma khong in dong ket qua nao.\n")
+        else
+            pass = pass + 1
+            io.write("  OK   `pipeline_contract` co spy cho moi `require` cua root\n")
+        end
     end
 end
 

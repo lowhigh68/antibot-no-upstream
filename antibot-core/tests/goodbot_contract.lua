@@ -1,0 +1,166 @@
+-- Behavioral contract for DNS-forward cache semantics.
+
+local pass, fail = 0, 0
+local function ok(v, n)
+    if v then pass = pass + 1 else fail = fail + 1; io.stderr:write("FAIL: ", n, "\n") end
+end
+local function eq(g, w, n)
+    ok(g == w, n .. " (got=" .. tostring(g) .. " want=" .. tostring(w) .. ")")
+end
+
+local cache, writes, query_mode, query_calls
+package.loaded["antibot.core.config"] = { ttl = { dns = 300 } }
+package.loaded["antibot.core.redis_pool"] = {
+    safe_get = function(k) return cache[k] end,
+    safe_set = function(k, v, ttl)
+        cache[k] = v
+        writes[#writes + 1] = { key = k, value = v, ttl = ttl }
+        return true
+    end,
+}
+package.loaded["resty.dns.resolver"] = {
+    new = function()
+        if query_mode == "init_fail" then return nil, "resolver init failed" end
+        local r = { TYPE_A = 1, TYPE_AAAA = 28 }
+        function r:query(_, opt)
+            query_calls = query_calls + 1
+            if query_mode == "timeout" then return nil, "timeout" end
+            if query_mode == "no_records" then return { errcode = 3 }, nil end
+            if query_mode == "success" and opt.qtype == self.TYPE_A then
+                return { { type = self.TYPE_A, address = "203.0.113.10" } }, nil
+            end
+            return { errcode = 3 }, nil
+        end
+        return r
+    end,
+}
+
+ngx = {
+    INFO = 1, ERR = 3,
+    log = function() end,
+}
+
+local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
+if src:sub(-1) ~= "/" then src = src .. "/" end
+local dns = assert(loadfile(src .. "detection/bot/dns_forward.lua"))()
+
+local function reset(mode)
+    cache, writes, query_calls, query_mode = {}, {}, 0, mode
+end
+local function ctx()
+    return {
+        dns_rev_valid = true,
+        dns_rev = "crawler.example.test",
+        ip = "203.0.113.10",
+        good_bot_name = "fixturebot",
+    }
+end
+
+reset("timeout")
+local a = ctx(); dns.run(a)
+eq(cache["dns_fwd:crawler.example.test"], "TIMEOUT", "timeout co token cache rieng")
+eq(writes[1].ttl, 10, "timeout cache ngan")
+eq(a.dns_fwd_timeout, true, "request dau giu timeout state")
+eq(a.good_bot_verified, nil, "timeout khong ket luan fake")
+local calls = query_calls
+query_mode = "success"
+local b = ctx(); dns.run(b)
+eq(query_calls, calls, "cached timeout khong lap DNS query")
+eq(b.dns_fwd_timeout, true, "cached timeout van la timeout")
+eq(b.good_bot_verified, nil, "cached timeout khong doi thanh fake")
+
+reset("init_fail")
+local c = ctx(); dns.run(c)
+eq(cache["dns_fwd:crawler.example.test"], "TEMP", "resolver failure co token TEMP")
+eq(c.dns_fwd_degraded, true, "resolver failure dat degraded")
+eq(c.good_bot_verified, nil, "degraded khong ket luan fake")
+local d = ctx(); dns.run(d)
+eq(d.dns_fwd_degraded, true, "cached TEMP van degraded")
+eq(d.good_bot_verified, nil, "cached TEMP khong doi thanh fake")
+
+reset("no_records")
+local e = ctx(); dns.run(e)
+eq(cache["dns_fwd:crawler.example.test"], "NO_RECORDS",
+   "no-record cache has an unambiguous semantic token")
+eq(e.good_bot_verified, false, "no-record la verification mismatch")
+eq(e.bot_ua, "fake_good_bot", "no-record dat fake reason")
+local f = ctx(); dns.run(f)
+eq(f.good_bot_verified, false, "cached NO_RECORDS van mismatch")
+
+reset("success")
+cache["dns_fwd:crawler.example.test"] = "FAIL"
+local legacy = ctx(); dns.run(legacy)
+eq(legacy.dns_fwd_degraded, true, "legacy forward FAIL migrates as degraded")
+eq(cache["dns_fwd:crawler.example.test"], "TEMP",
+   "legacy forward FAIL is rewritten to short TEMP")
+eq(writes[#writes].ttl, 10, "legacy forward FAIL migration retries soon")
+
+reset("success")
+local g = ctx(); dns.run(g)
+eq(g.good_bot_verified, true, "forward IP match verifies bot")
+eq(g.bot_score, 0.0, "verified bot score zero")
+ok((cache["dns_fwd:crawler.example.test"] or ""):find("203.0.113.10", 1, true),
+   "success cache stores address")
+
+-- Reverse lookup uses the same semantic cache split. Infrastructure failures
+-- are short-lived and neutral; NXDOMAIN remains an authoritative negative.
+do
+    local rev_mode
+    cache, writes, query_calls = {}, {}, 0
+    package.loaded["antibot.core.redis_pool"] = {
+        safe_get = function(k) return cache[k] end,
+        safe_set = function(k, v, ttl)
+            cache[k] = v
+            writes[#writes + 1] = { key = k, value = v, ttl = ttl }
+            return true
+        end,
+    }
+    package.loaded["resty.dns.resolver"] = {
+        new = function()
+            if rev_mode == "init_fail" then return nil, "resolver init failed" end
+            local r = { TYPE_PTR = 12 }
+            function r:query()
+                query_calls = query_calls + 1
+                if rev_mode == "timeout" then return nil, "timeout" end
+                if rev_mode == "nxdomain" then return { errcode = 3 }, nil end
+                return { { type = self.TYPE_PTR, ptrdname = "crawler.example.test" } }
+            end
+            return r
+        end,
+    }
+    local rev = assert(loadfile(src .. "detection/bot/dns_reverse.lua"))()
+
+    rev_mode = "timeout"
+    local ra = { good_bot_claimed = true, ip = "203.0.113.10" }
+    rev.run(ra)
+    eq(cache["dns_ptr:203.0.113.10"], "TIMEOUT", "reverse timeout has own token")
+    eq(writes[#writes].ttl, 10, "reverse timeout cache is short")
+    eq(ra.dns_rev_timeout, true, "reverse timeout is neutral")
+
+    cache, writes, query_calls = {}, {}, 0
+    rev_mode = "init_fail"
+    local rb = { good_bot_claimed = true, ip = "203.0.113.11" }
+    rev.run(rb)
+    eq(cache["dns_ptr:203.0.113.11"], "TEMP", "reverse resolver failure is TEMP")
+    eq(writes[#writes].ttl, 10, "reverse TEMP cache is short")
+    eq(rb.dns_rev_degraded, true, "reverse TEMP sets degraded")
+
+    cache, writes, query_calls = {}, {}, 0
+    rev_mode = "nxdomain"
+    local rc = { good_bot_claimed = true, ip = "203.0.113.12" }
+    rev.run(rc)
+    eq(cache["dns_ptr:203.0.113.12"], "NXDOMAIN", "reverse NXDOMAIN is semantic")
+    eq(writes[#writes].ttl, 300, "reverse NXDOMAIN keeps normal negative TTL")
+    eq(rc.dns_rev_valid, false, "reverse NXDOMAIN is verification failure")
+
+    cache = { ["dns_ptr:203.0.113.13"] = "FAIL" }
+    writes, query_calls = {}, 0
+    rev_mode = "success"
+    local rd = { good_bot_claimed = true, ip = "203.0.113.13" }
+    rev.run(rd)
+    eq(rd.dns_rev_degraded, true, "legacy reverse FAIL migrates as degraded")
+    eq(query_calls, 0, "legacy reverse FAIL cache avoids immediate requery")
+end
+
+io.write(string.format("goodbot_contract: %d qua, %d hong\n", pass, fail))
+if fail > 0 then os.exit(1) end

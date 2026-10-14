@@ -113,6 +113,23 @@ echo
 echo "── l7 (admission + circuit breaker) ──────────────────"
 "$RESTY" "${ANTIBOT_SRC}l7/tests/l7_regression.lua" || rc=1
 
+# Root pipeline contract: unit test tung layer khong the bat duoc mot terminal
+# exit dat sai cho lam dynamic request ne `surge.admit()`. Bo nay spy dependency
+# va ghim order admission -> WAF -> access/detection -> late admit, ke ca
+# verified/whitelist fast-path va log-phase release.
+echo
+echo "-- root pipeline contract --------------------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
+
+echo "-- goodbot DNS/cache contract ---------------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
+
+echo "-- trust boundary contract -----------------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/trust_contract.lua" || rc=1
+
+echo "-- async/hot-path contract ------------------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/hot_path_contract.lua" || rc=1
+
 echo "── admin: duong ra bo dem L7 ──────────────────────────"
 "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
 
