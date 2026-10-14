@@ -30,7 +30,7 @@ local intel_reporter     = require "antibot.async.intel_reporter"
 local logger             = require "antibot.async.logger"
 local waf_layer          = require "antibot.waf"
 local waf_logger         = require "antibot.async.waf_logger"
-local pool               = require "antibot.core.redis_pool"
+local verified_human     = require "antibot.core.access.verified_human"
 
 -- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
 -- Chi dung local shared dict + IP ban; khong chay detection/Redis rate pipeline.
@@ -50,7 +50,11 @@ local STEPS_ADMISSION = {
     { layer = ip_ban_check,      fn = "run"           },
 }
 
-local STEPS_COMMON = {
+-- Phan common truoc access verdict.  `access_layer` khong nam trong danh sach
+-- nay vi mot ket qua allow/whitelist la terminal ve security pipeline, nhung
+-- KHONG terminal ve capacity accounting: request dynamic van sap di backend va
+-- phai qua `surge.admit()` dung mot lan.
+local STEPS_COMMON_PRE_ACCESS = {
     -- asn: resolve ctx.asn (mmdb lookup, local, cheap) BEFORE the fleet
     -- aggregator so fleet's good-crawler exemption (trusted.is_good_crawler)
     -- can read the ASN. Previously asn.run ran only in the fingerprint layer
@@ -86,7 +90,12 @@ local STEPS_COMMON = {
     -- Sets ctx.ext_rep ∈ [0,1]; fails open (ext_rep=0) if Central Redis down.
     { layer = iprep,             fn = "check"         },
     { layer = device_classifier, fn = "run"           },
-    { layer = access_layer,      fn = "run"           },
+}
+
+-- Chi chay khi access khong short-circuit.  Tach hai nua giu nguyen thu tu cu
+-- cho traffic thong thuong, dong thoi cho root orchestration co co hoi nhan
+-- capacity slot truoc khi tra ve o nhanh whitelist.
+local STEPS_COMMON_POST_ACCESS = {
     -- ip_tour: cross-domain shared-hosting tour detector. Runs AFTER
     -- access_layer so ctx.whitelisted is known (LAN/admin skip counting) and
     -- AFTER session_richness (trust gate). Sets ctx.ip_tour; engine floors it
@@ -125,10 +134,10 @@ local STEPS_RESOURCE_PRE = {
     -- trước khi fire resource_starved. Không phụ thuộc identity (resource
     -- skip fingerprint nên ctx.identity = nil). 1 INCR + 1 EXPIRE rẻ.
     { layer = res_ip_counter,     fn = "run" },
-    -- Lite bot verify TRƯỚC intelligence: chạy ua_check + asn lookup +
-    -- ASN match (cached, rẻ). Set good_bot_verified=true cho Googlebot/Bingbot
-    -- fetch image → engine bypass scoring → không bị kill_block FP. Skip
-    -- DNS reverse (đắt) — ASN match đủ tin vì RIR delegation chỉ cho IP owner.
+    -- Lite bot verify TRƯỚC intelligence: chạy ua_check + ASN lookup. ASN
+    -- dedicated có thể xác minh trực tiếp; AS15169/AS8075 shared-cloud chỉ dùng
+    -- positive cache từ một lần DNS đầy đủ trước, nếu chưa có thì chuyển full
+    -- lane. Nhờ vậy resource không tự cấp trust chỉ từ quyền sở hữu cloud ASN.
     { layer = bot_lite_verify,    fn = "run" },
 }
 
@@ -151,14 +160,8 @@ local function run_steps(steps, ctx)
 end
 
 local function check_verified_cookie(ctx)
-    local cookie = ngx.var.cookie_antibot_fp
-    if not cookie or cookie == "" then return false end
-
-    local verified = pool.safe_get("verified:" .. cookie)
-    if verified == "1" then
-        ctx.verified = true
-        ctx.identity = cookie
-        ctx.fp_light = cookie
+    local verified, cookie = verified_human.check_cookie(ctx)
+    if verified then
         -- Populate minimal ctx so fleet aggregator can record this hit as
         -- a verified observation (raises verified_count in the /24 bucket,
         -- which lowers cookie_vacuum → keeps real-user subnets below the
@@ -262,7 +265,20 @@ function _M.run()
     -- Full classifier co the doc body form-urlencoded de tim auth semantic.
     -- Chi request khong thoat verified moi tra chi phi nay.
     classifier.run(ctx)
-    if run_steps(STEPS_COMMON, ctx) then return end
+    if run_steps(STEPS_COMMON_PRE_ACCESS, ctx) then return end
+
+    -- `access_layer.run()` tra exit=true khi da co quyet dinh whitelist.  Neu
+    -- dat no trong `run_steps`, root tra ve ngay va dong `admit_dynamic()` phia
+    -- duoi vinh vien khong the chay.  Day la lo dem capacity, khong phai lo
+    -- security: whitelist van allow nhu cu, nhung gio dynamic backend work duoc
+    -- dem dung.  Surge dang shadow nen thay doi nay khong chan them request nao.
+    local _, access_exit = access_layer.run(ctx)
+    if access_exit == true then
+        admit_dynamic(ctx)
+        return
+    end
+
+    if run_steps(STEPS_COMMON_POST_ACCESS, ctx) then return end
 
     -- Short-circuit cho cả verified (PoW) và whitelisted (admin rule, LAN,
     -- loopback, url/ip whitelist…). Trước đây chỉ check verified → các
@@ -315,9 +331,10 @@ function _M.log()
     l7_circuit.after(ctx)
 
     if ctx.req_class ~= "resource" and ctx.identity then
-        ngx.timer.at(0, function()
-            risk_update.run(ctx)
-        end)
+        -- `risk_update.run()` tu defer Redis work qua timer.  Boc them mot
+        -- `ngx.timer.at(0)` o day tao hai timer lien tiep cho moi request ma
+        -- khong doi phase hay hanh vi.  Goi truc tiep de chi con mot timer.
+        risk_update.run(ctx)
         -- `adaptive_weight.run(ctx)` ĐÃ GỠ (2026-09-06). Chết hai lần:
         --   1. Chữ ký là `run(ctx, feedback)` và dòng đầu là
         --      `if not feedback then return end`. Chỗ gọi DUY NHẤT là dòng này,
@@ -353,7 +370,11 @@ end
 
 function _M.init_worker()
     local mem_guard = require "antibot.async.memory_guard"
-    mem_guard.start()
+    local worker0 = ngx.worker.id() == 0
+    -- Redis SCAN cleanup la cong viec cap instance, khong phai cap worker.
+    -- Chay tren moi worker nhan chi phi va delete race len N lan ma khong tang
+    -- do bao phu.  Worker 0 da la owner cua cac periodic fleet job ben duoi.
+    if worker0 then mem_guard.start() end
 
     -- Nap cau hinh runtime cua WAF V2.
     --
@@ -401,7 +422,7 @@ function _M.init_worker()
     -- PHẢI defer qua ngx.timer.at vì cosocket (Redis network) bị DISABLE
     -- trong init_worker_by_lua* context. Timer 0s = chạy ngay sau init_worker
     -- trong context cho phép cosocket.
-    if ngx.worker.id() == 0 then
+    if worker0 then
         -- Tạo sẵn waf.log để sự vắng mặt của nó có nghĩa duy nhất là "hỏng",
         -- không phải "chưa có luật nào bắn". KHÔNG defer: file I/O thường,
         -- không phải cosocket. Chạy ở đây nên mỗi `nginx -s reload` cũng dựng

@@ -415,7 +415,21 @@ want  "21 co CACH DOC"        'cot ip-miss quyet dinh'
 # `git ls-files -s` doc INDEX chu khong doc dia: tren Windows mode tren dia vo
 # nghia, con index la cai rsync mang di.
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
-    bad=$(git ls-files -s -- '*.sh' | awk '$1 != "100755" && $4 ~ /^antibot-core\// {print $4}')
+    # HAI co nay deu CAN, va thieu moi cai lam phep do chet theo mot kieu
+    # khac. `run.sh` chay tu `waf/scripts/` chu khong tu goc repo:
+    #
+    #   * `:/`          neo PATHSPEC vao goc repo. Thieu no thi
+    #                   `antibot-core/*.lua` khop 0 tep (khong co
+    #                   `waf/scripts/antibot-core/`), con `*.sh` chi thay 14
+    #                   tep trong chinh thu muc nay.
+    #   * `--full-name` buoc DUONG DAN IN RA theo goc repo. Thieu no git in
+    #                   `fim.sh` va `../../intelligence/...`, nen bo loc
+    #                   `$4 ~ /^antibot-core\//` khop 0 dong du pathspec da
+    #                   dung -> 15 tep .sh KHONG he duoc kiem mode.
+    #
+    # Do 14-10-2026: thieu `--full-name` thi `sh_in_core` = 0; co no thi = 15.
+    # Bo dem tu kiem ngay duoi la cai da bat ra loi nay.
+    bad=$(git ls-files --full-name -s -- ':/*.sh' | awk '$1 != "100755" && $4 ~ /^antibot-core\// {print $4}')
     if [ -z "$bad" ]; then
         pass=$((pass+1))
     else
@@ -427,12 +441,24 @@ if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; th
     # Kiem chinh phep do: neu lenh tren bi viet sai (vi du `$1` doi thanh `$2`)
     # thi no se khong bao gio tim thay gi va bao "qua" vinh vien. Mot tep .lua
     # BUOC phai o 100644, nen bo dem nay phai > 0.
-    nlua=$(git ls-files -s -- 'antibot-core/*.lua' | awk '$1 == "100644"' | wc -l)
+    nlua=$(git ls-files --full-name -s -- ':/antibot-core/*.lua' | awk '$1 == "100644"' | wc -l)
     if [ "${nlua:-0}" -gt 0 ]; then
         pass=$((pass+1))
     else
         fail=$((fail+1))
         printf 'HONG  %s\n' "phep do mode bi hong: khong thay .lua nao o 100644"
+    fi
+    # Bo dem tren chi chung minh `$1` doc duoc mode; no KHONG chung minh bo loc
+    # `$4 ~ /^antibot-core\//` con khop gi. Dung thieu `--full-name` da lam
+    # dung chuyen do: `$1` van dung, `$4` khop 0 dong, va phep kiem bit +x bao
+    # "qua" tren mot tap RONG. Nen dem rieng DAN SO cua phep do do.
+    nsh=$(git ls-files --full-name -s -- ':/*.sh' | awk '$4 ~ /^antibot-core\// {c++} END{print c+0}')
+    if [ "${nsh:-0}" -gt 0 ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        printf 'HONG  %s\n' "phep do bit +x chay tren tap RONG: khong thay .sh nao trong antibot-core/"
+        printf '      thieu --full-name hoac :/ -> duong dan in ra theo cwd\n'
     fi
 else
     printf 'BO QUA  khong o trong git -- khong kiem duoc mode\n'

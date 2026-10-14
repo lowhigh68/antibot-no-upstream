@@ -5,7 +5,7 @@ local trusted = require "antibot.detection.fleet.trusted"
 
 -- Aggregator — per-request Redis writes for fleet detection.
 --
--- For each non-trusted, non-IPv6 request, write 8 entries into a 5-MINUTE
+-- For each non-trusted, non-IPv6 request, write 7 entries into a 5-MINUTE
 -- bucket (BUCKET_SECS = 300 below; <bkt> = floor(now/300), NOT a minute index)
 -- scoped by the request's /24 — and a full mirror for the parent /16:
 --
@@ -15,7 +15,6 @@ local trusted = require "antibot.detection.fleet.trusted"
 --   fl:24:path:<cidr_24>:<bkt>  ZINCRBY 1 <path>  for top-3 path share
 --   fl:24:ver:<cidr_24>:<bkt>   INCR (verified only)
 --   fl:24:ck:<cidr_24>:<bkt>    INCR (any cookie present)
---   fl:24:uab:<cidr_24>:<bkt>   INCR (browser-token UA) — WRITTEN, NO READER
 --   fl:active:24:<bkt>          SADD <cidr_24>    analyzer scan-set
 --
 -- The fl:16:* mirror is a FULL parallel set, fingerprint HLL INCLUDED
@@ -98,28 +97,14 @@ local function path_hash(uri)
     return ngx.md5(p):sub(1, 10)
 end
 
-local function browser_ua(ua)
-    if not ua or ua == "" then return false end
-    -- Cheap signature: real browser UA must contain at least one of these
-    -- engine tokens. Headless scrapers using "python-requests" / "curl" /
-    -- "Go-http-client" do not — they get counted as non-browser, which
-    -- alone is enough signal for the other layers; we don't double-count.
-    return ua:find("Chrome/", 1, true)
-        or ua:find("Firefox/", 1, true)
-        or ua:find("Safari/", 1, true)
-        or ua:find("Edg/", 1, true)
-        or ua:find("OPR/", 1, true)
-end
-
 function _M.write(ctx)
     -- Trusted ASN bypass (performance — see trusted.lua)
     if trusted.is_trusted(ctx) then return end
 
-    -- Good search-engine crawler bypass (CORRECTNESS — prevent fleet from
-    -- /16-dyn-blocking Googlebot/Bingbot/CocCoc/Applebot, which are
-    -- structurally fleet-like: many IPs, few fingerprints, no cookies).
-    -- Gated by ASN + self-declared crawler UA (see trusted.is_good_crawler).
-    -- Meta is deliberately NOT exempt here.
+    -- Dedicated crawler-infrastructure bypass (CORRECTNESS — legitimate
+    -- distributed crawlers are structurally fleet-like). Shared-cloud Google
+    -- and Microsoft ASNs deliberately fail this local gate; once DNS has
+    -- verified an IP they use the `crawler:<ip>` mark immediately below.
     if trusted.is_good_crawler(ctx) then return end
 
     local ip = ctx.ip
@@ -162,7 +147,6 @@ function _M.write(ctx)
     local fp     = fp_hash(ctx.ua, ngx.var.http_accept_language, ngx.var.http_accept_encoding)
     local uri    = (ctx.req and ctx.req.uri) or ngx.var.uri or ""
     local ph     = path_hash(uri)
-    local is_browser = browser_ua(ctx.ua) and true or false
     local is_verified = ctx.verified and true or false
     local has_cookie = (ngx.var.http_cookie ~= nil and ngx.var.http_cookie ~= "") and true or false
 
@@ -172,7 +156,6 @@ function _M.write(ctx)
     local k_path = "fl:24:path:" .. cidr_24 .. ":" .. bucket
     local k_ver  = "fl:24:ver:"  .. cidr_24 .. ":" .. bucket
     local k_ck   = "fl:24:ck:"   .. cidr_24 .. ":" .. bucket
-    local k_uab  = "fl:24:uab:"  .. cidr_24 .. ":" .. bucket
     local k_act  = "fl:active:24:" .. bucket
 
     local k16_hit  = "fl:16:hit:"  .. cidr_16 .. ":" .. bucket
@@ -181,7 +164,6 @@ function _M.write(ctx)
     local k16_path = "fl:16:path:" .. cidr_16 .. ":" .. bucket
     local k16_ver  = "fl:16:ver:"  .. cidr_16 .. ":" .. bucket
     local k16_ck   = "fl:16:ck:"   .. cidr_16 .. ":" .. bucket
-    local k16_uab  = "fl:16:uab:"  .. cidr_16 .. ":" .. bucket
     local k16_act  = "fl:active:16:" .. bucket
 
     local _, err = pool.pipeline(function(red)
@@ -193,7 +175,6 @@ function _M.write(ctx)
         red:zremrangebyrank(k_path, 0, -1 - PATH_ZSET_CAP)
         if is_verified then red:incr(k_ver); red:expire(k_ver, BUCKET_TTL) end
         if has_cookie  then red:incr(k_ck);  red:expire(k_ck,  BUCKET_TTL) end
-        if is_browser  then red:incr(k_uab); red:expire(k_uab, BUCKET_TTL) end
         red:sadd(k_act, cidr_24); red:expire(k_act, BUCKET_TTL)
 
         -- /16 aggregation — full parallel set so analyzer can evaluate
@@ -205,7 +186,6 @@ function _M.write(ctx)
         red:zremrangebyrank(k16_path, 0, -1 - PATH_ZSET_CAP)
         if is_verified then red:incr(k16_ver); red:expire(k16_ver, BUCKET_TTL) end
         if has_cookie  then red:incr(k16_ck);  red:expire(k16_ck,  BUCKET_TTL) end
-        if is_browser  then red:incr(k16_uab); red:expire(k16_uab, BUCKET_TTL) end
         red:sadd(k16_act, cidr_16); red:expire(k16_act, BUCKET_TTL)
     end)
 
