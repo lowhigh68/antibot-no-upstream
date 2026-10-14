@@ -26,7 +26,31 @@ function _M.check_cookie(ctx, opts)
     opts = opts or {}
     local ua = (ctx and ctx.ua) or ngx.var.http_user_agent or ""
     if ua_claim.claims_good_bot(ua) then
-        if ctx then ctx.verified_human_rejected_bot_claim = true end
+        if ctx then
+            ctx.verified_human_rejected_bot_claim = true
+
+            -- HAI tinh trang KHAC NHAU, va chi cai thu hai la su kien an ninh:
+            --
+            --   claim           mot UA crawler goi vao lane nguoi. Googlebot
+            --                   binh thuong lam dieu nay moi request, nen dem
+            --                   no ra mot so TO va vo nghia.
+            --   cookie_rejected UA crawler DANG GIU mot ve `verified:` con
+            --                   hieu luc. Nghia la mot thu da qua PoW roi moi
+            --                   mang UA crawler — day moi la cai dang lo.
+            --
+            -- Chi doc Redis khi UA la crawler VA co cookie, nen hot path cua
+            -- nguoi that khong tra them chi phi nao. Doc nay KHONG doi phan
+            -- quyet: lane van bi tu choi nhu truoc, chi de lai bang chung.
+            local cookie = ngx.var.cookie_antibot_fp
+            if cookie and cookie ~= ""
+               and pool.safe_get("verified:" .. cookie) == "1" then
+                ctx.verified_human_bot_held_cookie = true
+                ngx.log(ngx.WARN,
+                    "[verified_human] crawler UA holds verified cookie id=",
+                    cookie:sub(1, 8), " ip=", tostring(ctx.ip or "?"),
+                    " ua=", ua)
+            end
+        end
         return false, "crawler_claim"
     end
 

@@ -55,7 +55,35 @@ do
     eq(reason, "crawler_claim", "crawler rejection has explicit reason")
     eq(crawler.verified_human_rejected_bot_claim, true,
        "crawler rejection provenance is retained")
-    eq(gets, before, "crawler gate runs before verified Redis lookup")
+
+    -- Cookie o scenario nay LA mot ve hop le (`verified:human-cookie` = "1"),
+    -- nen ca nay chinh la su kien an ninh dang dem: crawler giu ve that.
+    eq(crawler.verified_human_bot_held_cookie, true,
+       "crawler holding a live verified ticket is recorded separately")
+
+    -- Bat bien con lai sau khi them phep doc: khong co cookie thi KHONG cham
+    -- Redis. Hot path cua crawler thong thuong (Googlebot khong cookie) van
+    -- khong tra chi phi nao.
+    ngx.var.cookie_antibot_fp = nil
+    local nocookie_before = gets
+    local bare = { ip = "203.0.113.11", ua = "Googlebot/2.1" }
+    local bare_hit, bare_reason = resolver.check_cookie(bare)
+    eq(bare_hit, false, "crawler without cookie is still rejected")
+    eq(bare_reason, "crawler_claim", "rejection reason unchanged")
+    eq(bare.verified_human_rejected_bot_claim, true,
+       "claim provenance still set without a cookie")
+    eq(bare.verified_human_bot_held_cookie, nil,
+       "no ticket means no security event")
+    eq(gets, nocookie_before,
+       "crawler without cookie never reaches Redis")
+
+    -- Va mot ve KHONG con hieu luc cung khong phai su kien.
+    ngx.var.cookie_antibot_fp = "stale-cookie"
+    local stale = { ip = "203.0.113.12", ua = "Googlebot/2.1" }
+    resolver.check_cookie(stale)
+    eq(stale.verified_human_bot_held_cookie, nil,
+       "an expired ticket is not counted as held")
+    ngx.var.cookie_antibot_fp = "human-cookie"
 end
 
 -- 2. Richness persistence uses early identity, not raw IP. Two browser majors

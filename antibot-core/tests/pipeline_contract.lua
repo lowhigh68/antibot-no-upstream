@@ -191,7 +191,15 @@ package.loaded["antibot.core.access.verified_human"] = {
         if ua:lower():find("bot", 1, true)
            or ua:lower():find("spider", 1, true)
            or ua:lower():find("crawler", 1, true) then
-            if ctx then ctx.verified_human_rejected_bot_claim = true end
+            if ctx then
+                ctx.verified_human_rejected_bot_claim = true
+                -- Giu dung thu tu ban that: co thu hai chi bat khi co cookie
+                -- VA ve con hieu luc.
+                local c = ngx.var.cookie_antibot_fp
+                if c and c ~= "" and scenario.verified_cookie then
+                    ctx.verified_human_bot_held_cookie = true
+                end
+            end
             return false, "crawler_claim"
         end
         local cookie = ngx.var.cookie_antibot_fp

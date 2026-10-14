@@ -563,11 +563,16 @@ function _M.run(ctx)
     -- particular, `gbv=dns_timeout|dns_degraded` lets production distinguish
     -- a neutral resolver failure from an authoritative mismatch; both used to
     -- collapse into the same cached FAIL state on the following request.
+    -- `verified_human_bot_held_cookie` PHAI nam trong cong in nay. Mot UA
+    -- crawler khong khop registry thi `good_bot_claimed` khong bat va moi co
+    -- DNS deu nil, nen neu khong co dieu kien nay thi dung ca dang lo nhat —
+    -- crawler giu ve `verified:` that — lai la ca KHONG duoc ghi ra dong nao.
     local gbverify_str = ""
     if ctx.good_bot_claimed or ctx.good_bot_verified
        or ctx.dns_rev_timeout or ctx.dns_rev_degraded
        or ctx.dns_fwd_timeout
-       or ctx.dns_fwd_degraded then
+       or ctx.dns_fwd_degraded
+       or ctx.verified_human_bot_held_cookie then
         local function tri(v)
             if v == nil then return "-" end
             return tostring(v)
@@ -583,7 +588,23 @@ function _M.run(ctx)
                 or ctx.dns_fwd_degraded) and true or false),
             tostring(ctx.asn and ctx.asn.asn_number or "-"),
             tostring(ctx.good_bot_asn_corroborative or false),
-            ctx.verified_human_rejected_bot_claim and "reject" or "-")
+            -- `held_cookie` = crawler mang ve `verified:` con hieu luc (su kien
+            -- an ninh, dem rieng); `reject` = UA crawler goi vao lane nguoi
+            -- nhung khong co ve (binh thuong, Googlebot nao cung vay).
+            (ctx.verified_human_bot_held_cookie and "held_cookie")
+                or (ctx.verified_human_rejected_bot_claim and "reject")
+                or "-")
+    end
+
+    -- `safe_run` intentionally remains fail-open. Make that loss of evidence
+    -- visible in the primary request log instead of relying only on error.log,
+    -- whose per-domain level may filter diagnostics on this fleet.
+    local intel_str = ""
+    if ctx.intelligence_degraded then
+        local layers = ctx.intelligence_degraded_layers
+        local names = (type(layers) == "table" and #layers > 0)
+            and table.concat(layers, ",") or "unknown"
+        intel_str = " ideg=" .. names
     end
 
     -- S2.5 tier details — chỉ append khi attest path fired.
@@ -821,7 +842,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -929,6 +950,7 @@ function _M.run(ctx)
         tier_str,
         gbrate_str,
         gbverify_str,
+        intel_str,
         auth_str,
         xf_str,
         sc_str,

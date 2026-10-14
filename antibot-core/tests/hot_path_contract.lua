@@ -130,7 +130,20 @@ do
     gb.bot_ua = "dns_timeout"
     gb.dns_fwd_timeout = true
     gb.verified_human_rejected_bot_claim = true
+    gb.intelligence_degraded = true
+    gb.intelligence_degraded_layers = { "threat", "scoring" }
     logger.run(gb)
+
+    -- Ca dang lo nhat: UA crawler KHONG khop registry (nen khong co
+    -- `good_bot_claimed`, moi co DNS deu nil) nhung DANG GIU ve `verified:`.
+    -- Neu cong in `gbverify_str` khong doc co nay thi dong nay khong co cot
+    -- `gb*` nao — do la trang thai truoc 14-10 va la ly do phep dem
+    -- `grep -c gbhuman=reject` khong the thay ca nay.
+    local held = sample("id-three")
+    held.verified_human_rejected_bot_claim = true
+    held.verified_human_bot_held_cookie = true
+    logger.run(held)
+
     eq(opens, 0, "request log path does not open file synchronously")
 
     local flushes = 0
@@ -149,6 +162,22 @@ do
        and payload:find("gbdeg=true", 1, true) ~= nil
        and payload:find("gbhuman=reject", 1, true) ~= nil,
        "goodbot verification provenance is observable")
+
+    -- `held_cookie` thang `reject` tren cung mot dong: hai co deu bat, nhung
+    -- chi co su kien an ninh duoc in. Khong co phep nay thi mot ban sua lam
+    -- `reject` thang lai se khong bi bat.
+    ok(payload:find("gbhuman=held_cookie", 1, true) ~= nil,
+       "crawler holding a verified ticket is logged as held_cookie")
+    for line in payload:gmatch("[^\n]+") do
+        if line:find("id%-three") then
+            ok(line:find("gbhuman=held_cookie", 1, true) ~= nil,
+               "unregistered crawler with a ticket still emits the gb* columns")
+            ok(line:find("gbhuman=reject", 1, true) == nil,
+               "held_cookie outranks reject on the same line")
+        end
+    end
+    ok(payload:find("ideg=threat,scoring", 1, true) ~= nil,
+       "partial intelligence pipeline is observable")
     io.open = real_open
 end
 
