@@ -15,15 +15,15 @@ Config, Redis pool, ctx lifecycle, request classification, fingerprint primitive
 | `ctx/init.lua` | `init(ctx)` — populate `ctx.ip`, `ctx.ua`, `ctx.req` from nginx vars; reset all flags. `finalize(ctx)` — fallback identity if missing |
 | `fingerprint/identity.lua` | `build_from(ip, ua)` → md5 — coarse identity (used by rate counter when no full fp yet) |
 | `fingerprint/asn.lua` | mmdb lookup → `ctx.asn = {asn_number, asn_org}` |
-| `fingerprint/ip_classify.lua` | Coarse network-type LABEL only → `ctx.ip_net_type` (residential/datacenter/…) for logging/admin. **IP-type scoring DISABLED** (`ctx.ip_score=0` at source) — DC egress = real users (Private Relay/corp), caused FP. Shared-IP detection is behavioural (`ctx.ip_shared` via ip_tour), NOT ASN |
 | `fingerprint/device_classifier.lua` | UA → `ctx.device_type`, `ctx.device_is_mobile`, `device_sec_fetch_expected`, `device_ch_ua_mobile_expected` |
 | `fingerprint/collect_request.lua` | Aggregates fp_full from all fp parts |
 | `fingerprint/init.lua` | Orchestrate fp collection |
-| `goodbot_seed.lua` | Worker 0 seed `core/data/goodbot.json` → Redis `goodbot:dns:*`, `goodbot:asn:*`, `goodbot:ptr_only:*` (deferred via `ngx.timer.at` because cosocket disabled in init_worker_by_lua) |
-| `data/goodbot.json` | DNS suffix + ASN + ptr_only registry for Google/Bing/Meta/Apple/CocCoc |
+| `goodbot_registry.lua` | Pure source for operator claims, verification-name parsing, static ASN/PTR metadata and rate-family matching; no Redis/I/O |
+| `goodbot_seed.lua` | Worker 0 seeds JSON DNS suffixes and ptr-only flags into Redis (deferred via `ngx.timer.at` because cosocket is disabled in init-worker context) |
+| `data/goodbot.json` | DNS suffix + ptr-only registry; static ASN evidence lives in `goodbot_registry.lua` |
 
 ## ctx fields written (mostly init+populate)
-`ip`, `port`, `ua`, `req.{uri,method,host,scheme,accept,referer,proto,…}`, `device_*`, `asn`, `ip_type`, `ip_score`, `req_class`, `score_multiplier`, `rate_weight`, `skip_layers`. **All flags reset to defaults**.
+`ip`, `port`, `ua`, `req.{uri,method,host,scheme,accept,referer,proto,…}`, `device_*`, `asn`, `req_class`, `score_multiplier`, `rate_weight`, `skip_layers`. **All flags reset to defaults**.
 
 ## ctx fields read
 None at init phase — first module to run.
@@ -40,7 +40,7 @@ None at init phase — first module to run.
 - Never instantiate `resty.redis` directly — always `redis_pool.safe_*`
 - New `lua_shared_dict` → declare in `nginx/nginx.conf:49-53` only
 - Adding a class in `req_classifier.lua` ripples into score_multiplier + rate_weight + skip_layers — must reconcile with `intelligence/scoring/compute.lua`
-- Adding good bot → extend `goodbot.json` + `PTR_ONLY_BOTS` in `detection/bot/ua_check.lua`
+- Adding a verified good bot → extend `goodbot.json` and, only when static infrastructure proof exists, `core/goodbot_registry.lua`; the behavioral matrix must parse every JSON name
 
 ## Update log
 - 2026-09-19 — **`proxy_origin.lua` (MỚI) — domain sau Cloudflare: `ctx.ip` là địa chỉ EDGE nên mọi tầng khoá theo IP đang gom hàng trăm khách thật thành một thực thể.**

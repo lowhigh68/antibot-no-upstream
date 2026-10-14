@@ -23,13 +23,14 @@ Compute behavioral/structural anomaly scores into ctx flags consumed by `intelli
 |---|---|
 | `init.lua` | Orchestrator. Each sub-init.lua calls `should_run(ctx)` checking `ctx.skip_layers` |
 | `distributed_swarm.lua` | Cross-identity attack pattern detection → `ctx.swarm_attack` (0.3–1.0, =1.0 at HARD threshold; many /24 → ONE domain). NOTE: sets `ctx.swarm_attack`, NOT the boolean `ctx.swarm` (that's `cluster/swarm_detect.lua`, a different signal) |
-| `ip_tour.lua` | Cross-domain tour detection → `ctx.ip_tour` (ONE ip → many domains). Runs in `STEPS_COMMON` (after access_layer), NOT here. HLL `iptour:dom/ua:<ip>`, NAT-gated by distinct-UA, richness-exempt, strike→direct-ban |
+| `ip_tour.lua` | Cross-domain tour detection → `ctx.ip_tour` (ONE ip → many domains). HLL `dom/ua`; legacy `ver` remains farm evidence while strict `known` grants Tier-2 IP-ban immunity from host-issued cookie names. Runs in `STEPS_COMMON` |
 | `wp_hardening.lua` | WordPress-specific path/payload checks |
 
 ## bot/ submodule (4-path verification)
 See [`memory/project_bot_verification.md`](../../memory/project_bot_verification.md).
 - `init.lua` orchestrate ua_check → dns_reverse → dns_forward → asn_fallback
-- `ua_check.lua` regex match UA against good-bot patterns, hardcoded `PTR_ONLY_BOTS` table (also stores ASN list)
+- `core/goodbot_registry.lua` is the pure parser/static-metadata source; `ua_claim.lua` is its broad hold-gate facade
+- `ua_check.lua` consumes the registry result, then loads DNS suffix/admin overrides from Redis
 - `dns_reverse.lua` PTR lookup, suffix match against `goodbot:dns:<name>` (Redis)
 - `dns_forward.lua` A record check IP membership; **early return if `good_bot_ptr_only`** (Meta family)
 - `lite_verify.lua` resource-class only: ua_check + asn lookup + ASN match (no DNS)

@@ -2,6 +2,7 @@ local _M       = {}
 local pool     = require "antibot.core.redis_pool"
 local cloud_sx = require "antibot.detection.bot.cloud_suffixes"
 local asn_policy = require "antibot.detection.bot.asn_policy"
+local registry = require "antibot.core.goodbot_registry"
 
 local ua_cache  = ngx.shared.antibot_ua_cache
 local CACHE_KEY = "ua_patterns"
@@ -34,25 +35,6 @@ local function is_headless_by_structure(ua)
     end
 
     return false, nil
-end
-
-local KNOWN_BOT_TOKENS = {
-    "bot", "spider", "crawler", "scraper",
-    "facebookexternalhit",
-    "meta%-external",
-    "google%-agent", "google%-site%-verifier", "googleother",
-    "apis%-google",
-    "mediapartners",       -- Mediapartners-Google (AdSense crawler)
-    "bingpreview",         -- BingPreview (snapshot tool)
-}
-
-local function is_bot_self_identified(ua_lower)
-    for _, token in ipairs(KNOWN_BOT_TOKENS) do
-        if ua_lower:find(token, 1, token:find("%%") == nil) then
-            return true
-        end
-    end
-    return false
 end
 
 -- Path 1 (contact attest) helpers.
@@ -144,71 +126,16 @@ end
 -- AS15169/AS8075 là shared cloud nên chỉ hỗ trợ DNS, không tự xác minh. Các ASN
 -- dedicated còn lại giữ fallback cũ. Chính sách nằm ở asn_policy.lua.
 --
--- Hardcode well-known infra để không phụ thuộc Redis seed state — worker khởi
--- động là có ngay. Admin vẫn có thể thêm bot khác bằng:
+-- Static well-known infrastructure lives in core.goodbot_registry so name
+-- extraction and evidence metadata cannot drift. Admin may still add runtime
+-- metadata with:
 --   SET goodbot:ptr_only:<name> "1"
 --   SET goodbot:asn:<name>      "<asn1>,<asn2>,..."
-local PTR_ONLY_BOTS = {
-    -- Meta family (AS32934 Facebook). Reverse DNS rotating hoặc NXDOMAIN.
-    -- ptr_only=true: skip forward DNS check (rotating pool fail forward A).
-    ["facebookexternalhit"]    = { ptr_only = true, asns = { 32934 } },
-    ["facebot"]                = { ptr_only = true, asns = { 32934 } },
-    ["meta-externalagent"]     = { ptr_only = true, asns = { 32934 } },
-    ["meta-externalfetcher"]   = { ptr_only = true, asns = { 32934 } },
-    -- Them 2026-09-06 tu san xuat: `do_why.sh` muc B tren cloud183-139 thay 229
-    -- dong `mm=ch_ua` trong mot cua so, TAT CA la `meta-externalads`. UA khop
-    -- regex `meta%-external%w+` nen `bot_name` ra dung, nhung ba noi khai bao
-    -- deu KHONG co ten nay => `get_good_bot_suffixes` tra nil => roi vao nhanh
-    -- `unregistered_bot` => `dns_reverse` khong co suffix de doi chieu => dat
-    -- `bot_score = 0.85`, cong them `ch_ua` +0,3 x 55 = 16,5 diem.
-    ["meta-externalads"]       = { ptr_only = true, asns = { 32934 } },
-
-    -- Google family (AS15169 Google LLC). PTR+A symmetric tốt — không cần
-    -- ptr_only. ASN list để fallback nếu Google add IP block mới chưa setup
-    -- reverse DNS.
-    ["googlebot"]              = { asns = { 15169 } },
-    ["googlebot-image"]        = { asns = { 15169 } },
-    ["googlebot-video"]        = { asns = { 15169 } },
-    ["googlebot-news"]         = { asns = { 15169 } },
-    ["adsbot-google"]          = { asns = { 15169 } },
-    ["adsbot-google-mobile"]   = { asns = { 15169 } },
-    ["mediapartners-google"]   = { asns = { 15169 } },
-    ["googleother"]            = { asns = { 15169 } },
-    ["googleother-image"]      = { asns = { 15169 } },
-    ["googleother-video"]      = { asns = { 15169 } },
-    ["apis-google"]            = { asns = { 15169 } },
-    ["google-site-verifier"]   = { asns = { 15169 } },
-    ["google-agent"]           = { asns = { 15169 } },
-    ["storebot-google"]        = { asns = { 15169 } },
-    ["google-inspectiontool"]  = { asns = { 15169 } },
-    ["google-read-aloud"]      = { asns = { 15169 } },
-    ["google-extended"]        = { asns = { 15169 } },
-    ["google-cloudvertexbot"]  = { asns = { 15169 } },
-    ["duplexweb-google"]       = { asns = { 15169 } },
-    ["feedfetcher-google"]     = { asns = { 15169 } },
-
-    -- Microsoft Bing (AS8075 MICROSOFT-CORP-MSN-AS-BLOCK).
-    ["bingbot"]                = { asns = { 8075 } },
-    ["bingpreview"]            = { asns = { 8075 } },
-    ["adidxbot"]               = { asns = { 8075 } },
-    ["msnbot"]                 = { asns = { 8075 } },
-    ["msnbot-media"]           = { asns = { 8075 } },
-    ["microsoftpreview"]       = { asns = { 8075 } },
-
-    -- Apple (AS714, AS6185, AS2709 Apple Inc).
-    ["applebot"]               = { asns = { 714, 6185, 2709 } },
-    ["applebot-extended"]      = { asns = { 714, 6185, 2709 } },
-
-    -- CocCoc (AS135905 Coc Coc Company Limited - Vietnam search engine).
-    ["coccocbot-web"]          = { asns = { 135905 } },
-    ["coccocbot-image"]        = { asns = { 135905 } },
-}
 
 local function is_ptr_only_bot(bot_name)
     if not bot_name or bot_name == "" then return false end
     local lname = bot_name:lower()
-    local entry = PTR_ONLY_BOTS[lname]
-    if entry and entry.ptr_only then return true end
+    if registry.is_ptr_only(lname) then return true end
     local val = pool.safe_get("goodbot:ptr_only:" .. lname)
     return val == "1"
 end
@@ -217,8 +144,8 @@ end
 local function get_bot_asns(bot_name)
     if not bot_name or bot_name == "" then return nil end
     local lname = bot_name:lower()
-    local entry = PTR_ONLY_BOTS[lname]
-    if entry and entry.asns then return entry.asns end
+    local static = registry.asns(lname)
+    if static then return static end
     local val = pool.safe_get("goodbot:asn:" .. lname)
     if val and val ~= "" then
         local out = {}
@@ -327,52 +254,11 @@ function _M.run(ctx)
         ngx.log(ngx.DEBUG, "[ua_check] structural headless but browser context: ", reason)
     end
 
-    -- Bot self-identification check
-    if is_bot_self_identified(ua_lower) then
-        -- Match against ua_lower cho các bot có UA luôn lowercase trong thực tế
-        -- (Meta documents meta-externalagent/1.1 lowercase). Pattern case-sensitive
-        -- trên ua gốc bỏ sót các bot này → bot_name=nil → không lookup goodbot
-        -- registry → bị chấm score như bot lạ → block oan.
-        -- Match against ua_lower cho các bot có UA luôn lowercase trong thực tế
-        -- (Meta documents meta-externalagent/1.1 lowercase). Pattern case-sensitive
-        -- trên ua gốc bỏ sót các bot này → bot_name=nil → không lookup goodbot
-        -- registry → bị chấm score như bot lạ → block oan.
-        --
-        -- Order: greedy bot/spider/crawler patterns trước (catch nhiều biến thể),
-        -- sau đó các pattern explicit cho UA không chứa từ khóa bot/spider/crawler
-        -- (Google-Read-Aloud, Google-Extended, Google-InspectionTool, MSNBot, …).
-        local bot_name = ua:match("([%w%-]+[Bb]ot[%w%-]*)")
-                      or ua:match("([%w%-]+[Ss]pider)")
-                      or ua:match("([%w%-]+[Cc]rawler)")
-                      or ua_lower:match("(facebookexternalhit)")
-                      or ua_lower:match("(facebot)")
-                      or ua_lower:match("(meta%-external%w+)")
-                      or ua_lower:match("(mediapartners%-google)")
-                      or ua_lower:match("(googleother%-image)")
-                      or ua_lower:match("(googleother%-video)")
-                      or ua_lower:match("(googleother)")
-                      or ua_lower:match("(google%-inspectiontool)")
-                      or ua_lower:match("(google%-read%-aloud)")
-                      or ua_lower:match("(google%-extended)")
-                      or ua_lower:match("(google%-agent)")
-                      or ua_lower:match("(google%-site%-verifier)")
-                      or ua_lower:match("(duplexweb%-google)")
-                      or ua_lower:match("(feedfetcher%-google)")
-                      or ua_lower:match("(apis%-google)")
-                      or ua_lower:match("(bingpreview)")
-                      or ua_lower:match("(microsoftpreview)")
-
-                      -- ── THEM 19-09-2026: crawler KHONG mang chu "bot" ──
-                      -- `AhrefsSiteAudit` la mot UA rieng, khac `AhrefsBot`, va
-                      -- no KHONG chua chu "bot" nen ba pattern greedy o dau
-                      -- chuoi deu truot => `bot_name = nil` => khong tra cuu
-                      -- registry => khong xac minh => khong co dau `crawler:<ip>`
-                      -- => nuoi bucket fleet. Do 19-09 tren cloud168-101:
-                      -- `AhrefsBot` 8.879 luot `good_bot_verified` (khop pattern,
-                      -- chay dung), con dai 51.81.0.0/16 bi `fl:dyn` chan song.
-                      -- Dang ky trong `goodbot.json` MOT MINH la vo nghia: neu
-                      -- khong trich duoc ten thi khong gi tra cuu no.
-                      or ua_lower:match("(ahrefssiteaudit)")
+    -- Bot self-identification and canonical-name extraction share the same
+    -- pure registry used by every early claim gate.
+    local claim = registry.inspect(ua)
+    if claim.verification_claimed then
+        local bot_name = claim.canonical_name
         if bot_name then bot_name = bot_name:lower() end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)

@@ -8,6 +8,64 @@ local function eq(g, w, n)
     ok(g == w, n .. " (got=" .. tostring(g) .. " want=" .. tostring(w) .. ")")
 end
 
+local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
+if src:sub(-1) ~= "/" then src = src .. "/" end
+
+-- P1.2: one pure parser/metadata source feeds the broad hold gate, the DNS
+-- verification lane and rate-family matching. These are compatibility tests:
+-- they pin existing verdict boundaries instead of silently widening trust.
+do
+    local registry = assert(loadfile(src .. "core/goodbot_registry.lua"))()
+    package.loaded["antibot.core.goodbot_registry"] = registry
+
+    eq(registry.claims_operator("Google"), true,
+       "exact Google operator claim is preserved")
+    eq(registry.claims_operator("Mozilla/5.0 Google Chrome"), false,
+       "browser text containing Google is not a crawler claim")
+    eq(registry.claims_operator("Mediapartners-Google/2.1"), true,
+       "Mediapartners broad hold is preserved")
+
+    local google = registry.inspect("Googlebot-Image/1.0")
+    eq(google.operator_claimed, true, "Googlebot is held")
+    eq(google.verification_claimed, true, "Googlebot enters verification")
+    eq(google.canonical_name, "googlebot-image", "Googlebot name is canonical")
+    eq(registry.asns("googlebot-image")[1], 15169,
+       "Google static ASN comes from unified registry")
+
+    local meta = registry.inspect("meta-externalagent/1.1")
+    eq(meta.canonical_name, "meta-externalagent", "lowercase Meta name parses")
+    eq(registry.is_ptr_only(meta.canonical_name), true,
+       "Meta ptr-only policy comes from unified registry")
+
+    local held = registry.inspect("Google")
+    eq(held.operator_claimed, true, "bare Google remains held from human lane")
+    eq(held.verification_claimed, false,
+       "P1.2 does not silently change bare Google verdict lane")
+
+    eq(registry.class_for_bot("coccocbot-web", {
+        coccoc = "polite", coccocbot = "moderate",
+    }), "moderate", "longest rate-family prefix wins")
+    eq(registry.class_for_bot("googlebot", { google = "moderate", googlebot = "polite" }),
+       "polite", "exact rate class wins before family prefix")
+
+    local f = assert(io.open(src .. "core/data/goodbot.json", "r"))
+    local raw = f:read("*a"); f:close()
+    local data = assert(require("cjson.safe").decode(raw))
+    local parsed = 0
+    for name in pairs(data.bots or {}) do
+        local result = registry.inspect(name .. "/1.0")
+        eq(result.canonical_name, name:lower(),
+           "registry entry has canonical parser: " .. name)
+        parsed = parsed + 1
+    end
+    ok(parsed > 0, "goodbot JSON matrix is non-empty")
+
+    local facade = assert(loadfile(src .. "detection/bot/ua_claim.lua"))()
+    eq(facade.claims_good_bot("AhrefsSiteAudit/7.0"),
+       registry.claims_operator("AhrefsSiteAudit/7.0"),
+       "ua_claim is a facade over unified registry")
+end
+
 local cache, writes, query_mode, query_calls
 package.loaded["antibot.core.config"] = { ttl = { dns = 300 } }
 package.loaded["antibot.core.redis_pool"] = {
@@ -40,8 +98,6 @@ ngx = {
     log = function() end,
 }
 
-local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
-if src:sub(-1) ~= "/" then src = src .. "/" end
 local dns = assert(loadfile(src .. "detection/bot/dns_forward.lua"))()
 
 local function reset(mode)
