@@ -2,6 +2,12 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 
+-- Preserve the cause of a negative lookup. `NO_RECORDS` is a semantic
+-- negative; `TIMEOUT` and `TEMP` are infrastructure failures.  Legacy `FAIL`
+-- mixed both meanings, so it is migrated to short-lived TEMP rather than
+-- guessed into a fake-bot verdict.
+local TEMP_TTL = 10
+
 local function do_forward_lookup(hostname)
     local ok, resolver = pcall(require, "resty.dns.resolver")
     if not ok then return nil, "dns_lib_unavailable" end
@@ -70,7 +76,18 @@ function _M.run(ctx)
     local fwd_ips   = {}
 
     if cached then
-        if cached ~= "FAIL" then
+        if cached == "TIMEOUT" then
+            ctx.dns_fwd_timeout = true
+            ctx.dns_fwd_valid   = nil
+            return true, false
+        elseif cached == "TEMP" or cached == "FAIL" then
+            if cached == "FAIL" then
+                pool.safe_set(cache_key, "TEMP", TEMP_TTL)
+            end
+            ctx.dns_fwd_degraded = true
+            ctx.dns_fwd_valid    = nil
+            return true, false
+        elseif cached ~= "NO_RECORDS" then
             for addr in cached:gmatch("[^,]+") do
                 fwd_ips[addr] = true
             end
@@ -84,9 +101,17 @@ function _M.run(ctx)
             pool.safe_set(cache_key, table.concat(ip_list, ","),
                           cfg.ttl.dns or 300)
         else
-            pool.safe_set(cache_key, "FAIL", cfg.ttl.dns or 300)
             if err and err:find("timeout") then
+                pool.safe_set(cache_key, "TIMEOUT", TEMP_TTL)
                 ctx.dns_fwd_timeout = true
+                ctx.dns_fwd_valid   = nil
+                return true, false
+            elseif err == "no_records" then
+                pool.safe_set(cache_key, "NO_RECORDS", cfg.ttl.dns or 300)
+            else
+                pool.safe_set(cache_key, "TEMP", TEMP_TTL)
+                ctx.dns_fwd_degraded = true
+                ctx.dns_fwd_valid    = nil
                 return true, false
             end
         end

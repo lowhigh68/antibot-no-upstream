@@ -3,6 +3,7 @@ local _M = {}
 local ua_check = require "antibot.detection.bot.ua_check"
 local asn_mod  = require "antibot.core.fingerprint.asn"
 local pool     = require "antibot.core.redis_pool"
+local asn_policy = require "antibot.detection.bot.asn_policy"
 
 local CRAWLER_PREFIX = "crawler:"
 local CRAWLER_TTL    = 3600
@@ -23,10 +24,10 @@ end
 -- ip_rep + h2_bot_confidence + mismatch dồn lên đủ để kill_block (raw≥80
 -- → eff=85 → block). Bingbot/Googlebot fetch image bị FP.
 --
--- Lite mode: chỉ chạy ua_check (UA pattern → bot_name + good_bot_asns)
--- + asn lookup (mmdb local, cached) + ASN match — KHÔNG chạy DNS reverse
--- (đắt). ASN match là đủ vì RIR delegation tương đương trust với PTR
--- delegation (cùng yêu cầu IP block ownership).
+-- Lite mode: chạy ua_check + ASN lookup (mmdb local, cached). ASN dedicated
+-- được xác minh trực tiếp. AS15169/AS8075 shared-cloud chỉ được đi lite khi
+-- `crawler:<ip>` chứng minh IP đó đã qua full DNS ở request trước; nếu chưa có
+-- thì chuyển full lane thay vì tự cấp trust từ ASN.
 --
 -- Chỉ activate khi UA self-identified và có ctx.good_bot_asns expected.
 function _M.run(ctx)
@@ -55,7 +56,23 @@ function _M.run(ctx)
     end
 
     for _, asn in ipairs(expected) do
-        if asn == actual then
+        if tonumber(asn) == tonumber(actual) then
+            if asn_policy.is_corroborative(actual) then
+                ctx.good_bot_asn_corroborative = true
+                -- Resource requests may skip the expensive DNS lane, but a
+                -- prior full DNS verification leaves a positive per-IP mark.
+                -- Without that mark, ASN15169/8075 only identify shared cloud
+                -- infrastructure and the request must enter the full lane.
+                local known = ctx.ip and pool.safe_get(CRAWLER_PREFIX .. ctx.ip)
+                if known ~= "1" then
+                    return require_full(ctx, "good_bot_lite_needs_dns")
+                end
+                ctx.good_bot_verified = true
+                ctx.bot_score         = 0.0
+                ctx.bot_ua            = "good_bot_cached_verified"
+                ctx.action_reason     = "good_bot_cached_lite"
+                return true, false
+            end
             ctx.good_bot_verified = true
             ctx.bot_score         = 0.0
             ctx.bot_ua            = "good_bot_asn_verified"

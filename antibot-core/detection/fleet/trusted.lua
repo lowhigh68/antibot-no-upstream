@@ -1,6 +1,7 @@
 local _M  = {}
 local cfg = require "antibot.core.config"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+local asn_policy = require "antibot.detection.bot.asn_policy"
 
 -- Trusted ASN allowlist — SKIPS fleet aggregation entirely.
 -- Performance optimization only: detection correctness is independent of
@@ -28,11 +29,10 @@ end
 -- dyn-blocked = SEO disaster (observed: Googlebot/Bingbot ranges at risk;
 -- Meta's 57.141.0.0/16 was actively dyn-blocked).
 --
--- Gate requires BOTH the ASN AND a self-declared crawler UA — REQUIRED because
--- AS8075 (Bing) also hosts Azure, so ASN alone would whitelist cloud-hosted
--- scrapers on that ASN. With the UA-claim requirement, a browser-UA scraper on
--- Azure is NOT exempt (fleet still catches it); a UA-spoofing fake Googlebot is
--- caught downstream by DNS reverse verification.
+-- Gate requires BOTH the ASN AND a self-declared crawler UA.  General-purpose
+-- shared-cloud ASNs are excluded even with that claim: AS15169 and AS8075 only
+-- corroborate DNS and cannot grant an early exemption.  Their verified IPs use
+-- the `crawler:<ip>` positive mark in aggregator.lua instead.
 --
 -- Meta AS32934 INCLUDED (operator policy B): meta-externalagent DOES verify
 -- (prod log: good_bot_verified + ASN-lite on 57.141.0.0/16 = AS32934, both via
@@ -60,7 +60,11 @@ local GOOD_CRAWLER_ASN = {
 -- which is now resolved in STEPS_COMMON before the aggregator runs.
 function _M.is_good_crawler(ctx)
     if not ctx.asn or not ctx.asn.asn_number then return false end
-    if not GOOD_CRAWLER_ASN[ctx.asn.asn_number] then return false end
+    local asn = tonumber(ctx.asn.asn_number)
+    if not GOOD_CRAWLER_ASN[asn] then return false end
+    -- Google/Microsoft shared-cloud ASN needs a positive DNS-derived crawler
+    -- mark, which aggregator checks immediately after this local gate.
+    if asn_policy.is_corroborative(asn) then return false end
     return ua_claim.claims_good_bot(ctx.ua)
 end
 

@@ -2,6 +2,15 @@ local _M = {}
 
 local LOG_FILE = "/var/log/antibot/antibot.log"
 
+-- Per-worker bounded batch. A synchronous append in log phase does not delay
+-- the response already sent, but it still occupies an event-loop worker.
+local LOG_FLUSH_DELAY = 0.05
+local LOG_BATCH_LINES = 64
+local LOG_BATCH_BYTES = 256 * 1024
+local log_queue = {}
+local log_queue_bytes = 0
+local log_flush_scheduled = false
+
 local DEVICE_GROUP = {
     mobile_chrome_android = "mobile",
     mobile_safari_ios     = "mobile",
@@ -293,10 +302,9 @@ local function write_stats(premature, host, class, action, date, device_type, in
     pool.put(red)
 end
 
--- Write one log line to dedicated antibot log file.
--- Called from log_by_lua_block — response is already sent,
--- blocking I/O here does not affect latency seen by the client.
-local function write_log_line(line)
+-- Write a complete batch with one open/write/close sequence.
+local function write_log_batch(batch)
+    if not batch or #batch == 0 then return true end
     local fh, err = io.open(LOG_FILE, "a")
     if not fh then
         -- ngx.ERR, KHÔNG phải WARN. Chú thích cũ ở đây hứa "fallback sang nginx
@@ -307,10 +315,57 @@ local function write_log_line(line)
         -- antibot.log vì sai quyền hay thiếu thư mục — lại là thứ im lặng nhất.
         ngx.log(ngx.ERR, "[antibot] cannot open log file: ", tostring(err),
                 " — MAT TOAN BO antibot.log. Kiem /var/log/antibot va quyen user `nginx`.")
+        return false
+    end
+    fh:write(table.concat(batch, "\n"), "\n")
+    fh:close()
+    return true
+end
+
+local function take_log_batch()
+    if #log_queue == 0 then return nil end
+    local batch = log_queue
+    log_queue = {}
+    log_queue_bytes = 0
+    return batch
+end
+
+local function flush_log_queue(_premature)
+    -- Clear election before I/O. A line arriving after the table swap can
+    -- schedule the next flush and cannot get stranded behind the old flag.
+    log_flush_scheduled = false
+    local batch = take_log_batch()
+    if batch then write_log_batch(batch) end
+end
+
+local function schedule_log_flush()
+    if log_flush_scheduled then return true end
+    log_flush_scheduled = true
+    local ok, err = ngx.timer.at(LOG_FLUSH_DELAY, flush_log_queue)
+    if ok then return true end
+
+    -- Timer exhaustion degrades to the previous synchronous append. Losing
+    -- the primary forensic log silently is worse than a rare blocking write.
+    log_flush_scheduled = false
+    ngx.log(ngx.ERR, "[antibot] log flush timer failed: ", tostring(err))
+    local batch = take_log_batch()
+    if batch then write_log_batch(batch) end
+    return false
+end
+
+local function write_log_line(line)
+    log_queue[#log_queue + 1] = line
+    log_queue_bytes = log_queue_bytes + #line + 1
+
+    if #log_queue >= LOG_BATCH_LINES or log_queue_bytes >= LOG_BATCH_BYTES then
+        -- Bound memory if timers are starved. This path is synchronous, but
+        -- writes one whole batch rather than one open/close per request.
+        local batch = take_log_batch()
+        if batch then write_log_batch(batch) end
         return
     end
-    fh:write(line, "\n")
-    fh:close()
+
+    schedule_log_flush()
 end
 
 function _M.run(ctx)
@@ -501,6 +556,34 @@ function _M.run(ctx)
             ctx.good_bot_aggression or 0,
             ctx.good_bot_rate_count or 0,
             ctx.good_bot_rate_limit or 0)
+    end
+
+    -- Good-bot verification provenance.  Emit only after a request entered
+    -- the verification lane, so ordinary traffic does not grow.  In
+    -- particular, `gbv=dns_timeout|dns_degraded` lets production distinguish
+    -- a neutral resolver failure from an authoritative mismatch; both used to
+    -- collapse into the same cached FAIL state on the following request.
+    local gbverify_str = ""
+    if ctx.good_bot_claimed or ctx.good_bot_verified
+       or ctx.dns_rev_timeout or ctx.dns_rev_degraded
+       or ctx.dns_fwd_timeout
+       or ctx.dns_fwd_degraded then
+        local function tri(v)
+            if v == nil then return "-" end
+            return tostring(v)
+        end
+        gbverify_str = string.format(
+            " gbv=%s gbname=%s gbrev=%s gbfwd=%s gbdeg=%s gbasn=%s gbcor=%s gbhuman=%s",
+            tostring(ctx.bot_ua or "-"),
+            tostring(ctx.good_bot_name or "-"),
+            tri(ctx.dns_rev_valid),
+            tri(ctx.dns_fwd_valid),
+            tostring((ctx.dns_rev_timeout or ctx.dns_rev_degraded
+                or ctx.dns_fwd_timeout
+                or ctx.dns_fwd_degraded) and true or false),
+            tostring(ctx.asn and ctx.asn.asn_number or "-"),
+            tostring(ctx.good_bot_asn_corroborative or false),
+            ctx.verified_human_rejected_bot_claim and "reject" or "-")
     end
 
     -- S2.5 tier details — chỉ append khi attest path fired.
@@ -738,7 +821,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -845,6 +928,7 @@ function _M.run(ctx)
         throttle_str,
         tier_str,
         gbrate_str,
+        gbverify_str,
         auth_str,
         xf_str,
         sc_str,

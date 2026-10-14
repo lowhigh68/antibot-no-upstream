@@ -637,6 +637,25 @@ function _M.run(ctx)
         ctx.monitor_flag  = true
     end
 
+    -- Resolver-infrastructure failure on a matching shared-cloud crawler ASN.
+    -- AS15169/AS8075 is not sufficient to verify Google/Bing because both ASNs
+    -- host general cloud workloads.  It is, however, enough corroboration to
+    -- avoid a user-visible block caused solely while our DNS evidence is
+    -- unavailable.  Semantic negatives (NXDOMAIN, bad suffix, forward
+    -- mismatch) never set this flag and therefore receive no cap.
+    if ctx.good_bot_shared_asn_degraded == true
+       and (action == "block" or action == "challenge") then
+        ngx.log(ngx.INFO,
+            "[engine] shared-ASN DNS-degraded cap action=", action,
+            "->monitor asn=AS",
+            tostring(ctx.asn and ctx.asn.asn_number or "?"),
+            " eff=", math.floor(ctx.effective_score or 0),
+            " ip=", ctx.ip or "?")
+        action = "monitor"
+        ctx.action_reason = "good_bot_dns_degraded_cap"
+        ctx.monitor_flag  = true
+    end
+
     -- ── Trần cho IP do nhà vận hành CÔNG BỐ (tầng danh tính thứ ba) ──
     -- Hai tầng sẵn có đều dựa vào UA TỰ KHAI: S4 (registry + DNS hai chiều)
     -- và S2.5 (contact/analyzer attest). Thiếu tầng cho nhà vận hành khai

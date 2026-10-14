@@ -4,6 +4,7 @@ local dns_rev   = require "antibot.detection.bot.dns_reverse"
 local dns_fwd   = require "antibot.detection.bot.dns_forward"
 local bot_score = require "antibot.detection.bot.bot_score"
 local cloud_sx  = require "antibot.detection.bot.cloud_suffixes"
+local asn_policy= require "antibot.detection.bot.asn_policy"
 local pool      = require "antibot.core.redis_pool"
 
 local CLOUD_PTR_SUFFIXES = cloud_sx.CLOUD_PTR_SUFFIXES
@@ -274,7 +275,14 @@ local function asn_fallback_verify(ctx)
     local actual = ctx.asn and ctx.asn.asn_number
     if not actual then return false end
     for _, asn in ipairs(expected) do
-        if asn == actual then
+        if tonumber(asn) == tonumber(actual) then
+            if asn_policy.is_corroborative(actual) then
+                ctx.good_bot_asn_corroborative = true
+                ngx.log(ngx.INFO,
+                    "[bot] ASN corroborative only bot=", ctx.good_bot_name or "?",
+                    " ip=", ctx.ip or "?", " asn=AS", actual)
+                return false
+            end
             ngx.log(ngx.INFO,
                 "[bot] VERIFIED asn_fallback bot=", ctx.good_bot_name or "?",
                 " ip=", ctx.ip or "?", " asn=AS", actual)
@@ -323,10 +331,19 @@ function _M.run(ctx)
                 ctx.good_bot_verified = true
                 ctx.bot_score         = 0.0
                 ctx.bot_ua            = "good_bot_asn_verified"
-            elseif ctx.dns_rev_timeout or ctx.dns_fwd_timeout then
+            elseif ctx.dns_rev_timeout or ctx.dns_rev_degraded
+                or ctx.dns_fwd_timeout or ctx.dns_fwd_degraded then
                 -- Resolver không phản hồi = sự cố TẠM THỜI, không phải bằng
                 -- chứng giả mạo. Không kết luận gì; bot_score.lua bảo toàn 0.
-                ctx.bot_ua = "dns_timeout"
+                ctx.good_bot_dns_degraded = true
+                if ctx.good_bot_asn_corroborative then
+                    -- Shared-cloud ASN is not verification.  It only provides
+                    -- enough provenance to cap an infrastructure-failure case
+                    -- at monitor later in the engine.
+                    ctx.good_bot_shared_asn_degraded = true
+                end
+                ctx.bot_ua = (ctx.dns_rev_degraded or ctx.dns_fwd_degraded)
+                    and "dns_degraded" or "dns_timeout"
             else
                 ctx.bot_ua            = "fake_good_bot"
                 -- math.max: giữ 0.9 mà dns_fwd đã đặt (PTR khớp registry nhưng
@@ -388,7 +405,8 @@ function _M.run(ctx)
     -- Verified hoặc S2.5 attest ⇒ KHÔNG ghi, để lượt sau vẫn được defer.
     if ctx.ban_deferred_gb
        and ctx.good_bot_verified ~= true
-       and ctx.bot_identity_tier ~= "S2.5" then
+       and ctx.bot_identity_tier ~= "S2.5"
+       and ctx.good_bot_dns_degraded ~= true then
         local id = ctx.identity or ctx.fp_light
         if id and id ~= "" then
             pool.safe_set(FAKE_VERDICT_PREFIX .. id, "1", FAKE_VERDICT_TTL)

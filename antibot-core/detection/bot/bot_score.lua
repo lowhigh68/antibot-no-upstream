@@ -16,12 +16,12 @@ function _M.run(ctx)
     local score = ctx.bot_score or 0.0
 
     if ctx.good_bot_claimed then
-        if ctx.dns_rev_timeout then
+        if ctx.dns_rev_timeout or ctx.dns_rev_degraded then
             ctx.bot_score = score
             return true, false
         end
 
-        if ctx.dns_fwd_timeout then
+        if ctx.dns_fwd_timeout or ctx.dns_fwd_degraded then
             ctx.bot_score = math.min(score, 0.05)
             return true, false
         end

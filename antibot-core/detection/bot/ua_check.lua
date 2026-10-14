@@ -1,6 +1,7 @@
 local _M       = {}
 local pool     = require "antibot.core.redis_pool"
 local cloud_sx = require "antibot.detection.bot.cloud_suffixes"
+local asn_policy = require "antibot.detection.bot.asn_policy"
 
 local ua_cache  = ngx.shared.antibot_ua_cache
 local CACHE_KEY = "ua_patterns"
@@ -136,13 +137,12 @@ local function get_good_bot_suffixes(bot_name)
     return nil
 end
 
--- PTR-only verify + ASN fallback: bot dùng rotating IP pool, forward A không
+-- PTR-only verify + ASN metadata: bot dùng rotating IP pool, forward A không
 -- match được IP gốc → không thể forward verify. Một số block IP còn không
 -- setup reverse DNS (NXDOMAIN) → cần fallback sang ASN check.
 --
--- Sở hữu ASN từ RIR (RIPE/ARIN/APNIC) yêu cầu pháp nhân + IP block delegation
--- — attack vector tương đương việc spoof PTR. Match (UA crawler, ASN owner)
--- đủ để verify identity bot.
+-- AS15169/AS8075 là shared cloud nên chỉ hỗ trợ DNS, không tự xác minh. Các ASN
+-- dedicated còn lại giữ fallback cũ. Chính sách nằm ở asn_policy.lua.
 --
 -- Hardcode well-known infra để không phụ thuộc Redis seed state — worker khởi
 -- động là có ngay. Admin vẫn có thể thêm bot khác bằng:
@@ -229,6 +229,14 @@ local function get_bot_asns(bot_name)
         return #out > 0 and out or nil
     end
     return nil
+end
+
+local function mark_asn_policy(ctx)
+    local actual = ctx.asn and ctx.asn.asn_number
+    if asn_policy.matches(ctx.good_bot_asns, actual)
+       and asn_policy.is_corroborative(actual) then
+        ctx.good_bot_asn_corroborative = true
+    end
 end
 
 local function is_valid_suffix(ptr, suffixes)
@@ -375,6 +383,7 @@ function _M.run(ctx)
             ctx.good_bot_suffixes = suffixes
             ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
             ctx.good_bot_asns     = get_bot_asns(bot_name)
+            mark_asn_policy(ctx)
             ctx.bot_ua            = "good_bot_claimed"
             ctx.bot_score         = 0.0
             ngx.log(ngx.INFO,
@@ -394,6 +403,7 @@ function _M.run(ctx)
             ctx.good_bot_name     = bot_name
             ctx.good_bot_suffixes = {}   -- empty → dns_reverse will fail verify
             ctx.good_bot_asns     = get_bot_asns(bot_name)  -- ASN fallback if Redis DNS miss
+            mark_asn_policy(ctx)
             ctx.bot_ua            = "unregistered_bot"
             ctx.bot_score         = 0.0  -- dns_reverse decides the score
             return true, false

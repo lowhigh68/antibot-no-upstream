@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local TEMP_TTL = 10
 
 local function expand_ipv6(ip)
     local left, right = ip:match("^(.*)::(.*)$")
@@ -93,7 +94,7 @@ local function do_ptr_lookup(ip)
 end
 
 -- Cached PTR lookup — returns (ptr_or_nil, err_type_or_nil).
--- err_type ∈ {"TIMEOUT", "NXDOMAIN", "FAIL", "skip"} on failure.
+-- err_type ∈ {"TIMEOUT", "NXDOMAIN", "TEMP", "skip"} on failure.
 -- Exposed so Path 2 (analyzer attest) in bot/init.lua can fetch PTR
 -- for IPs whose UA does NOT trigger good_bot_claimed.
 function _M.lookup_ptr(ip)
@@ -103,8 +104,14 @@ function _M.lookup_ptr(ip)
     local cache_key = "dns_ptr:" .. ip
     local cached    = pool.safe_get(cache_key)
     if cached then
-        if cached == "TIMEOUT" or cached == "NXDOMAIN" or cached == "FAIL" then
+        if cached == "TIMEOUT" or cached == "NXDOMAIN" or cached == "TEMP" then
             return nil, cached
+        elseif cached == "FAIL" then
+            -- Migration from the old cache format. FAIL mixed resolver/library
+            -- failures with semantic negatives; treating it as TEMP avoids
+            -- manufacturing a fake-bot verdict and forces a fresh lookup soon.
+            pool.safe_set(cache_key, "TEMP", TEMP_TTL)
+            return nil, "TEMP"
         end
         return cached, nil
     end
@@ -113,15 +120,18 @@ function _M.lookup_ptr(ip)
         pool.safe_set(cache_key, p, cfg.ttl.dns or 300)
         return p, nil
     end
-    local err_type
+    local err_type, ttl
     if e and e:find("timeout") then
         err_type = "TIMEOUT"
+        ttl = TEMP_TTL
     elseif e == "nxdomain" or e == "no_ptr_record" then
         err_type = "NXDOMAIN"
+        ttl = cfg.ttl.dns or 300
     else
-        err_type = "FAIL"
+        err_type = "TEMP"
+        ttl = TEMP_TTL
     end
-    pool.safe_set(cache_key, err_type, cfg.ttl.dns or 300)
+    pool.safe_set(cache_key, err_type, ttl)
     ngx.log(ngx.DEBUG, "[dns_rev] ip=", ip, " err=", tostring(e))
     return nil, err_type
 end
@@ -178,6 +188,9 @@ function _M.run(ctx)
     elseif err_type == "TIMEOUT" then
         ctx.dns_rev_timeout = true
         ctx.dns_rev_valid   = nil
+    elseif err_type == "TEMP" then
+        ctx.dns_rev_degraded = true
+        ctx.dns_rev_valid    = nil
     else
         ctx.dns_rev_valid   = false
         ctx.dns_rev_nxdomain= true
