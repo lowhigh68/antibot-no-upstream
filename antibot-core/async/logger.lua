@@ -823,6 +823,22 @@ function _M.run(ctx)
         waf_str = string.format(" waf=%s wafv=%.2f", h.rule or "-", h.score or 0)
     end
 
+    -- P1.1 Tier-2 provenance is emitted only after an IP crosses the lenient
+    -- shared threshold, so normal traffic pays no log-volume cost. `ipru` is
+    -- the legacy cookie population retained for farm policy; `ipku` is the
+    -- strict first-party population that grants IP-ban immunity after warmup.
+    local shared_ip_str = ""
+    if ctx.ip_shared then
+        shared_ip_str = string.format(
+            " ipuas=%d ipru=%d ipku=%d ipsv=%s iptev=%s iptwarm=%s",
+            tonumber(ctx.ip_tour_uas) or 0,
+            tonumber(ctx.ip_real_users) or 0,
+            tonumber(ctx.ip_known_users) or 0,
+            tostring(ctx.ip_shared_verified or false),
+            tostring(ctx.ip_tier2_cookie_evidence or "-"),
+            tostring(ctx.ip_tier2_warming or false))
+    end
+
     -- Beacon coverage state (Step 0 telemetry).
     -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
     -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
@@ -961,6 +977,7 @@ function _M.run(ctx)
         surge_str,
         circuit_str
     )
+    line = line .. shared_ip_str
 
     write_log_line(line)
 

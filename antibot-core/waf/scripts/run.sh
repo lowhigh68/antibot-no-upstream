@@ -130,6 +130,9 @@ echo "-- trust boundary contract -----------------------------"
 echo "-- async/hot-path contract ------------------------------"
 "$RESTY" "${ANTIBOT_SRC}tests/hot_path_contract.lua" || rc=1
 
+echo "-- intelligence/degraded contract -----------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/intelligence_contract.lua" || rc=1
+
 echo "── admin: duong ra bo dem L7 ──────────────────────────"
 "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
 

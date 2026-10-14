@@ -144,6 +144,16 @@ do
     held.verified_human_bot_held_cookie = true
     logger.run(held)
 
+    local shared = sample("id-shared")
+    shared.ip_shared = true
+    shared.ip_tour_uas = 8
+    shared.ip_real_users = 5
+    shared.ip_known_users = 3
+    shared.ip_shared_verified = true
+    shared.ip_tier2_cookie_evidence = "known"
+    shared.ip_tier2_warming = false
+    logger.run(shared)
+
     eq(opens, 0, "request log path does not open file synchronously")
 
     local flushes = 0
@@ -178,6 +188,9 @@ do
     end
     ok(payload:find("ideg=threat,scoring", 1, true) ~= nil,
        "partial intelligence pipeline is observable")
+    ok(payload:find("ipuas=8 ipru=5 ipku=3 ipsv=true iptev=known iptwarm=false",
+                    1, true) ~= nil,
+       "Tier-2 legacy/strict populations are observable without ambiguity")
     io.open = real_open
 end
 

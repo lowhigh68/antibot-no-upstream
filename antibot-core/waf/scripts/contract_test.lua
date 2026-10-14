@@ -2069,20 +2069,25 @@ do
     end
 
     local uc = slurp(SRC .. "detection/bot/ua_claim.lua")
-    if not uc then
+    local gr = slurp(SRC .. "core/goodbot_registry.lua")
+    if not uc or not gr then
         bad("  SAI  thieu detection/bot/ua_claim.lua\n")
     else
+        if not uc:find('require "antibot.core.goodbot_registry"', 1, true) then
+            bad("  SAI  ua_claim.lua khong delegate vao goodbot_registry.\n")
+        else pass = pass + 1 end
         -- Bay token phai giu nguyen, khong duoc bot khi ai do "don dep".
         for _, tok in ipairs({ "bot", "spider", "crawler", "facebookexternal",
-                               "mediapartners", "bingpreview", "meta%-external" }) do
-            if not uc:find('"' .. tok .. '"') then
-                bad("  SAI  ua_claim thieu token goc %q\n", tok)
+                               "mediapartners", "bingpreview", "meta-external" }) do
+            if not gr:find('"' .. tok .. '"', 1, true) then
+                bad("  SAI  goodbot_registry thieu token goc %q\n", tok)
             else pass = pass + 1 end
         end
         -- UA dung bang `Google` phai khop TUYET DOI, khong phai substring:
         -- substring "google" se khop ca UA trinh duyet that, ma whitelist.lua
         -- dung phep kiem nay theo huong TU CHOI (chan khoi lane nguoi).
-        if not uc:find("EXACT") or not uc:find('%["google"%]') then
+        if not gr:find("OPERATOR_EXACT", 1, true)
+           or not gr:find('["google"]', 1, true) then
             bad("  SAI  ua_claim phai khop `google` bang phep so BANG TUYET DOI,\n" ..
                 "       khong phai substring — whitelist.lua dung no de TU CHOI.\n")
         else pass = pass + 1 end
@@ -2145,25 +2150,19 @@ end
 -- "crawler", ma `AhrefsSiteAudit` khong co chu nao => bot_name = nil.
 -- `AhrefsBot` (co chu "bot") thi chay dung: 8.879 luot `good_bot_verified`.
 do
-    local uachk = slurp(SRC .. "detection/bot/ua_check.lua")
-    local gb    = slurp(SRC .. "core/data/goodbot.json")
-    if not uachk or not gb then
-        bad("  SAI  thieu ua_check.lua hoac goodbot.json\n")
+    local parser = loadfile(SRC .. "core/goodbot_registry.lua")
+    local gb     = slurp(SRC .. "core/data/goodbot.json")
+    local data   = gb and require("cjson.safe").decode(gb) or nil
+    if not parser or not data or type(data.bots) ~= "table" then
+        bad("  SAI  thieu/hong goodbot_registry.lua hoac goodbot.json\n")
     else
-        -- Cac ten trong registry KHONG chua bot/spider/crawler thi PHAI co
-        -- pattern explicit trong ua_check.
-        for name in gb:gmatch('"([%w%-%.]+)":%s*%[') do
-            local n = name:lower()
-            if not (n:find("bot", 1, true) or n:find("spider", 1, true)
-                    or n:find("crawler", 1, true)) then
-                -- Ten co dau gach noi: pattern viet duoi dang `a%-b`.
-                local pat = n:gsub("%-", "%%%%%%-")
-                if not (uachk:find(n, 1, true) or uachk:find(pat, 1, true)) then
-                    bad("  SAI  goodbot.json co %q nhung ua_check khong trich\n" ..
-                        "       duoc ten do tu UA => muc CHET, crawler khong bao\n" ..
-                        "       gio duoc xac minh. Them pattern vao chuoi bot_name.\n", name)
-                else pass = pass + 1 end
-            end
+        local registry = parser()
+        for name in pairs(data.bots) do
+            local result = registry.inspect(name .. "/1.0")
+            if result.canonical_name ~= name:lower() then
+                bad("  SAI  goodbot.json co %q nhung parser tra %q.\n",
+                    name, tostring(result.canonical_name))
+            else pass = pass + 1 end
         end
     end
 end

@@ -1,6 +1,7 @@
 local _M = {}
 local cfg  = require "antibot.core.config"
 local pool = require "antibot.core.redis_pool"
+local goodbot_registry = require "antibot.core.goodbot_registry"
 
 -- ============================================================
 -- Good-bot expensive-request throttle (Hybrid scoring)
@@ -125,21 +126,9 @@ end
 -- Chỉ ảnh hưởng TRẦN TỐC ĐỘ, không ảnh hưởng việc kết nạp: muốn vào nhánh này
 -- vẫn phải qua DNS. Khớp rộng quá thì hậu quả tối đa là siết nhầm lớp, không
 -- phải cho qua nhầm.
-local function class_for_bot(bot, map)
-    local exact = map[bot]
-    if exact then return exact end
-    local best, best_len = nil, 0
-    for k, v in pairs(map) do
-        if #k > best_len and bot:sub(1, #k) == k then
-            best, best_len = v, #k
-        end
-    end
-    return best
-end
-
 local function effective_class(bot)
     local conf       = cfg.rate.good_bot_rate
-    local base_class = class_for_bot(bot, conf.map) or "default"
+    local base_class = goodbot_registry.class_for_bot(bot, conf.map) or "default"
     local agg        = tonumber(pool.safe_get("gb_aggression:" .. bot)) or 0
 
     if agg < conf.promotion_threshold_1 then

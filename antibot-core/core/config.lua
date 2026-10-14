@@ -580,6 +580,10 @@ _M.ip_tour = {
     -- dedicated IP looks "shared" (Tier 1) but has 0 real cookies → stays
     -- IP-bannable. Office/CGNAT/mobile-farm-with-real-victims clear it easily.
     ban_immune_real_min = 3,
+    -- One old-window grace after worker reload lets the new strict HLL warm up.
+    -- It is a rollout guard, not a permanent dual-read: after 90s only
+    -- first-party-cookie cardinality can grant Tier-2 immunity.
+    tier2_migration_grace = 90,
     -- Phase 2 — mobile-farm signature on a shared IP. A benign carrier/office IP
     -- carries many RETURNING users (cookies) so its cookie-ratio stays up; a farm
     -- is mostly ephemeral fresh devices → cookie-ratio ≈ 0. When distinct-UA is

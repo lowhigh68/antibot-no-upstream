@@ -4,6 +4,11 @@ local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 
+-- Per-worker rollout epoch for the new strict HLL. One legacy window is kept
+-- after a reload so an empty new key cannot abruptly revoke an IP's existing
+-- immunity before first-party observations have had time to repopulate it.
+local tier2_strict_started_at
+
 -- IP-Tour detector — antibot's structural advantage on shared hosting.
 --
 -- Every tenant domain funnels through the same OpenResty + same Redis, so a
@@ -50,9 +55,12 @@ local ua_claim = require "antibot.detection.bot.ua_claim"
 -- Storage (Redis HLL — same primitive detection/distributed_swarm.lua uses):
 --   iptour:dom:<ip>    PFADD host      → PFCOUNT = distinct domains
 --   iptour:ua:<ip>     PFADD md5(ua)   → PFCOUNT = distinct UAs (NAT gate)
+--   iptour:ver:<ip>    PFADD md5(cookie) → legacy population for farm ratio
+--   iptour:known:<ip>  PFADD md5(cookie) → known first-party population
 --   iptour:strike:<ip> INCR            → ban-if-repeat counter
 --   iptour:age:<ip>    first-ban stamp → TTL escalation on repeat
--- Counting is one pipeline / request (6 ops, 1 RTT). Fail-open on Redis error.
+-- Counting is one pipeline/request: 8 base ops, up to 12 when both cookie
+-- populations are updated, still one RTT. Fail-open on Redis error.
 
 function _M.run(ctx)
     local c = cfg.ip_tour
@@ -70,6 +78,9 @@ function _M.run(ctx)
     local host = (ctx.req and ctx.req.host) or ngx.var.host
     if not host or host == "" then return true, false end
 
+    local current_time = ngx.time()
+    if not tier2_strict_started_at then tier2_strict_started_at = current_time end
+
     local ua     = ctx.ua or ""
     local window = c.window or 90
 
@@ -82,12 +93,30 @@ function _M.run(ctx)
     local dom_key = "iptour:dom:" .. ip
     local ua_key  = "iptour:ua:" .. ip
     local ver_key = "iptour:ver:" .. ip
+    local known_key = "iptour:known:" .. ip
 
     -- Real-user evidence: distinct cookie-bearing identities on this IP. Feeds
     -- the Tier-2 ban-immunity gate — a bot ROTATING UAs on a dedicated IP looks
     -- "shared" by UA count but carries no real cookies, so it must NOT buy
     -- IP-ban immunity. session_richness>0 means the client presents a cookie.
-    local has_cookie = (ctx.session_richness or 0) > 0
+    -- P1.1 keeps the legacy cookie population for the existing farm ratio, but
+    -- requires first-party evidence for the stronger Tier-2 IP-ban immunity.
+    -- nil means the host registry is immature, so preserve legacy behavior;
+    -- false is authoritative and an arbitrary Cookie header buys no privilege.
+    local raw_cookie = ngx.var.http_cookie or ""
+    local has_cookie = raw_cookie ~= "" and (ctx.session_richness or 0) > 0
+    local known_state = ctx.session_cookie_known
+    local has_known_cookie
+    if known_state == true then
+        has_known_cookie = raw_cookie ~= ""
+        ctx.ip_tier2_cookie_evidence = "known"
+    elseif known_state == false then
+        has_known_cookie = false
+        ctx.ip_tier2_cookie_evidence = has_cookie and "rejected" or "none"
+    else
+        has_known_cookie = has_cookie
+        ctx.ip_tier2_cookie_evidence = has_cookie and "legacy" or "none"
+    end
 
     red:init_pipeline()
     red:pfadd(dom_key, host)
@@ -95,14 +124,18 @@ function _M.run(ctx)
     red:pfadd(ua_key, ngx.md5(ua))
     red:expire(ua_key, window)
     if has_cookie then
-        red:pfadd(ver_key, ngx.md5(ngx.var.http_cookie or ""))
+        red:pfadd(ver_key, ngx.md5(raw_cookie))
         red:expire(ver_key, window)
     end
-    -- 3 PFCOUNTs LAST so their indices are deterministic (#res-2/-1/0)
-    -- regardless of the conditional ver PFADD above.
+    if has_known_cookie then
+        red:pfadd(known_key, ngx.md5(raw_cookie))
+        red:expire(known_key, window)
+    end
+    -- Four PFCOUNTs remain last so conditional writes cannot move indices.
     red:pfcount(dom_key)
     red:pfcount(ua_key)
     red:pfcount(ver_key)
+    red:pfcount(known_key)
     local res, perr = red:commit_pipeline()
     pool.put(red)
 
@@ -112,13 +145,15 @@ function _M.run(ctx)
     end
 
     local n          = #res
-    local domains    = tonumber(res[n - 2]) or 0
-    local uas        = tonumber(res[n - 1]) or 0
-    local real_users = tonumber(res[n])     or 0
+    local domains     = tonumber(res[n - 3]) or 0
+    local uas         = tonumber(res[n - 2]) or 0
+    local real_users  = tonumber(res[n - 1]) or 0
+    local known_users = tonumber(res[n])     or 0
 
     ctx.ip_tour_domains = domains
     ctx.ip_tour_uas     = uas
     ctx.ip_real_users   = real_users
+    ctx.ip_known_users  = known_users
 
     -- Two-tier shared-IP judgment (mobile CGNAT / mobile farm / office WAN — many
     -- real devices behind one IP; one bad device must not punish the rest).
@@ -132,8 +167,13 @@ function _M.run(ctx)
     -- Bad devices on a shared IP are still caught PER-DEVICE (bot_score/headless/
     -- behaviour/anomaly + per-identity ban:<id>), never by IP guilt.
     ctx.ip_shared = uas >= (c.shared_ua_min or 6)
+    local tier2_min = c.ban_immune_real_min or 3
+    local migration_grace = math.max(tonumber(c.tier2_migration_grace) or window, 0)
+    local tier2_warming = current_time - tier2_strict_started_at < migration_grace
+    ctx.ip_tier2_warming = tier2_warming
     ctx.ip_shared_verified = ctx.ip_shared
-        and real_users >= (c.ban_immune_real_min or 3)
+        and (known_users >= tier2_min
+             or (tier2_warming and real_users >= tier2_min))
 
     -- Phase 2 — mobile-farm signature: many distinct UAs but a very low cookie
     -- ratio (benign carrier/office carries many returning cookied users; a farm

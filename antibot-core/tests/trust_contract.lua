@@ -15,6 +15,8 @@ end
 local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
 if src:sub(-1) ~= "/" then src = src .. "/" end
 local resty_md5 = ngx.md5
+package.loaded["antibot.core.goodbot_registry"] =
+    assert(loadfile(src .. "core/goodbot_registry.lua"))()
 
 -- 1. Root and access share one verified-human cookie resolver. A crawler UA
 -- is rejected before Redis even when it carries a valid human cookie.
@@ -313,6 +315,143 @@ do
     }
     eq(engine.run(control), "block",
        "shared ASN without infrastructure-failure proof receives no cap")
+end
+
+-- 5. Tier-2 shared-IP immunity requires first-party cookie evidence on a
+-- mature host, while nil registry state preserves the legacy behavior. The
+-- legacy population remains independent because the mobile-farm challenge
+-- policy is outside P1.1 and must not change as a side effect.
+do
+    local current, calls
+    local red = {}
+    function red:init_pipeline() calls = {} end
+    function red:pfadd(k, v) calls[#calls + 1] = { "pfadd", k, v } end
+    function red:expire(k, ttl) calls[#calls + 1] = { "expire", k, ttl } end
+    function red:pfcount(k) calls[#calls + 1] = { "pfcount", k } end
+    function red:commit_pipeline()
+        local out = {}
+        for i, op in ipairs(calls) do
+            if op[1] ~= "pfcount" then
+                out[i] = 1
+            elseif op[2]:find("iptour:dom:", 1, true) == 1 then
+                out[i] = current.domains or 1
+            elseif op[2]:find("iptour:ua:", 1, true) == 1 then
+                out[i] = current.uas or 6
+            elseif op[2]:find("iptour:ver:", 1, true) == 1 then
+                out[i] = current.real_users or 0
+            elseif op[2]:find("iptour:known:", 1, true) == 1 then
+                out[i] = current.known_users or 0
+            end
+        end
+        return out
+    end
+
+    package.loaded["antibot.core.config"] = {
+        ip_tour = {
+            enabled = true, window = 90, distinct_domains = 5,
+            distinct_ua_max = 3, shared_ua_min = 6,
+            ban_immune_real_min = 3, farm_ua_min = 15,
+            tier2_migration_grace = 0,
+            farm_cookie_ratio_max = 0.15, richness_max = 0.5,
+            strike_ban = 12, ban_ttl = 300, ban_ttl_repeat = 3600,
+        },
+    }
+    package.loaded["antibot.core.redis_pool"] = {
+        get = function() return red end,
+        put = function() end,
+        safe_incr = function() return 0 end,
+    }
+    package.loaded["antibot.core.ip_scope"] = { is_self = function() return false end }
+    package.loaded["antibot.detection.bot.ua_claim"] = {
+        claims_good_bot = function() return false end,
+    }
+    local clock = 1700000000
+    ngx = {
+        WARN = 2, INFO = 1, log = function() end, md5 = resty_md5,
+        time = function() return clock end,
+        var = { host = "tenant.test", http_cookie = "wordpress_logged_in=x" },
+    }
+    local ip_tour = assert(loadfile(src .. "detection/ip_tour.lua"))()
+
+    local function run_case(c, runner)
+        current = c
+        local ctx = {
+            ip = c.ip or "203.0.113.50", ua = "Mozilla/5.0",
+            req = { host = "tenant.test" },
+            session_richness = c.richness or 0.8,
+            session_cookie_known = c.cookie_known,
+        }
+        (runner or ip_tour).run(ctx)
+        return ctx, calls
+    end
+
+    local known, known_calls = run_case {
+        cookie_known = true, real_users = 3, known_users = 3, uas = 6,
+    }
+    eq(known.ip_shared_verified, true,
+       "known first-party population grants Tier-2 immunity")
+    eq(known.ip_tier2_cookie_evidence, "known",
+       "known evidence provenance is explicit")
+    local wrote_known = false
+    for _, call in ipairs(known_calls) do
+        if call[1] == "pfadd" and call[2]:find("iptour:known:", 1, true) == 1 then
+            wrote_known = true
+        end
+    end
+    eq(wrote_known, true, "known cookie enters strict HLL")
+
+    local arbitrary, arbitrary_calls = run_case {
+        ip = "203.0.113.51", cookie_known = false,
+        real_users = 3, known_users = 0, uas = 15,
+    }
+    eq(arbitrary.ip_shared_verified, false,
+       "arbitrary cookie cannot buy Tier-2 immunity on mature host")
+    eq(arbitrary.ip_tier2_cookie_evidence, "rejected",
+       "rejected cookie evidence is distinguishable")
+    local arbitrary_wrote_known = false
+    for _, call in ipairs(arbitrary_calls) do
+        if call[1] == "pfadd" and call[2]:find("iptour:known:", 1, true) == 1 then
+            arbitrary_wrote_known = true
+        end
+    end
+    eq(arbitrary_wrote_known, false, "arbitrary cookie never enters strict HLL")
+    eq(arbitrary.ip_farm_suspect, false,
+       "P1.1 leaves legacy farm ratio semantics unchanged")
+
+    local immature, immature_calls = run_case {
+        ip = "203.0.113.52", cookie_known = nil,
+        real_users = 3, known_users = 3, uas = 6,
+    }
+    eq(immature.ip_shared_verified, true,
+       "immature cookie registry preserves legacy Tier-2 protection")
+    eq(immature.ip_tier2_cookie_evidence, "legacy",
+       "nil registry fallback is observable")
+    local fallback_wrote_known = false
+    for _, call in ipairs(immature_calls) do
+        if call[1] == "pfadd" and call[2]:find("iptour:known:", 1, true) == 1 then
+            fallback_wrote_known = true
+        end
+    end
+    eq(fallback_wrote_known, true, "nil registry state seeds compatibility HLL")
+
+    package.loaded["antibot.core.config"].ip_tour.tier2_migration_grace = 90
+    local rollout = assert(loadfile(src .. "detection/ip_tour.lua"))()
+    local warming = run_case({
+        ip = "203.0.113.53", cookie_known = false,
+        real_users = 3, known_users = 0, uas = 6,
+    }, rollout)
+    eq(warming.ip_tier2_warming, true, "new strict HLL gets one-window rollout grace")
+    eq(warming.ip_shared_verified, true,
+       "rollout grace does not abruptly revoke existing legacy immunity")
+
+    clock = clock + 91
+    local strict = run_case({
+        ip = "203.0.113.53", cookie_known = false,
+        real_users = 3, known_users = 0, uas = 6,
+    }, rollout)
+    eq(strict.ip_tier2_warming, false, "rollout grace expires without dual-read tail")
+    eq(strict.ip_shared_verified, false,
+       "after grace only first-party cardinality grants Tier-2 immunity")
 end
 
 io.write(string.format("trust_contract: %d qua, %d hong\n", pass, fail))
