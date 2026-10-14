@@ -39,7 +39,6 @@ local DEFAULT_WEIGHTS = {
 
     anomaly_score       = 35,
 
-    ip_score            = 25,
     ip_rep              = 45,
 
     asn_rep             = 35,
@@ -89,7 +88,7 @@ local DEFAULT_WEIGHTS = {
     -- auth header). Logged-in user (r=0.8) trừ 24 pts → đẩy fresh-warmup
     -- FP (mismatch + h2_bot_confidence khi connection coalescing) dưới
     -- challenge threshold. Bot fake cookie vẫn phải qua anomaly/h2_bot/
-    -- ip_score → không bypass detection.
+    -- IP reputation/anomaly signals remain independent and cannot bypass detection.
     -- Lưu ý compute loop dưới: pts âm không vào top_signals (filter pts>0.5),
     -- nhưng vẫn trừ vào total. Antibot.log có field richness riêng để debug.
     session_richness    = -30,
@@ -352,7 +351,6 @@ local function get_signal(name, ctx)
     if name == "bot_score"          then return safe_val(ctx.bot_score) end
     if name == "ua_flag"            then return safe_val(ctx.ua_flag) end
     if name == "anomaly_score"      then return safe_val(ctx.anomaly_score) end
-    if name == "ip_score"           then return safe_val(ctx.ip_score) end
     if name == "ip_rep"             then return per_ip_rep(ctx, safe_val(ctx.ip_rep)) end
     if name == "asn_rep"            then return safe_val(ctx.asn_rep) end
     if name == "ip_risk"            then return per_ip_rep(ctx, safe_val(ctx.ip_risk)) end

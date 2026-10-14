@@ -1,10 +1,9 @@
 local _M = {}
 
--- NOTE: the old `intelligence.ip` layer (ip_score.lua) used to overwrite
--- ctx.ip_score = ctx.ip_risk, but ran BEFORE ip_reputation populated ip_risk →
--- it silently zeroed ip_score. Removed: IP-type scoring is disabled at source
--- (core/ctx/init.lua pins ctx.ip_score = 0.0) and per-IP reputation is handled by ip_rep/
--- ip_risk/ext_rep directly. Reviving this layer would double-count ip_risk.
+-- The old `intelligence.ip`/`ip_score` axis has been removed end-to-end.
+-- IP ownership/type is not a reliable user/bot discriminator on shared
+-- hosting. The independent `ip_rep`, `ip_risk` and `ext_rep` axes remain;
+-- reviving `ip_score` would only double-charge IP-level evidence.
 local threat_layer  = require "antibot.intelligence.threat"
 local corr_layer    = require "antibot.intelligence.correlation"
 local scoring_layer = require "antibot.intelligence.scoring"
@@ -12,8 +11,19 @@ local scoring_layer = require "antibot.intelligence.scoring"
 local function safe_run(mod, label, ctx)
     local ok, err = pcall(mod.run, ctx)
     if not ok then
+        -- Preserve fail-open, but make a partial intelligence pipeline visible
+        -- on the same request row. The detailed exception stays in error.log.
+        ctx.intelligence_degraded = true
+        local layers = ctx.intelligence_degraded_layers
+        if type(layers) ~= "table" then
+            layers = {}
+            ctx.intelligence_degraded_layers = layers
+        end
+        layers[#layers + 1] = label
         ngx.log(ngx.ERR, "[intelligence.", label, "] error: ", tostring(err))
+        return false
     end
+    return true
 end
 
 function _M.run(ctx)

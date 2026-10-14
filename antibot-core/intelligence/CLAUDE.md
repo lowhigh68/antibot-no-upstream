@@ -20,7 +20,6 @@ Convert dozens of individual signals (each [0,1]) into a single weighted score [
 | Signal | Weight | Source |
 |---|---|---|
 | `ip_rep` | 45 | Redis `ip_risk:<ip>` |
-| `ip_score` | 25 | core/fingerprint/ip_classify (datacenter/vpn/etc) |
 | `bot_score` | varies | detection/bot |
 | `header_flag` | varies | detection/anomaly/header_anomaly |
 | `ua_flag` | varies | detection/anomaly/ua_anomaly |

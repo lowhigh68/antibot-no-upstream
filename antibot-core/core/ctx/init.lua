@@ -78,14 +78,13 @@ function _M.init(ctx)
     ctx.fp_degraded    = false
 
     ctx.asn            = nil
-    -- IP-type scoring bi VO HIEU CO CHU Y (DC egress = nguoi that: iCloud
-    -- Private Relay, proxy bao mat doanh nghiep, cloud VPN). `ip_classify.lua`
-    -- da bi xoa 2026-09-06 nen DAY LA NOI DUY NHAT dat gia tri; ba noi doc no
-    -- (compute weight 25, cross_layer_rules, l7/rate/adaptive_limit) deu nhan 0.
-    ctx.ip_score       = 0.0
+    -- IP-type scoring da bi go end-to-end: cloud/datacenter ownership khong tu
+    -- no phan biet bot voi user that tren shared hosting. `ip_rep`, `ip_risk`
+    -- va `ext_rep` la cac truc reputation rieng con song.
     ctx.ip_shared      = false       -- Tier 1 (lenient): distinct-UA/IP high → dampen per-IP reputation
     ctx.ip_shared_verified = false   -- Tier 2 (strict): shared AND real cookied users → IP-ban immunity
-    ctx.ip_real_users  = 0           -- distinct cookie-bearing identities on IP (ip_tour)
+    ctx.ip_real_users  = 0           -- legacy cookie-bearing identities (farm ratio)
+    ctx.ip_known_users = 0           -- first-party-cookie identities (Tier-2 immunity)
     ctx.ip_farm_suspect = false      -- Phase 2: shared IP with mobile-farm signature (many UAs, very low cookie-ratio)
     -- Dat boi core/proxy_origin.lua trong STEPS_ADMISSION, truoc local
     -- admission va ip_ban_check.
@@ -137,6 +136,8 @@ function _M.init(ctx)
     ctx.action_reason    = nil
     ctx.top_signals      = {}
     ctx.monitor_flag     = false
+    ctx.intelligence_degraded = false
+    ctx.intelligence_degraded_layers = {}
 
     ctx.corr_rules     = {}
     ctx.mismatch       = 0.0

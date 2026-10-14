@@ -222,7 +222,7 @@ local function handle_whitelist_api()
 
     -- `asn_type_set`/`asn_type_del` ĐÃ GỠ (2026-08-31). Chúng ghi `asn:type:<n>`,
     -- mà khoá đó chảy vào `ctx.ip_net_type` và DỪNG Ở ĐÓ — không module nào đọc
-    -- (`ip_classify.lua:113` ghim `ctx.ip_score = 0.0`, quyết định đúng: iCloud
+    -- (trục `ip_score` đã gỡ end-to-end, quyết định đúng: iCloud
     -- Private Relay / Zscaler / VPN doanh nghiệp khiến "datacenter = đáng ngờ"
     -- thành máy sinh FP). Nút bấm báo thành công rồi không đổi một điểm nào.
     --
