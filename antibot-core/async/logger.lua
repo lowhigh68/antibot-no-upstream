@@ -766,7 +766,7 @@ function _M.run(ctx)
        -- "chua du luu luong" voi "bien khong doc duoc o log phase".
        or ctx.circuit_no_sample then
         circuit_str = string.format(
-            " cb=%s cbmode=%s cbcause=%s cbwould=%s cbprobe=%s cbpslow=%s cbstale=%s cbn=%s cbrps=%s cbslow=%s cbslowcand=%s cberr=%s cbuntil=%s cbfor=%s cbtrans=%s cbdeg=%s cbnosample=%s",
+            " cb=%s cbmode=%s cbcause=%s cbwould=%s cbprobe=%s cbpslow=%s cbstale=%s cbn=%s cbrps=%s cbslow=%s cbslowcand=%s cberr=%s cbuntil=%s cbfor=%s cbtrans=%s cbdeg=%s cbnosample=%s cbactual=%s cbup=%s cbuptime=%s",
             tostring(ctx.circuit_state or "-"),
             tostring(ctx.circuit_mode or "-"),
             tostring(ctx.circuit_cause or "-"),
@@ -785,7 +785,10 @@ function _M.run(ctx)
             tostring(ctx.circuit_open_for or "-"),
             tostring(ctx.circuit_transition or "-"),
             tostring(ctx.circuit_degraded or false),
-            tostring(ctx.circuit_no_sample or false))
+            tostring(ctx.circuit_no_sample or false),
+            tostring(ctx.circuit_actual_status or "-"),
+            tostring(ctx.circuit_actual_upstream_status or "-"),
+            tostring(ctx.circuit_actual_upstream_time or "-"))
     end
 
     -- mismatch telemetry (intelligence/correlation/consistency_check.lua).

@@ -244,6 +244,32 @@ local function max_upstream_time(raw)
     return maximum
 end
 
+-- Keep the real shadow outcome observable without feeding it back into the
+-- state machine.  Nginx may expose a retry chain such as "502, 200" or
+-- "0.012, 0.104"; remove whitespace so each value remains one key=value log
+-- token, retain the separators, and cap it against unexpected log growth.
+local function outcome_log_token(raw)
+    if raw == nil then return nil end
+    local value = tostring(raw):gsub("%s+", "")
+    if value == "" then return nil end
+    value = value:gsub("[^%d%.,:%-]", "_")
+    if #value > 96 then value = value:sub(1, 95) .. "~" end
+    return value
+end
+
+local function capture_actual_outcome(ctx)
+    if not ctx then return end
+
+    local status = tonumber(ngx.status)
+    if status and status >= 100 and status <= 599 then
+        ctx.circuit_actual_status = math.floor(status)
+    end
+    ctx.circuit_actual_upstream_status =
+        outcome_log_token(ngx.var.upstream_status)
+    ctx.circuit_actual_upstream_time =
+        outcome_log_token(ngx.var.upstream_response_time)
+end
+
 local function sample_from_ngx(c)
     local hard = parse_upstream_status(ngx.var.upstream_status)
     if hard == nil then return nil end -- request never reached an upstream
@@ -416,6 +442,13 @@ end
 function _M.after(ctx)
     local c = conf()
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then return end
+
+    -- Capture the counterfactual outcome before deliberately excluding a
+    -- shadow-shed request from learning.  `cbactual`/`cbup`/`cbuptime` answer
+    -- whether an enforced 503 would have replaced a real success or another
+    -- upstream failure, while the early return preserves enforce-equivalent
+    -- state transitions and recovery traffic.
+    capture_actual_outcome(ctx)
     if ctx and ctx.circuit_shadow_reject and not ctx.circuit_probe then return end
 
     -- `nil` = request chua bao gio toi upstream.

@@ -154,6 +154,16 @@ do
     shared.ip_tier2_warming = false
     logger.run(shared)
 
+    local circuit = sample("id-circuit")
+    circuit.circuit_state = "open"
+    circuit.circuit_mode = "shadow"
+    circuit.circuit_cause = "hard"
+    circuit.circuit_would_reject = true
+    circuit.circuit_actual_status = 200
+    circuit.circuit_actual_upstream_status = "502,200"
+    circuit.circuit_actual_upstream_time = "0.050,0.250"
+    logger.run(circuit)
+
     eq(opens, 0, "request log path does not open file synchronously")
 
     local flushes = 0
@@ -188,6 +198,9 @@ do
     end
     ok(payload:find("ideg=threat,scoring", 1, true) ~= nil,
        "partial intelligence pipeline is observable")
+    ok(payload:find(
+           "cbactual=200 cbup=502,200 cbuptime=0.050,0.250", 1, true) ~= nil,
+       "shadow circuit actual upstream outcome is serialized")
     ok(payload:find("ipuas=8 ipru=5 ipku=3 ipsv=true iptev=known iptwarm=false",
                     1, true) ~= nil,
        "Tier-2 legacy/strict populations are observable without ambiguity")

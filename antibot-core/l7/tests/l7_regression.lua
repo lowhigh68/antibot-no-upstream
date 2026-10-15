@@ -776,6 +776,41 @@ eq(ca_shadow.circuit_would_reject, true, "shadow ghi would-reject")
 eq(ca_shadow.circuit_state, "open", "shadow ghi dung state OPEN")
 eq(ca_shadow.circuit_cause, "hard", "shadow giu cause cua OPEN state")
 
+-- Shadow would-request van di toi upstream, nen phai ghi ket qua THAT de do
+-- FP. Tuy nhien ket qua nay khong duoc hoc vao bucket: enforce se shed request
+-- truoc upstream, va shadow phai mo phong cung tap recovery traffic do.
+local shadow_bucket = "cb:a.test:b:" .. tostring(math.floor(clock)) .. ":n"
+local bucket_before_shadow = fake_ngx.shared.antibot_cache:get(shadow_bucket)
+fake_ngx.status = 200
+cbvars("a.test", "502, 200", "0.050, 0.250")
+circuit.after(ca_shadow)
+eq(ca_shadow.circuit_actual_status, 200,
+   "shadow would ghi final HTTP status that")
+eq(ca_shadow.circuit_actual_upstream_status, "502,200",
+   "shadow would giu chuoi retry upstream status trong mot log token")
+eq(ca_shadow.circuit_actual_upstream_time, "0.050,0.250",
+   "shadow would giu chuoi upstream response time")
+eq(fake_ngx.shared.antibot_cache:get(shadow_bucket), bucket_before_shadow,
+   "telemetry shadow would khong hoc vao circuit bucket")
+
+-- Mot lop sau circuit co the tu choi request truoc upstream. Van phai thay
+-- final status that, nhung cbup/cbuptime rong de khong nham 429 noi bo voi
+-- loi backend.
+local local_shadow = cbctx("dynamic")
+local _, local_shadow_exit = circuit.before(local_shadow)
+eq(local_shadow_exit, false, "shadow would van di tiep toi cac lop sau")
+fake_ngx.status = 429
+cbvars("a.test", nil, nil)
+circuit.after(local_shadow)
+eq(local_shadow.circuit_actual_status, 429,
+   "shadow would bi lop sau chan van ghi final status")
+eq(local_shadow.circuit_actual_upstream_status, nil,
+   "request khong cham upstream khong gia mao upstream status")
+eq(local_shadow.circuit_actual_upstream_time, nil,
+   "request khong cham upstream khong gia mao upstream time")
+eq(fake_ngx.shared.antibot_cache:get(shadow_bucket), bucket_before_shadow,
+   "shadow would bi chan noi bo van khong hoc vao circuit bucket")
+
 -- Host B doc lap: A OPEN khong duoc lam B bi shed.
 cbvars("b.test", nil, nil)
 local cb = cbctx("dynamic")
