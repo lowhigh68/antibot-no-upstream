@@ -514,7 +514,10 @@ _M.l7_circuit_breaker = {
     -- 1% tap cua so cua may do. `min_samples=30` vi vay la san chon loc, khong
     -- phai code ngu: no van bat duoc duoi phan phoi tai thoi diem host co tai
     -- lien tuc. Voi dung 30 mau, `hard_error_ratio=0.30` doi hoi 9 loi
-    -- 502/503/504 trong 10 giay moi mo state machine.
+    -- 502/503/504 trong 10 giay moi dat CANDIDATE. OPEN chi xay ra khi lan
+    -- danh gia ke tiep van vuot nguong VA bucket mot giay moi hoan tat van co
+    -- hard error. Day la cong freshness: loi cu trong cua so 10 giay khong
+    -- duoc mo circuit sau khi backend da phuc hoi.
     --
     -- Day la CONG LUU LUONG DUY NHAT. `rps=total/window` van duoc log de do,
     -- nhung khong co cong RPS thu hai: voi window co dinh, them ca hai chi la

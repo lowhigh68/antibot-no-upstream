@@ -766,7 +766,7 @@ function _M.run(ctx)
        -- "chua du luu luong" voi "bien khong doc duoc o log phase".
        or ctx.circuit_no_sample then
         circuit_str = string.format(
-            " cb=%s cbmode=%s cbcause=%s cbwould=%s cbprobe=%s cbpslow=%s cbstale=%s cbn=%s cbrps=%s cbslow=%s cbslowcand=%s cberr=%s cbuntil=%s cbfor=%s cbtrans=%s cbdeg=%s cbnosample=%s cbactual=%s cbup=%s cbuptime=%s",
+            " cb=%s cbmode=%s cbcause=%s cbwould=%s cbprobe=%s cbpslow=%s cbstale=%s cbn=%s cbrps=%s cbslow=%s cbslowcand=%s cberr=%s cbcand=%s cblastn=%s cblasth=%s cbuntil=%s cbfor=%s cbtrans=%s cbdeg=%s cbnosample=%s cbactual=%s cbup=%s cbuptime=%s",
             tostring(ctx.circuit_state or "-"),
             tostring(ctx.circuit_mode or "-"),
             tostring(ctx.circuit_cause or "-"),
@@ -781,6 +781,9 @@ function _M.run(ctx)
             tostring(ctx.circuit_slow_candidate or false),
             ctx.circuit_hard_ratio
                 and string.format("%.3f", ctx.circuit_hard_ratio) or "-",
+            tostring(ctx.circuit_candidate or "-"),
+            tostring(ctx.circuit_recent_total or "-"),
+            tostring(ctx.circuit_recent_hard or "-"),
             tostring(ctx.circuit_open_until or "-"),
             tostring(ctx.circuit_open_for or "-"),
             tostring(ctx.circuit_transition or "-"),

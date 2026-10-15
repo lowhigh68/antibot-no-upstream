@@ -762,10 +762,22 @@ eq(ca2.circuit_transition, nil,
 clock = 602
 local ca3 = cbctx("dynamic")
 circuit.after(ca3)
-eq(ca3.circuit_transition, "closed>open", "hard-error du nguong mo breaker")
+eq(ca3.circuit_transition, nil, "lan vuot nguong dau chi dat candidate")
+eq(ca3.circuit_candidate, "set", "candidate hard duoc ghi ro telemetry")
+eq(ca3.circuit_total, 2, "evaluator doc hai bucket da hoan tat")
+eq(ca3.circuit_recent_hard, 1, "candidate thay hard o bucket moi nhat")
+eq(fake_ngx.shared.antibot_cache:get("cb:a.test:open_until"), nil,
+   "candidate chua duoc mo breaker")
+
+clock = 603
+cbvars("a.test", "503", "0.100")
+ca3 = cbctx("dynamic")
+circuit.after(ca3)
+eq(ca3.circuit_transition, "closed>open",
+   "hai bucket hard lien tiep moi mo breaker")
+eq(ca3.circuit_candidate, "confirm", "OPEN ghi ro candidate da xac nhan")
 eq(ca3.circuit_state, "open", "host A vao OPEN")
 eq(ca3.circuit_cause, "hard", "OPEN ghi ro nguyen nhan hard")
-eq(ca3.circuit_total, 2, "evaluator doc hai bucket da hoan tat")
 ok(ca3.circuit_open_until > clock, "OPEN co deadline")
 
 -- Shadow mo hinh hoa phan quyet nhung tuyet doi khong 503.
@@ -958,6 +970,164 @@ circuit.after(c404)
 eq(c404.circuit_transition, nil, "404 khong mo circuit breaker")
 eq(c404.circuit_hard_ratio, 0, "404 khong tinh hard error")
 
+-- Mau production quatructuyen.vn: aggregate 10 giay van vuot nguong, nhung
+-- bucket moi nhat da khoe. Ban cu OPEN sau khi backend phuc hoi; freshness gate
+-- phai xoa candidate va de request tiep tuc di qua.
+do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.l7_circuit_breaker.min_samples = 2
+    cfg.l7_circuit_breaker.hard_error_ratio = 0.5
+    clock = 750
+    cbvars("recovered-before-open.test", "503", "2.500")
+    circuit.after(cbctx("dynamic"))
+    clock = 751
+    cbvars("recovered-before-open.test", "503", "2.500")
+    circuit.after(cbctx("dynamic"))
+    clock = 752
+    cbvars("recovered-before-open.test", "200", "0.100")
+    local recovered_candidate = cbctx("dynamic")
+    circuit.after(recovered_candidate)
+    eq(recovered_candidate.circuit_candidate, "set",
+       "loi cu vuot nguong chi dat candidate")
+    clock = 753
+    cbvars("recovered-before-open.test", "200", "0.100")
+    local recovered_clear = cbctx("dynamic")
+    circuit.after(recovered_clear)
+    eq(recovered_clear.circuit_hard_ratio, 2 / 3,
+       "aggregate cu van con vuot nguong khi backend da khoe")
+    eq(recovered_clear.circuit_recent_hard, 0,
+       "bucket moi nhat chung minh khong con hard error")
+    eq(recovered_clear.circuit_candidate, "clear_recent",
+       "freshness gate xoa candidate loi cu")
+    eq(recovered_clear.circuit_transition, nil,
+       "backend da khoe khong bi mo circuit muon")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:recovered-before-open.test:open_until"), nil,
+       "loi stale khong tao OPEN state")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:recovered-before-open.test:candidate"), nil,
+       "candidate stale duoc xoa khoi shared dict")
+end
+
+-- Hai lan vuot nguong phai thuoc hai bucket HOAN TAT lien tiep. Candidate cu
+-- khong duoc nhay qua mot giay trong roi xac nhan bang bang chung moi.
+do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.l7_circuit_breaker.min_samples = 2
+    cfg.l7_circuit_breaker.hard_error_ratio = 0.5
+    clock = 760
+    fake_ngx.shared.antibot_cache:set(
+        "cb:gap-candidate.test:b:758:n", 1, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:gap-candidate.test:b:758:h", 1, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:gap-candidate.test:b:759:n", 1, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:gap-candidate.test:b:759:h", 1, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:gap-candidate.test:candidate", 757, 30)
+    cbvars("gap-candidate.test", "503", "0.100")
+    local gap_restart = cbctx("dynamic")
+    circuit.after(gap_restart)
+    eq(gap_restart.circuit_candidate, "restart",
+       "candidate cach bucket moi mot khoang phai khoi dong lai")
+    eq(gap_restart.circuit_transition, nil,
+       "bang chung khong lien tiep khong duoc OPEN")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:gap-candidate.test:candidate"), 759,
+       "restart neo candidate vao bucket moi nhat")
+
+    clock = 761
+    cbvars("gap-candidate.test", "503", "0.100")
+    local gap_confirm = cbctx("dynamic")
+    circuit.after(gap_confirm)
+    eq(gap_confirm.circuit_candidate, "confirm",
+       "bucket hard lien tiep sau restart duoc xac nhan")
+    eq(gap_confirm.circuit_transition, "closed>open",
+       "restart chi OPEN sau cap bucket lien tiep moi")
+end
+
+-- Candidate phai duoc DON khi aggregate tut xuong duoi nguong. Khong don thi
+-- no song het TTL (`interval * 3 + 2`) va mot dot loi RIENG BIET sau do chi can
+-- MOT bucket hard de OPEN — tuc gate hai-bucket bi vo hieu dung luc no can
+-- nhat. Dot bien: go nhanh `clear_threshold` thi toan bo suite van xanh truoc
+-- khi co hai phep nay.
+do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.l7_circuit_breaker.min_samples = 2
+    cfg.l7_circuit_breaker.hard_error_ratio = 0.5
+    -- Can BA tick: hai de do day bucket, tick thu ba moi doc duoc
+    -- `min_samples=2` tu cac bucket DA HOAN TAT va dat candidate.
+    clock = 770
+    cbvars("candidate-cleanup.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    clock = 771
+    cbvars("candidate-cleanup.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    -- Tick nay KHOE: bucket 771 van hard nen aggregate con vuot nguong va
+    -- candidate duoc dat, nhung request hien tai khong them hard moi.
+    clock = 772
+    cbvars("candidate-cleanup.test", "200", "0.100")
+    local armed = cbctx("dynamic")
+    circuit.after(armed)
+    eq(armed.circuit_candidate, "set", "dot loi dau dat candidate")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:candidate-cleanup.test:candidate"), 771,
+       "candidate neo vao bucket da hoan tat")
+
+    -- Luu luong khoe keo aggregate xuong duoi nguong. Phai bat NGAY tick dau
+    -- tien aggregate tut duoi nguong: cac tick sau do candidate DA bi xoa, nen
+    -- `circuit_candidate` tro lai nil va phep kiem se bao oan (da mac dung loi
+    -- nay mot lan — `dict=nil` trong probe la cai chi ra).
+    --
+    -- 4 hard (770-772 + bucket dang ghi) / 10 giay: can du khoe de ratio < 0.5.
+    local cleared
+    for i = 773, 790 do
+        clock = i
+        cbvars("candidate-cleanup.test", "200", "0.100")
+        local tick = cbctx("dynamic")
+        circuit.after(tick)
+        if tick.circuit_candidate == "clear_threshold" then
+            cleared = tick
+            break
+        end
+    end
+    ok(cleared ~= nil,
+       "aggregate duoi nguong phai DON candidate (bat o tick dau tien)")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:candidate-cleanup.test:candidate"), nil,
+       "candidate bi xoa khoi shared dict, khong song het TTL")
+end
+
+-- `trip()` xoa candidate. LUU Y GIOI HAN CUA PHEP NAY: go dong `delete_key`
+-- trong `trip()` thi suite VAN xanh, vi `close_after_probe()` cung xoa khoa do
+-- khi breaker ve CLOSED — nen tren duong di binh thuong khong quan sat duoc su
+-- khac biet. Giu ca hai la phong ve nhieu lop (neu OPEN het han ma khong qua
+-- probe thi `trip()` moi la noi don), khong phai ma trung lap. Phep duoi chi
+-- ghim trang thai SAU trip; dung tin no bat duoc viec go dong do.
+do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.l7_circuit_breaker.min_samples = 2
+    cfg.l7_circuit_breaker.hard_error_ratio = 0.5
+    clock = 790
+    cbvars("trip-cleanup.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    clock = 791
+    cbvars("trip-cleanup.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    clock = 792
+    cbvars("trip-cleanup.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    clock = 793
+    cbvars("trip-cleanup.test", "503", "0.100")
+    local tripped = cbctx("dynamic")
+    circuit.after(tripped)
+    eq(tripped.circuit_transition, "closed>open", "hai bucket hard mo breaker")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:trip-cleanup.test:candidate"), nil,
+       "trip() xoa candidate de khong ro ri sang chu ky sau")
+end
+
 -- Slow 200 chi la candidate telemetry. Du 100% cham cung KHONG duoc ghi OPEN.
 fake_ngx.shared.antibot_cache = Dict.new()
 clock = 800
@@ -1023,7 +1193,8 @@ eq(ignored.circuit_evaluated, nil,
 
 -- Dung 3 req/s trong 10 giay = 30 mau. Ban cu doc bucket hien tai moi co
 -- mot request nen chi thay 28 va khong bao gio mo; complete buckets phai mo o
--- request dau giay 11 voi dung n=30, rps=3.
+-- request dau giay 11 voi dung n=30, rps=3. Freshness gate dat candidate;
+-- bucket hard lien tiep tiep theo moi duoc OPEN.
 fake_ngx.shared.antibot_cache = Dict.new()
 cfg.l7_circuit_breaker.min_samples = 30
 cfg.l7_circuit_breaker.hard_error_ratio = 1
@@ -1041,12 +1212,26 @@ for sec = 0, 9 do
 end
 clock = 1010.1
 cbvars("exact3.test", "503", "0.100")
+exact3_last = cbctx("dynamic")
+circuit.after(exact3_last)
+eq(exact3_last.circuit_transition, nil,
+   "dung 3rps dat candidate sau 10 bucket hoan tat")
+eq(exact3_last.circuit_candidate, "set", "3rps dat candidate dau")
+eq(exact3_last.circuit_total, 30, "3rps co dung 30 mau")
+eq(exact3_last.circuit_rps, 3, "config 3rps khop hanh vi 3rps")
+for hit = 2, 3 do
+    clock = 1010 + hit / 10
+    cbvars("exact3.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+end
+clock = 1011.1
+cbvars("exact3.test", "503", "0.100")
 local exact3_trip = cbctx("dynamic")
 circuit.after(exact3_trip)
 eq(exact3_trip.circuit_transition, "closed>open",
-   "dung 3rps mo sau 10 bucket hoan tat")
-eq(exact3_trip.circuit_total, 30, "3rps co dung 30 mau")
-eq(exact3_trip.circuit_rps, 3, "config 3rps khop hanh vi 3rps")
+   "3rps hard lien tuc mo sau mot bucket xac nhan")
+eq(exact3_trip.circuit_candidate, "confirm",
+   "3rps OPEN qua candidate xac nhan")
 
 -- Tach `min_samples` khoi RPS dan xuat: cung 30 mau nhung cua so 20s chi co
 -- rps=1.5 van PHAI du dieu kien. Neu ai khoi phuc cong RPS cu voi fallback 3,
@@ -1067,14 +1252,29 @@ for sec = 0, 9 do
 end
 clock = 1060.1
 cbvars("sample-gate.test", "503", "0.100")
+sample_gate_last = cbctx("dynamic")
+circuit.after(sample_gate_last)
+eq(sample_gate_last.circuit_transition, nil,
+   "30 mau dat candidate du rps dan xuat chi 1.5")
+eq(sample_gate_last.circuit_candidate, "set",
+   "min_samples doc lap RPS van dat candidate")
+eq(sample_gate_last.circuit_total, 30,
+   "cua so 20s van dung cong min_samples=30")
+eq(sample_gate_last.circuit_rps, 1.5,
+   "rps chi la telemetry total/window, khong phai cong")
+for hit = 2, 3 do
+    clock = 1060 + hit / 10
+    cbvars("sample-gate.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+end
+clock = 1061.1
+cbvars("sample-gate.test", "503", "0.100")
 local sample_gate_trip = cbctx("dynamic")
 circuit.after(sample_gate_trip)
 eq(sample_gate_trip.circuit_transition, "closed>open",
-   "30 mau la du du rps dan xuat chi 1.5")
-eq(sample_gate_trip.circuit_total, 30,
-   "cua so 20s van dung cong min_samples=30")
-eq(sample_gate_trip.circuit_rps, 1.5,
-   "rps chi la telemetry total/window, khong phai cong")
+   "hard lien tuc xac nhan min_samples du RPS chi 1.65")
+eq(sample_gate_trip.circuit_candidate, "confirm",
+   "cua so 20s cung di qua freshness gate")
 cfg.l7_circuit_breaker.window_seconds = 10
 
 -- Circuit breaker khong hua chan burst duoi mot giay: evaluator dau giay thay
@@ -1096,12 +1296,22 @@ clock = 1101.1
 cbvars("burst.test", "503", "0.100")
 local burst_next_second = cbctx("dynamic")
 circuit.after(burst_next_second)
-eq(burst_next_second.circuit_transition, "closed>open",
-   "request giay sau thay tron burst cua giay truoc")
+eq(burst_next_second.circuit_transition, nil,
+   "request giay sau thay burst nhung chi dat candidate")
+eq(burst_next_second.circuit_candidate, "set",
+   "burst mot giay phai qua freshness candidate")
 eq(burst_next_second.circuit_total, 100,
    "evaluator giay sau doc du 100 mau")
 eq(burst_next_second.circuit_rps, 10,
    "burst 100 mau tren cua so 10s thanh 10rps")
+clock = 1102.1
+cbvars("burst.test", "503", "0.100")
+burst_next_second = cbctx("dynamic")
+circuit.after(burst_next_second)
+eq(burst_next_second.circuit_transition, "closed>open",
+   "hard o bucket ke tiep moi xac nhan burst con tiep dien")
+eq(burst_next_second.circuit_candidate, "confirm",
+   "burst lien tuc mo qua candidate xac nhan")
 
 cfg.l7_circuit_breaker = old_circuit
 

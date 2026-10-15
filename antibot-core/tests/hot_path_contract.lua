@@ -162,6 +162,9 @@ do
     circuit.circuit_actual_status = 200
     circuit.circuit_actual_upstream_status = "502,200"
     circuit.circuit_actual_upstream_time = "0.050,0.250"
+    circuit.circuit_candidate = "clear_recent"
+    circuit.circuit_recent_total = 7
+    circuit.circuit_recent_hard = 0
     logger.run(circuit)
 
     eq(opens, 0, "request log path does not open file synchronously")
@@ -201,6 +204,9 @@ do
     ok(payload:find(
            "cbactual=200 cbup=502,200 cbuptime=0.050,0.250", 1, true) ~= nil,
        "shadow circuit actual upstream outcome is serialized")
+    ok(payload:find(
+           "cbcand=clear_recent cblastn=7 cblasth=0", 1, true) ~= nil,
+       "circuit freshness candidate is serialized")
     ok(payload:find("ipuas=8 ipru=5 ipku=3 ipsv=true iptev=known iptwarm=false",
                     1, true) ~= nil,
        "Tier-2 legacy/strict populations are observable without ambiguity")

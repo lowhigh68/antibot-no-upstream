@@ -14,17 +14,19 @@
 -- phase performs one state lookup; log phase updates short fixed buckets and
 -- elects at most one evaluator per host/second.  Evaluation reads only fully
 -- completed one-second buckets.  The only volume gate is `min_samples`; RPS is
--- derived telemetry (`total/window`), not a second threshold.  With the default
--- 30 samples/10 seconds this is an observed average of 3 req/s, at the
--- deliberate cost of about one second detection latency.  Same-second bursts
--- belong to admission.lua.  No Redis/cosocket is used.
+-- derived telemetry (`total/window`), not a second threshold.  A first breach
+-- becomes a candidate.  OPEN requires the next completed one-second bucket to
+-- breach again and still contain a hard error, so stale failures cannot open a
+-- host that has already recovered.  With the default 30 samples/10 seconds this
+-- adds one confirmation bucket to the observed average floor of 3 req/s.
+-- Same-second bursts belong to admission.lua.  No Redis/cosocket is used.
 --
 -- SAN LUU LUONG, do tren harness voi backend chet 100% trong 60 giay:
 --   1-2 req/s  -> KHONG BAO GIO mo (khong du 30 mau/10s)
---   3 req/s    -> mo o giay 10
---   4 req/s    -> giay 8
---   10 req/s   -> giay 3
---   30 req/s   -> giay 1
+--   3 req/s    -> candidate giay 10, mo o giay 11 neu loi con tiep dien
+--   4 req/s    -> candidate giay 8,  mo o giay 9
+--   10 req/s   -> candidate giay 3,  mo o giay 4
+--   30 req/s   -> candidate giay 1,  mo o giay 2
 -- Day la y dinh: mot host 1 req/s khong lam can PHP pool, nen 503 cho no la FP
 -- thuan. Nhung tren dan may nay phan lon host nam duoi san do (do 171-96 04-10:
 -- `phuson.vn` 752 hit/24h ~ 0,009 req/s), nen breaker thuc te chi bao ve vai
@@ -357,6 +359,7 @@ local function trip(dict, ctx, c, host, metrics, t, old_state, cause)
         if ctx then ctx.circuit_degraded = true end
     end
     delete_key(dict, key(host, "probe_ok"))
+    delete_key(dict, key(host, "candidate"))
     if ctx then ctx.circuit_open_until = open_until end
     transition(ctx, c, host, old_state or "closed", "open", metrics, duration,
         cause)
@@ -391,6 +394,7 @@ local function close_after_probe(dict, ctx, c, host, sample, t)
     delete_key(dict, key(host, "open_until"))
     delete_key(dict, key(host, "cause"))
     delete_key(dict, key(host, "probe_ok"))
+    delete_key(dict, key(host, "candidate"))
     clear_sample_window(dict, c, host, t)
     transition(ctx, c, host, "half_open", "closed", {
         total = count,
@@ -434,6 +438,18 @@ local function evaluate_thresholds(c, metrics)
         hard            = eligible and metrics.hard_ratio >= hard_ratio,
         slow_candidate  = eligible and metrics.slow_ratio >= slow_ratio,
     }
+end
+
+local function store_candidate(dict, host, completed_second, ttl, ctx, state)
+    local ok, err = dict:set(
+        key(host, "candidate"), completed_second, ttl)
+    if not ok then
+        log_dict_error("candidate", err)
+        if ctx then ctx.circuit_degraded = true end
+        return false
+    end
+    if ctx then ctx.circuit_candidate = state end
+    return true
 end
 
 -- Log phase.  Only a request with a real upstream sample is learned.  Requests
@@ -558,8 +574,13 @@ function _M.after(ctx)
     -- won this evaluator slot, so it is necessarily partial.  Read the prior
     -- complete window instead.  At exactly 3 req/s this yields 30/10, rather
     -- than the old 28/10 caused by nine full seconds plus one current sample.
-    local metrics = read_window(dict, host, second - 1, window)
+    local completed_second = second - 1
+    local metrics = read_window(dict, host, completed_second, window)
     local thresholds = evaluate_thresholds(c, metrics)
+    local recent_total = tonumber(dict:get(
+        key(host, "b:" .. completed_second .. ":n"))) or 0
+    local recent_hard = tonumber(dict:get(
+        key(host, "b:" .. completed_second .. ":h"))) or 0
     set_ctx(ctx, {
         circuit_evaluated  = true,
         circuit_state      = "closed",
@@ -570,6 +591,8 @@ function _M.after(ctx)
         circuit_rps        = metrics.rps,
         circuit_slow_ratio = metrics.slow_ratio,
         circuit_hard_ratio = metrics.hard_ratio,
+        circuit_recent_total = recent_total,
+        circuit_recent_hard  = recent_hard,
     })
 
     -- A request that started while CLOSED may finish after another worker has
@@ -577,9 +600,52 @@ function _M.after(ctx)
     local open_until = tonumber(dict:get(key(host, "open_until")))
     if open_until then return end
 
-    if thresholds.hard then
-        trip(dict, ctx, c, host, metrics, t, "closed", "hard")
+    local candidate_key = key(host, "candidate")
+    local candidate_second = tonumber(dict:get(candidate_key))
+
+    if not thresholds.hard then
+        if candidate_second then
+            delete_key(dict, candidate_key)
+            if ctx then ctx.circuit_candidate = "clear_threshold" end
+        end
+        return
     end
+
+    -- The first aggregate breach only arms a short-lived candidate.  Store the
+    -- newest COMPLETED second, not evaluator wall time: sub-second evaluator
+    -- settings or scheduling jitter must not manufacture two confirmations
+    -- from the same evidence.
+    local candidate_ttl = math.max(interval * 3 + 2, 5)
+    if not candidate_second then
+        store_candidate(dict, host, completed_second, candidate_ttl, ctx, "set")
+        return
+    end
+
+    -- A future/same-second value can only come from an adjacent evaluator race.
+    -- Never move it backwards or confirm the same completed bucket twice.
+    if candidate_second >= completed_second then
+        if ctx then ctx.circuit_candidate = "hold" end
+        return
+    end
+
+    if candidate_second == completed_second - 1 and recent_hard > 0 then
+        delete_key(dict, candidate_key)
+        if ctx then ctx.circuit_candidate = "confirm" end
+        trip(dict, ctx, c, host, metrics, t, "closed", "hard")
+        return
+    end
+
+    -- Either a completed second was skipped or the freshest bucket no longer
+    -- contains a hard failure.  No stale 10-second aggregate may open the host.
+    if recent_hard <= 0 then
+        delete_key(dict, candidate_key)
+        if ctx then ctx.circuit_candidate = "clear_recent" end
+        return
+    end
+
+    -- Traffic/evaluation had a gap, but the newest bucket is hard again.  Start
+    -- a fresh pair instead of treating non-contiguous evidence as confirmation.
+    store_candidate(dict, host, completed_second, candidate_ttl, ctx, "restart")
 end
 
 return _M
