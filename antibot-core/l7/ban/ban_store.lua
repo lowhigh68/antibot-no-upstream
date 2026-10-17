@@ -2,35 +2,43 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+local quarantine = require "antibot.core.network_quarantine"
 
-local ESCALATE_RATE_LIMIT = 60   -- 1 viol incr / 60s tối đa per identity
-
--- Grace period sau lần ban đầu tiên: user mất mạng / mất internet vài phút,
--- F5 retry → 403 → nếu escalate ngay sẽ thành permanent ban oan. Đợi 5 phút
--- mới escalate — bot persistent vẫn vượt threshold này, user thường giải
--- quyết network rồi quay lại sau ban TTL.
-local BAN_ESCALATE_GRACE = 300
-
--- Ngưỡng "phiên đã thiết lập" (đăng nhập) — GIỮ ĐỒNG BỘ với
--- enforcement/decision/engine.lua AUTH_SESSION_RICHNESS + cfg.ip_tour.richness_max.
+-- A session established by this host may pass a coarse network-UA seal. This
+-- is not a whitelist: the request continues through the live pipeline.
 local SHARED_ID_RICHNESS = 0.5
 
--- Phán quyết "UA khai good bot nhưng xác minh DNS/attest TRƯỢT".
--- GHI bởi detection/bot/init.lua, ĐỌC ở đây. Giữ đồng bộ tên tiền tố hai file.
+-- Keep these in sync with detection/bot/init.lua. A previously proved crawler
+-- is allowed to re-enter verification unless a fresh contradicted verdict is
+-- present for the same network-UA subject.
 local FAKE_VERDICT_PREFIX = "botverdict:fake:"
 local CRAWLER_PREFIX      = "crawler:"
 
+local function selected_seal(results, host_keys, global_keys, legacy_keys, legacy_read)
+    if results and results[2] == "1" then return global_keys, false end
+    if results and results[3] == "1" then return host_keys, false end
+    if legacy_read and results and results[4] == "1" then
+        return legacy_keys, true
+    end
+    return nil, false
+end
+
 function _M.run(ctx)
-    -- PHẢI cùng order với enforcement/ban/ban_store_write.lua (identity trước
-    -- fp_light). identity = md5(ip+ua_norm); fp_light = md5(ip+ua+asn+ja3).
-    -- (h2_sig BO khoi fp_light tu 73b413d — no la van tay cua REQUEST.)
-    -- Hai hash KHÁC NHAU → nếu order ngược, write key X mà read key Y →
-    -- ban Redis tồn tại nhưng không bao giờ được tìm thấy → bot lọt mãi.
-    local id = ctx.identity or ctx.fp_light
+    local qcfg = cfg.network_quarantine or {}
+    if qcfg.enabled == false then
+        ctx.banned = false
+        return false, false
+    end
+
+    local id = quarantine.network_id(ctx)
     if not id or id == "" then
         ctx.banned = false
         return false, false
     end
+
+    local host_keys   = quarantine.keys(ctx, "host")
+    local global_keys = quarantine.keys(ctx, "global")
+    local legacy_keys = quarantine.legacy_keys(ctx)
 
     local red, err = pool.get()
     if not red then
@@ -39,18 +47,17 @@ function _M.run(ctx)
         return false, false
     end
 
-    -- One round-trip: operator identity-whitelist (admin UI "Whitelist identity")
-    -- + ban state. wl:id takes precedence and bypasses the pipeline.
+    -- One round trip. New host/global namespaces are authoritative. The old
+    -- ban:<id> namespace is read-only during migration and expires naturally.
     red:init_pipeline()
     red:get("wl:id:" .. id)
-    red:get("ban:" .. id)
+    red:get(global_keys.ban)
+    red:get(host_keys.ban)
+    if qcfg.legacy_read ~= false then red:get(legacy_keys.ban) end
     local res = red:commit_pipeline()
     pool.put(red)
 
-    local wl_val = res and res[1]
-    local val    = res and res[2]
-
-    if wl_val == "1" then
+    if res and res[1] == "1" then
         ctx.whitelisted   = true
         ctx.action_reason = "id_whitelist"
         ctx.banned        = false
@@ -58,159 +65,92 @@ function _M.run(ctx)
         return false, false
     end
 
-    if val == "1" then
-        -- Defer nếu UA claim good bot — để DNS verify ở detection/bot quyết định.
-        --
-        -- NHƯNG chỉ defer khi CHƯA có phán quyết "xác minh trượt" còn hiệu lực.
-        -- Defer vô điều kiện khiến `ban:<id>` VÔ NGHĨA với mọi UA chứa "bot":
-        -- mỗi request lại chạy trọn pipeline + một truy vấn DNS ngược, rồi lại
-        -- bị chặn bằng chấm điểm, rồi viol++ — mãi mãi. Đo trên production
-        -- 2026-08-04: Amazonbot/GPTBot có ban_ttl=-1 (vĩnh viễn) mà viol vẫn
-        -- leo tới 199 và 163, tức lệnh cấm chưa từng được thi hành lần nào.
-        --
-        -- Phán quyết TTL 1800s ⇒ cứ ~30 phút bot được xác minh lại một lần
-        -- (khoá seal ở đây nên detection/bot không chạy → phán quyết không được
-        -- làm mới → tự hết hạn). Bot dựng đúng PTR/A là tự thoát, không cần
-        -- thao tác tay. Chi phí giảm từ "mỗi request một DNS" xuống "30 phút một DNS".
-        local ua = ctx.ua or ngx.var.http_user_agent or ""
-        if ua_claim.claims_good_bot(ua)
-           and ctx.ip and pool.safe_get(CRAWLER_PREFIX .. ctx.ip) == "1"
-           and pool.safe_get(FAKE_VERDICT_PREFIX .. id) ~= "1" then
-            ngx.log(ngx.INFO,
-                "[ban_store] defer good_bot_claim id=", id:sub(1, 8),
-                " ua=", ua:sub(1, 60))
-            ctx.banned          = false
-            -- Cờ cho detection/bot/init.lua: CHỈ identity đang bị cấm mới cần
-            -- ghi phán quyết. Không có cờ này thì mọi bot giả danh (kể cả chưa
-            -- bị cấm) đều tốn một SETEX mỗi request mà không ai đọc.
-            ctx.ban_deferred_gb = true
-            return false, false
-        end
+    local keys, legacy = selected_seal(
+        res, host_keys, global_keys, legacy_keys, qcfg.legacy_read ~= false)
+    if not keys then
+        ctx.banned = false
+        return false, false
+    end
 
-        -- ── Shared-identity FP guard (Fix A + Fix B) ─────────────────────
-        -- identity = md5(ip+ua_norm), mà ua_norm gộp Chrome về "Chrome/<major>"
-        -- (bỏ minor/build/OS) → cả một văn phòng (chung IP NAT + cùng major
-        -- browser) COLLAPSE về MỘT identity. ban:<id> khi đó KHÔNG per-device mà
-        -- per-(IP, browser-major) → một ban khóa cả văn phòng, và mỗi F5 của mọi
-        -- người còn escalate ban tới permanent. Hai lối thoát cho NGƯỜI THẬT,
-        -- giữ nguyên seal cho bot (richness~0, không giải nổi PoW):
-        -- Chi state cua CHINH request + cookie da biet la first-party moi duoc
-        -- no seal shared-identity. Cookie rac/di san Redis khong phai auth.
-        local richness = ctx.session_richness_own or 0
+    ctx.ban_id        = id
+    ctx.ban_id_kind   = "network_ua"
+    ctx.ban_scope     = keys.scope
+    ctx.ban_host      = keys.host
+    ctx.ban_key       = keys.ban
+    ctx.ban_legacy    = legacy
 
-        -- Fix A — phiên đã đăng nhập. session_richness tính PER-REQUEST từ
-        -- cookie/auth của CHÍNH request → phân biệt được từng người trong cùng
-        -- identity hash bị collapse. Bỏ seal + KHÔNG escalate, trả về pipeline
-        -- cho scoring phán LIVE (score~0 → allow). Nhất quán auth_session_cap
-        -- (engine) nhưng áp ở ĐÚNG tầng — ban read seal TRƯỚC khi engine chạy.
-        if richness >= SHARED_ID_RICHNESS
-           and ctx.session_cookie_known == true then
-            ngx.log(ngx.INFO, "[ban_store] richness_bypass id=", id:sub(1, 8),
-                " r=", string.format("%.2f", richness))
-            ctx.banned = false
-            return false, false
-        end
+    local ua = ctx.ua or ngx.var.http_user_agent or ""
+    if ua_claim.claims_good_bot(ua)
+       and ctx.ip and pool.safe_get(CRAWLER_PREFIX .. ctx.ip) == "1"
+       and pool.safe_get(FAKE_VERDICT_PREFIX .. id) ~= "1" then
+        ngx.log(ngx.INFO,
+            "[ban_store] defer good_bot_claim id=", id:sub(1, 8),
+            " scope=", keys.scope, " ua=", ua:sub(1, 60))
+        ctx.banned          = false
+        ctx.ban_deferred_gb = true
+        return false, false
+    end
 
-        -- Fix B — IP chia sẻ (văn phòng/CGNAT: distinct raw-UA ≥ 6). Nhân viên
-        -- DUYỆT ẨN DANH (richness thấp) vẫn dính collapse. Với request render
-        -- được HTML (Accept: text/html) → serve PoW thay vì seal 403: người thật
-        -- giải 1 lần → verified:<cookie> → bypass ở cookie fast-path (init.lua)
-        -- cho MỌI request sau; bot không giải nổi → vẫn chặn hiệu quả. KHÔNG
-        -- escalate (challenge không phải bằng chứng bot). Request không render
-        -- HTML (XHR/static) rơi xuống seal cứng bên dưới — nhưng navigation đầu
-        -- tiên đã verify nên các request sau được cookie fast-path tha.
-        --
-        -- ĐÍNH CHÍNH 2026-09-19 (bản trước của khối này SAI, đã commit ở
-        -- `d83758d` rồi sửa lại ở đây — giữ lại để không ai dựng lại lập luận đó):
-        --   Tôi đã viết "nhánh này là CODE CHẾT vì `ctx.ip_shared` ghi ở bước 10
-        --   mà file này đọc ở bước 6". **Sai.** File này KHÔNG chạy ở bước 6:
-        --   `ip_ban_check.lua` (bước 6) chỉ đọc `ban:<ip>` và không gọi tới đây.
-        --   `ban_store.run` được `l7/init.lua` gọi, tức `l7_layer` — chạy SAU khi
-        --   phân lớp, tức sau cả 13 bước của STEPS_COMMON. `ip_tour` ở bước 11
-        --   ⇒ **nơi ghi chạy TRƯỚC nơi đọc, thứ tự ĐÚNG.**
-        --   Nguyên nhân đọc sai: hai file nằm cùng `l7/ban/` nên tôi gán vị trí
-        --   của `ip_ban_check` cho file này mà không truy đường gọi.
-        --
-        --   `PFCOUNT iptour:ua:<ip>` = 0 cũng KHÔNG chứng minh gì: khoá đó TTL
-        --   **90 giây** (`cfg.ip_tour.window`), mà phép đo chạy nhiều giờ sau cửa
-        --   sổ log. `0` nghĩa là "90 giây qua IP này không gửi request".
-        --
-        -- Nhánh vẫn hiếm kích hoạt trong thực địa vì `ctx.ip_shared` đòi
-        -- `distinct-UA >= 6` trong cửa sổ 90 giây TRÊN CÙNG MỘT IP — điều kiện
-        -- hẹp. Chưa đo được văn phòng thật nào kẹt ở đây mà Fix A (`richness >=
-        -- 0.5`) không cứu, nên chưa đổi gì. Nếu định nới: nhóm hưởng lợi đầu tiên
-        -- đo được 19-09 là một đàn bot xoay UA (50 UA / 1 domain / 12-13 identity,
-        -- ~950 lượt/50 phút mỗi IP) — và `cfg.pow.difficulty="000"` nên PoW không
-        -- chặn được máy.
-        local accept = (ctx.req and ctx.req.accept) or ngx.var.http_accept or ""
-        if ctx.ip_shared and accept:find("text/html", 1, true) then
-            pool.safe_set("ban:hit:" .. id, tostring(ngx.time()), 300)
-            ctx.action        = "challenge"
-            ctx.action_reason = "banned_id_shared_challenge"
-            ngx.log(ngx.INFO, "[ban_store] shared_challenge id=", id:sub(1, 8),
-                " ip=", ctx.ip or "?", " r=", string.format("%.2f", richness))
-            require("antibot.enforcement.challenge").run(ctx)  -- serve PoW + exit 200
-            return true, true
-        end
+    local richness = ctx.session_richness_own or 0
+    if richness >= SHARED_ID_RICHNESS
+       and ctx.session_cookie_known == true then
+        ngx.log(ngx.INFO,
+            "[ban_store] richness_bypass id=", id:sub(1, 8),
+            " scope=", keys.scope,
+            " r=", string.format("%.2f", richness))
+        ctx.banned = false
+        return false, false
+    end
 
-        ctx.banned = true
-        local now = ngx.time()
+    local accept = (ctx.req and ctx.req.accept) or ngx.var.http_accept or ""
+    local html_navigation = accept:find("text/html", 1, true) ~= nil
 
-        -- Mỗi 403 hit = bot vẫn cố tấn công → escalate viol để tiến tới
-        -- permanent ban nhanh hơn (thay vì chờ ban expire rồi mới incr).
-        -- Rate limit 1 incr/60s để không spam Redis (bot retry 30/min không
-        -- thành 30 viol). Tận dụng ban:hit:<id> làm timestamp.
-        local last_hit = pool.safe_get("ban:hit:" .. id)
-        local should_escalate = (not last_hit) or
-                                (now - (tonumber(last_hit) or 0) > ESCALATE_RATE_LIMIT)
-
-        -- Grace period: chỉ escalate sau khi ban đã active >= BAN_ESCALATE_GRACE.
-        -- User mất mạng F5 retry trong 5 phút đầu KHÔNG bị tăng TTL ban.
-        -- Bot persistent ≥ 5 phút vẫn bị escalate bình thường.
-        local ban_age_key = "ban:age:" .. id
-        local ban_age_str = pool.safe_get(ban_age_key)
-        if not ban_age_str then
-            pool.safe_set(ban_age_key, tostring(now), 86400)
-            should_escalate = false
-        else
-            local age = now - (tonumber(ban_age_str) or now)
-            if age < BAN_ESCALATE_GRACE then
-                should_escalate = false
-                ngx.log(ngx.DEBUG,
-                    "[ban_store] escalate_grace id=", id:sub(1, 8),
-                    " ban_age=", age, "s")
-            end
-        end
-
-        if should_escalate then
-            local new_viol = pool.safe_incr("viol:" .. id, cfg.ttl.violation) or 1
-            local steps    = cfg.ttl.ban_steps
-            local idx      = math.min(new_viol, #steps)
-            local new_ttl  = steps[idx]
-            if new_ttl == 0 then
-                pool.safe_set("ban:" .. id, "1")          -- permanent
-            elseif new_ttl > 0 then
-                pool.safe_set("ban:" .. id, "1", new_ttl) -- extend
-            end
-            ngx.log(ngx.INFO,
-                "[ban_store] escalate id=", id:sub(1, 8),
-                " viol=", new_viol,
-                " ttl=", new_ttl == 0 and "permanent" or tostring(new_ttl) .. "s")
-        end
-
-        pool.safe_set("ban:hit:" .. id, tostring(now), 300)
-        ngx.log(ngx.INFO, "[ban_store] blocked id=", id:sub(1, 8), "...")
-        ctx.action        = "block"
-        ctx.action_reason = "banned_id"
-        ngx.status = 403
-        ngx.header["Content-Type"] = "text/plain"
-        ngx.say("Access denied.")
-        ngx.exit(403)
+    -- Host quarantine is deliberately recoverable for every browser
+    -- navigation, not only after the separate distinct-UA detector calls the IP
+    -- shared. A managed office can have many cloned machines with exactly the
+    -- same normalized UA, so distinct-UA evidence may remain one forever.
+    -- Legacy seals retain the narrower old shared-IP recovery rule.
+    if html_navigation
+       and (keys.scope == "host" or (keys.scope == "legacy" and ctx.ip_shared)) then
+        pool.safe_set(keys.hit, tostring(ngx.time()), 300)
+        ctx.action        = "challenge"
+        ctx.action_reason = keys.scope == "host"
+            and "network_quarantine_challenge"
+            or "banned_id_shared_challenge"
+        ctx.banned = false
+        ngx.log(ngx.INFO,
+            "[ban_store] recovery_challenge id=", id:sub(1, 8),
+            " scope=", keys.scope,
+            " host=", keys.host,
+            " ip=", ctx.ip or "?",
+            " r=", string.format("%.2f", richness))
+        require("antibot.enforcement.challenge").run(ctx)
         return true, true
     end
 
-    ctx.banned = false
-    return false, false
+    -- A seal hit is not new evidence. Record activity only; never increment a
+    -- violation counter and never refresh or lengthen the sentence here.
+    pool.safe_set(keys.hit, tostring(ngx.time()), 300)
+    ctx.banned = true
+    ctx.action = "block"
+    if keys.scope == "global" then
+        ctx.action_reason = "global_identity_ban"
+    elseif keys.scope == "host" then
+        ctx.action_reason = "network_quarantine"
+    else
+        ctx.action_reason = "banned_id"
+    end
+
+    ngx.log(ngx.INFO,
+        "[ban_store] blocked id=", id:sub(1, 8),
+        " scope=", keys.scope,
+        " host=", keys.host,
+        " legacy=", tostring(legacy))
+    ngx.status = 403
+    ngx.header["Content-Type"] = "text/plain"
+    ngx.say("Access denied.")
+    ngx.exit(403)
+    return true, true
 end
 
 return _M

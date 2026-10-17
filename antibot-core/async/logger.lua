@@ -90,6 +90,7 @@ local DEVICE_GROUP = {
 local REASON_BOT = {
     banned_ip            = true,  -- lệnh cấm tồn tại VÌ bằng chứng ở lượt trước
     banned_id            = true,
+    global_identity_ban  = true,
     xmlrpc_ua_reject     = true,  -- chữ ký UA, không phải suy đoán
     wp_login_notc_repeat = true,  -- POST login lặp không cookie = dò mật khẩu
     expensive_filter_ban = true,  -- ≥20 tổ hợp filter/IP: crawler bất khả chối
@@ -596,6 +597,67 @@ function _M.run(ctx)
                 or "-")
     end
 
+    -- Generic automation telemetry. Unlike gbv=, this is emitted for every
+    -- structural automation claim, including requests that exited at admission,
+    -- IP-ban or WAF before DNS verification could run.
+    local automation_str = ""
+    if ctx.automation_observed then
+        local function amount(v)
+            return v == nil and "-" or string.format("%.1f", tonumber(v) or 0)
+        end
+        automation_str = string.format(
+            " aut=1 autp=%s auttier=%s autproof=%s autmode=%s autcost=%s" ..
+            " autps=%s autpl=%s autis=%s autil=%s auths=%s authl=%s" ..
+            " autss=%s autsl=%s autwould=%s autuse=%s autaxis=%s autdeg=%s" ..
+            " autactual=%s autup=%s autuptime=%s",
+            tostring(ctx.automation_principal or "-"),
+            tostring(ctx.automation_tier or "unknown"),
+            tostring(ctx.automation_proof or "claim_only"),
+            tostring(ctx.automation_mode or "-"),
+            amount(ctx.automation_cost),
+            amount(ctx.automation_principal_short),
+            amount(ctx.automation_principal_long),
+            amount(ctx.automation_ip_short),
+            amount(ctx.automation_ip_long),
+            amount(ctx.automation_host_short),
+            amount(ctx.automation_host_long),
+            amount(ctx.automation_server_short),
+            amount(ctx.automation_server_long),
+            tostring(ctx.automation_would_throttle or false),
+            tostring(ctx.automation_top_use or "-"),
+            tostring(ctx.automation_top_axis or "-"),
+            tostring(ctx.automation_degraded or false),
+            tostring(ngx.status or "-"),
+            tostring(ngx.var.upstream_status or "-"),
+            tostring(ngx.var.upstream_response_time or "-"))
+    end
+
+    -- Published-network provenance is independent from good-bot verification.
+    -- `opmatch=true` means both network and self-identification matched early;
+    -- false/nil can still appear when the final monitor cap matched by IP only.
+    local operator_str = ""
+    if ctx.operator_network_name then
+        operator_str = string.format(" opnet=%s opmode=%s opmatch=%s",
+            tostring(ctx.operator_network_name),
+            tostring(ctx.operator_network_mode or "-"),
+            tostring(ctx.operator_network_verified == true))
+    end
+
+    -- Network-UA quarantine telemetry. `network_id` is intentionally coarse;
+    -- scope and host are part of the decision contract, not display metadata.
+    -- Do not emit the full Redis key into the request log.
+    local ban_str = ""
+    if ctx.ban_scope or ctx.ban_id_kind then
+        ban_str = string.format(
+            " bkind=%s bscope=%s bhost=%s blegacy=%s bviol=%s bttl=%s",
+            tostring(ctx.ban_id_kind or "-"),
+            tostring(ctx.ban_scope or "-"),
+            tostring(ctx.ban_host or "-"),
+            tostring(ctx.ban_legacy == true),
+            tostring(ctx.ban_violation or "-"),
+            tostring(ctx.ban_ttl or "-"))
+    end
+
     -- `safe_run` intentionally remains fail-open. Make that loss of evidence
     -- visible in the primary request log instead of relying only on error.log,
     -- whose per-domain level may filter diagnostics on this fleet.
@@ -983,7 +1045,7 @@ function _M.run(ctx)
         surge_str,
         circuit_str
     )
-    line = line .. shared_ip_str
+    line = line .. automation_str .. operator_str .. shared_ip_str .. ban_str
 
     write_log_line(line)
 

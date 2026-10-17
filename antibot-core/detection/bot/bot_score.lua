@@ -15,6 +15,13 @@ function _M.run(ctx)
 
     local score = ctx.bot_score or 0.0
 
+    -- UNKNOWN automation is scored as an ordinary self-identified client. DNS
+    -- outage/missing PTR must not silently turn the claim into a zero-point
+    -- trust bonus; only attested/verified evidence earns score zero above.
+    if ctx.automation_tier == "unknown" then
+        score = math.max(score, 0.4)
+    end
+
     if ctx.good_bot_claimed then
         if ctx.dns_rev_timeout or ctx.dns_rev_degraded then
             ctx.bot_score = score
@@ -22,7 +29,7 @@ function _M.run(ctx)
         end
 
         if ctx.dns_fwd_timeout or ctx.dns_fwd_degraded then
-            ctx.bot_score = math.min(score, 0.05)
+            ctx.bot_score = math.max(score, 0.4)
             return true, false
         end
     end

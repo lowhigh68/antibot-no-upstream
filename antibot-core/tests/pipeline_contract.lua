@@ -92,6 +92,7 @@ package.loaded["antibot.enforcement"] = layer("enforcement", "run", function(ctx
 end)
 
 package.loaded["antibot.l7.admission"] = layer("admission", "run")
+package.loaded["antibot.l7.automation_guard"] = layer("automation.guard", "run")
 package.loaded["antibot.l7.circuit_breaker"] = {
     before = function() event("circuit.before"); return true, exit_for("circuit.before") end,
     after = function() event("circuit.after") end,
@@ -258,6 +259,8 @@ root.run()
 eq(counts.admitted, 1, "dynamic thuong nhan dung mot slot")
 eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
 before("admission", "waf.pre", "admission chay truoc WAF")
+before("automation.guard", "admission",
+    "automation claim duoc do truoc moi admission fast-exit")
 before("waf.pre", "access", "WAF chay truoc trust/access")
 before("access", "detection", "access chay truoc detection")
 before("enforcement", "surge.admit", "chi admit sau enforcement")

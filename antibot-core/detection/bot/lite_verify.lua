@@ -71,11 +71,15 @@ function _M.run(ctx)
                 ctx.bot_score         = 0.0
                 ctx.bot_ua            = "good_bot_cached_verified"
                 ctx.action_reason     = "good_bot_cached_lite"
+                ctx.automation_tier   = "verified"
+                ctx.automation_proof  = "cached_dns"
                 return true, false
             end
             ctx.good_bot_verified = true
             ctx.bot_score         = 0.0
             ctx.bot_ua            = "good_bot_asn_verified"
+            ctx.automation_tier   = "verified"
+            ctx.automation_proof  = "asn"
             -- Distinct reason để antibot.log grep được — engine.run sẽ giữ
             -- nguyên (đã sửa thành action_reason or "good_bot_verified").
             ctx.action_reason     = "good_bot_asn_lite"

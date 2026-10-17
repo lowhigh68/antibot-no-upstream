@@ -25,6 +25,58 @@ do
     eq(registry.claims_operator("Mediapartners-Google/2.1"), true,
        "Mediapartners broad hold is preserved")
 
+    local chatgpt = registry.inspect(
+        "ChatGPT-User/1.0; +https://openai.com/bot")
+    eq(chatgpt.automation_claimed, true,
+       "RFC contact marker is a generic automation claim")
+    eq(chatgpt.operator_claimed, false,
+       "contact claim alone earns no legacy crawler hold")
+    eq(chatgpt.verification_claimed, true,
+       "contact client enters the evidence lane")
+    eq(chatgpt.canonical_name, "chatgpt-user",
+       "last contact product is the generic principal")
+    eq(registry.inspect(
+        "Claude-User/1.0; +https://example.test/claudebot").canonical_name,
+       "claude-user", "contact URL cannot inject the canonical product name")
+
+    local claude = registry.inspect(
+        "Claude-User/1.0; +mailto:crawler@example.test")
+    eq(claude.automation_claimed, true,
+       "mailto contact marker is an automation claim")
+    eq(claude.canonical_name, "claude-user",
+       "mailto claimant has a stable product principal")
+
+    local claude_bare = registry.inspect(
+        "Claude-User/1.0; +Claude-User@anthropic.com")
+    eq(claude_bare.automation_claimed, true,
+       "bare contact mailbox is still an automation claim")
+    eq(claude_bare.verification_claimed, true,
+       "bare contact mailbox enters the evidence lane")
+    eq(claude_bare.contact_attestable, false,
+       "bare mailbox alone cannot earn contact attestation")
+    eq(claude_bare.contact_domain, "anthropic.com",
+       "bare mailbox exposes provider domain for network binding")
+    eq(claude_bare.canonical_name, "claude-user",
+       "bare mailbox keeps a stable product principal")
+
+    local opaque = registry.inspect("anthropic-ai")
+    eq(opaque.automation_claimed, false,
+       "opaque machine product does not affect human trust gates")
+    eq(opaque.automation_meter_claimed, true,
+       "opaque machine product enters generic automation metering")
+    eq(opaque.machine_claimed, true,
+       "opaque product is marked as meter-only machine shape")
+    eq(opaque.canonical_name, "anthropic-ai",
+       "opaque product becomes a stable meter principal")
+
+    local curl = registry.inspect("curl/8.5.0")
+    eq(curl.automation_meter_claimed, true,
+       "generic product/version client is metered without a brand list")
+    eq(registry.inspect("Mozilla/5.0 Chrome/150.0 Safari/537.36").automation_claimed,
+       false, "ordinary browser is not an automation claim")
+    eq(registry.inspect("Mozilla/5.0 Chrome/150.0 Safari/537.36").automation_meter_claimed,
+       false, "ordinary browser does not enter machine metering")
+
     local google = registry.inspect("Googlebot-Image/1.0")
     eq(google.operator_claimed, true, "Googlebot is held")
     eq(google.verification_claimed, true, "Googlebot enters verification")
@@ -64,6 +116,8 @@ do
     eq(facade.claims_good_bot("AhrefsSiteAudit/7.0"),
        registry.claims_operator("AhrefsSiteAudit/7.0"),
        "ua_claim is a facade over unified registry")
+    eq(facade.claims_automation("ChatGPT-User/1.0; +https://openai.com/bot"),
+       true, "automation facade includes RFC contact clients")
 end
 
 local cache, writes, query_mode, query_calls

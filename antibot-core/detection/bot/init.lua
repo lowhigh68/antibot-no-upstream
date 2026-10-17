@@ -212,6 +212,9 @@ local function contact_attest(ctx)
     ctx.bot_identity_tier = "S2.5"
     ctx.bot_score         = 0.0
     ctx.action_reason     = reason
+    ctx.automation_claimed = true
+    ctx.automation_tier    = "attested"
+    ctx.automation_proof   = reason
     ctx.skip_layers       = ctx.skip_layers or {}
     ctx.skip_layers.cluster = true
     ctx.skip_layers.graph   = true
@@ -251,6 +254,10 @@ local function analyzer_attest(ctx)
 
     ctx.bot_identity_tier = "S2.5"
     ctx.action_reason     = "analyzer_attested"
+    ctx.automation_claimed   = true
+    ctx.automation_principal = ctx.analyzer_marker or "analyzer-client"
+    ctx.automation_tier      = "attested"
+    ctx.automation_proof     = "analyzer_cloud_ptr"
     ctx.skip_layers       = ctx.skip_layers or {}
     ctx.skip_layers.cluster = true
     ctx.skip_layers.graph   = true
@@ -296,6 +303,49 @@ local function asn_fallback_verify(ctx)
     return false
 end
 
+-- Resolve a claim for which no positive proof path succeeded. Missing proof
+-- from an unregistered product is UNKNOWN, not proof of impersonation. A
+-- registered identity has an explicit evidence contract, so its authoritative
+-- mismatch remains CONTRADICTED and preserves the existing fake-bot verdict.
+function _M.resolve_unverified(ctx)
+    local degraded = ctx.dns_rev_timeout or ctx.dns_rev_degraded
+        or ctx.dns_fwd_timeout or ctx.dns_fwd_degraded
+
+    ctx.automation_claimed = true
+    -- Official published network plus a matching self-identification is
+    -- positive operator evidence, but deliberately weaker than S4/S2.5. Keep
+    -- the neutral 0.4 bot signal and full scoring; only prevent an absent DNS
+    -- contract from being mislabelled as impersonation.
+    if ctx.operator_network_verified == true then
+        ctx.automation_tier  = "operator"
+        ctx.automation_proof = "published_ip"
+        ctx.bot_ua = "operator_network"
+        ctx.bot_score = 0.4
+        ctx.good_bot_verified = nil
+        return "operator"
+    end
+    if degraded or ctx.good_bot_registered ~= true then
+        ctx.automation_tier  = "unknown"
+        ctx.automation_proof = degraded and "dns_unavailable" or "unproven_claim"
+        ctx.bot_ua = degraded
+            and ((ctx.dns_rev_degraded or ctx.dns_fwd_degraded)
+                and "dns_degraded" or "dns_timeout")
+            or "automation_unknown"
+        -- ua_check owns this axis. Discard the legacy 0.85 fake-claim value
+        -- that may have been assigned immediately before normalization.
+        ctx.bot_score = 0.4
+        if degraded then ctx.good_bot_dns_degraded = true end
+        return "unknown"
+    end
+
+    ctx.automation_tier  = "contradicted"
+    ctx.automation_proof = "registered_evidence_mismatch"
+    ctx.bot_ua            = "fake_good_bot"
+    ctx.bot_score         = math.max(ctx.bot_score or 0, 0.85)
+    ctx.good_bot_verified = false
+    return "contradicted"
+end
+
 function _M.run(ctx)
     ua_check.run(ctx)
 
@@ -335,6 +385,8 @@ function _M.run(ctx)
                 or ctx.dns_fwd_timeout or ctx.dns_fwd_degraded then
                 -- Resolver không phản hồi = sự cố TẠM THỜI, không phải bằng
                 -- chứng giả mạo. Không kết luận gì; bot_score.lua bảo toàn 0.
+                -- The generic normalization below keeps this UNKNOWN at 0.4;
+                -- resolver failure is neutral evidence, not zero-cost trust.
                 ctx.good_bot_dns_degraded = true
                 if ctx.good_bot_asn_corroborative then
                     -- Shared-cloud ASN is not verification.  It only provides
@@ -350,6 +402,22 @@ function _M.run(ctx)
                 -- forward phản đối — đáng ngờ hơn 0.85 = "không có bằng chứng").
                 ctx.bot_score         = math.max(ctx.bot_score or 0, 0.85)
                 ctx.good_bot_verified = false
+            end
+        end
+
+        -- Normalize legacy branch outputs into the generic evidence contract.
+        -- Positive proof is promoted; every unresolved unregistered claimant
+        -- stays unknown even if the legacy branch temporarily labelled it fake.
+        if ctx.good_bot_verified == true then
+            ctx.automation_claimed = true
+            ctx.automation_tier    = "verified"
+            ctx.automation_proof   = ctx.dns_fwd_valid and "dns_forward"
+                or (ctx.dns_rev_valid and "dns_reverse") or "asn"
+        elseif ctx.bot_identity_tier ~= "S2.5" then
+            _M.resolve_unverified(ctx)
+            if ctx.good_bot_dns_degraded
+               and ctx.good_bot_asn_corroborative then
+                ctx.good_bot_shared_asn_degraded = true
             end
         end
     else
@@ -406,7 +474,7 @@ function _M.run(ctx)
     if ctx.ban_deferred_gb
        and ctx.good_bot_verified ~= true
        and ctx.bot_identity_tier ~= "S2.5"
-       and ctx.good_bot_dns_degraded ~= true then
+       and ctx.automation_tier == "contradicted" then
         local id = ctx.identity or ctx.fp_light
         if id and id ~= "" then
             pool.safe_set(FAKE_VERDICT_PREFIX .. id, "1", FAKE_VERDICT_TTL)

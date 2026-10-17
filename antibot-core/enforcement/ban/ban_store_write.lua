@@ -2,12 +2,27 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
+local quarantine = require "antibot.core.network_quarantine"
 
 function _M.run(ctx)
-    local id    = ctx.identity or ctx.fp_light
+    local scope = ctx.ban_scope or "host"
+    local keys  = quarantine.keys(ctx, scope)
+    local id    = ctx.ban_id or (keys and keys.id)
     local ip    = ctx.ip
     local ttl   = ctx.ban_ttl
     local class = ctx.req_class or "unknown"
+    local qcfg  = cfg.network_quarantine or {}
+
+    if not keys or not id then
+        ngx.log(ngx.ERR, "[ban_write] missing network quarantine key")
+        return
+    end
+
+    ctx.ban_id_kind = "network_ua"
+    ctx.ban_id       = id
+    ctx.ban_scope    = scope
+    ctx.ban_host     = keys.host
+    ctx.ban_key      = keys.ban
 
     local red, err = pool.get()
     if not red then
@@ -27,6 +42,11 @@ function _M.run(ctx)
             req_class   = class,
             ts          = ngx.time(),
             identity    = id or "",
+            network_id  = id or "",
+            ban_scope   = scope,
+            ban_host    = keys.host,
+            ban_key     = keys.ban,
+            ban_viol    = ctx.ban_violation or 1,
             fp_deg      = ctx.fp_degraded or false,
             device_type = ctx.device_type or "unknown",
             ua          = (ctx.ua or ""):sub(1, 180),
@@ -62,7 +82,8 @@ function _M.run(ctx)
 
     -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
     -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
-    local viol_count = id and (tonumber(pool.safe_get("viol:" .. id)) or 0) or 0
+    local viol_count = tonumber(ctx.ban_previous_viol)
+        or tonumber(pool.safe_get(keys.viol)) or 0
 
     -- swarm case: distributed swarm (nhiều IP × ít request/IP) khiến ip_risk
     -- KHÔNG BAO GIỜ leo tới 0.5 (EMA cần ~4 hit/IP; swarm né đúng điều đó) nên
@@ -76,7 +97,9 @@ function _M.run(ctx)
     local should_ban_ip = ip and (
         ip_risk_val >= 0.7
         or swarm_ban
-        or viol_count >= 3   -- repeat offender → ban IP kể cả risk thấp
+        -- Coarse host quarantine must not promote itself into a collective IP
+        -- ban. Only global/direct evidence may use repeat violations here.
+        or (scope == "global" and viol_count >= 3)
     )
 
     -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
@@ -248,17 +271,17 @@ function _M.run(ctx)
     -- cua `should_ban_ip` — hai nhanh, mot quy tac: may khong tu ket an chinh no.
     if id and not self_request then
         if ttl and ttl > 0 then
-            red:setex("ban:" .. id, ttl, "1")
+            red:setex(keys.ban, ttl, "1")
         else
-            red:set("ban:" .. id, "1")
+            red:set(keys.ban, "1")
         end
         -- Fresh ban → ACTIVE ngay trong 5 phút đầu, không phải chờ hit kế tiếp.
-        red:setex("ban:hit:" .. id, 300, now_ts)
+        red:setex(keys.hit, 300, now_ts)
         -- Mỗi lần ban = +1 violation để ban_escalation lũy tiến TTL lần sau.
         -- Trước đây viol chỉ tăng khi rate-limit/challenge-fail → score-based
         -- block (GPTBot/DotBot...) luôn dừng ở step 1 = 5m dù quay lại nhiều lần.
-        red:incr("viol:" .. id)
-        red:expire("viol:" .. id, cfg.ttl.violation)
+        red:incr(keys.viol)
+        red:expire(keys.viol, qcfg.violation_ttl or cfg.ttl.violation)
     end
 
     if should_ban_ip then
@@ -276,7 +299,7 @@ function _M.run(ctx)
         -- so bang chung khong co ban an di kem chi la rac. Bat bien can giu:
         -- `ban_ctx:<x>` ton tai <=> co mot ban an cho <x>.
         if id and not self_request then
-            red:setex("ban_ctx:" .. id, ctx_ttl, ctx_json)
+            red:setex(keys.context, ctx_ttl, ctx_json)
         end
         if should_ban_ip then
             -- Guard TTL: `SETEX key 0 val` là LỖI trong Redis, và lỗi trong
@@ -300,6 +323,9 @@ function _M.run(ctx)
         " ban_ip=", tostring(should_ban_ip ~= false and should_ban_ip ~= nil),
         " ip_ttl=", should_ban_ip and ip_ban_ttl or "-",
         " id=", id and id:sub(1, 8) .. "..." or "nil",
+        " scope=", scope,
+        " host=", keys.host,
+        " key=", keys.ban,
         " ttl=", ttl == 0 and "permanent" or tostring(ttl) .. "s",
         " score=", ctx.score or 0,
         " eff=", ctx.effective_score or 0)

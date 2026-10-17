@@ -110,6 +110,7 @@ function _M.compute(ctx)
     if not id or id == "" then
         id = identity_mod.build_from(ctx.ip or "", ctx.ua or "")
         ctx.early_identity = id
+        ctx.network_id = id
     end
     if id ~= "" then
         local key    = "richness:max:" .. id

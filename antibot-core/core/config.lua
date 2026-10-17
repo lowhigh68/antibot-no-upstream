@@ -185,6 +185,24 @@ _M.ttl = {
     whitelist_cache  = 60,
 }
 
+-- P1 network-UA quarantine.  This is deliberately separate from `_M.ttl`:
+-- the old ladder is still used by IP/global hard bans, while a coarse
+-- (IP, normalized-UA) subject must not receive a fleet-wide 30-day sentence.
+--
+-- Do not add OS, language, Client-Hints or browser build to this key merely to
+-- split office NATs.  Managed-company machines are commonly cloned and updated
+-- together, so those fields still collide while making the key churn on update.
+-- Collision recovery belongs to host scope + challenge-first browser handling.
+_M.network_quarantine = {
+    enabled       = true,
+    steps         = {300, 3600, 86400}, -- 5m -> 1h -> 24h, never 30d
+    violation_ttl = 172800,              -- only fresh block decisions increment
+    legacy_read   = true,                -- old ban:<id> drains naturally; never refreshed
+    global_reasons = {
+        fake_good_bot = true,            -- registered identity contradicted by proof
+    },
+}
+
 _M.rate = {
     base_threshold        = 300,
     burst_threshold       = 30,
@@ -371,6 +389,43 @@ _M.rate = {
 -- Hai cua so la fixed buckets. `long` chan luong duy tri, `short` chan spike.
 -- Cac nguong mac dinh co y dat cao de rollout an toan tren shared hosting;
 -- phai hieu chinh theo capacity/log that cua tung cum may.
+-- Generic automation governor. This phase is telemetry-only: every
+-- self-identified automation client is metered by principal+host, IP+host and
+-- server aggregate, but no request is rejected. Limits are provisional
+-- `would` lines for production calibration, not enforcement thresholds.
+-- Units approximate backend cost rather than raw object count, so one page
+-- with many CSS/images is not treated like the same burst of dynamic work.
+_M.automation = {
+    enabled = true,
+    mode = "shadow",
+    windows = { short = 10, long = 60 },
+    costs = {
+        resource      = 0.1,
+        navigation    = 1.0,
+        feed           = 1.0,
+        meta           = 0.5,
+        interaction   = 2.0,
+        unknown       = 2.0,
+        api_callback  = 3.0,
+        auth_endpoint = 4.0,
+    },
+    provisional_limits = {
+        tiers = {
+            verified     = { short = 30, long = 120 },
+            -- Published source network + matching self-identification. This is
+            -- not S4 good-bot trust: scoring remains active and only the final
+            -- block/challenge decision is capped at monitor.
+            operator     = { short = 30, long = 120 },
+            attested     = { short = 20, long = 60  },
+            unknown      = { short = 12, long = 40  },
+            contradicted = { short = 8,  long = 20  },
+        },
+        ip     = { short = 20,  long = 60   },
+        host   = { short = 100, long = 400  },
+        server = { short = 300, long = 1200 },
+    },
+}
+
 _M.l7_admission = {
     enabled       = true,
     mode          = "enforce", -- shadow | enforce | off

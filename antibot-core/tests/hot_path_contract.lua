@@ -154,6 +154,26 @@ do
     shared.ip_tier2_warming = false
     logger.run(shared)
 
+    local automation = sample("id-automation")
+    automation.automation_observed = true
+    automation.automation_principal = "chatgpt-user"
+    automation.automation_tier = "unknown"
+    automation.automation_proof = "claim_only"
+    automation.automation_mode = "shadow"
+    automation.automation_cost = 1
+    automation.automation_principal_short = 13
+    automation.automation_principal_long = 21
+    automation.automation_would_throttle = true
+    automation.automation_top_use = 108
+    automation.automation_top_axis = "principal:short"
+    ngx.status = 200
+    ngx.var.upstream_status = "200"
+    ngx.var.upstream_response_time = "0.250"
+    logger.run(automation)
+    ngx.status = nil
+    ngx.var.upstream_status = nil
+    ngx.var.upstream_response_time = nil
+
     local circuit = sample("id-circuit")
     circuit.circuit_state = "open"
     circuit.circuit_mode = "shadow"
@@ -210,6 +230,14 @@ do
     ok(payload:find("ipuas=8 ipru=5 ipku=3 ipsv=true iptev=known iptwarm=false",
                     1, true) ~= nil,
        "Tier-2 legacy/strict populations are observable without ambiguity")
+    ok(payload:find(
+           "aut=1 autp=chatgpt-user auttier=unknown autproof=claim_only autmode=shadow",
+           1, true) ~= nil
+       and payload:find("autwould=true autuse=108 autaxis=principal:short",
+                        1, true) ~= nil,
+       "generic automation shadow telemetry is serialized")
+    ok(payload:find("autactual=200 autup=200 autuptime=0.250", 1, true) ~= nil,
+       "automation telemetry includes actual upstream outcome")
     io.open = real_open
 end
 

@@ -78,6 +78,8 @@ end
 local syntax_rel = {
     "init.lua",
     "core/config.lua",
+    "core/network_quarantine.lua",
+    "core/operator_network.lua",
     "core/req_classifier.lua",
     "detection/bot/lite_verify.lua",
     "detection/browser/beacon_handler.lua",
@@ -85,8 +87,12 @@ local syntax_rel = {
     "detection/distributed_swarm.lua",
     "enforcement/challenge/verify_token.lua",
     "enforcement/decision/engine.lua",
+    "enforcement/ban/ban_escalation.lua",
+    "enforcement/ban/ban_store_write.lua",
+    "enforcement/ban/ban_sync.lua",
     "async/logger.lua",
     "l7/admission.lua",
+    "l7/automation_guard.lua",
     "l7/circuit_breaker.lua",
     "l7/surge_guard.lua",
     "l7/init.lua",
@@ -1487,10 +1493,13 @@ ok(init_src:find("xfilter_guard%.run%(ctx%)", verified_pos) ~= nil,
 
 local admission_steps = assert(init_src:match(
     "local STEPS_ADMISSION%s*=%s*{(.-)\n}"))
+local automation_pos = assert(admission_steps:find("layer%s*=%s*automation_guard"))
 local local_brake_pos = assert(admission_steps:find("layer%s*=%s*l7_admission"))
 local circuit_pos = assert(admission_steps:find("layer%s*=%s*l7_circuit"))
 local surge_pos = assert(admission_steps:find("layer%s*=%s*l7_surge"))
 local redis_ban_pos = assert(admission_steps:find("layer%s*=%s*ip_ban_check"))
+ok(automation_pos < local_brake_pos,
+   "automation telemetry runs before admission fast-exit")
 ok(local_brake_pos < circuit_pos,
    "circuit breaker reuses admission dynamic/static decision")
 ok(circuit_pos < redis_ban_pos,

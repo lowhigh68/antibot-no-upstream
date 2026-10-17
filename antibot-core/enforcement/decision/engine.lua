@@ -2,6 +2,8 @@ local _M = {}
 local cfg  = require "antibot.core.config"
 local pool = require "antibot.core.redis_pool"
 local goodbot_registry = require "antibot.core.goodbot_registry"
+local automation_guard = require "antibot.l7.automation_guard"
+local operator_network = require "antibot.core.operator_network"
 
 -- ============================================================
 -- Good-bot expensive-request throttle (Hybrid scoring)
@@ -417,6 +419,10 @@ local function get_ip_risk(ctx)
 end
 
 function _M.run(ctx)
+    -- The admission-stage counter is claim-only. Detection may have upgraded
+    -- its evidence tier; recompute the shadow threshold without incrementing.
+    automation_guard.evaluate(ctx)
+
     if ctx.whitelisted == true then
         ctx.action        = "allow"
         ctx.action_reason = ctx.action_reason or "whitelisted"
@@ -464,7 +470,11 @@ function _M.run(ctx)
     -- nên có thể không có tên, mà thiếu tên thì khoá đếm rơi về
     -- `gb_rate:unknown:<phút>` — một xô dùng chung cho mọi bot vô danh, vừa sai
     -- ngữ nghĩa vừa siết oan lẫn nhau.
-    if ctx.bot_identity_tier == "S2.5" and ctx.good_bot_name then
+    -- Contact-only clients were added by the generic automation rollout. Keep
+    -- their new governor in shadow; do not silently inherit this older,
+    -- machine-global enforcing ceiling before per-host production data exists.
+    if ctx.bot_identity_tier == "S2.5" and ctx.good_bot_name
+       and ctx.automation_contact_only ~= true then
         if throttle_good_bot_rate(ctx) then
             return "throttled"
         end
@@ -672,13 +682,28 @@ function _M.run(ctx)
     --
     -- Khoá `mon:<ip>` do `scripts/monitor_ip_sync.sh` ghi, TTL 48h, cron 12h.
     -- Hết TTL là hết miễn trừ ⇒ cron chết thì hệ tự về mặc định nghiêm ngặt.
+    local monitor_owner = ctx.operator_network_name
+    local monitor_mode  = ctx.operator_network_mode
     if (action == "block" or action == "challenge")
        and ctx.ip
-       and pool.safe_get("mon:" .. ctx.ip) == "1" then
+       and not monitor_owner then
+        monitor_mode, monitor_owner = operator_network.lookup(ctx.ip)
+        if monitor_owner then
+            ctx.operator_network_name = monitor_owner
+            ctx.operator_network_mode = monitor_mode
+        end
+    end
+    if (action == "block" or action == "challenge")
+       and monitor_owner ~= nil
+       and (ctx.operator_network_verified == true
+            or monitor_mode == "ipcap"
+            or monitor_mode == "legacy") then
         ngx.log(ngx.INFO,
             "[engine] monitor-IP cap action=", action, "->monitor",
             " eff=", math.floor(ctx.effective_score or 0),
-            " ip=", ctx.ip)
+            " ip=", ctx.ip,
+            " operator=", ctx.operator_network_name,
+            " mode=", tostring(monitor_mode))
         action = "monitor"
         ctx.action_reason = "monitor_ip_cap"
         ctx.monitor_flag  = true

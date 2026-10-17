@@ -119,6 +119,34 @@ local function scan_keys(red, pattern, limit, max_iter)
     return results
 end
 
+-- Clear every namespace used by a network-UA subject. Host quarantine keys
+-- carry the host before the id, so an operator action must discover them; an
+-- exact legacy DEL alone would otherwise report success while the seal stayed
+-- active. The id is an MD5 hex string, which also keeps SCAN MATCH literal.
+local function clear_network_identity(red, id)
+    red:del("ban:" .. id)
+    red:del("ban:hit:" .. id)
+    red:del("ban:age:" .. id)
+    red:del("viol:" .. id)
+    red:del("ban_ctx:" .. id)
+
+    red:del("gban:" .. id)
+    red:del("ghit:" .. id)
+    red:del("gviol:" .. id)
+    red:del("gctx:" .. id)
+
+    if #id ~= 32 or not id:match("^[0-9a-fA-F]+$") then return 0 end
+    local found = scan_keys(red, "qban:*:" .. id, 20000, 800)
+    for _, ban_key in ipairs(found) do
+        local suffix = ban_key:sub(#"qban:" + 1)
+        red:del(ban_key)
+        red:del("qhit:" .. suffix)
+        red:del("qviol:" .. suffix)
+        red:del("qctx:" .. suffix)
+    end
+    return #found
+end
+
 local function time_ago(ts)
     if not ts then return "-" end
     local diff = ngx.time() - tonumber(ts)
@@ -163,20 +191,19 @@ local function handle_whitelist_api()
 
     elseif action == "unban_id" and req.id then
         local id = req.id
-        red:del("ban:"      .. id)
+        local host_count = clear_network_identity(red, id)
         red:del("risk:"     .. id)
-        red:del("viol:"     .. id)
         red:del("verified:" .. id)
-        result = {ok=true, msg="Identity "..id:sub(1,16).."... unbanned & cleared"}
+        result = {ok=true, msg="Identity "..id:sub(1,16)..
+            "... unbanned & cleared ("..host_count.." host seals)"}
 
     elseif action == "wl_id" and req.id then
         local id = req.id
         red:set("wl:id:"   .. id, "1")   -- persistent identity whitelist (ban_store checks this)
-        red:del("ban:"     .. id)
+        local host_count = clear_network_identity(red, id)
         red:del("risk:"    .. id)
-        red:del("viol:"    .. id)
-        red:del("ban:age:" .. id)
-        result = {ok=true, msg="Identity "..id:sub(1,16).."... whitelisted (persistent) & cleared"}
+        result = {ok=true, msg="Identity "..id:sub(1,16)..
+            "... whitelisted (persistent) & cleared ("..host_count.." host seals)"}
 
     elseif action == "wl_url_add" and req.prefix then
         local prefix = req.prefix

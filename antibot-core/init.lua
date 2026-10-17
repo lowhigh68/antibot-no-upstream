@@ -18,6 +18,7 @@ local fingerprint_layer  = require "antibot.core.fingerprint"
 local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
+local automation_guard   = require "antibot.l7.automation_guard"
 local l7_circuit         = require "antibot.l7.circuit_breaker"
 local l7_surge           = require "antibot.l7.surge_guard"
 local detection_layer    = require "antibot.detection"
@@ -37,6 +38,9 @@ local verified_human     = require "antibot.core.access.verified_human"
 local STEPS_ADMISSION = {
     { layer = ctx_layer,         fn = "init"          },
     { layer = classifier,        fn = "run_fast"      },
+    -- Claim-only, shared-dict telemetry. Runs before all exits so repeated
+    -- ban/WAF hits remain measurable; it never changes a verdict in shadow.
+    { layer = automation_guard,  fn = "run"           },
     { layer = proxy_origin,      fn = "run"           },
     { layer = l7_admission,      fn = "run"           },
     -- Per-host backend health gate.  Admission has already classified static

@@ -17,4 +17,11 @@ function _M.claims_good_bot(ua)
     return registry.claims_operator(ua)
 end
 
+-- Broader trust-lane gate: RFC contact clients are automation too, but this
+-- must not be reused by ban/fleet exemptions. A self-claim can withhold human
+-- trust; it cannot earn crawler trust.
+function _M.claims_automation(ua)
+    return registry.claims_automation(ua)
+end
+
 return _M

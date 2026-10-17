@@ -112,6 +112,7 @@ function _M.build(ctx)
     local id = _compute(ip, ua_norm)
 
     ctx.identity    = id
+    ctx.network_id  = id
     ctx.ua_norm     = ua_norm
 
     return id

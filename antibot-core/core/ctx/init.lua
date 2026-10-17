@@ -1,6 +1,7 @@
 local _M = {}
 
 local ip_scope = require "antibot.core.ip_scope"
+local goodbot_registry = require "antibot.core.goodbot_registry"
 
 local FATAL_FIELDS = { "ip", "ua", "req" }
 
@@ -71,11 +72,19 @@ function _M.init(ctx)
     ctx.h2_order       = nil
 
     ctx.identity       = nil
+    ctx.network_id     = nil       -- coarse IP+ua_norm key; never a device identity
     ctx.ua_norm        = nil
     ctx.fp_light       = nil
     ctx.fp_full        = nil
     ctx.fp_quality     = 0.25
     ctx.fp_degraded    = false
+    ctx.ban_id         = nil
+    ctx.ban_id_kind    = nil
+    ctx.ban_scope      = nil
+    ctx.ban_host       = nil
+    ctx.ban_key        = nil
+    ctx.ban_legacy     = false
+    ctx.ban_violation  = nil
 
     ctx.asn            = nil
     -- IP-type scoring da bi go end-to-end: cloud/datacenter ownership khong tu
@@ -121,6 +130,33 @@ function _M.init(ctx)
     ctx.good_bot_claimed = false
     ctx.banned           = false
     ctx.verified         = false
+
+    -- Generic automation claim, available before every admission/WAF/ban
+    -- fast-exit.  This is syntax, not trust: identity verification remains in
+    -- detection/bot and may later promote unknown -> attested/verified or mark
+    -- a registered identity contradicted.
+    local automation = goodbot_registry.inspect(ctx.ua)
+    ctx.automation_inspect   = automation
+    ctx.automation_claimed   = automation.automation_claimed == true
+    -- Meter-only includes opaque machine clients (`product` or
+    -- `product/version`).  Keep it separate from `automation_claimed`: a
+    -- generic curl/app UA must not lose verified-human access merely because
+    -- it is useful to count as machine-shaped traffic.
+    ctx.automation_meter_claimed = automation.automation_meter_claimed == true
+    ctx.automation_principal = automation.canonical_name
+        or (automation.contact_claimed and "contact-client" or nil)
+    ctx.automation_contact_only = automation.contact_claimed == true
+        and automation.operator_claimed ~= true
+    ctx.automation_contact_attestable = automation.contact_attestable == true
+    ctx.automation_machine_only = automation.machine_claimed == true
+        and ctx.automation_claimed ~= true
+    ctx.automation_tier      = ctx.automation_meter_claimed and "unknown" or nil
+    ctx.automation_proof     = ctx.automation_machine_only and "machine_shape"
+        or (ctx.automation_claimed and "claim_only" or nil)
+    ctx.automation_observed  = false
+    ctx.operator_network_verified = false
+    ctx.operator_network_name = nil
+    ctx.operator_network_mode = nil
 
     -- S2.5 attest fields (Phase 1).
     -- ua_check populates {bot_ua_compliant, bot_contact_host, browser_ua_pattern, analyzer_marker}.

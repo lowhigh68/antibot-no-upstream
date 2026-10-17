@@ -4,6 +4,13 @@ local identity_mod = require "antibot.core.fingerprint.identity"
 local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+
+local function is_automation(ctx, ua)
+    if ctx and ctx.automation_claimed ~= nil then
+        return ctx.automation_claimed == true
+    end
+    return ua_claim.claims_automation(ua)
+end
 local verified_human = require "antibot.core.access.verified_human"
 
 local ANTIBOT_PATHS = {
@@ -70,7 +77,7 @@ end
 local function lookup_device_by_ua(ua, ip, verified_ttl, ctx)
     if not ua or ua == "" then return nil end
     -- Gate the device_canvas_verified path (the observed leak).
-    if ua_claim.claims_good_bot(ua) then return nil end
+    if is_automation(ctx, ua) then return nil end
     local ip16 = get_ip16(ip)
     if not ip16 then return nil end
 
@@ -113,7 +120,7 @@ function _M.check(ctx)
     -- Self-declared crawlers never enter the verified-human lane. Gates the
     -- cookie (5) and early-id (7) paths below; device (6) is gated inside
     -- lookup_device_by_ua. Infra whitelists (1-4) and static bypass (8) still apply.
-    local ua_is_bot = ua_claim.claims_good_bot(ua)
+    local ua_is_bot = is_automation(ctx, ua)
 
     -- 1. Internal antibot endpoints
     for _, p in ipairs(ANTIBOT_PATHS) do

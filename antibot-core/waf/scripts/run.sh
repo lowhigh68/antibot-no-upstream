@@ -124,8 +124,18 @@ echo "-- root pipeline contract --------------------------------"
 echo "-- goodbot DNS/cache contract ---------------------------"
 "$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
 
+echo "-- generic automation contract -------------------------"
+"$RESTY" --shdict "antibot_cache 1m" \
+  "${ANTIBOT_SRC}tests/automation_contract.lua" || rc=1
+
+echo "-- operator network contract ---------------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/operator_network_contract.lua" || rc=1
+
 echo "-- trust boundary contract -----------------------------"
 "$RESTY" "${ANTIBOT_SRC}tests/trust_contract.lua" || rc=1
+
+echo "-- network-UA quarantine contract ----------------------"
+"$RESTY" "${ANTIBOT_SRC}tests/quarantine_contract.lua" || rc=1
 
 echo "-- async/hot-path contract ------------------------------"
 "$RESTY" "${ANTIBOT_SRC}tests/hot_path_contract.lua" || rc=1

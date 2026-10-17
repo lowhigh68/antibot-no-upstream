@@ -25,6 +25,8 @@ set -e
 REPO_DIR="/home/xadmin/antibot/antibot-no-upstream"
 SOURCE_DIR="$REPO_DIR/antibot-core/"
 TARGET_DIR="/usr/local/openresty/nginx/conf/antibot"
+MONITOR_IP_SRC="$REPO_DIR/nginx/scripts/monitor_ip_sync.sh"
+MONITOR_IP_DST="/usr/local/openresty/nginx/conf/scripts/monitor_ip_sync.sh"
 NGINX="/usr/local/openresty/nginx/sbin/nginx"
 LUAJIT="/usr/local/openresty/luajit/bin/luajit"
 RESTY="/usr/local/openresty/bin/resty"
@@ -118,6 +120,18 @@ while IFS= read -r f; do
 done < <(find "$SOURCE_DIR" -name '*.sh')
 if [ $sh_fail -ne 0 ]; then
     echo "HUY: co file shell sai cu phap. KHONG sync, cay dang chay giu nguyen."
+    exit 1
+fi
+
+# `monitor_ip_sync.sh` lives beside nginx configuration, outside SOURCE_DIR,
+# so the find above cannot see it. Validate both syntax and its offline CIDR
+# parser before touching the live copy.
+if [ ! -f "$MONITOR_IP_SRC" ]; then
+    echo "HUY: thieu $MONITOR_IP_SRC"
+    exit 1
+fi
+if ! bash -n "$MONITOR_IP_SRC" || ! bash "$MONITOR_IP_SRC" --self-test; then
+    echo "HUY: monitor_ip_sync.sh hong cu phap/logic CIDR. KHONG sync."
     exit 1
 fi
 echo "    OK"
@@ -232,6 +246,12 @@ fi
 
 echo "[4] Sync core folder..."
 rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
+
+# This script is intentionally outside antibot-core, hence outside the rsync
+# transaction above. Install it explicitly; no nginx.conf or per-domain config
+# is changed by this step.
+install -d -m 0755 "$(dirname "$MONITOR_IP_DST")"
+install -m 0750 "$MONITOR_IP_SRC" "$MONITOR_IP_DST"
 
 # BIT THUC THI — rsync -a BAO TOAN mode TU NGUON, nen mot script 644 trong git
 # toi day van 644 va `./postdeploy.sh` tra RC=126 ("found but not executable").
@@ -792,6 +812,24 @@ if command -v redis-cli >/dev/null 2>&1; then
         echo "    Chay tay mot lan de thay the: $TFS"
     fi
     fi
+fi
+
+# [8b] Published operator ranges. Install/refresh cron and populate Redis now,
+# so a deploy does not wait up to 12 hours for the first scheduled run. Remote
+# source failure is non-fatal: existing keys retain their TTL and Lua remains
+# strict when they expire.
+echo "[8b] Dong bo dai IP operator cong bo..."
+if [ -x "$MONITOR_IP_DST" ]; then
+    "$MONITOR_IP_DST" --install-cron
+    if ANTIBOT_REDIS_PASS_FILE="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}" \
+       "$MONITOR_IP_DST"; then
+        _mon_last=$("${RCLI_P[@]}" --raw GET mon:last_sync 2>/dev/null || :)
+        echo "    OK mon:last_sync=${_mon_last:-?}"
+    else
+        echo "    *** CANH BAO: sync that bai; khoa cu giu den het TTL, deploy van tiep tuc ***"
+    fi
+else
+    echo "    *** CANH BAO: $MONITOR_IP_DST khong thuc thi duoc ***"
 fi
 
 # ---------------------------------------------------------------------------

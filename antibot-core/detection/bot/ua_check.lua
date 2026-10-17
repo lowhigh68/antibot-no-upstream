@@ -43,8 +43,17 @@ end
 -- eTLD+1 uses heuristic "last 2 labels" (Q7=b) — accepts FP on `*.co.uk` etc.
 local function parse_contact_url(ua)
     local url = ua:match("%+(https?://[%w%.%-:_]+)")
+    local host
+    if url then
+        host = url:match("https?://([%w%.%-]+)")
+    else
+        local mailbox, mail_host = ua:match("%+mailto:([%w%.%+_%-]+@([%w%.%-]+))")
+        if mailbox then
+            url = "mailto:" .. mailbox
+            host = mail_host
+        end
+    end
     if not url then return nil, nil end
-    local host = url:match("https?://([%w%.%-]+)")
     if not host then return url, nil end
     local last2 = host:match("([%w%-]+%.[%w%-]+)$")
     return url, last2
@@ -256,10 +265,21 @@ function _M.run(ctx)
 
     -- Bot self-identification and canonical-name extraction share the same
     -- pure registry used by every early claim gate.
-    local claim = registry.inspect(ua)
+    local claim = ctx.automation_inspect or registry.inspect(ua)
     if claim.verification_claimed then
         local bot_name = claim.canonical_name
         if bot_name then bot_name = bot_name:lower() end
+
+        ctx.automation_claimed   = true
+        ctx.automation_principal = bot_name or ctx.automation_principal
+            or "automation-client"
+        ctx.automation_contact_only = claim.contact_claimed == true
+            and claim.operator_claimed ~= true
+        ctx.automation_contact_attestable = claim.contact_attestable == true
+        if ctx.operator_network_verified ~= true then
+            ctx.automation_tier  = "unknown"
+            ctx.automation_proof = "claim_pending"
+        end
 
         local suffixes = bot_name and get_good_bot_suffixes(bot_name)
         if suffixes then
@@ -269,6 +289,7 @@ function _M.run(ctx)
             ctx.good_bot_suffixes = suffixes
             ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
             ctx.good_bot_asns     = get_bot_asns(bot_name)
+            ctx.good_bot_registered = true
             mark_asn_policy(ctx)
             ctx.bot_ua            = "good_bot_claimed"
             ctx.bot_score         = 0.0
@@ -280,24 +301,31 @@ function _M.run(ctx)
             return true, false
         end
 
-        -- Bot self-identified but no DNS registration in Redis.
+        -- Self-identified automation without a DNS registry entry. The
+        -- evidence lane may still attest it; missing proof remains unknown.
         -- Route through DNS verify anyway — if it passes, it's legit.
-        -- If DNS fails (no PTR or wrong domain), dns_reverse.lua will
-        -- set bot_score=0.85.
         if bot_name then
             ctx.good_bot_claimed  = true
             ctx.good_bot_name     = bot_name
             ctx.good_bot_suffixes = {}   -- empty → dns_reverse will fail verify
             ctx.good_bot_asns     = get_bot_asns(bot_name)  -- ASN fallback if Redis DNS miss
+            ctx.good_bot_ptr_only = is_ptr_only_bot(bot_name)
+            ctx.good_bot_registered = claim.metadata ~= nil
+                or ctx.good_bot_ptr_only == true
+                or (ctx.good_bot_asns and #ctx.good_bot_asns > 0) or false
             mark_asn_policy(ctx)
             ctx.bot_ua            = "unregistered_bot"
-            ctx.bot_score         = 0.0  -- dns_reverse decides the score
+            ctx.bot_score         = 0.4
             return true, false
         end
 
         -- Could not extract a bot name → generic suspicious
-        ctx.bot_ua    = "self_identified_bot"
-        ctx.bot_score = 0.4
+        ctx.good_bot_claimed    = true
+        ctx.good_bot_name       = "automation-client"
+        ctx.good_bot_suffixes   = {}
+        ctx.good_bot_registered = false
+        ctx.bot_ua              = "self_identified_bot"
+        ctx.bot_score           = 0.4
         return true, false
     end
 

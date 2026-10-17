@@ -25,7 +25,11 @@ end
 function _M.check_cookie(ctx, opts)
     opts = opts or {}
     local ua = (ctx and ctx.ua) or ngx.var.http_user_agent or ""
-    if ua_claim.claims_good_bot(ua) then
+    local automation_claimed = ctx and ctx.automation_claimed
+    if automation_claimed == nil then
+        automation_claimed = ua_claim.claims_automation(ua)
+    end
+    if automation_claimed then
         if ctx then
             ctx.verified_human_rejected_bot_claim = true
 

@@ -63,6 +63,16 @@ do
     eq(crawler.verified_human_bot_held_cookie, true,
        "crawler holding a live verified ticket is recorded separately")
 
+    local contact = {
+        ip = "203.0.113.10",
+        ua = "ChatGPT-User/1.0; +https://openai.com/bot",
+    }
+    local contact_hit = resolver.check_cookie(contact)
+    eq(contact_hit, false,
+       "RFC contact automation cannot use the verified-human lane")
+    eq(contact.verified_human_rejected_bot_claim, true,
+       "contact automation rejection keeps provenance")
+
     -- Bat bien con lai sau khi them phep doc: khong co cookie thi KHONG cham
     -- Redis. Hot path cua crawler thong thuong (Googlebot khong cookie) van
     -- khong tra chi phi nao.
@@ -199,6 +209,7 @@ do
             ctx.good_bot_name = "fixturebot"
             ctx.good_bot_asns = expected
             ctx.good_bot_suffixes = { "example.test" }
+            ctx.good_bot_registered = true
             ctx.bot_score = 0
             return true, false
         end,
@@ -284,9 +295,15 @@ do
             aggression_decay_ttl = 600, retry_after = 60,
         } },
     }
+    local monitor_values = {}
     package.loaded["antibot.core.redis_pool"] = {
-        safe_get = function() return nil end,
+        safe_get = function(k) return monitor_values[k] end,
         safe_incr = function() return 1 end,
+    }
+    package.loaded["antibot.core.operator_network"] =
+        assert(loadfile(src .. "core/operator_network.lua"))()
+    package.loaded["antibot.l7.automation_guard"] = {
+        evaluate = function() return true, false end,
     }
     ngx = {
         INFO = 1, WARN = 2, log = function() end,
@@ -315,6 +332,36 @@ do
     }
     eq(engine.run(control), "block",
        "shared ASN without infrastructure-failure proof receives no cap")
+
+    monitor_values["mon:203.0.113.20"] = "claim@openai.com"
+    local claim_only_ip = {
+        score = 100, score_multiplier = 1, req_class = "navigation",
+        fp_quality = 1, sess_len = 0, ua = "ordinary-client",
+        ip = "203.0.113.20", req = { method = "GET", uri = "/" },
+    }
+    eq(engine.run(claim_only_ip), "block",
+       "AI provider CIDR alone cannot cap an unrelated request")
+
+    monitor_values["mon:203.0.113.21"] = "ipcap@uptrends.com"
+    local uptime = {
+        score = 100, score_multiplier = 1, req_class = "navigation",
+        fp_quality = 1, sess_len = 0, ua = "Mozilla/5.0",
+        ip = "203.0.113.21", req = { method = "GET", uri = "/" },
+    }
+    eq(engine.run(uptime), "monitor",
+       "published uptime probes preserve the legacy IP-only cap")
+
+    monitor_values["mon:203.0.113.22"] = "claim@openai.com"
+    local bound_ai = {
+        score = 100, score_multiplier = 1, req_class = "navigation",
+        fp_quality = 1, sess_len = 0, ua = "ChatGPT-User/1.0",
+        ip = "203.0.113.22", req = { method = "GET", uri = "/" },
+        operator_network_verified = true,
+        operator_network_name = "openai.com",
+        operator_network_mode = "claim",
+    }
+    eq(engine.run(bound_ai), "monitor",
+       "claim-bound AI network caps only after identity binding")
 end
 
 -- 5. Tier-2 shared-IP immunity requires first-party cookie evidence on a
