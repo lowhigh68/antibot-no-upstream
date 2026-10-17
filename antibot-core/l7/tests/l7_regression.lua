@@ -970,6 +970,82 @@ circuit.after(c404)
 eq(c404.circuit_transition, nil, "404 khong mo circuit breaker")
 eq(c404.circuit_hard_ratio, 0, "404 khong tinh hard error")
 
+-- Mau fleet 168-123 ngay 17-10: ca sau aggregate breach cua
+-- quatructuyen.vn deu co `cblasth=0`; hai ca con co `cblastn=0`.  Khong duoc
+-- arm candidate tren rolling-window residue.  Neu arm, chi mot hard error le
+-- o bucket ke tiep se xac nhan bang chung cu va OPEN nham.
+do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.l7_circuit_breaker.window_seconds = 10
+    cfg.l7_circuit_breaker.min_samples = 30
+    cfg.l7_circuit_breaker.hard_error_ratio = 0.30
+
+    -- 10/33 hard trong rolling window, nhung completed-second moi nhat co
+    -- 9 request khoe. Day la dung shape n=33, err=0.303, lastn=9, lasth=0
+    -- da do tren production.
+    clock = 740
+    fake_ngx.shared.antibot_cache:set(
+        "cb:stale-arm.test:b:738:n", 24, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:stale-arm.test:b:738:h", 10, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:stale-arm.test:b:739:n", 9, 30)
+    cbvars("stale-arm.test", "200", "0.100")
+    local stale = cbctx("dynamic")
+    circuit.after(stale)
+    eq(stale.circuit_total, 33,
+       "fixture stale co dung 33 mau trong rolling window")
+    eq(stale.circuit_recent_total, 9,
+       "fixture stale co traffic khoe trong bucket moi nhat")
+    eq(stale.circuit_recent_hard, 0,
+       "bucket moi nhat khong co hard error")
+    eq(stale.circuit_candidate, "clear_recent",
+       "aggregate stale khong duoc arm candidate")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:stale-arm.test:candidate"), nil,
+       "khong ghi candidate stale vao shared dict")
+
+    -- Mot hard error le den muon trong cung giay. Ban cu da co candidate=739
+    -- va se OPEN o evaluator ke tiep; ban moi chi duoc SET tai bucket 740.
+    clock = 740.2
+    cbvars("stale-arm.test", "503", "0.100")
+    circuit.after(cbctx("dynamic"))
+    clock = 741
+    cbvars("stale-arm.test", "200", "0.100")
+    local fresh_first = cbctx("dynamic")
+    circuit.after(fresh_first)
+    eq(fresh_first.circuit_recent_hard, 1,
+       "hard moi duoc thay trong completed-second ke tiep")
+    eq(fresh_first.circuit_candidate, "set",
+       "hard moi chi bat dau mot cap freshness moi")
+    eq(fresh_first.circuit_transition, nil,
+       "mot hard moi khong duoc xac nhan boi aggregate stale")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:stale-arm.test:open_until"), nil,
+       "aggregate stale cong mot hard le khong OPEN")
+
+    -- Bien the production `lastn=0, lasth=0`: completed-second rong cung
+    -- khong duoc dung lam nua dau cua cap xac nhan.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    clock = 750
+    fake_ngx.shared.antibot_cache:set(
+        "cb:empty-recent.test:b:748:n", 30, 30)
+    fake_ngx.shared.antibot_cache:set(
+        "cb:empty-recent.test:b:748:h", 10, 30)
+    cbvars("empty-recent.test", "200", "0.100")
+    local empty_recent = cbctx("dynamic")
+    circuit.after(empty_recent)
+    eq(empty_recent.circuit_recent_total, 0,
+       "fixture co completed-second rong")
+    eq(empty_recent.circuit_recent_hard, 0,
+       "completed-second rong khong co hard")
+    eq(empty_recent.circuit_candidate, "clear_recent",
+       "bucket rong khong arm candidate")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "cb:empty-recent.test:candidate"), nil,
+       "bucket rong khong tao shared candidate")
+end
+
 -- Mau production quatructuyen.vn: aggregate 10 giay van vuot nguong, nhung
 -- bucket moi nhat da khoe. Ban cu OPEN sau khi backend phuc hoi; freshness gate
 -- phai xoa candidate va de request tiep tuc di qua.
@@ -1080,20 +1156,23 @@ do
     -- `circuit_candidate` tro lai nil va phep kiem se bao oan (da mac dung loi
     -- nay mot lan — `dict=nil` trong probe la cai chi ra).
     --
-    -- 4 hard (770-772 + bucket dang ghi) / 10 giay: can du khoe de ratio < 0.5.
-    local cleared
-    for i = 773, 790 do
-        clock = i
+    -- 2 hard (bucket 770-771) / 10 giay: them du mau khoe de ratio < 0.5.
+    -- Them response khoe vao CHINH bucket 772 sau evaluator dau giay. Khi
+    -- evaluator 773 doc bucket da hoan tat, 2 hard / 7 mau < 0.5, nen no phai
+    -- di dung nhanh `clear_threshold`. Fixture cu chi them mot mau khoe moi
+    -- giay: aggregate van >=0.5 o tick dau, `clear_recent` xoa candidate truoc,
+    -- vi vay vong lap cho `clear_threshold` thuc ra khong the thanh cong.
+    for hit = 1, 4 do
+        clock = 772 + hit / 10
         cbvars("candidate-cleanup.test", "200", "0.100")
-        local tick = cbctx("dynamic")
-        circuit.after(tick)
-        if tick.circuit_candidate == "clear_threshold" then
-            cleared = tick
-            break
-        end
+        circuit.after(cbctx("dynamic"))
     end
-    ok(cleared ~= nil,
-       "aggregate duoi nguong phai DON candidate (bat o tick dau tien)")
+    clock = 773
+    cbvars("candidate-cleanup.test", "200", "0.100")
+    local cleared = cbctx("dynamic")
+    circuit.after(cleared)
+    eq(cleared.circuit_candidate, "clear_threshold",
+       "aggregate duoi nguong phai DON candidate o tick dau tien")
     eq(fake_ngx.shared.antibot_cache:get(
         "cb:candidate-cleanup.test:candidate"), nil,
        "candidate bi xoa khoi shared dict, khong song het TTL")

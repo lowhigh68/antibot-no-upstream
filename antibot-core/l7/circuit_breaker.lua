@@ -15,10 +15,11 @@
 -- elects at most one evaluator per host/second.  Evaluation reads only fully
 -- completed one-second buckets.  The only volume gate is `min_samples`; RPS is
 -- derived telemetry (`total/window`), not a second threshold.  A first breach
--- becomes a candidate.  OPEN requires the next completed one-second bucket to
--- breach again and still contain a hard error, so stale failures cannot open a
--- host that has already recovered.  With the default 30 samples/10 seconds this
--- adds one confirmation bucket to the observed average floor of 3 req/s.
+-- becomes a candidate only when the newest completed bucket itself contains a
+-- hard error.  OPEN requires the adjacent completed bucket to breach again and
+-- also contain a hard error, so stale failures cannot open a host that has
+-- already recovered.  With the default 30 samples/10 seconds this adds one
+-- confirmation bucket to the observed average floor of 3 req/s.
 -- Same-second bursts belong to admission.lua.  No Redis/cosocket is used.
 --
 -- SAN LUU LUONG, do tren harness voi backend chet 100% trong 60 giay:
@@ -611,12 +612,23 @@ function _M.after(ctx)
         return
     end
 
-    -- The first aggregate breach only arms a short-lived candidate.  Store the
-    -- newest COMPLETED second, not evaluator wall time: sub-second evaluator
-    -- settings or scheduling jitter must not manufacture two confirmations
-    -- from the same evidence.
+    -- The first aggregate breach only arms a short-lived candidate when the
+    -- newest COMPLETED second contains a hard error.  Production evidence from
+    -- quatructuyen.vn showed six aggregate breaches with `recent_hard=0`, two
+    -- of them over an empty newest bucket: all were stale rolling-window
+    -- residue followed by successful 200/301 responses.  Arming those rows
+    -- would let one unrelated hard error in the next second confirm stale
+    -- evidence.  Report `clear_recent` but do not write shared state.
+    --
+    -- Store the completed second, not evaluator wall time: sub-second
+    -- evaluator settings or scheduling jitter must not manufacture two
+    -- confirmations from the same evidence.
     local candidate_ttl = math.max(interval * 3 + 2, 5)
     if not candidate_second then
+        if recent_hard <= 0 then
+            if ctx then ctx.circuit_candidate = "clear_recent" end
+            return
+        end
         store_candidate(dict, host, completed_second, candidate_ttl, ctx, "set")
         return
     end
