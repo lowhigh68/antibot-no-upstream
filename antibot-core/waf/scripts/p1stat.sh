@@ -55,7 +55,7 @@ if [ ! -f "$LG" ]; then
     echo "  KHONG thay $LG — dat LIVE=/duong/dan neu khac"; exit 2
 fi
 miss=""
-for s in iptev ipku held_cookie ideg; do
+for s in iptev ipku held_cookie ideg cbcand cblastn cblasth; do
     grep -q "$s" "$LG" 2>/dev/null || miss="$miss $s"
 done
 if [ -n "$miss" ]; then
@@ -64,7 +64,7 @@ if [ -n "$miss" ]; then
     echo "  KHONG in so: mot 0 o day khong phan biet duoc 'chua xay ra' voi 'chua co ma'."
     exit 3
 fi
-echo "  cong kiem  : OK (iptev ipku held_cookie ideg deu co trong logger.lua)"
+echo "  cong kiem  : OK (iptev ipku held_cookie ideg cbcand cblastn cblasth deu co trong logger.lua)"
 
 # ── 2. CHON FILE, KE CA FILE DA XOAY ────────────────────────────────
 TREF=$(date -d "@$D" '+%Y-%m-%d %H:%M:%S')
@@ -72,7 +72,11 @@ FILES=$(find "$LOGDIR" -maxdepth 1 -name "$LOGBASE*" -newermt "$TREF" \
         -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2)
 # File DANG ghi luon phai co mat: neu no chua xoay thi mtime cua no moi hon moc,
 # nhung neu may vua xoay xong thi file moi co the chua co dong nao.
-case "$FILES" in *"$LOG"*) :;; *) FILES="$FILES $LOG";; esac
+HAVE_CURRENT=0
+for f in $FILES; do
+    [ "$f" = "$LOG" ] && HAVE_CURRENT=1
+done
+[ "$HAVE_CURRENT" -eq 1 ] || FILES="$FILES $LOG"
 
 catf() { for f in $1; do [ -f "$f" ] || continue; case "$f" in *.gz) zcat "$f";; *) cat "$f";; esac; done; }
 
@@ -189,4 +193,79 @@ END {
     printf "  capped=%d  violated=%d\n", n+0, bad+0
     if (n+0 == 0) print "  capped=0 = CHUA GAP CA NAO (can timeout trung luc crawler ghe), KHONG phai cap hong."
     if (bad+0 > 0) print "  >> BAT BIEN VI PHAM: co luot bi block/challenge du da duoc cap."
+}' "$W"
+
+# ── 6. P1.3/P1.4 — circuit candidate freshness ─────────────────────────────
+# `cbcand` la ket qua cua evaluator, con `cblasth` la so hard error trong
+# completed-second MOI NHAT ma evaluator vua doc.  Hai bat bien production:
+#
+#   * set     chi duoc arm khi cblasth > 0;
+#   * confirm chi duoc OPEN khi cblasth > 0.
+#
+# Vi pham mot trong hai dieu nay nghia la rolling-window residue cu co the duoc
+# ghep voi mot hard error le den muon.  Khac voi `would=0`, day la bat bien co
+# the ket luan ngay; script tra ma khac 0 de monitoring khong nuot mat no.
+echo
+echo "=== 5. P1.3/P1.4 circuit candidate freshness ==="
+HOSTNAME=$(hostname 2>/dev/null || echo unknown)
+awk -v host="$HOSTNAME" '
+function val(k,    i, p, n) {
+    p = k "="
+    for (i = 1; i <= NF; i++) {
+        if (index($i, p) == 1) {
+            n = length(p)
+            return substr($i, n + 1)
+        }
+    }
+    return ""
+}
+{
+    cb = val("cb")
+    if (cb == "") next
+
+    rows++
+    cand = val("cbcand")
+    lastn = val("cblastn")
+    lasth = val("cblasth")
+    nosample = val("cbnosample")
+    trans = val("cbtrans")
+    would = val("cbwould")
+    deg = val("cbdeg")
+
+    if (cand != "" && lastn != "" && lasth != "") schema++
+    else missing++
+
+    if (nosample == "false") evaluated++
+    else if (nosample == "true") no_sample++
+
+    if (cand != "" && cand != "-") candidates[cand]++
+    if (trans == "closed>open") trips++
+    if (would == "true") would_open++
+    if (deg == "true") degraded++
+
+    # Dau `-` va chuoi rong la thieu bang chung, khong duoc ep thanh so 0 roi
+    # vo tinh cho qua. Chi so nguyen duong moi la completed bucket co hard.
+    fresh = (lasth ~ /^[0-9]+$/ && (lasth + 0) > 0)
+    if (cand == "set" && !fresh) bad_set++
+    if (cand == "confirm" && !fresh) bad_confirm++
+}
+END {
+    printf "  host=%s rows=%d schema=%d missing=%d evaluated=%d nosample=%d", \
+           host, rows+0, schema+0, missing+0, evaluated+0, no_sample+0
+    printf " set=%d confirm=%d clear_recent=%d clear_threshold=%d restart=%d hold=%d", \
+           candidates["set"]+0, candidates["confirm"]+0,
+           candidates["clear_recent"]+0, candidates["clear_threshold"]+0,
+           candidates["restart"]+0, candidates["hold"]+0
+    printf " trips=%d would=%d bad_set=%d bad_confirm=%d degraded=%d\n", \
+           trips+0, would_open+0, bad_set+0, bad_confirm+0, degraded+0
+
+    if (rows == 0) {
+        print "  dan so=0: chua co circuit telemetry sau moc; khong ket luan."
+        exit 0
+    }
+    if (missing > 0 || bad_set > 0 || bad_confirm > 0) {
+        print "  >> FAIL: schema thieu hoac bat bien candidate freshness bi vi pham."
+        exit 1
+    }
+    print "  >> OK: moi set/confirm deu co hard error trong completed-second moi nhat."
 }' "$W"

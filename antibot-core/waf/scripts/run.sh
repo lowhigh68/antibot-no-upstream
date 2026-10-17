@@ -280,4 +280,11 @@ echo
 echo "── hai parser .htaccess tren cung tap fixture ────────"
 sh_suite htaccess_fixture_test "$HERE/htaccess_fixture_test.sh" || rc=1
 
+# `p1stat.sh` la cong quyet dinh production, nen cung phai co oracle rieng:
+# doc dung current + rotated gzip, fail khi schema thieu, va fail neu set/confirm
+# duoc ghi ma completed-second moi nhat khong co hard error.
+echo
+echo "── p1stat.sh (log rotation + circuit freshness) ─────────"
+sh_suite p1stat_test "$HERE/p1stat_test.sh" || rc=1
+
 exit $rc
