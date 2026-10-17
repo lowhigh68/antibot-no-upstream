@@ -45,16 +45,18 @@ end
 -- `anthropic-ai` can bind to the first label of `anthropic.com`; this is still
 -- only operator-tier evidence and never grants the good-bot bypass.
 local function owner_matches_claim(ctx, owner)
-    if owner == "legacy" then return false end
+    if owner == "legacy" then return nil end
     local claim = ctx.automation_inspect or {}
-    if suffix_match(claim.contact_domain, owner) then return true end
+    if suffix_match(claim.contact_domain, owner) then return "contact" end
 
     if claim.machine_claimed == true then
         local stem = owner:match("^([^.]+)")
         local principal = tostring(ctx.automation_principal or ""):lower()
-        if stem and #stem >= 4 and principal:find(stem, 1, true) then return true end
+        if stem and #stem >= 4 and principal:find(stem, 1, true) then
+            return "stem"
+        end
     end
-    return false
+    return nil
 end
 
 function _M.lookup(ip)
@@ -83,11 +85,15 @@ function _M.resolve(ctx)
     if ip == "" then return false end
 
     local mode, owner = _M.lookup(ip)
-    if not owner or not owner_matches_claim(ctx, owner) then return false end
+    local bind = owner and owner_matches_claim(ctx, owner) or nil
+    if not bind then return false end
 
     ctx.operator_network_verified = true
     ctx.operator_network_name = owner
     ctx.operator_network_mode = mode
+    -- Keep the evidence strength visible: contact is a domain-bound claim;
+    -- stem is the weaker generic inference used for opaque product tokens.
+    ctx.operator_network_bind = bind
     ctx.automation_claimed = true
     ctx.automation_meter_claimed = true
     ctx.automation_tier = "operator"

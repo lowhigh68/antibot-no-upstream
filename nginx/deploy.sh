@@ -825,6 +825,16 @@ if [ -x "$MONITOR_IP_DST" ]; then
        "$MONITOR_IP_DST"; then
         _mon_last=$("${RCLI_P[@]}" --raw GET mon:last_sync 2>/dev/null || :)
         echo "    OK mon:last_sync=${_mon_last:-?}"
+        if ! ANTIBOT_REDIS_PASS_FILE="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}" \
+             "$MONITOR_IP_DST" --health; then
+            echo "    *** CANH BAO: feed health chua du 8 nguon; xem syslog tag antibot-monitor-ip ***"
+        fi
+        # One deploy-time SCAN records the real cost of exact-IP keys. It is
+        # intentionally absent from the periodic health cron.
+        if ! ANTIBOT_REDIS_PASS_FILE="${ANTIBOT_REDIS_PASS_FILE:-/etc/antibot/redis.pass}" \
+             "$MONITOR_IP_DST" --stats; then
+            echo "    *** CANH BAO: khong do duoc Redis keyspace cho mon:* ***"
+        fi
     else
         echo "    *** CANH BAO: sync that bai; khoa cu giu den het TTL, deploy van tiep tuc ***"
     fi

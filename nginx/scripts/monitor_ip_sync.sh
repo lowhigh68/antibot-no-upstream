@@ -25,6 +25,7 @@ CACHE_DIR="${MONITOR_SYNC_CACHE:-/tmp/antibot_monitor_ips}"
 LOCK_FILE="${MONITOR_SYNC_LOCK:-/tmp/antibot_monitor_sync.lock}"
 SCRIPT_PATH="$(readlink -f "$0")"
 TTL_MON="${MONITOR_TTL:-172800}"
+HEALTH_MAX_AGE="${MONITOR_HEALTH_MAX_AGE:-108000}" # 30h: cron 12h + one missed run
 
 # source | operator-domain | policy | format | min | max expanded IPv4 | URL
 # Provider facts live here. Lua policy stays generic: it binds the contact
@@ -45,13 +46,22 @@ SOURCES=(
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log()  { echo "[$(ts)] $*" | tee -a "$LOG_FILE"; }
 warn() { echo "[$(ts)] WARN: $*" | tee -a "$LOG_FILE" >&2; }
+alert() {
+    warn "$*"
+    if [ "${MONITOR_HEALTH_SYSLOG:-1}" = "1" ] && command -v logger >/dev/null 2>&1; then
+        command logger -p daemon.err -t antibot-monitor-ip -- "$*" || true
+    fi
+}
 
 ip_to_int() {
     local ip="$1" a b c d extra n
     IFS=. read -r a b c d extra <<< "$ip"
     [ -z "${extra:-}" ] || return 1
     for n in "$a" "$b" "$c" "$d"; do
-        [[ "$n" =~ ^[0-9]{1,3}$ ]] || return 1
+        # Feed addresses are decimal dotted quads. Reject zero-padded octets
+        # instead of silently treating an ambiguous/octal-looking token as
+        # decimal (for example 01.02.03.04 -> 1.2.3.4).
+        [[ "$n" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
         [ "$((10#$n))" -le 255 ] || return 1
     done
     printf '%u' "$(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))"
@@ -158,8 +168,110 @@ self_test() {
     printf '%s\n' '{"prefixes":[{"ipv4Prefix":"8.8.0.0/16"}]}' > "$bad"
     ! parse_source "$bad" json_prefixes "$out" 300 \
         || { rm -rf -- "$td"; return 1; }
+    printf '%s\n' '{"prefixes":[{"ipv4Prefix":"01.2.3.4/32"}]}' > "$bad"
+    ! parse_source "$bad" json_prefixes "$out" 300 \
+        || { rm -rf -- "$td"; return 1; }
     rm -rf -- "$td"
     echo "monitor_ip_sync self-test: OK"
+}
+
+health_check() {
+    local now failures checked entry name owner policy format min_ips max_ips url
+    local sync count age last_sync last_age summary pong
+    now="$(date +%s)"
+    failures=0
+    checked=0
+    summary=""
+
+    pong="$(RCLI --raw PING 2>/dev/null || :)"
+    if [ "$pong" != "PONG" ]; then
+        alert "health FAIL: Redis unavailable at ${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}"
+        return 1
+    fi
+
+    if ! [[ "$HEALTH_MAX_AGE" =~ ^[0-9]+$ ]] || [ "$HEALTH_MAX_AGE" -lt 43200 ]; then
+        alert "health FAIL: invalid MONITOR_HEALTH_MAX_AGE=${HEALTH_MAX_AGE}"
+        return 1
+    fi
+
+    for entry in "${SOURCES[@]}"; do
+        IFS='|' read -r name owner policy format min_ips max_ips url <<< "$entry"
+        sync="$(RCLI --raw GET "mon:srcsync:${name}" 2>/dev/null || :)"
+        count="$(RCLI --raw GET "mon:src:${name}" 2>/dev/null || :)"
+
+        if ! [[ "$sync" =~ ^[0-9]+$ ]]; then
+            alert "health FAIL [$name]: missing/invalid mon:srcsync"
+            failures=$((failures + 1))
+            continue
+        fi
+        if [ "$sync" -gt $((now + 300)) ]; then
+            alert "health FAIL [$name]: source timestamp is in the future (${sync})"
+            failures=$((failures + 1))
+            continue
+        fi
+        age=$((now - sync))
+        if [ "$age" -gt "$HEALTH_MAX_AGE" ]; then
+            alert "health FAIL [$name]: stale age=${age}s limit=${HEALTH_MAX_AGE}s"
+            failures=$((failures + 1))
+            continue
+        fi
+        if ! [[ "$count" =~ ^[0-9]+$ ]] \
+           || [ "$count" -lt "$min_ips" ] \
+           || [ "$count" -gt "$max_ips" ]; then
+            alert "health FAIL [$name]: count=${count:-missing} expected=${min_ips}..${max_ips}"
+            failures=$((failures + 1))
+            continue
+        fi
+
+        checked=$((checked + 1))
+        summary="${summary}${name}:${count}/${age}s,"
+    done
+
+    last_sync="$(RCLI --raw GET mon:last_sync 2>/dev/null || :)"
+    if ! [[ "$last_sync" =~ ^[0-9]+$ ]] \
+       || [ "$last_sync" -gt $((now + 300)) ] \
+       || [ $((now - last_sync)) -gt "$HEALTH_MAX_AGE" ]; then
+        alert "health FAIL: mon:last_sync missing, future, or older than ${HEALTH_MAX_AGE}s"
+        failures=$((failures + 1))
+    else
+        last_age=$((now - last_sync))
+    fi
+
+    if [ "$failures" -ne 0 ]; then
+        alert "health FAIL: checked=${checked}/${#SOURCES[@]} failures=${failures}"
+        return 1
+    fi
+    log "health OK: checked=${checked}/${#SOURCES[@]} last_age=${last_age}s sources=${summary%,}"
+}
+
+# Manual/deploy-time capacity report. This deliberately is not part of the
+# six-hour health cron because SCAN walks the complete Redis keyspace. Keep
+# exact-IP O(1) lookup until this evidence shows memory/key pressure.
+stats_report() {
+    local pong dbsize memory_info used used_human dataset scan_counts mon_keys mon_ip_keys
+    local source_expanded entry name owner policy format min_ips max_ips url count
+    pong="$(RCLI --raw PING 2>/dev/null || :)"
+    if [ "$pong" != "PONG" ]; then
+        warn "stats unavailable: Redis unavailable at ${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}"
+        return 1
+    fi
+
+    dbsize="$(RCLI --raw DBSIZE 2>/dev/null || :)"
+    memory_info="$(RCLI --raw INFO memory 2>/dev/null | tr -d '\r' || :)"
+    used="$(awk -F: '$1=="used_memory" {print $2}' <<< "$memory_info")"
+    used_human="$(awk -F: '$1=="used_memory_human" {print $2}' <<< "$memory_info")"
+    dataset="$(awk -F: '$1=="used_memory_dataset" {print $2}' <<< "$memory_info")"
+    scan_counts="$(RCLI --scan --pattern 'mon:*' 2>/dev/null \
+        | awk '{all++} /^mon:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {ip++}
+               END {printf "%d %d", all+0, ip+0}')"
+    read -r mon_keys mon_ip_keys <<< "$scan_counts"
+    source_expanded=0
+    for entry in "${SOURCES[@]}"; do
+        IFS='|' read -r name owner policy format min_ips max_ips url <<< "$entry"
+        count="$(RCLI --raw GET "mon:src:${name}" 2>/dev/null || :)"
+        [[ "$count" =~ ^[0-9]+$ ]] && source_expanded=$((source_expanded + count))
+    done
+    log "stats dbsize=${dbsize:-?} mon_keys=${mon_keys} mon_ip_keys=${mon_ip_keys} source_expanded=${source_expanded} used_memory=${used:-?} used_memory_human=${used_human:-?} used_memory_dataset=${dataset:-?}"
 }
 
 integration_test() {
@@ -167,7 +279,7 @@ integration_test() {
         echo "monitor_ip_sync integration-test: SKIP (redis-server missing)" >&2
         return 2
     }
-    local td port i oip uip keys oval uval ottl
+    local td port i oip uip keys oval uval ottl stats_out
     td="$(mktemp -d)" || return 1
     port=$((20000 + ($$ % 10000)))
     cleanup_integration() {
@@ -184,12 +296,20 @@ integration_test() {
     done
     [ "$(redis-cli -p "$port" ping 2>/dev/null)" = "PONG" ] || return 1
 
-    MONITOR_REDIS_PORT="$port" \
-    MONITOR_SYNC_LOG="$td/sync.log" \
-    MONITOR_SYNC_CACHE="$td/cache" \
-    MONITOR_SYNC_LOCK="$td/lock" \
-    REDIS_CLI="$(command -v redis-cli)" \
-        bash "$SCRIPT_PATH"
+    run_nested() {
+        MONITOR_REDIS_PORT="$port" \
+        MONITOR_SYNC_LOG="$td/sync.log" \
+        MONITOR_SYNC_CACHE="$td/cache" \
+        MONITOR_SYNC_LOCK="$td/lock" \
+        MONITOR_HEALTH_SYSLOG=0 \
+        REDIS_CLI="$(command -v redis-cli)" \
+            bash "$SCRIPT_PATH" "$@"
+    }
+
+    run_nested || return 1
+    run_nested --health || return 1
+    stats_out="$(run_nested --stats)" || return 1
+    echo "$stats_out" | grep -q 'mon_ip_keys=' || return 1
 
     oip="$(head -1 "$td/cache/openai-chatgpt-user.ips")"
     uip="$(head -1 "$td/cache/uptrends.ips")"
@@ -202,6 +322,25 @@ integration_test() {
     [ "$uval" = "ipcap@uptrends.com" ] || return 1
     [ "$ottl" -gt 0 ] || return 1
     [ "$keys" -gt 40000 ] || return 1
+
+    # A missing per-source heartbeat must make health fail even while all
+    # exact IP keys are still alive under their independent TTL.
+    redis-cli -p "$port" DEL mon:srcsync:anthropic >/dev/null
+    if run_nested --health >/dev/null 2>&1; then return 1; fi
+
+    # STALE heartbeat is a DIFFERENT branch from a missing one, and it is the
+    # branch that matters in production: a feed that silently stops updating
+    # leaves every key present, merely old. Deleting the key only exercises the
+    # "missing/invalid" test above, so removing the age comparison entirely
+    # left the whole suite green — verified by mutation 17-10. Restore the
+    # heartbeat with a timestamp older than the limit and require a failure.
+    redis-cli -p "$port" SET mon:srcsync:anthropic \
+        "$(( $(date +%s) - 200000 ))" >/dev/null
+    if run_nested --health >/dev/null 2>&1; then return 1; fi
+    # And a fresh heartbeat must pass again, so the check above cannot be
+    # satisfied by health failing for some unrelated permanent reason.
+    redis-cli -p "$port" SET mon:srcsync:anthropic "$(date +%s)" >/dev/null
+    run_nested --health >/dev/null 2>&1 || return 1
     printf 'monitor_ip_sync integration-test: OK keys=%s openai=%s uptrends=%s ttl=%s\n' \
         "$keys" "$oval" "$uval" "$ottl"
 
@@ -225,6 +364,9 @@ if [ "${1:-}" = "--install-cron" ]; then
 # The script already appends through log()/warn(); redirecting to the same file
 # here would duplicate every line.
 17 */12 * * * root bash ${SCRIPT_PATH} >/dev/null 2>&1
+# Validate all source heartbeats independently between sync runs. Failures are
+# written both to the sync log and syslog with tag antibot-monitor-ip.
+47 */6 * * * root bash ${SCRIPT_PATH} --health >/dev/null 2>&1
 EOF
     chmod 0644 /etc/cron.d/antibot-monitor-ip
     log "installed /etc/cron.d/antibot-monitor-ip"
@@ -243,6 +385,16 @@ RAUTH=()
 [ -n "$REDIS_PASS" ] && RAUTH=(--no-auth-warning -a "$REDIS_PASS")
 RCLI()  { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "${RAUTH[@]}" "$@"; }
 RPIPE() { "$REDIS_CLI" -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "${RAUTH[@]}" --pipe; }
+
+if [ "${1:-}" = "--health" ]; then
+    health_check
+    exit $?
+fi
+
+if [ "${1:-}" = "--stats" ]; then
+    stats_report
+    exit $?
+fi
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || { warn "already running; skip"; exit 0; }

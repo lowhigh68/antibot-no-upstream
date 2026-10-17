@@ -46,6 +46,7 @@ eq(opnet.resolve(a), true, "matching contact domain and network verify operator"
 eq(a.automation_tier, "operator", "operator evidence has a separate tier")
 eq(a.automation_proof, "published_ip", "operator proof is explicit")
 eq(a.operator_network_mode, "claim", "AI provider network is claim-bound")
+eq(a.operator_network_bind, "contact", "contact-domain binding is explicit")
 ok(a.good_bot_verified ~= true, "operator network never grants goodbot bypass")
 
 local before = calls
@@ -70,6 +71,8 @@ eq(opnet.resolve(opaque), true,
    "opaque product binds generically to operator-domain stem")
 eq(opaque.automation_claimed, true,
    "bound opaque client becomes a real automation claim")
+eq(opaque.operator_network_bind, "stem",
+   "opaque product records weaker stem binding")
 
 store["mon:203.0.113.13"] = "claim@anthropic.com"
 local generic = {

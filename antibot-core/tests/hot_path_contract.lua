@@ -166,6 +166,10 @@ do
     automation.automation_would_throttle = true
     automation.automation_top_use = 108
     automation.automation_top_axis = "principal:short"
+    automation.operator_network_name = "openai.com"
+    automation.operator_network_mode = "claim"
+    automation.operator_network_verified = true
+    automation.operator_network_bind = "contact"
     ngx.status = 200
     ngx.var.upstream_status = "200"
     ngx.var.upstream_response_time = "0.250"
@@ -238,6 +242,10 @@ do
        "generic automation shadow telemetry is serialized")
     ok(payload:find("autactual=200 autup=200 autuptime=0.250", 1, true) ~= nil,
        "automation telemetry includes actual upstream outcome")
+    ok(payload:find(
+           "opnet=openai.com opmode=claim opmatch=true opbind=contact",
+           1, true) ~= nil,
+       "operator-network telemetry distinguishes contact and stem binding")
     io.open = real_open
 end
 

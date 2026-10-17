@@ -634,13 +634,15 @@ function _M.run(ctx)
 
     -- Published-network provenance is independent from good-bot verification.
     -- `opmatch=true` means both network and self-identification matched early;
-    -- false/nil can still appear when the final monitor cap matched by IP only.
+    -- `opbind=contact|stem` distinguishes strong domain binding from the weaker
+    -- opaque-product inference. IP-only/final lookups emit `opbind=-`.
     local operator_str = ""
     if ctx.operator_network_name then
-        operator_str = string.format(" opnet=%s opmode=%s opmatch=%s",
+        operator_str = string.format(" opnet=%s opmode=%s opmatch=%s opbind=%s",
             tostring(ctx.operator_network_name),
             tostring(ctx.operator_network_mode or "-"),
-            tostring(ctx.operator_network_verified == true))
+            tostring(ctx.operator_network_verified == true),
+            tostring(ctx.operator_network_bind or "-"))
     end
 
     -- Network-UA quarantine telemetry. `network_id` is intentionally coarse;

@@ -157,6 +157,7 @@ function _M.init(ctx)
     ctx.operator_network_verified = false
     ctx.operator_network_name = nil
     ctx.operator_network_mode = nil
+    ctx.operator_network_bind = nil
 
     -- S2.5 attest fields (Phase 1).
     -- ua_check populates {bot_ua_compliant, bot_contact_host, browser_ua_pattern, analyzer_marker}.
