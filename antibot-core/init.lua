@@ -19,6 +19,8 @@ local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
 local automation_guard   = require "antibot.l7.automation_guard"
+local endpoint_policy    = require "antibot.waf.endpoint_policy"
+local endpoint_guard     = require "antibot.l7.endpoint_guard"
 local l7_circuit         = require "antibot.l7.circuit_breaker"
 local l7_surge           = require "antibot.l7.surge_guard"
 local detection_layer    = require "antibot.detection"
@@ -34,7 +36,9 @@ local waf_logger         = require "antibot.async.waf_logger"
 local verified_human     = require "antibot.core.access.verified_human"
 
 -- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
--- Chi dung local shared dict + IP ban; khong chay detection/Redis rate pipeline.
+-- Broad budgets chi dung local shared dict + IP ban; khong chay detection/Redis
+-- rate pipeline.  Rieng WordPress endpoint candidate co the doc inventory Redis
+-- MOT LAN khi cache WP-root con lanh, roi wp_paths cache ket qua theo docroot.
 local STEPS_ADMISSION = {
     { layer = ctx_layer,         fn = "init"          },
     { layer = classifier,        fn = "run_fast"      },
@@ -43,6 +47,11 @@ local STEPS_ADMISSION = {
     { layer = automation_guard,  fn = "run"           },
     { layer = proxy_origin,      fn = "run"           },
     { layer = l7_admission,      fn = "run"           },
+    -- Generic capacity engine, WordPress policy overlay.  Classification is
+    -- cheap for ordinary traffic and runs after the broad admission brake;
+    -- promoted endpoint rules can then reject before WAF/Redis-heavy work.
+    { layer = endpoint_policy,   fn = "run"           },
+    { layer = endpoint_guard,    fn = "before"        },
     -- Per-host backend health gate.  Admission has already classified static
     -- hit vs dynamic/static-miss, so the breaker never penalizes real assets.
     { layer = l7_circuit,        fn = "before"        },
@@ -219,6 +228,8 @@ end
 -- Keeping this separate from STEPS_ADMISSION is intentional: a request that
 -- WAF/challenge/ban terminates must never look like backend concurrency.
 local function admit_dynamic(ctx)
+    local _, endpoint_exit = endpoint_guard.admit(ctx)
+    if endpoint_exit == true then return true end
     local _, exit = l7_surge.admit(ctx)
     return exit == true
 end
@@ -331,6 +342,7 @@ function _M.log()
     -- Release the in-flight slot before logging; circuit learning then records
     -- the completed upstream outcome.  Both expose their elected sample or
     -- transition in this same antibot.log line.
+    endpoint_guard.after(ctx)
     l7_surge.after(ctx)
     l7_circuit.after(ctx)
 

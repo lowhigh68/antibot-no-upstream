@@ -500,6 +500,80 @@ _M.l7_admission = {
     },
 }
 
+-- Generic endpoint-cost guard with a WordPress policy overlay.
+--
+-- This protects the axis that per-IP/fingerprint/rate scoring cannot see: a
+-- low request rate spread over thousands of IPs where every request occupies
+-- expensive PHP/DB work.  All rules start in SHADOW.  Promotion is per axis,
+-- so production may enforce the low-FP capacity rule for oEmbed without also
+-- enforcing URL-host or REST-user policy.
+--
+-- Counts live in the existing local `antibot_cache`; no Redis or Nginx change.
+-- Rate limits are per proven WordPress root + endpoint, not per IP and not per
+-- query value.  Consequently changing `url=` cannot create a new budget.
+_M.endpoint_guard = {
+    enabled          = true,
+    retry_after      = 2,
+    rate_status      = 429,
+    inflight_status  = 503,
+    shape_status     = 400,
+    windows = {
+        short = 10,
+        long  = 60,
+    },
+    slot_bucket_seconds    = 30,
+    slot_retention_seconds = 180,
+    endpoints = {
+        -- Production incident 18-10-2026: 3,385 IP, 5.7 req/s aggregate,
+        -- responses held PHP for 10-79s.  20/10s catches that aggregate while
+        -- remaining far above ordinary on-demand embed discovery.  The more
+        -- important signal is 3 concurrent requests per WordPress root.
+        wp_oembed_embed = {
+            rate       = { mode = "shadow", short = 20, long = 100 },
+            inflight   = { mode = "shadow", limit = 3 },
+            shape_mode = "shadow",
+            -- Cross-host URL is measured separately.  Do not enforce until
+            -- aliases/pointers on the production fleet have been observed.
+            cross_host_mode = "shadow",
+        },
+        -- Core protects this route with `edit_posts`, but a capacity ceiling
+        -- still prevents a valid/admin caller or plugin hook from consuming a
+        -- whole PHP pool.
+        wp_oembed_proxy = {
+            rate       = { mode = "shadow", short = 20, long = 120 },
+            inflight   = { mode = "shadow", limit = 4 },
+            shape_mode = "shadow",
+            cross_host_mode = "shadow",
+        },
+        -- Public user listing is primarily a reconnaissance/privacy concern.
+        -- Keep conservative budgets in shadow; do not turn privacy preference
+        -- into a fleet-wide compatibility break for author/headless clients.
+        wp_users_collection = {
+            rate       = { mode = "shadow", short = 30, long = 180 },
+            inflight   = { mode = "shadow", limit = 6 },
+            shape_mode = "shadow",
+            cross_host_mode = "off",
+        },
+        -- Mutation remains subject to WordPress authentication/capability.
+        -- This guard supplies only a host capacity backstop.
+        wp_users_mutation = {
+            rate       = { mode = "shadow", short = 20, long = 100 },
+            inflight   = { mode = "shadow", limit = 4 },
+            shape_mode = "off",
+            cross_host_mode = "off",
+        },
+        -- `_embed` expands linked REST resources; it is distinct from the
+        -- oEmbed endpoint and common enough to require a deliberately high,
+        -- telemetry-only starting threshold.
+        wp_rest_embed_expand = {
+            rate       = { mode = "shadow", short = 100, long = 600 },
+            inflight   = { mode = "shadow", limit = 10 },
+            shape_mode = "off",
+            cross_host_mode = "off",
+        },
+    },
+}
+
 -- Per-host dynamic in-flight surge guard.  This closes the main Lua-only gap
 -- between fixed request-rate budgets and the completed-response circuit
 -- breaker: a small number of long dynamic requests can occupy backend capacity

@@ -93,6 +93,38 @@ end)
 
 package.loaded["antibot.l7.admission"] = layer("admission", "run")
 package.loaded["antibot.l7.automation_guard"] = layer("automation.guard", "run")
+package.loaded["antibot.waf.endpoint_policy"] = {
+    run = function(ctx)
+        event("endpoint.policy")
+        if scenario.endpoint then
+            ctx.endpoint_id = scenario.endpoint
+            ctx.endpoint_scope = "scope-test"
+        end
+        return true, false
+    end,
+}
+package.loaded["antibot.l7.endpoint_guard"] = {
+    before = function()
+        event("endpoint.before")
+        return true, exit_for("endpoint.before")
+    end,
+    admit = function(ctx)
+        event("endpoint.admit")
+        if ctx.endpoint_id and not ctx.endpoint_admitted then
+            ctx.endpoint_admitted = true
+            counts.endpoint_admitted = counts.endpoint_admitted + 1
+        end
+        if scenario.exit_at == "endpoint.admit" then return false, true end
+        return true, false
+    end,
+    after = function(ctx)
+        event("endpoint.after")
+        if ctx.endpoint_admitted and not ctx.endpoint_released then
+            ctx.endpoint_released = true
+            counts.endpoint_released = counts.endpoint_released + 1
+        end
+    end,
+}
 package.loaded["antibot.l7.circuit_breaker"] = {
     before = function() event("circuit.before"); return true, exit_for("circuit.before") end,
     after = function() event("circuit.after") end,
@@ -240,6 +272,7 @@ local function reset(s)
     events = {}
     counts = {
         admitted = 0, released = 0, risk_calls = 0, intel_reports = 0,
+        endpoint_admitted = 0, endpoint_released = 0,
         timer_at = 0, memory_starts = 0, fleet_timer = 0, waf_ensure = 0,
     }
     worker_id = 1
@@ -261,9 +294,33 @@ eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
 before("admission", "waf.pre", "admission chay truoc WAF")
 before("automation.guard", "admission",
     "automation claim duoc do truoc moi admission fast-exit")
+before("admission", "endpoint.policy",
+    "broad admission brake chay truoc endpoint overlay")
+before("endpoint.before", "waf.pre",
+    "endpoint early gate chay truoc WAF")
 before("waf.pre", "access", "WAF chay truoc trust/access")
 before("access", "detection", "access chay truoc detection")
 before("enforcement", "surge.admit", "chi admit sau enforcement")
+before("endpoint.admit", "surge.admit",
+    "endpoint atomic gate chay truoc global surge accounting")
+
+reset({ endpoint = "wp_oembed_embed" })
+root.run()
+eq(counts.endpoint_admitted, 1, "endpoint backend request nhan dung mot slot")
+eq(event_count("endpoint.admit"), 1, "endpoint admit dung mot lan")
+root.log()
+root.log()
+eq(counts.endpoint_released, 1, "endpoint slot release dung mot lan")
+
+reset({ endpoint = "wp_oembed_embed", whitelist = true })
+root.run()
+eq(counts.endpoint_admitted, 1,
+   "whitelist khong bypass endpoint capacity slot")
+
+reset({ endpoint = "wp_oembed_embed", verified_cookie = true })
+root.run()
+eq(counts.endpoint_admitted, 1,
+   "verified cookie khong bypass endpoint capacity slot")
 
 reset({ whitelist = true })
 root.run()
@@ -303,6 +360,10 @@ reset({ waf_block = true })
 root.run()
 eq(counts.admitted, 0, "WAF block khong nhan slot")
 eq(event_count("access"), 0, "WAF block khong vao trust pipeline")
+reset({ endpoint = "wp_oembed_embed", waf_block = true })
+root.run()
+eq(counts.endpoint_admitted, 0,
+   "WAF block endpoint khong tieu backend endpoint budget")
 reset({ exit_at = "admission" })
 root.run()
 eq(counts.admitted, 0, "admission block khong nhan slot")

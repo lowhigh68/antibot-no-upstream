@@ -93,6 +93,7 @@ local syntax_rel = {
     "async/logger.lua",
     "l7/admission.lua",
     "l7/automation_guard.lua",
+    "l7/endpoint_guard.lua",
     "l7/circuit_breaker.lua",
     "l7/surge_guard.lua",
     "l7/init.lua",
@@ -104,6 +105,7 @@ local syntax_rel = {
     "l7/rate/adaptive_limit.lua",
     "l7/rate/counter.lua",
     "l7/rate/res_ip_counter.lua",
+    "waf/endpoint_policy.lua",
 }
 
 local syntax_files = {}
@@ -688,6 +690,258 @@ eq(sg_degraded.surge_admitted, nil, "dict day khong tao slot ao")
 
 fake_ngx.shared.antibot_cache.full = nil
 cfg.l7_surge_guard = old_surge
+
+-- Endpoint policy: canonicalize pretty REST, rest_route and sub-directory
+-- WordPress without applying the overlay to an unproven CMS root.
+local function run_endpoint_tests()
+local saved_wp_paths = package.loaded["antibot.waf.wordpress.paths"]
+package.loaded["antibot.waf.wordpress.paths"] = {
+    is_wp_root = function() return true end,
+}
+package.loaded["antibot.waf.endpoint_policy"] = nil
+local endpoint_policy = require "antibot.waf.endpoint_policy"
+
+local function classify_endpoint(vars, args, is_wp)
+    fake_ngx.var = vars
+    local ctx = { req = {
+        uri = vars.uri, method = vars.request_method, host = vars.host,
+    } }
+    endpoint_policy.run(ctx, {
+        args = args or {},
+        is_wp_root = function(_, prefix, docroot)
+            if is_wp == false then return false end
+            ctx.test_prefix, ctx.test_docroot = prefix, docroot
+            return true
+        end,
+    })
+    return ctx
+end
+
+local ep1 = classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "url=x",
+    request_method = "GET", host = "example.test",
+    document_root = "/home/u/public_html",
+}, { url = "https://example.test/post/" })
+eq(ep1.endpoint_id, "wp_oembed_embed", "pretty oEmbed duoc canonicalize")
+eq(ep1.endpoint_shape, "ok", "oEmbed hop le co shape=ok")
+eq(ep1.endpoint_url_relation, "same", "oEmbed cung host duoc nhan ra")
+eq(ep1.test_prefix, "", "WordPress root co prefix rong")
+
+local ep2 = classify_endpoint({
+    uri = "/blog/", args = "rest_route=%2Foembed%2F1.0%2Fembed",
+    request_method = "GET",
+    host = "www.example.test", document_root = "/home/u/public_html",
+}, {
+    rest_route = "/oembed/1.0/embed/",
+    url = "https://example.test/post/",
+})
+eq(ep2.endpoint_id, "wp_oembed_embed", "rest_route oEmbed duoc canonicalize")
+eq(ep2.test_prefix, "/blog", "rest_route giu prefix WordPress thu muc con")
+eq(ep2.endpoint_url_relation, "www_alias", "www va apex duoc tach thanh alias")
+
+local ep2dup = classify_endpoint({
+    uri = "/",
+    args = "rest_route=%2Fwp%2Fv2%2Fposts&rest_route=%2Foembed%2F1.0%2Fembed",
+    request_method = "GET",
+    host = "example.test", document_root = "/home/u/public_html",
+}, {
+    rest_route = { "/wp/v2/posts", "/oembed/1.0/embed" },
+    url = "https://example.test/post/",
+})
+eq(ep2dup.endpoint_id, "wp_oembed_embed",
+   "duplicate rest_route khong che duoc protected endpoint")
+eq(ep2dup.endpoint_shape, "duplicate_rest_route",
+   "duplicate rest_route co shape telemetry rieng")
+
+fake_ngx.var = {
+    uri = "/", args = "%72est_route=%2Foembed%2F1.0%2Fembed",
+    request_method = "GET", host = "example.test",
+    document_root = "/home/u/public_html",
+}
+local ep2encoded = { req = { uri = "/", method = "GET", host = "example.test" } }
+endpoint_policy.run(ep2encoded, {
+    args = {}, args_error = "truncated",
+    is_wp_root = function() return true end,
+})
+eq(ep2encoded.endpoint_id, "wp_oembed_embed",
+   "percent-encoded rest_route key khong bypass classifier")
+eq(ep2encoded.endpoint_shape, "args_truncated",
+   "truncated args duoc giu lam shape evidence")
+
+local ep3 = classify_endpoint({
+    uri = "/wp-json/wp/v2/users", args = "", request_method = "GET",
+    host = "example.test", document_root = "/home/u/public_html",
+}, { per_page = "100", search = "admin" })
+eq(ep3.endpoint_id, "wp_users_collection", "GET users vao collection policy")
+eq(ep3.endpoint_shape, "scan", "users search duoc danh dau scan, khong coi malformed")
+
+local ep4 = classify_endpoint({
+    uri = "/wp-json/wp/v2/users", args = "", request_method = "POST",
+    host = "example.test", document_root = "/home/u/public_html",
+}, {})
+eq(ep4.endpoint_id, "wp_users_mutation", "POST users tach khoi enumeration")
+
+local ep5 = classify_endpoint({
+    uri = "/wp-json/wp/v2/posts", args = "_embed=1", request_method = "GET",
+    host = "example.test", document_root = "/home/u/public_html",
+}, { _embed = "1" })
+eq(ep5.endpoint_id, "wp_rest_embed_expand", "REST _embed la family rieng")
+
+local ep6 = classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "", request_method = "GET",
+    host = "example.test", document_root = "/home/u/public_html",
+}, { url = "https://other.test/post/" })
+eq(ep6.endpoint_url_relation, "cross", "cross-host URL chi duoc ghi telemetry")
+
+local ep7 = classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "", request_method = "GET",
+    host = "example.test", document_root = "/home/u/public_html",
+}, { url = { "https://example.test/a", "https://example.test/b" } })
+eq(ep7.endpoint_shape, "bad_url", "duplicate url khong duoc sap thanh scalar")
+
+local ep_nonwp = classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "", request_method = "GET",
+    host = "custom.test", document_root = "/srv/custom",
+}, { url = "https://custom.test/a" }, false)
+eq(ep_nonwp.endpoint_id, nil, "site khong duoc chung minh WP khong nhan overlay")
+eq(ep_nonwp.endpoint_candidate, "wp_oembed_embed",
+   "candidate van co telemetry khi cong WP tu choi")
+
+-- Generic endpoint guard: aggregate by tenant+endpoint, independent of IP.
+local old_endpoint = cfg.endpoint_guard
+cfg.endpoint_guard = {
+    enabled = true, retry_after = 2,
+    rate_status = 429, inflight_status = 503, shape_status = 400,
+    windows = { short = 10, long = 60 },
+    slot_bucket_seconds = 30, slot_retention_seconds = 180,
+    endpoints = {
+        wp_oembed_embed = {
+            rate = { mode = "shadow", short = 2, long = 5 },
+            inflight = { mode = "shadow", limit = 2 },
+            shape_mode = "shadow", cross_host_mode = "shadow",
+        },
+    },
+}
+package.loaded["antibot.l7.endpoint_guard"] = nil
+local endpoint_guard = require "antibot.l7.endpoint_guard"
+
+local function epctx(scope, ip, shape, relation)
+    return {
+        endpoint_id = "wp_oembed_embed",
+        endpoint_scope = scope or "tenant_a",
+        endpoint_shape = shape or "ok",
+        endpoint_url_relation = relation or "same",
+        ip = ip or "192.0.2.1",
+    }
+end
+
+clock = 1400
+exits = {}
+fake_ngx.status = 200
+fake_ngx.header = {}
+fake_ngx.var = { upstream_status = "200", upstream_response_time = "0.250" }
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_stats = Dict.new()
+
+local eg1 = epctx("tenant_a", "192.0.2.1")
+local eg2 = epctx("tenant_a", "198.51.100.2")
+local eg3 = epctx("tenant_a", "203.0.113.3")
+endpoint_guard.admit(eg1)
+endpoint_guard.admit(eg2)
+local _, eg3_exit = endpoint_guard.admit(eg3)
+eq(eg3_exit, false, "endpoint shadow khong chan")
+eq(eg3.endpoint_short_count, 3, "counter gom ba IP vao cung tenant endpoint")
+eq(eg3.endpoint_inflight, 3, "inflight gom ba IP, khong bi rotate-IP bypass")
+eq(eg3.endpoint_would_reject, true, "limit+1 duoc ghi would")
+ok(eg3.endpoint_cause:find("inflight", 1, true) ~= nil,
+   "would neu ro nguyen nhan inflight")
+ok(eg3.endpoint_cause:find("rate_short", 1, true) ~= nil,
+   "would neu ro nguyen nhan rate")
+eq(#exits, 0, "shadow khong ngx.exit")
+
+clock = 1401
+endpoint_guard.after(eg1)
+eq(eg1.endpoint_duration, 1, "endpoint slot co duration")
+eq(eg1.endpoint_upstream_time, 0.25, "endpoint log doc upstream time")
+endpoint_guard.after(eg1)
+endpoint_guard.after(eg2)
+endpoint_guard.after(eg3)
+eq(fake_ngx.shared.antibot_cache:get("ep:tenant_a:wp_oembed_embed:slot:46"), nil,
+   "endpoint release idempotent va tra het slot")
+
+-- Tenant isolation: a hot site cannot spend another site's budget.
+local eg_other = epctx("tenant_b", "192.0.2.1")
+endpoint_guard.admit(eg_other)
+eq(eg_other.endpoint_short_count, 1, "endpoint budget tach theo WordPress root")
+endpoint_guard.after(eg_other)
+
+-- Incident replay shape: every request uses another IP and releases before
+-- the next one, so neither per-IP nor concurrency is required for detection;
+-- the invariant host+endpoint rate budget still accumulates all of them.
+clock = 1450
+fake_ngx.shared.antibot_cache = Dict.new()
+local rotated_last
+for i = 1, 25 do
+    local rotated = epctx("tenant_rotate", "198.51.100." .. tostring(i))
+    endpoint_guard.admit(rotated)
+    endpoint_guard.after(rotated)
+    rotated_last = rotated
+end
+eq(rotated_last.endpoint_short_count, 25,
+   "rotate-IP replay van cong theo host+endpoint")
+eq(rotated_last.endpoint_inflight, 1,
+   "replay tuan tu khong can gia concurrency")
+eq(rotated_last.endpoint_would_reject, true,
+   "rotate-IP replay van vuot endpoint rate budget")
+ok(rotated_last.endpoint_cause:find("rate_short", 1, true) ~= nil,
+   "rotate-IP replay chi ro rate cause")
+
+-- Shape and cross-host are separate shadow candidates, never IP punishment.
+local eg_shape = epctx("tenant_shape", nil, "bad_url", "invalid")
+endpoint_guard.admit(eg_shape)
+eq(eg_shape.endpoint_would_reject, true, "bad shape co shadow candidate")
+ok(eg_shape.endpoint_cause:find("shape_bad_url", 1, true) ~= nil,
+   "shape cause duoc tach rieng")
+eq(eg_shape.action, nil, "shadow shape khong doi bot verdict")
+endpoint_guard.after(eg_shape)
+
+local eg_cross = epctx("tenant_cross", nil, "ok", "cross")
+endpoint_guard.admit(eg_cross)
+eq(eg_cross.endpoint_would_reject, true, "cross-host co shadow candidate")
+eq(eg_cross.endpoint_cause, "cross_host", "cross-host co cause rieng")
+endpoint_guard.after(eg_cross)
+
+-- Promote only rate: the early gate rejects before WAF/backend, while the
+-- independent inflight/shape/cross rules remain shadow.
+cfg.endpoint_guard.endpoints.wp_oembed_embed.rate.mode = "enforce"
+clock = 1500
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local er1, er2 = epctx("tenant_enforce"), epctx("tenant_enforce")
+endpoint_guard.admit(er1)
+endpoint_guard.admit(er2)
+local er3 = epctx("tenant_enforce")
+local _, er3_exit = endpoint_guard.before(er3)
+eq(er3_exit, true, "rate enforce chan request tiep theo o early gate")
+eq(exits[#exits], 429, "rate enforce tra 429")
+eq(er3.action, "throttled", "capacity reject khong gan bot block")
+ok(er3.action_reason:find("endpoint_guard:wp_oembed_embed", 1, true) ~= nil,
+   "endpoint reject co reason on dinh")
+endpoint_guard.after(er1)
+endpoint_guard.after(er2)
+
+-- A WAF/local block never called admit(), so log phase cannot decrement a
+-- slot belonging to somebody else.
+local never_admitted = epctx("tenant_enforce")
+endpoint_guard.after(never_admitted)
+eq(never_admitted.endpoint_released, nil,
+   "request khong admit khong tao release ao")
+
+cfg.endpoint_guard = old_endpoint
+package.loaded["antibot.waf.endpoint_policy"] = nil
+package.loaded["antibot.waf.wordpress.paths"] = saved_wp_paths
+end
+run_endpoint_tests()
 
 -- Classifier: extension chi duoc coi la resource khi GET/HEAD; Sec-Fetch-Dest
 -- chi la telemetry, khong con la quyen tu chon lane nhe.

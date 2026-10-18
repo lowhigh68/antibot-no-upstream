@@ -791,6 +791,44 @@ function _M.run(ctx)
             tostring(ctx.admission_use_axis or "-"))
     end
 
+    -- Endpoint-cost telemetry.  Endpoint ids are bounded policy constants;
+    -- query values (especially the attacker-controlled oEmbed `url`) are never
+    -- logged.  Every classified endpoint row is emitted because these routes
+    -- are low-volume in normal operation and the production question is their
+    -- full distribution, not a sampled approximation.
+    local endpoint_str = ""
+    if ctx.endpoint_id or ctx.endpoint_candidate then
+        endpoint_str = string.format(
+            " ep=%s epcand=%s epmode=%s eps=%s/%s epl=%s/%s epif=%s/%s" ..
+            " epwould=%s epcause=%s epshape=%s epurl=%s epsrc=%s epproof=%s" ..
+            " epdeg=%s epexp=%s epdur=%s epactual=%s epup=%s epuptime=%s",
+            tostring(ctx.endpoint_id or "-"),
+            tostring(ctx.endpoint_candidate or "-"),
+            tostring(ctx.endpoint_mode or "-"),
+            tostring(ctx.endpoint_short_count or "-"),
+            tostring(ctx.endpoint_short_limit or "-"),
+            tostring(ctx.endpoint_long_count or "-"),
+            tostring(ctx.endpoint_long_limit or "-"),
+            tostring(ctx.endpoint_inflight or "-"),
+            tostring(ctx.endpoint_inflight_limit or "-"),
+            tostring(ctx.endpoint_would_reject or false),
+            tostring(ctx.endpoint_cause or "-"),
+            tostring(ctx.endpoint_shape or "-"),
+            tostring(ctx.endpoint_url_relation or "-"),
+            tostring(ctx.endpoint_route_source or "-"),
+            tostring(ctx.endpoint_policy_state or "-"),
+            tostring(ctx.endpoint_degraded
+                or ctx.endpoint_policy_degraded or false),
+            tostring(ctx.endpoint_slot_expired or false),
+            ctx.endpoint_duration
+                and string.format("%.3f", ctx.endpoint_duration) or "-",
+            tostring(ctx.endpoint_actual_status or "-"),
+            (tostring(ctx.endpoint_actual_upstream_status or "-")
+                :gsub("%s+", "")),
+            ctx.endpoint_upstream_time
+                and string.format("%.3f", ctx.endpoint_upstream_time) or "-")
+    end
+
     -- Per-host dynamic in-flight telemetry.  Ordinary rows are sampled once
     -- per host/second; transitions, simulated/enforced rejects and degraded
     -- paths are always visible.  `sgdur` is the slot lifetime from late access
@@ -1047,7 +1085,8 @@ function _M.run(ctx)
         surge_str,
         circuit_str
     )
-    line = line .. automation_str .. operator_str .. shared_ip_str .. ban_str
+    line = line .. endpoint_str .. automation_str .. operator_str
+        .. shared_ip_str .. ban_str
 
     write_log_line(line)
 
