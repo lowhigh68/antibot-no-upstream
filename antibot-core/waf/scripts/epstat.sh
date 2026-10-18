@@ -23,13 +23,21 @@
 #      khong phan biet duoc "chua xay ra" voi "ma chua deploy". Cong sai thi
 #      thoat rc=3 va KHONG in so nao.
 #
-#   4. MUI GIO. `awk mktime` doc theo gio DIA PHUONG cua may chay awk, nhung
-#      dong log nginx mang san offset (`+0700`). Do duoc: mktime cho
-#      `2025 10 9 7 53 20` tra 1759971200 trong khi epoch that la 1759996400 —
-#      lech dung 25200s = 7 tieng, tuc ca cua so dich sang mot phia. Day la ho
-#      lan thu hai cua bay timestamp: lan truoc la so sanh CHUOI tren
-#      `dd/Mon/yyyy` (`30/Apr` > `17/Oct` vi `3` > `1`) nen gan nhu ca file loi
-#      vao cua so va sinh ra con so "3.830 req/s" khong ton tai.
+#   4. DINH DANG THOI GIAN lay tu NOI GHI, khong tu tri nho. `antibot.log`
+#      ghi SAN epoch o cot `ts=` (`logger.lua:968-974`), nen bo loc chi can
+#      doc cot do — khong phan tich ngay thang, khong bu mui gio.
+#
+#      Ban dau cua script nay doi dinh dang nginx access log
+#      (`[dd/Mon/yyyy:HH:MM:SS +0700]`) va con bu mui gio cho no. Regex ay
+#      KHONG KHOP DONG NAO cua `antibot.log`, nen bo loc vut sach ca file va
+#      bao "dong sau moc: 0" tren mot may dang tai 132 — cua so 539 phut, may
+#      chac chan co luu luong. Dung ho voi `uri=` (that ra la `matched=`) va
+#      `autom=` (that ra la `aut=`).
+#
+#      BAY KEP: fixture cua oracle cung sai y het (dung `ts=a` + dau thoi
+#      gian kieu nginx), nen 34 phep thu van xanh trong khi tren may that bo
+#      loc hong hoan toan. Mot bo loc tra 0 tren may chac chan co luu luong
+#      la dau hieu BO LOC HONG, khong phai "chua xay ra".
 #
 # Chay: bash epstat.sh [epoch_moc] [duong/dan/antibot.log]
 
@@ -154,30 +162,27 @@ read_all() {
 WIN=$(mktemp) || exit 2
 trap 'rm -f "$WIN"' EXIT
 
+# `antibot.log` ghi SAN epoch trong cot `ts=` (`logger.lua:968-974`:
+# `"[%s] [antibot] ts=%d ..."` voi `ngx.time()`), nen KHONG phai phan tich
+# ngay thang gi het — doc thang cot do.
+#
+# Ban dau cua script nay doi `[dd/Mon/yyyy:HH:MM:SS +0700]` theo dinh dang
+# nginx access log, roi bo cong suc bu mui gio cho no. Nhung `antibot.log`
+# dung `[%Y-%m-%d %H:%M:%S]`, khong co thang chu va khong co offset, nen
+# regex kia KHONG KHOP DONG NAO va bo loc im lang vut het ca file: do duoc
+# 18-10, cua so 539 phut tren may dang tai nang ma bao `dong sau moc: 0`.
+#
+# Bai hoc giong ca `uri=` (that ra la `matched=`) va `autom=` (that ra la
+# `aut=`): doc dinh dang tu NOI GHI, khong lay tu tri nho. Mot bo loc tra 0
+# tren may chac chan co luu luong la dau hieu bo loc hong, khong phai dau
+# hieu "chua xay ra".
 read_all | awk -v moc="$MOC" '
-BEGIN {
-    split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ")
-    for (i = 1; i <= 12; i++) mon[m[i]] = i
-    # Chenh giua gio dia phuong cua may nay va UTC, do MOT lan.
-    now = systime()
-    local_off = now - mktime(strftime("%Y %m %d %H %M %S", now, 1))
-}
 {
-    if (!match($0, /\[[0-9]{2}\/[A-Z][a-z]{2}\/[0-9]{4}:[0-9]{2}:[0-9]{2}:[0-9]{2}/))
-        next
-    s = substr($0, RSTART + 1, RLENGTH - 1)
-    split(s, p, /[\/:]/)
-    t = mktime(sprintf("%s %s %s %s %s %s",
-                       p[3], mon[p[2]], p[1], p[4], p[5], p[6]))
-    t += local_off              # coi nhu da doc ra gio UTC
-    off = 0
-    if (match($0, /[+-][0-9]{4}\]/)) {
-        o = substr($0, RSTART, 5)
-        sign = (substr(o, 1, 1) == "-") ? -1 : 1
-        off = sign * (substr(o, 2, 2) * 3600 + substr(o, 4, 2) * 60)
+    if (match($0, /(^|[[:space:]])ts=[0-9]+/)) {
+        t = substr($0, RSTART, RLENGTH)
+        sub(/^.*ts=/, "", t)
+        if (t + 0 >= moc) print
     }
-    t -= off                   # bu offset THAT cua dong log -> epoch
-    if (t >= moc) print
 }' > "$WIN"
 
 TOTAL=$(wc -l < "$WIN")

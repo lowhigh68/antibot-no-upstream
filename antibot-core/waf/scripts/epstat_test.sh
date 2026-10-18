@@ -78,25 +78,35 @@ cp "$W/new/async/logger.lua"      "$W/old/async/"
 DEPLOY=$(( $(date +%s) - 4200 ))
 SETTLE=0
 MOC=$DEPLOY
-TS() { date -d "@$1" '+%d/%b/%Y:%H:%M:%S %z'; }
-before=$(TS $((MOC - 3600)))
-after1=$(TS $((MOC + 600)))
-after2=$(TS $((MOC + 1200)))
+# DINH DANG PHAI GIONG `logger.lua:968-974` TUNG BYTE:
+#   "[%Y-%m-%d %H:%M:%S] [antibot] ts=<epoch> domain=... "
+# Ban fixture dau dung `ts=a [18/Oct/2026:...]` theo kieu nginx access log —
+# vua sai cot `ts=` (chu cai thay vi epoch) vua them dau thoi gian khong ton
+# tai. Vi fixture va bo loc CUNG sai mot kieu nen 34 phep thu van xanh trong
+# khi tren may that bo loc vut sach ca file. Fixture phai lay dinh dang tu NOI
+# GHI, khong tu tri nho.
+LINE() { # LINE <epoch> <phan con lai>
+    printf '[%s] [antibot] ts=%s domain=inachau.net class=navigation %s\n' \
+        "$(date -d "@$1" '+%Y-%m-%d %H:%M:%S')" "$1" "$2"
+}
+T_BEFORE=$((MOC - 3600))
+T_AFTER1=$((MOC + 600))
+T_AFTER2=$((MOC + 1200))
 
 L="$W/log/antibot.log"
-E=' epsrc=pretty epproof=wp epmode=shadow'
+E='epsrc=pretty epproof=wp epmode=shadow'
 {
-  echo "ts=a [$before] ep=wp_oembed_embed epif=9/3 epwould=true epcause=inflight epshape=ok$E"
-  echo "ts=b [$before] ep=wp_oembed_embed epif=8/3 epwould=true epcause=inflight epshape=ok$E"
-  echo "ts=c [$before] ep=wp_oembed_embed epif=1/3 epwould=false epcause=- epshape=ok$E"
-  echo "ts=d [$after1] ep=wp_oembed_embed epif=1/3 epwould=false epcause=- epshape=ok$E"
-  echo "ts=e [$after1] ep=wp_oembed_embed epif=2/3 epwould=false epcause=- epshape=ok$E"
-  echo "ts=f [$after1] ep=wp_oembed_embed epif=3/3 epwould=false epcause=- epshape=ok$E"
-  echo "ts=g [$after2] ep=wp_oembed_embed epif=4/3 epwould=true epcause=inflight epshape=ok$E rown=0.00"
-  echo "ts=h [$after2] ep=wp_oembed_embed epif=5/3 epwould=true epcause=inflight epshape=bad_url$E rown=0.00"
-  echo "ts=i [$after2] ep=wp_users_collection epif=1/6 epwould=false epcause=- epshape=scan epsrc=rest_route epproof=wp epmode=shadow"
-  echo "ts=j [$after2] ep=wp_oembed_embed epif=7/3 epwould=true epcause=inflight epshape=ok$E rown=0.00"
-  echo "ts=k [$after2] reason=allow score=1.0 rown=0.80"
+  LINE $T_BEFORE "ep=wp_oembed_embed epif=9/3 epwould=true epcause=inflight epshape=ok $E"
+  LINE $T_BEFORE "ep=wp_oembed_embed epif=8/3 epwould=true epcause=inflight epshape=ok $E"
+  LINE $T_BEFORE "ep=wp_oembed_embed epif=1/3 epwould=false epcause=- epshape=ok $E"
+  LINE $T_AFTER1 "ep=wp_oembed_embed epif=1/3 epwould=false epcause=- epshape=ok $E"
+  LINE $T_AFTER1 "ep=wp_oembed_embed epif=2/3 epwould=false epcause=- epshape=ok $E"
+  LINE $T_AFTER1 "ep=wp_oembed_embed epif=3/3 epwould=false epcause=- epshape=ok $E"
+  LINE $T_AFTER2 "ep=wp_oembed_embed epif=4/3 epwould=true epcause=inflight epshape=ok $E rown=0.00"
+  LINE $T_AFTER2 "ep=wp_oembed_embed epif=5/3 epwould=true epcause=inflight epshape=bad_url $E rown=0.00"
+  LINE $T_AFTER2 "ep=wp_users_collection epif=1/6 epwould=false epcause=- epshape=scan epsrc=rest_route epproof=wp epmode=shadow"
+  LINE $T_AFTER2 "ep=wp_oembed_embed epif=7/3 epwould=true epcause=inflight epshape=ok $E rown=0.00"
+  LINE $T_AFTER2 "reason=allow score=1.0 rown=0.80"
 } > "$L"
 
 echo "$DEPLOY" > "$W/log/.deploy_ts"
@@ -121,7 +131,15 @@ ck "ban moi qua cong (rc=0)" "0" "$rc_new"
 ck "cong bao OK" "yes" \
    "$(printf '%s' "$out_new" | grep -q 'GATE OK' && echo yes || echo no)"
 
-echo "── 2. loc theo epoch + mui gio ──────────────────────"
+echo "── 2. loc theo cot ts= (epoch san trong log) ────────"
+# Phep thu NAY la cai da thieu: bo loc doi dinh dang nginx
+# (`[dd/Mon/yyyy:HH:MM:SS +0700]`) khong khop dong nao cua `antibot.log` nen
+# vut sach ca file, ma fixture cu cung sai y het nen khong ai bat duoc.
+ck "dong fixture dung dinh dang logger.lua" "yes" \
+   "$(head -1 "$L" | grep -qE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}\] \[antibot\] ts=[0-9]+ ' \
+      && echo yes || echo no)"
+ck "fixture KHONG chua dinh dang nginx" "0" \
+   "$(grep -cE '\[[0-9]{2}/[A-Z][a-z]{2}/[0-9]{4}:' "$L")"
 ck "dem dung 7 dong ep= sau moc" "7" \
    "$(printf '%s' "$out_new" | sed -n 's/^dong co ep= *: *//p')"
 # Neu so sanh CHUOI, hoac bo offset, thi dong truoc moc lot vao -> thay 9/3, 8/3
