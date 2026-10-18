@@ -448,6 +448,24 @@ do
     local tiers = aut.enforce_tiers or {}
     eq(aut.mode, "enforce", "automation_guard enforce")
     eq(tiers.operator, true, "operator tier bi chan")
+    local server_limit = ((aut.provisional_limits or {}).server or {})
+    eq(server_limit.short, 20,
+       "server-axis = 20 cost units / 10s de gom tai qua domain")
+    eq(server_limit.long, 60,
+       "server-axis = 60 cost units / 60s de bao ve backend chung")
+    -- Truc `fleet` (principal toan may) chua duoc ghim thi ai cung ha duoc
+    -- trong im lang — dung lo ma MUT 2 phat hien hom nay (moi test dung config
+    -- stub nen gia tri SHIP khong co gi bao ve).
+    local fleet_limit = ((aut.provisional_limits or {}).fleet or {})
+    eq(fleet_limit.short, 15,
+       "fleet-axis = 15 cost units / 10s: chan DOT cua mot principal")
+    eq(fleet_limit.long, 60,
+       "fleet-axis = 60 / 60s: OpenAI 1,641 req/s -> ve ~61% toc do keo")
+    -- Hai truc phai CUNG ton tai. `server` mot minh thi Anthropic+Perplexity
+    -- (20/5.929 request operator) bi chan chi vi OpenAI dang keo; `fleet` mot
+    -- minh thi khong co tran nao cho tong tai cua moi principal cong lai.
+    ok(next(server_limit) ~= nil and next(fleet_limit) ~= nil,
+       "giu CA HAI truc: fleet phan biet principal, server dat tran toan may")
     eq(tiers.unknown, nil, "unknown KHONG bi chan — rao chan FP chinh")
     eq(tiers.verified, nil, "verified (Googlebot/Bingbot) KHONG bi chan")
 end

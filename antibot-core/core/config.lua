@@ -467,9 +467,41 @@ _M.automation = {
             unknown      = { short = 12, long = 40  },
             contradicted = { short = 8,  long = 20  },
         },
-        ip     = { short = 20,  long = 60   },
-        host   = { short = 100, long = 400  },
-        server = { short = 300, long = 1200 },
+        ip     = { short = 20,  long = 60  },
+        host   = { short = 100, long = 400 },
+
+        -- Truc PRINCIPAL TOAN MAY (them 18-10-2026). Sua dung phep nhan mau so
+        -- da do duoc, thay vi ap mot tran chung len moi principal:
+        --     GPTBot di qua 17 domain -> 17 ngan sach `(host, principal)`
+        --     doc lap -> han muc operator 8/10s thanh hieu dung 136/10s.
+        --
+        -- Co so cho con so: 5.909/5.929 request operator trong 60 phut la
+        -- OpenAI = 1,641 req/s. Voi `navigation` cost 1.0:
+        --     long  60/60s = 1,000 don vi/s -> OpenAI ve ~61% toc do keo
+        --     short 15/10s = 1,500 don vi/s -> chan dot, khong chan deu
+        --
+        -- Vi sao truc nay can thiet du da co `server`: Anthropic cong
+        -- Perplexity chi chiem 20/5.929 = 0,34% request operator, tuc
+        -- 0,0056 req/s — cach nguong fleet 293 lan nen KHONG THE bi chan oan.
+        -- Truc `server` thi gop moi principal, nen chung bi chan chi vi OpenAI
+        -- dang keo. Hai truc do hai thu khac nhau va deu can.
+        fleet  = { short = 15,  long = 60  },
+
+        -- HA 300/1200 -> 20/60 (18-10-2026), sau so lieu production 60 phut:
+        -- 5.516 automation request da vao upstream, trung binh 6,905 giay
+        -- (~10,6 request dong thoi theo Little's law), trong khi traffic trai
+        -- tren 53 domain va GPTBot rieng di qua 17 domain. Per-host principal
+        -- limit vi vay bi nhan thanh 17 ngan sach doc lap; server-axis cu chua
+        -- tung breach va khong bao ve duoc pool backend chung.
+        --
+        -- Day la DON VI CHI PHI tren TOAN MAY, khong phai so request thuan:
+        -- navigation=1, api_callback=3, auth_endpoint=4... Tat ca automation
+        -- tier deu GHI vao counter chung, nhung chi operator/contradicted trong
+        -- `enforce_tiers` moi bi 429 khi counter day. Human traffic khong di
+        -- qua meter nay; verified/unknown automation chi gop ap luc va tu no
+        -- van khong bi throttle. Counter nam trong ngx.shared.antibot_cache,
+        -- chung giua worker/domain tren MOT may, khong phai Redis/fleet-global.
+        server = { short = 20, long = 60 },
     },
 }
 

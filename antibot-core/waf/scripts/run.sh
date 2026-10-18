@@ -61,44 +61,94 @@ sh_suite() {
     return $erc
 }
 
+# Bo test LUA: `resty` NUOT ma thoat.
+#
+# Do duoc 18-10-2026, kiem truc tiep:
+#     printf 'os.exit(1)\n' > e.lua ; resty e.lua ; echo $?   -> 0
+#     printf 'error("boom")\n' > e2.lua ; resty e2.lua ; echo $?  -> 0
+# Ca `os.exit(1)` lan `error()` deu cho rc=0. Vi vay `"$RESTY" x.lua || rc=1`
+# KHONG BAO GIO dat rc=1, va `run.sh` da tra ve 0 trong khi
+# `automation_contract` bao "92 qua, 5 hong". Chung minh bang cach chay that:
+# chen mot dot bien vao `automation_guard.lua` -> 5 test hong, RUN_SH_RC=0.
+#
+# Moi suite Lua trong cay nay in mot dong tong ket co dinh dang. Cong nay doc
+# dong do thay vi doc ma thoat:
+#     "<ten>: <N> qua, <M> hong"   (phan lon)
+#     "<ten>: <N> pass, <M> fail"  (quarantine_contract)
+#     "L7_REGRESSION_OK <N>"       (l7_regression — khong co cot hong)
+# va coi la HONG khi: M > 0, hoac co dong FAIL:/LOI, hoac KHONG co dong tong
+# ket nao (suite chet giua chung vi loi cu phap/runtime thi khong in gi).
+lua_suite() {
+    local out rc0
+    out=$(mktemp) || return 2
+    "$@" >"$out" 2>&1
+    rc0=$?
+    cat "$out"
+    local bad=0
+    # Dong tong ket KHONG bat buoc co tien to ten: do duoc 18-10, 7 suite in
+    # thang `171 qua, 0 hong`. Doi dau `:` o day la cach bien mot cong dung
+    # thanh 7 canh bao gia.
+    local SUM='(^|[[:space:]])[0-9]+[[:space:]]+(qua|pass),[[:space:]]*[0-9]+[[:space:]]+(hong|fail)'
+    local BAD='(^|[[:space:]])[0-9]+[[:space:]]+(qua|pass),[[:space:]]*[1-9][0-9]*[[:space:]]+(hong|fail)'
+    # 1. Cot "hong"/"fail" khac 0.
+    if grep -qE "$BAD" "$out"; then
+        bad=1
+    fi
+    # 2. Dong FAIL/LOI o dau dong. Neo `^` co y: nhieu phep thu co TEN chua
+    #    chu "fail" (vi du "set stale lam p1stat fail") va chung di kem "OK".
+    if grep -qE '^[[:space:]]*(FAIL|LOI)[:[:space:]]' "$out"; then
+        bad=1
+    fi
+    # 3. Khong co dong tong ket nao -> suite khong chay den cuoi (loi cu phap
+    #    hoac runtime). `resty` tra rc=0 ca khi `error()`, nen day la dau hieu
+    #    DUY NHAT con lai.
+    if ! grep -qE "$SUM|L7_REGRESSION_OK" "$out"; then
+        echo "  !! ${2:-$1}: KHONG co dong tong ket -- suite chet giua chung" >&2
+        bad=1
+    fi
+    rm -f "$out"
+    [ "$bad" -eq 0 ] || return 1
+    return $rc0
+}
+
 
 # `policy_test` chay DAU TIEN: registry/policy/telemetry la nen cua moi phan con
 # lai, va mot registry lech detector thi bon bo test sau se bao loi kho doc thay
 # vi chi ra dung nguyen nhan.
 echo "── policy / registry / telemetry ────────────────────────────"
-"$RESTY" --shdict "antibot_cache 1m" "$HERE/policy_test.lua" || rc=1
+lua_suite "$RESTY" --shdict "antibot_cache 1m" "$HERE/policy_test.lua" || rc=1
 
 echo
 echo "── wordpress/paths ──────────────────────────────────────────"
-"$RESTY" --shdict "antibot_cache 1m" "$HERE/wordpress_paths_test.lua" || rc=1
+lua_suite "$RESTY" --shdict "antibot_cache 1m" "$HERE/wordpress_paths_test.lua" || rc=1
 
 echo
 echo "── hop dong giua cac module ──────────────────────────"
-"$RESTY" "$HERE/contract_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/contract_test.lua" || rc=1
 
 echo
 echo "── args ──────────────────────────────────────────────"
-"$RESTY" "$HERE/args_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/args_test.lua" || rc=1
 
 echo
 echo "── body ──────────────────────────────────────────────"
-"$RESTY" "$HERE/body_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/body_test.lua" || rc=1
 
 echo
 echo "── upload (P1) ───────────────────────────────────────"
-"$RESTY" "$HERE/upload_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/upload_test.lua" || rc=1
 
 echo
 echo "── upload_content + cung part (buoc 3-4) ─────────────"
-"$RESTY" "$HERE/upload_content_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/upload_content_test.lua" || rc=1
 
 echo
 echo "── upload_magic (muc 7: duoi vs byte dau) ────────────"
-"$RESTY" "$HERE/upload_magic_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/upload_magic_test.lua" || rc=1
 
 echo
 echo "── routes (muc 5: hop dong endpoint) ─────────────────"
-"$RESTY" "$HERE/routes_test.lua" || rc=1
+lua_suite "$RESTY" "$HERE/routes_test.lua" || rc=1
 
 # L7 la lop DUY NHAT tra 429/503 TRUOC khi request toi backend, va truoc ban nay
 # bo kiem cua no KHONG nam trong `run.sh`. Hau qua: moi commit cham L7 di qua mot
@@ -111,7 +161,7 @@ echo "── routes (muc 5: hop dong endpoint) ───────────
 # duoc `run.sh`.
 echo
 echo "── l7 (admission + circuit breaker) ──────────────────"
-"$RESTY" "${ANTIBOT_SRC}l7/tests/l7_regression.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}l7/tests/l7_regression.lua" || rc=1
 
 # Root pipeline contract: unit test tung layer khong the bat duoc mot terminal
 # exit dat sai cho lam dynamic request ne `surge.admit()`. Bo nay spy dependency
@@ -119,38 +169,38 @@ echo "── l7 (admission + circuit breaker) ───────────�
 # verified/whitelist fast-path va log-phase release.
 echo
 echo "-- root pipeline contract --------------------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
 
 echo "-- goodbot DNS/cache contract ---------------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
 
 echo "-- generic automation contract -------------------------"
-"$RESTY" --shdict "antibot_cache 1m" \
+lua_suite "$RESTY" --shdict "antibot_cache 1m" \
   "${ANTIBOT_SRC}tests/automation_contract.lua" || rc=1
 
 echo "-- operator network contract ---------------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/operator_network_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/operator_network_contract.lua" || rc=1
 
 echo "-- trust boundary contract -----------------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/trust_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/trust_contract.lua" || rc=1
 
 echo "-- network-UA quarantine contract ----------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/quarantine_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/quarantine_contract.lua" || rc=1
 
 echo "-- async/hot-path contract ------------------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/hot_path_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/hot_path_contract.lua" || rc=1
 
 echo "-- intelligence/degraded contract -----------------------"
-"$RESTY" "${ANTIBOT_SRC}tests/intelligence_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/intelligence_contract.lua" || rc=1
 
 echo "── admin: duong ra bo dem L7 ──────────────────────────"
-"$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_l7_test.lua" || rc=1
 
 echo "── admin: duong ra FIM (the dashboard) ────────────────"
-"$RESTY" "${ANTIBOT_SRC}admin/tests/admin_fim_test.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_fim_test.lua" || rc=1
 
 echo "── admin: tab WAF (bang theo domain) ──────────────────"
-"$RESTY" "${ANTIBOT_SRC}admin/tests/admin_fimwaf_test.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}admin/tests/admin_fimwaf_test.lua" || rc=1
 
 echo "── secaudit (bo nghiem thu ranh gioi) ────────────────"
 bash "${ANTIBOT_SRC}waf/scripts/secaudit_test.sh" || rc=1

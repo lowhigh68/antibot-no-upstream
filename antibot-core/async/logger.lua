@@ -608,7 +608,8 @@ function _M.run(ctx)
         automation_str = string.format(
             " aut=1 autp=%s auttier=%s autproof=%s autmode=%s autcost=%s" ..
             " autps=%s autpl=%s autis=%s autil=%s auths=%s authl=%s" ..
-            " autss=%s autsl=%s autwould=%s autuse=%s autaxis=%s autdeg=%s" ..
+            " autss=%s autsl=%s autfs=%s autfl=%s" ..
+            " autwould=%s autuse=%s autaxis=%s autdeg=%s" ..
             " autthr=%s autbreach=%s autactual=%s autup=%s autuptime=%s",
             tostring(ctx.automation_principal or "-"),
             tostring(ctx.automation_tier or "unknown"),
@@ -623,6 +624,11 @@ function _M.run(ctx)
             amount(ctx.automation_host_long),
             amount(ctx.automation_server_short),
             amount(ctx.automation_server_long),
+            -- `autfs`/`autfl`: truc principal TOAN MAY. Khong co hai cot nay
+            -- thi khong phan biet duoc "OpenAI dang keo" voi "toan may day",
+            -- va truc moi thanh vung mu.
+            amount(ctx.automation_fleet_short),
+            amount(ctx.automation_fleet_long),
             tostring(ctx.automation_would_throttle or false),
             tostring(ctx.automation_top_use or "-"),
             tostring(ctx.automation_top_axis or "-"),

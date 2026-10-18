@@ -417,5 +417,180 @@ ok(ax.automation_breached ~= nil and #ax.automation_breached > 0,
 ok(tostring(ax.automation_breached[1]):find("principal", 1, true) ~= nil,
    "truc principal la truc vuot dau tien")
 
+-- 7. Server-axis gom that su qua NHIEU host/principal. Day la cong bao ve
+-- backend chung khi mot operator chia tai ra nhieu domain: moi principal con
+-- duoi budget rieng, nhung request dat tran toan may van phai bi throttle.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.tiers.operator = { short = 100, long = 200 }
+cfg_stub.provisional_limits.ip = { short = 100, long = 200 }
+cfg_stub.provisional_limits.host = { short = 100, long = 200 }
+cfg_stub.provisional_limits.server = { short = 3, long = 200 }
+
+local sv1 = op_sample("one.test")
+sv1.ip, sv1.automation_principal = "192.0.2.1", "gptbot"
+local _, sx1 = guard.run(sv1)
+local sv2 = op_sample("two.test")
+sv2.ip, sv2.automation_principal = "192.0.2.2", "oai-searchbot"
+local _, sx2 = guard.run(sv2)
+local sv3 = op_sample("three.test")
+sv3.ip, sv3.automation_principal = "192.0.2.3", "claudebot"
+local _, sx3 = guard.run(sv3)
+
+eq(sx1, false, "server-axis: request dau con duoi tran")
+eq(sx2, false, "server-axis: request hai con duoi tran")
+eq(sv3.automation_server_short, 3,
+   "server-axis cong chi phi qua ba host/principal")
+eq(sv3.automation_principal_short, 1,
+   "moi principal van chi co mot don vi rieng")
+eq(sx3, true, "request cham tran server bi throttle")
+ok(tostring(sv3.action_reason):find("server:short", 1, true) ~= nil,
+   "reason ghi dung server:short")
+eq(exits[#exits], 429, "server-axis shed bang 429")
+
+-- 8. Tier khong enforce van gop vao phep do capacity nhung khong tu bi chan.
+-- Khi operator den sau, no la tier uu tien thap bi shed; khach nguoi that
+-- khong vao automation meter, con verified/unknown van observation-only.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.server = { short = 2, long = 200 }
+local vv1 = sample("verified-a.test")
+vv1.automation_tier, vv1.automation_principal = "verified", "googlebot"
+local _, vx1 = guard.run(vv1)
+local vv2 = sample("verified-b.test")
+vv2.automation_tier, vv2.automation_principal = "verified", "bingbot"
+local _, vx2 = guard.run(vv2)
+eq(vx1, false, "verified duoi server budget khong bi chan")
+eq(vv2.automation_would_throttle, true,
+   "verified van cho thay server capacity da day")
+eq(vx2, false, "verified khong bi chan du cham tran server")
+eq(#exits, 0, "verified khong ngx.exit")
+
+local low = op_sample("operator-after-verified.test")
+low.ip, low.automation_principal = "192.0.2.9", "gptbot"
+local _, low_exit = guard.run(low)
+eq(low_exit, true, "operator den khi server day bi shed")
+ok(tostring(low.action_reason):find("server:short", 1, true) ~= nil,
+   "priority shedding ghi dung truc server")
+
+-- 10. Truc FLEET: principal toan may, chan dung phep NHAN mau so theo host.
+--
+-- Tinh huong do duoc tren cloud28-246 18-10: GPTBot di qua 17 domain. Truc
+-- `(host, principal)` cho no 17 ngan sach doc lap, nen han muc 8/10s thanh
+-- hieu dung 136/10s. Phep thu nay dung lai dung hinh dang do: MOT principal,
+-- NHIEU host, moi host chi mot request — tung ngan sach principal van o 1, ma
+-- tong theo principal thi vuot.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.tiers.operator = { short = 100, long = 200 }
+cfg_stub.provisional_limits.ip = { short = 100, long = 200 }
+cfg_stub.provisional_limits.host = { short = 100, long = 200 }
+cfg_stub.provisional_limits.server = { short = 100, long = 200 }
+cfg_stub.provisional_limits.fleet = { short = 3, long = 200 }
+
+local f1 = op_sample("d1.test")
+f1.ip, f1.automation_principal = "192.0.2.11", "gptbot"
+local _, fx1 = guard.run(f1)
+local f2 = op_sample("d2.test")
+f2.ip, f2.automation_principal = "192.0.2.12", "gptbot"
+local _, fx2 = guard.run(f2)
+local f3 = op_sample("d3.test")
+f3.ip, f3.automation_principal = "192.0.2.13", "gptbot"
+local _, fx3 = guard.run(f3)
+
+eq(fx1, false, "fleet: host dau tien con duoi tran")
+eq(fx2, false, "fleet: host thu hai con duoi tran")
+eq(f3.automation_principal_short, 1,
+   "moi (host, principal) van chi thay MOT don vi — day la phep nhan mau so")
+eq(f3.automation_fleet_short, 3,
+   "truc fleet cong du ba host vao cung mot principal")
+eq(fx3, true, "principal vuot tran toan may bi throttle du moi host deu thap")
+ok(tostring(f3.action_reason):find("fleet:short", 1, true) ~= nil,
+   "reason ghi dung fleet:short")
+eq(exits[#exits], 429, "fleet shed bang 429")
+
+-- Principal KHAC khong chia ngan sach: day la dieu truc `server` khong lam
+-- duoc. Anthropic+Perplexity chiem 20/5.929 request operator, nen chung khong
+-- duoc bi chan chi vi OpenAI dang keo.
+local other = op_sample("d4.test")
+other.ip, other.automation_principal = "192.0.2.14", "claudebot"
+local _, ox = guard.run(other)
+eq(other.automation_fleet_short, 1,
+   "principal khac co ngan sach fleet RIENG")
+eq(ox, false, "claudebot khong bi chan vi gptbot da keo het")
+
+-- Tier khong enforce van dong gop vao counter fleet nhung khong tu bi chan.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.fleet = { short = 2, long = 200 }
+local fu1 = sample("u1.test")
+fu1.automation_tier, fu1.automation_principal = "unknown", "curl"
+local _, fux1 = guard.run(fu1)
+local fu2 = sample("u2.test")
+fu2.automation_tier, fu2.automation_principal = "unknown", "curl"
+local _, fux2 = guard.run(fu2)
+-- `sample()` dung `req_class = "auth_endpoint"` -> cost 4, nen HAI request
+-- cho counter 8 chu khong phai 2. Day KHONG phai lam tron so mong doi cho
+-- khop: counter cong DON VI CHI PHI, khong cong so request, va dinh ngay vao
+-- cach doc moi han muc trong `provisional_limits`. Mot han muc 60 khong co
+-- nghia la 60 request.
+eq(fu2.automation_cost, 4, "auth_endpoint co cost 4, khong phai 1")
+eq(fu2.automation_fleet_short, 8,
+   "counter fleet cong DON VI CHI PHI (2 request x cost 4), khong cong luot")
+eq(fu2.automation_would_throttle, true, "unknown thay tran fleet da day")
+eq(fux1, false, "unknown khong bi chan (rao chan FP chinh)")
+eq(fux2, false, "unknown khong bi chan du cham tran fleet")
+eq(#exits, 0, "unknown khong ngx.exit")
+
+-- Meter hong (degraded) thi KHONG chan tren truc fleet: throttle tren mot so
+-- khong doc duoc la cach mot loi do bien thanh su co.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.fleet = { short = 1, long = 200 }
+local fd = op_sample("d5.test")
+fd.ip, fd.automation_principal = "192.0.2.15", "gptbot"
+local _, fdx1 = guard.run(fd)
+eq(fdx1, true, "fleet tran 1: request dau da vuot va bi chan")
+local fd2 = op_sample("d6.test")
+fd2.ip, fd2.automation_principal = "192.0.2.16", "gptbot"
+fd2.automation_degraded = true
+local _, fdx2 = guard.run(fd2)
+eq(fdx2, false, "meter degraded thi fail-open tren truc fleet")
+
+-- Thu tu truc: `fleet` phai duoc xet TRUOC `server`, vi `breached[1]` la truc
+-- di vao `action_reason`. Khi ca hai vuot, truc co tinh phan biet (principal
+-- nao dang keo) huu ich hon truc tran chung (toan may dang day).
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.fleet = { short = 1, long = 200 }
+cfg_stub.provisional_limits.server = { short = 1, long = 200 }
+local both = op_sample("d7.test")
+both.ip, both.automation_principal = "192.0.2.17", "gptbot"
+local _, bx = guard.run(both)
+eq(bx, true, "ca fleet va server deu vuot -> bi chan")
+ok(tostring(both.action_reason):find("fleet:short", 1, true) ~= nil,
+   "ca hai truc vuot thi reason bao FLEET, khong bao server")
+-- Khoi phuc cho cac phep thu sau (neu co) va cho lan chay lai.
+cfg_stub.provisional_limits.fleet = nil
+cfg_stub.provisional_limits.server = { short = 100, long = 200 }
+
+-- Khong cau hinh `fleet` thi truc do im lang: `consider()` tra ve ngay khi
+-- `limits` la nil, nen them truc KHONG lam doi hanh vi cua may chua tune.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+local nf = op_sample("d8.test")
+nf.ip, nf.automation_principal = "192.0.2.18", "gptbot"
+local _, nfx = guard.run(nf)
+eq(nfx, false, "khong cau hinh fleet thi khong chan")
+eq(nf.automation_fleet_short, 1,
+   "van DEM de do luong du chua cau hinh han muc")
+
 io.write(string.format("automation_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end

@@ -117,6 +117,11 @@ function _M.evaluate(ctx)
         ctx.automation_ip_long, limits.ip, top)
     top = consider(ctx, "host", ctx.automation_host_short,
         ctx.automation_host_long, limits.host, top)
+    -- `fleet` dung TRUOC `server` co y: `breached[1]` la truc duoc bao trong
+    -- `action_reason`, va khi ca hai vuot thi truc co tinh PHAN BIET (principal
+    -- nao dang keo) huu ich hon truc tran chung (toan may dang day).
+    top = consider(ctx, "fleet", ctx.automation_fleet_short,
+        ctx.automation_fleet_long, limits.fleet, top)
     top = consider(ctx, "server", ctx.automation_server_short,
         ctx.automation_server_long, limits.server, top)
 
@@ -185,6 +190,19 @@ function _M.run(ctx)
         windows, cost, now)
     local hs, hl, he = pair(dict, "h", host, windows, cost, now)
     local ss, sl, se = pair(dict, "s", "server", windows, cost, now)
+    -- Truc `fleet`: principal tren TOAN MAY, khong gan host.
+    --
+    -- Truc `p` o tren khoa theo `(host, principal)`, nen mot crawler quet N
+    -- domain nhan N ngan sach doc lap. Do duoc tren cloud28-246 18-10: GPTBot
+    -- di qua 17 domain, tuc han muc operator 8/10s thanh hieu dung 136/10s.
+    -- Day la phep NHAN mau so, va no khong sua duoc bang cach ha `p` (ha nua
+    -- thi mot site don le bi siet oan) cung khong sua dung bang `server` (truc
+    -- do gop MOI principal, nen Perplexity voi 20/5.929 request bi chan vi
+    -- OpenAI keo).
+    --
+    -- `canonical_name` (core/ctx/init.lua:146) da chuan hoa doc lap host, nen
+    -- dung truc tiep lam khoa.
+    local fs, fl, fe = pair(dict, "f", principal, windows, cost, now)
 
     ctx.automation_observed = true
     ctx.automation_cost = cost
@@ -196,7 +214,9 @@ function _M.run(ctx)
     ctx.automation_host_long  = hl
     ctx.automation_server_short = ss
     ctx.automation_server_long  = sl
-    if pe or ie or he or se then ctx.automation_degraded = true end
+    ctx.automation_fleet_short = fs
+    ctx.automation_fleet_long  = fl
+    if pe or ie or he or se or fe then ctx.automation_degraded = true end
 
     return _M.evaluate(ctx)
 end
