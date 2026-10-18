@@ -389,10 +389,10 @@ _M.rate = {
 -- Hai cua so la fixed buckets. `long` chan luong duy tri, `short` chan spike.
 -- Cac nguong mac dinh co y dat cao de rollout an toan tren shared hosting;
 -- phai hieu chinh theo capacity/log that cua tung cum may.
--- Generic automation governor. This phase is telemetry-only: every
--- self-identified automation client is metered by principal+host, IP+host and
--- server aggregate, but no request is rejected. Limits are provisional
--- `would` lines for production calibration, not enforcement thresholds.
+-- Generic automation governor. Every self-identified automation client is
+-- metered by principal+host, IP+host and server aggregate. Enforcement is
+-- explicitly restricted below to operator/contradicted tiers; unknown and
+-- verified automation remain telemetry-only to contain FP risk.
 -- Units approximate backend cost rather than raw object count, so one page
 -- with many CSS/images is not treated like the same burst of dynamic work.
 _M.automation = {
@@ -577,7 +577,12 @@ _M.endpoint_guard = {
         -- important signal is 3 concurrent requests per WordPress root.
         wp_oembed_embed = {
             rate       = { mode = "shadow", short = 20, long = 100 },
-            inflight   = { mode = "shadow", limit = 3 },
+            -- ENFORCE 18-10-2026 after production showed about 17 concurrent
+            -- oEmbed calls against one docroot: 31/34 ended as 499/500 and
+            -- requests held up to 29s. This gate limits backend occupancy; it
+            -- does not score or ban the caller. Rate/shape/cross-host remain
+            -- independent shadow signals.
+            inflight   = { mode = "enforce", limit = 3 },
             shape_mode = "shadow",
             -- Cross-host URL is measured separately.  Do not enforce until
             -- aliases/pointers on the production fleet have been observed.

@@ -43,8 +43,13 @@ LINE() { # LINE <epoch> <phan con lai>
 }
 
 N=$(date +%s)
-H1=$((N - 7200))       # gio -2
-H2=$((N - 3600))       # gio -1
+# KHONG dat moc dung tai bien cua so. `H2 = N - 3600` nam DUNG tren ranh gioi
+# cua cua so 1 gio, nen phep thu "cua so 1h chi con gio gan nhat" lúc dat lúc
+# truot tuy vai tram mili-giay giua luc sinh fixture va luc awk goi
+# `systime()`. Lech 2700/5400 giay cho ca hai phia mot bien an toan ma khong
+# doi y nghia phep thu.
+H1=$((N - 5400))       # ~1,5 gio truoc — NGOAI cua so 1h
+H2=$((N - 2700))       # ~45 phut truoc — TRONG cua so 1h
 OLD=$((N - 200 * 3600))
 
 # TINH TAY, cua so 72h:

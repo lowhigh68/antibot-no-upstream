@@ -398,5 +398,59 @@ root.init_worker()
 eq(counts.memory_starts, 1, "worker 0 chay memory guard dung mot lan")
 eq(counts.fleet_timer, 1, "worker 0 van khoi dong fleet timer")
 
+-- ── Gia tri SHIP THAT trong config.lua ──────────────────────────────
+--
+-- Moi bo test o tren deu dung config STUB, nen khong cai nao kiem gia tri
+-- that se len may. Do duoc bang dot bien 18-10: doi `inflight_status` tu 503
+-- sang 429 trong `config.lua` KHONG lam bo test nao do. Mot hang so chi ton
+-- tai trong stub la mot hang so khong duoc bao ve.
+--
+-- Khoi nay chi pin nhung gi dot trien khai oEmbed 18-10 PHU THUOC. No co y
+-- khong pin moi truong: them mot nguong vao day la bat nguoi sau phai sua
+-- test moi lan tinh chinh, va do la cach bien test thanh vat can.
+do
+    for _, name in ipairs({
+        "antibot.core.config",
+        "antibot.waf.endpoint_policy",
+        "antibot.l7.endpoint_guard",
+    }) do package.loaded[name] = nil end
+
+    local real = dofile(src .. "core/config.lua")
+    local eg = real.endpoint_guard or {}
+    local oembed = (eg.endpoints or {}).wp_oembed_embed or {}
+    local proxy  = (eg.endpoints or {}).wp_oembed_proxy  or {}
+
+    eq(eg.enabled, true, "endpoint_guard bat trong config that")
+    eq(eg.inflight_status, 503,
+       "inflight reject dung 503 (suc chua), khong phai 429 (toc do)")
+    eq(tonumber(eg.retry_after) ~= nil, true, "co Retry-After cho client lui lai")
+
+    -- Day la cong DANG CUU HE THONG. Neu ai do ha ve shadow thi phai co mot
+    -- phep thu do, khong phai mot lan deploy im lang.
+    eq((oembed.inflight or {}).mode, "enforce",
+       "oEmbed concurrency ENFORCE — day la cong dang chan tai")
+    eq((oembed.inflight or {}).limit, 3,
+       "tran concurrency oEmbed = 3 tren moi docroot")
+
+    -- Ba truc con lai PHAI con shadow: chung chua co bang chung FP.
+    eq((oembed.rate or {}).mode, "shadow", "rate oEmbed van shadow")
+    eq(oembed.shape_mode, "shadow", "shape oEmbed van shadow")
+    eq(oembed.cross_host_mode, "shadow", "cross-host oEmbed van shadow")
+
+    -- `wp_oembed_proxy` la duong WordPress editor/admin dung that. Enforce no
+    -- la chan nguoi dang soan bai, nen no phai o shadow.
+    eq((proxy.inflight or {}).mode, "shadow",
+       "oEmbed proxy (editor WordPress) van shadow — khong chan admin")
+
+    -- `automation_guard`: chi operator/contradicted bi chan. `unknown` la noi
+    -- khach that bi phan loai nham roi vao; `verified` la Googlebot/Bingbot.
+    local aut = real.automation or {}
+    local tiers = aut.enforce_tiers or {}
+    eq(aut.mode, "enforce", "automation_guard enforce")
+    eq(tiers.operator, true, "operator tier bi chan")
+    eq(tiers.unknown, nil, "unknown KHONG bi chan — rao chan FP chinh")
+    eq(tiers.verified, nil, "verified (Googlebot/Bingbot) KHONG bi chan")
+end
+
 io.write(string.format("pipeline_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end

@@ -5,8 +5,9 @@
 -- WAF-blocked and admission-limited automation still appears in telemetry.
 -- It uses the existing shared dict only: no Redis RTT and no nginx.conf change.
 --
--- Current rollout is shadow-only by contract. `autwould=true` is a calibration
--- result; this module never sets ctx.action, headers or ngx.exit.
+-- `unknown` and verified automation remain observation-only. The separately
+-- proven operator/contradicted tiers may be paced when config selects enforce;
+-- `autwould` stays the measurement and `autthr` records an actual 429.
 
 local _M = {}
 

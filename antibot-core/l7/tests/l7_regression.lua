@@ -984,6 +984,34 @@ ok(er3.action_reason:find("endpoint_guard:wp_oembed_embed", 1, true) ~= nil,
 endpoint_guard.after(er1)
 endpoint_guard.after(er2)
 
+-- Production rollout promotes ONLY oEmbed concurrency. Rate remains shadow:
+-- a short legitimate discovery burst may be fast, while holding more than the
+-- bounded number of PHP workers is direct capacity pressure. The early gate
+-- must reject before backend work and must use the inflight status (503).
+cfg.endpoint_guard.endpoints.wp_oembed_embed.rate.mode = "shadow"
+cfg.endpoint_guard.endpoints.wp_oembed_embed.rate.short = 100
+cfg.endpoint_guard.endpoints.wp_oembed_embed.rate.long = 100
+cfg.endpoint_guard.endpoints.wp_oembed_embed.inflight.mode = "enforce"
+clock = 1510
+exits = {}
+fake_ngx.status = 200
+fake_ngx.header = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local ei1, ei2 = epctx("tenant_inflight"), epctx("tenant_inflight")
+endpoint_guard.admit(ei1)
+endpoint_guard.admit(ei2)
+local ei3 = epctx("tenant_inflight")
+local _, ei3_exit = endpoint_guard.before(ei3)
+eq(ei3_exit, true, "inflight enforce chan som request limit+1")
+eq(exits[#exits], 503, "inflight enforce tra 503, khong dung rate 429")
+eq(ei3.action, "throttled", "inflight capacity khong gan bot verdict")
+ok(tostring(ei3.endpoint_cause):find("inflight", 1, true) ~= nil,
+   "inflight reject co cause rieng")
+ok(not tostring(ei3.endpoint_cause):find("rate_", 1, true),
+   "rate shadow duoi nguong khong bi gan lam cause")
+endpoint_guard.after(ei1)
+endpoint_guard.after(ei2)
+
 -- A WAF/local block never called admit(), so log phase cannot decrement a
 -- slot belonging to somebody else.
 local never_admitted = epctx("tenant_enforce")
