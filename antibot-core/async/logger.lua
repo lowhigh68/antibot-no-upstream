@@ -609,7 +609,7 @@ function _M.run(ctx)
             " aut=1 autp=%s auttier=%s autproof=%s autmode=%s autcost=%s" ..
             " autps=%s autpl=%s autis=%s autil=%s auths=%s authl=%s" ..
             " autss=%s autsl=%s autwould=%s autuse=%s autaxis=%s autdeg=%s" ..
-            " autactual=%s autup=%s autuptime=%s",
+            " autthr=%s autbreach=%s autactual=%s autup=%s autuptime=%s",
             tostring(ctx.automation_principal or "-"),
             tostring(ctx.automation_tier or "unknown"),
             tostring(ctx.automation_proof or "claim_only"),
@@ -627,6 +627,13 @@ function _M.run(ctx)
             tostring(ctx.automation_top_use or "-"),
             tostring(ctx.automation_top_axis or "-"),
             tostring(ctx.automation_degraded or false),
+            -- `autwould` da ton tai va van giu nghia cu: "vuot han muc". Hai
+            -- cot nay tra loi cau KHAC: co THUC SU chan khong, va truc nao
+            -- vuot. Mot dong `autwould=true autthr=false` la hop le va co
+            -- nghia — tang do dang quan sat, hoac meter bi degraded.
+            tostring(ctx.automation_throttled or false),
+            tostring(ctx.automation_breached
+                and table.concat(ctx.automation_breached, ",") or "-"),
             tostring(ngx.status or "-"),
             tostring(ngx.var.upstream_status or "-"),
             tostring(ngx.var.upstream_response_time or "-"))

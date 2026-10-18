@@ -53,8 +53,52 @@ local function consider(ctx, axis, short_value, long_value, limits, top)
     if ratio > (top.ratio or 0) then
         top = { ratio = ratio, axis = axis .. ":" .. window }
     end
-    if sr >= 1 or lr >= 1 then ctx.automation_would_throttle = true end
+    if sr >= 1 or lr >= 1 then
+        ctx.automation_would_throttle = true
+        -- Remember WHICH axis broke, not just that something did. The reject
+        -- reason and the operator's tuning both need the axis; `autaxis` alone
+        -- carries the highest ratio, which is not always the one over 1.
+        local breached = ctx.automation_breached or {}
+        breached[#breached + 1] = axis .. ":" .. (sr >= 1 and "short" or "long")
+        ctx.automation_breached = breached
+    end
     return top
+end
+
+-- Throttle self-identified automation that exceeded its own tier budget.
+--
+-- 429 + Retry-After, deliberately: it is the response every published crawler
+-- documents as a back-off signal, so a well-behaved operator slows down and
+-- returns. 403 would read as "never come back" and 503 would mark the SITE as
+-- unhealthy to search/AI indexes. This is a pace limit, not a verdict about
+-- the client, so nothing here touches bot score, reputation or ban state.
+--
+-- No `Retry-After` smaller than the short window: telling a crawler to come
+-- back sooner than the budget refills just converts one burst into a retry
+-- storm on the same budget.
+local function throttle(ctx, c, axis)
+    local windows = c.windows or {}
+    local retry = tonumber(c.retry_after)
+        or math.max(tonumber(windows.short) or 10, 1)
+
+    ctx.automation_throttled = true
+    ctx.action = "throttled"
+    ctx.action_reason = "automation_guard:" .. tostring(ctx.automation_tier
+        or "unknown") .. ":" .. tostring(axis or "-")
+
+    ngx.header["Retry-After"]      = tostring(retry)
+    ngx.header["Cache-Control"]    = "no-store"
+    ngx.header["Content-Type"]     = "text/plain"
+    ngx.header["X-Bot-Action"]     = "throttled"
+    ngx.status = tonumber(c.status) or 429
+    ngx.say("Too many requests. Please slow down and retry.")
+    ngx.exit(ngx.status)
+    -- Tra `true` TUONG MINH chu khong `return ngx.exit(...)`: tren OpenResty
+    -- that `ngx.exit` khong tra ve nen hai cach giong nhau, nhung trong test
+    -- stub no tra ve ma trang thai va `exit=429` khong phai `exit=true` —
+    -- hop dong cua pipeline la mot boolean. Mot khac biet chi lo ra o test la
+    -- mot khac biet co that.
+    return true
 end
 
 function _M.evaluate(ctx)
@@ -78,7 +122,28 @@ function _M.evaluate(ctx)
     ctx.automation_tier = tier
     ctx.automation_top_axis = top.axis
     ctx.automation_top_use = math.floor((top.ratio or 0) * 100 + 0.5)
-    return true, false
+
+    if not ctx.automation_would_throttle then return true, false end
+
+    -- Enforcement is opt-in per mode and NEVER applies to a degraded meter:
+    -- when the shared dict failed we do not know the real rate, and throttling
+    -- on a number we could not read is how a measurement bug becomes an
+    -- outage. Fail open, keep the telemetry.
+    if ctx.automation_degraded then return true, false end
+
+    local mode = c.mode or "shadow"
+    if mode ~= "enforce" then return true, false end
+
+    -- A tier may stay in observation while others enforce. This is what makes
+    -- the rollout safe: the operator can pace OpenAI without touching the
+    -- `unknown` tier, where real users misclassified as automation would land.
+    local enforce_tiers = c.enforce_tiers
+    if type(enforce_tiers) == "table" and enforce_tiers[tier] ~= true then
+        return true, false
+    end
+
+    local axis = (ctx.automation_breached or {})[1] or top.axis
+    return false, throttle(ctx, c, axis)
 end
 
 function _M.run(ctx)

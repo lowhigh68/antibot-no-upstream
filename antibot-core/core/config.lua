@@ -397,7 +397,36 @@ _M.rate = {
 -- with many CSS/images is not treated like the same burst of dynamic work.
 _M.automation = {
     enabled = true,
-    mode = "shadow",
+    -- ENFORCE tu 18-10-2026. Truoc do `shadow`, va doc code thi ro vi sao
+    -- khong co gi bi chan: `evaluate()` chi dat `automation_would_throttle`
+    -- roi tra ve, khong bao gio goi `ngx.exit`. Gioi han operator 30/10s hien
+    -- ra trong log suot thoi gian do nhung khong rang buoc gi.
+    --
+    -- Do duoc tren cloud28-246: 48.798 luot `opnet=openai` trong 48h di thang
+    -- vao backend; `max_children=10` can kiet, 499 chiem 91%, HTTP 200 con
+    -- DUNG MOT luot trong cua so 10 phut.
+    mode = "enforce",
+    status = 429,
+    -- Khong nho hon `windows.short`: bao crawler quay lai som hon luc ngan
+    -- sach day lai chi bien mot dot thanh mot con bao retry tren cung ngan
+    -- sach do.
+    retry_after = 10,
+
+    -- Chi hai tang nay bi chan. `unknown` CO Y de ngoai: do la noi mot khach
+    -- that bi phan loai nham thanh automation se roi vao, va uu tien so mot
+    -- cua he thong nay la khong chan nham. `verified` (S3/S4 good bot) cung
+    -- de ngoai: Googlebot/Bingbot da qua DNS hai chieu va viec ha xep hang
+    -- tim kiem cua khach dat hon nhieu so voi tai ma chung tao ra.
+    --
+    -- `operator` = IP nam trong dai CONG BO cua nha cung cap VA UA tu khai
+    -- khop (`operator_network.lua:owner_matches_claim`). Mot host AWS bat ky
+    -- KHONG vao duoc tang nay: `mon:<ip>` chi duoc ghi tu feed chinh thuc.
+    -- `contradicted` = da co bang chung mau thuan voi loi tu khai.
+    enforce_tiers = {
+        operator     = true,
+        contradicted = true,
+    },
+
     windows = { short = 10, long = 60 },
     costs = {
         resource      = 0.1,
@@ -415,7 +444,25 @@ _M.automation = {
             -- Published source network + matching self-identification. This is
             -- not S4 good-bot trust: scoring remains active and only the final
             -- block/challenge decision is capped at monitor.
-            operator     = { short = 30, long = 120 },
+            --
+            -- HA 30/120 -> 8/30 (18-10-2026). Ly do la bat doi xung o chinh
+            -- cac feed cong bo, dem duoc khi dong bo:
+            --     openai-chatgpt-user  36.496 IP   (cap feed 65536)
+            --     openai-gptbot         2.704 IP
+            --     openai-searchbot      2.560 IP
+            --     openai-adsbot           256 IP
+            --     anthropic             1.136 IP
+            --     perplexitybot            18 IP
+            -- OpenAI cong bo 42.016 IP, Anthropic 1.136 — gap 37 lan. Han
+            -- muc o day tinh theo (host, principal) chu khong theo IP, nen
+            -- so IP khong tu dong nhan han muc len; nhung no cho thay quy mo
+            -- ha tang dung de keo, va 30 don vi chi phi / 10 giay tren MOT
+            -- host chia se la qua rong cho mot ben keo lien tuc.
+            --
+            -- 8/10s voi `navigation` cost 1.0 la ~0,8 trang/giay/host — van
+            -- du de index het mot site vai nghin trang trong vai gio, nhung
+            -- khong du de lam can mot pool `max_children=10`.
+            operator     = { short = 8,  long = 30  },
             attested     = { short = 20, long = 60  },
             unknown      = { short = 12, long = 40  },
             contradicted = { short = 8,  long = 20  },
