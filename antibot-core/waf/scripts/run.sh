@@ -297,4 +297,12 @@ echo
 echo "── p1stat.sh (log rotation + circuit freshness) ─────────"
 sh_suite p1stat_test "$HERE/p1stat_test.sh" || rc=1
 
+# `epstat.sh` tra loi "co promote endpoint inflight sang enforce duoc chua", nen
+# cung la cong quyet dinh production. Oracle phu them hai bay rieng cua no:
+# cong phien ban phai chan ban CON CHIA scope theo prefix (so epif cua ban do bi
+# nhan len theo so tien to ngon ngu), va `mktime` phai bu offset cua dong log.
+echo
+echo "── epstat.sh (endpoint budget + mui gio log) ────────────"
+sh_suite epstat_test "$HERE/epstat_test.sh" || rc=1
+
 exit $rc

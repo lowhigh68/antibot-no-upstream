@@ -6,7 +6,19 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 P1STAT="$HERE/p1stat.sh"
 T=$(mktemp -d /tmp/p1stat-test.XXXXXX)
-trap 'rm -rf "$T"' EXIT
+
+# Trap phai GIU LAI ma thoat. Voi `trap 'rm -rf "$T"' EXIT` thi `rm` chay SAU
+# lenh cuoi va ma thoat cua no (thanh cong) de len ma thoat that cua suite —
+# `bash -x` cho thay `[ 2 -eq 0 ]` tra 1 roi `rm -rf` dua ve 0. Hau qua: suite
+# nay BAO LOI ra man hinh nhung KHONG BAO GIO lam `run.sh` do, tu luc duoc them
+# vao. Do duoc 18-10 bang cach tat cong phien ban cua `p1stat.sh`: in "11 OK,
+# 2 LOI" ma van rc=0. Cung ho loi voi `sh_suite` da ghim o `run.sh:44`.
+cleanup() {
+    local rc=$?
+    rm -rf "$T"
+    exit $rc
+}
+trap cleanup EXIT
 
 ok=0
 bad=0
