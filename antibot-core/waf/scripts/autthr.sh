@@ -12,7 +12,9 @@
 #   baiduspider trong "autaxis=fleet" — chung khong he bi chan.
 #
 # Hai cot tra loi DUNG cau hoi:
-#   autthr=true   -> da THUC SU 429 (ctx.automation_throttled)
+#   autthr=true   -> da THUC SU bi automation guard tu choi
+#                    (`autactual=429`: rate; `403` + `autbreach=suspend`:
+#                    principal dang bi tam dung)
 #   autbreach=    -> DANH SACH moi truc da vuot, ghep bang dau phay
 #                    (automation_guard.lua:151 lay phan tu [1] lam reason)
 # Mot dong "autwould=true autthr=false" la HOP LE va co nghia: tang dang quan
@@ -106,7 +108,7 @@ NTHR=$(col autthr | grep -c '^true$')
 NWOULD=$(col autwould | grep -c '^true$')
 NDEG=$(col autdeg | grep -c '^true$')
 printf "  autwould=true : %6d  (vuot han muc)\n" "$NWOULD"
-printf "  autthr=true   : %6d  (THUC SU 429)\n" "$NTHR"
+printf "  autthr=true   : %6d  (CHAN THAT: rate 429 / suspend 403)\n" "$NTHR"
 printf "  autdeg=true   : %6d  (meter hong -> fail-open co y)\n" "$NDEG"
 if [ "$NWOULD" -gt 0 ]; then
     awk -v w="$NWOULD" -v t="$NTHR" 'BEGIN{

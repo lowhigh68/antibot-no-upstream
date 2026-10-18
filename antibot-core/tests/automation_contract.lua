@@ -724,5 +724,109 @@ eq(#exits, 0, "khong co ngx.exit nao")
 cfg_stub.provisional_limits.fleet = nil
 cfg_stub.provisional_limits.server = { short = 100, long = 200 }
 
+-- 14. Emergency principal suspension: stop only the proven GPTBot operator.
+-- A matching UA/principal without published-network proof remains in the
+-- ordinary pipeline, and other OpenAI products retain independent budgets.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+ngx.header = {}
+ngx.status = 200
+cfg_stub.mode = "enforce"
+cfg_stub.suspended_principals = { gptbot = true }
+cfg_stub.suspend_status = 403
+
+local stop = op_sample("suspend.test")
+stop.ip, stop.automation_principal = "192.0.2.71", "GPTBot"
+local _, stop_exit = guard.run(stop)
+eq(stop_exit, true, "GPTBot operator bi dung ngay")
+eq(exits[#exits], 403, "suspension tra 403, khong phai rate 429")
+eq(stop.action, "block", "suspension la block tam thoi, khong phai throttle")
+eq(stop.automation_suspended, true, "co co noi bo cho suspension")
+eq(stop.automation_throttled, true,
+   "autthr van ghi mot automation rejection that")
+eq(stop.automation_would_throttle, true,
+   "suspension khong tao autthr=true/autwould=false vo nghia")
+eq(stop.automation_breached[1], "suspend",
+   "telemetry tach suspension khoi cac truc rate")
+-- Suspension duoc QUYET DINH truoc dong ho nhung AP DUNG sau, co y: thoat
+-- ngay thi `autcost=`/`autps=`/`autfs=` thanh `-` va mat dung cot dung de do
+-- "gptbot dang keo bao nhieu" — tuc khong so sanh duoc truoc/sau cong tac.
+-- 403 van den TRUOC backend vi `run()` la buoc 3 cua STEPS_ADMISSION.
+eq(stop.automation_cost, 1,
+   "van ghi chi phi: khong co no thi autthr.sh muc 5 bao autfs max 0.0")
+eq(stop.automation_fleet_short, 1,
+   "dong ho fleet van cong — giu duoc dinh tai that de so sanh")
+eq(stop.automation_principal_short, 1,
+   "dong ho principal van cong")
+eq(ngx.header["X-Bot-Action"], "blocked",
+   "response noi ro day la block, khong phai pacing")
+
+exits = {}
+ngx.status = 200
+local search = op_sample("search.test")
+search.ip, search.automation_principal = "192.0.2.72", "oai-searchbot"
+local _, search_exit = guard.run(search)
+eq(search_exit, false, "OAI-SearchBot khong bi dung theo GPTBot")
+eq(search.automation_suspended, nil,
+   "principal khac khong mang co suspension")
+eq(#exits, 0, "OAI-SearchBot khong ngx.exit")
+
+exits = {}
+local spoof = sample("spoof.test")
+spoof.req_class = "navigation"
+spoof.automation_principal = "gptbot"
+spoof.automation_tier = "unknown"
+local _, spoof_exit = guard.run(spoof)
+eq(spoof_exit, false,
+   "UA/principal GPTBot khong co operator proof KHONG bi suspension")
+eq(spoof.automation_suspended, nil,
+   "claim don thuan khong du bang chung de hard-block")
+eq(#exits, 0, "GPTBot claim-only khong ngx.exit")
+
+exits = {}
+cfg_stub.mode = "shadow"
+local shadow_stop = op_sample("suspend-shadow.test")
+shadow_stop.ip, shadow_stop.automation_principal = "192.0.2.73", "gptbot"
+local _, shadow_exit = guard.run(shadow_stop)
+eq(shadow_exit, false, "shadow khong thi hanh principal suspension")
+eq(#exits, 0, "shadow suspension khong ngx.exit")
+
+-- Meter hong (khong co shared dict) thi suspension VAN thi hanh.
+-- Day la khac biet co y so voi `throttle()`: throttle fail-open vi no quyet
+-- dinh THEO MOT CON SO khong doc duoc; suspension la quyet dinh cua operator
+-- va khong phu thuoc con so nao. Fail-open o day se lam cong tac cuu tai
+-- that hieu luc dung luc may dang qua tai nhat.
+exits = {}
+ngx.status = 200
+cfg_stub.mode = "enforce"
+local saved_dict = ngx.shared.antibot_cache
+ngx.shared.antibot_cache = nil
+local nodict = op_sample("suspend-nodict.test")
+nodict.ip, nodict.automation_principal = "192.0.2.74", "gptbot"
+local _, nodict_exit = guard.run(nodict)
+eq(nodict_exit, true, "meter hong van suspend — khong fail-open")
+eq(exits[#exits], 403, "va van tra 403")
+eq(nodict.automation_degraded, true, "co degraded duoc ghi dung")
+ngx.shared.antibot_cache = saved_dict
+
+-- Principal khong nam trong danh sach thi khong bi anh huong du meter hong.
+exits = {}
+saved_dict = ngx.shared.antibot_cache
+ngx.shared.antibot_cache = nil
+local nodict_ok = op_sample("nodict-ok.test")
+nodict_ok.ip, nodict_ok.automation_principal = "192.0.2.75", "claudebot"
+local _, nodict_ok_exit = guard.run(nodict_ok)
+eq(nodict_ok_exit, false, "claudebot khong bi suspend khi meter hong")
+eq(#exits, 0, "va khong ngx.exit")
+ngx.shared.antibot_cache = saved_dict
+
+-- Khoi phuc cho lan chay lai.
+cfg_stub.suspended_principals = nil
+
+cfg_stub.mode = "enforce"
+cfg_stub.suspended_principals = nil
+cfg_stub.suspend_status = nil
+
 io.write(string.format("automation_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end

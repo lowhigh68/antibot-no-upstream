@@ -412,6 +412,26 @@ _M.automation = {
     -- sach do.
     retry_after = 10,
 
+    -- Emergency isolation switch (18-10-2026).  This is deliberately keyed
+    -- by canonical automation principal AND is consumed only when the request
+    -- has reached tier `operator` (published network + matching claim).  A
+    -- random client that merely writes "GPTBot" in its UA is therefore not
+    -- granted a new blocking primitive.
+    --
+    -- Two production machines now show the same causal shape:
+    --   - GPTBot: 2,144 / 2,621 attempts per hour, 68.9% / 71.0% already 429;
+    --   - admitted samples still hold upstream for 6.52s / 15.40s on average;
+    --   - exact-UA access logs rank `/wp-json/oembed/1.0/embed` and `/` first,
+    --     spread across many domains (77.7% / 73.9% unique URLs for the day).
+    -- Rate tuning has therefore not isolated the remaining expensive tail.
+    -- Suspend the verified training crawler completely for a few hours and
+    -- compare worker-seconds/load.  OAI-SearchBot and ChatGPT-User remain on
+    -- their normal independent budgets.
+    suspended_principals = {
+        gptbot = true,
+    },
+    suspend_status = 403,
+
     -- Chi hai tang nay bi chan. `unknown` CO Y de ngoai: do la noi mot khach
     -- that bi phan loai nham thanh automation se roi vao, va uu tien so mot
     -- cua he thong nay la khong chan nham. `verified` (S3/S4 good bot) cung

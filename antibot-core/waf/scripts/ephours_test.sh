@@ -43,25 +43,44 @@ LINE() { # LINE <epoch> <phan con lai>
 }
 
 N=$(date +%s)
-# KHONG dat moc dung tai bien cua so. `H2 = N - 3600` nam DUNG tren ranh gioi
-# cua cua so 1 gio, nen phep thu "cua so 1h chi con gio gan nhat" lúc dat lúc
-# truot tuy vai tram mili-giay giua luc sinh fixture va luc awk goi
-# `systime()`. Lech 2700/5400 giay cho ca hai phia mot bien an toan ma khong
-# doi y nghia phep thu.
-H1=$((N - 5400))       # ~1,5 gio truoc — NGOAI cua so 1h
-H2=$((N - 2700))       # ~45 phut truoc — TRONG cua so 1h
+# Moc phai NEO VAO DAU GIO, khong phai tru mot so giay co dinh.
+#
+# Hai ban truoc deu chap chon theo dong ho:
+#   - `H2 = N - 3600` nam DUNG tren bien cua so 1 gio -> lúc dat lúc truot tuy
+#     vai tram mili-giay giua luc sinh fixture va luc awk goi `systime()`.
+#   - `H1 = N - 5400` / `H2 = N - 2700` thi TRUNG GIO khi phut hien tai nam
+#     trong khoang ~30-44: voi N = 12:30 thi N-5400 = 11:00 va N-2700 = 11:45,
+#     CUNG gio 11. Hai gio gop thanh mot va 7 assert do. Do duoc 18-10 luc
+#     16:45 (qua) va tai hien duoc o phut 30 (do).
+#
+# Neo vao dau gio thi khoang cach giua H1 va H2 luon la DUNG mot gio, khong
+# phu thuoc phut hien tai.
+HOUR0=$(( N - (N % 3600) ))   # dau gio hien tai
+H1=$(( HOUR0 - 5400 ))        # giua gio truoc-truoc — NGOAI cua so 1h
+H2=$(( HOUR0 - 1800 ))        # giua gio truoc        — cung NGOAI 1h nhung
+                              # luon la MOT gio khac H1
+# Mot moc TRONG gio hien tai, cho rieng phep thu "cua so 1h".
+#
+# `N - 60` KHONG dung: o phut 00 no roi ve gio TRUOC va trung voi H2 (kiem
+# bang vong lap 60 phut, chi phut 00 trung). Neo vao dau gio + 1 giay thi no
+# luon thuoc gio hien tai, va luon nam trong cua so 1h vi cutoff = N - 3600
+# con HOUR0 >= N - 3599.
+NOWH=$(( HOUR0 + 1 ))
 OLD=$((N - 200 * 3600))
 
 # TINH TAY, cua so 72h:
-#   gio H1: 3 dong | oembed 2 | openai 1 | anthropic 0 | operator 1 | block 1
-#   gio H2: 2 dong | oembed 0 | openai 2 | anthropic 1 | operator 2 | block 0
+#   gio H1  : 3 dong | oembed 2 | openai 1 | anthropic 0 | operator 1 | block 1
+#   gio H2  : 2 dong | oembed 0 | openai 2 | anthropic 1 | operator 2 | block 0
+#   gio NOWH: 1 dong — chi de kiem cua so 1h
 #   dong OLD bi loai; 3 dong BAY khong duoc tao gio nao
+#   TONG CONG = 3 + 2 + 1 = 6
 {
   LINE $H1 "ep=wp_oembed_embed xf_hits=1 action=allow"
   LINE $H1 "ep=wp_oembed_embed sclients=1 action=block"
   LINE $H1 "opnet=openai auttier=operator action=monitor"
   LINE $H2 "opnet=openai auttier=operator action=monitor"
   LINE $H2 "opnet=anthropic opnet=openai auttier=operator action=allow"
+  LINE $NOWH "ep=wp_oembed_embed action=allow"
   LINE $OLD "ep=wp_oembed_embed action=allow"
   # BAY: cot ket thuc bang "ts=", KHONG co ts= that
   echo '[2026-10-18 09:00:00] [waf] rid=r exists=1 parts=1'
@@ -79,7 +98,7 @@ echo "── 1. bay 'cot ket thuc bang ts=' ────────────
 ck "rc=0" "0" "$rc"
 ck "KHONG co gio 1970" "0" \
    "$(printf '%s' "$out" | grep -c '^1970-')"
-ck "KHONG co gio rac ngoai hai gio that" "2" \
+ck "KHONG co gio rac ngoai ba gio that" "3" \
    "$(printf '%s' "$out" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2} ')"
 ck "fixture co that 3 dong bay" "3" \
    "$(grep -cE 'exists=1|sclients=1 xf_hits=1|blen=10 parts=1' "$L")"
@@ -96,7 +115,7 @@ ck "gio H2 OPENAI=2"    "2" "$(printf '%s' "$row2" | awk '{print $5}')"
 ck "gio H2 ANTHROP=1"   "1" "$(printf '%s' "$row2" | awk '{print $6}')"
 
 echo "── 3. cua so thoi gian ──────────────────────────────"
-ck "dong qua cu bi loai (TONG CONG=5)" "5" \
+ck "dong qua cu bi loai (TONG CONG=6)" "6" \
    "$(printf '%s' "$out" | awk '/^TONG CONG/{print $3}')"
 out1h=$(run 1)
 ck "cua so 1h chi con gio gan nhat" "1" \
@@ -119,7 +138,7 @@ echo "── 6. log xoay vong ────────────────�
 gzip -c "$L" > "$W/log/antibot.log.1.gz"
 : > "$L"
 out_rot=$(run 72)
-ck "doc duoc du lieu trong .gz" "5" \
+ck "doc duoc du lieu trong .gz" "6" \
    "$(printf '%s' "$out_rot" | awk '/^TONG CONG/{print $3}')"
 ck "in ra ten file .gz" "yes" \
    "$(printf '%s' "$out_rot" | grep -q 'antibot.log.1.gz' && echo yes || echo no)"

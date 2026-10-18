@@ -633,10 +633,12 @@ function _M.run(ctx)
             tostring(ctx.automation_top_use or "-"),
             tostring(ctx.automation_top_axis or "-"),
             tostring(ctx.automation_degraded or false),
-            -- `autwould` da ton tai va van giu nghia cu: "vuot han muc". Hai
-            -- cot nay tra loi cau KHAC: co THUC SU chan khong, va truc nao
-            -- vuot. Mot dong `autwould=true autthr=false` la hop le va co
-            -- nghia — tang do dang quan sat, hoac meter bi degraded.
+            -- `autwould` keeps its old "over budget" meaning. `autthr=true`
+            -- means the automation guard actually rejected the request:
+            -- `autactual=429` is rate pacing, while `autactual=403` with
+            -- `autbreach=suspend` is a temporary principal suspension.
+            -- `autwould=true autthr=false` remains valid for an observed tier
+            -- or a deliberately fail-open degraded meter.
             tostring(ctx.automation_throttled or false),
             tostring(ctx.automation_breached
                 and table.concat(ctx.automation_breached, ",") or "-"),

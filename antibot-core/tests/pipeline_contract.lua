@@ -448,6 +448,15 @@ do
     local tiers = aut.enforce_tiers or {}
     eq(aut.mode, "enforce", "automation_guard enforce")
     eq(tiers.operator, true, "operator tier bi chan")
+    local suspended = aut.suspended_principals or {}
+    eq(suspended.gptbot, true,
+       "GPTBot operator bi tam dung de tach nguyen nhan tai production")
+    eq(suspended["oai-searchbot"], nil,
+       "OAI-SearchBot khong bi dung cung GPTBot")
+    eq(suspended["chatgpt-user"], nil,
+       "ChatGPT-User khong bi dung cung GPTBot")
+    eq(aut.suspend_status, 403,
+       "suspension dung 403, tach nghia voi rate throttle 429")
     -- `server` DA GO TINH TOAN 18-10. Khong dat han muc -> `consider()` tra ve
     -- ngay, truc chi con dem. Hai vong do tren 28-246 cho thay no khong the
     -- lam truc rang buoc: noi tran gap ba (20/60 -> 45/180) ma so luot vuot

@@ -102,6 +102,36 @@ local function throttle(ctx, c, axis)
     return true
 end
 
+-- Temporarily stop one proven operator before it can consume a rate bucket or
+-- reach an upstream.  This is intentionally stricter than `throttle()`:
+-- 403 means that this principal is suspended, whereas 429 means it may return
+-- after its budget refills.  Requiring tier `operator` is the safety boundary;
+-- principal text/UA alone is not sufficient evidence.
+local function suspend_operator(ctx, c, principal)
+    ctx.automation_observed = true
+    ctx.automation_suspended = true
+
+    -- Keep the existing enforcement telemetry contract.  `autthr=true` means
+    -- an automation request was actually rejected; `autactual=403` and
+    -- `autbreach=suspend` distinguish this hard suspension from a rate 429.
+    ctx.automation_would_throttle = true
+    ctx.automation_throttled = true
+    ctx.automation_top_axis = "suspend"
+    ctx.automation_top_use = 100
+    ctx.automation_breached = { "suspend" }
+
+    ctx.action = "block"
+    ctx.action_reason = "automation_guard:operator:suspend:" .. principal
+
+    ngx.header["Cache-Control"] = "no-store"
+    ngx.header["Content-Type"] = "text/plain"
+    ngx.header["X-Bot-Action"] = "blocked"
+    ngx.status = tonumber(c.suspend_status) or 403
+    ngx.say("Crawler temporarily disabled.")
+    ngx.exit(ngx.status)
+    return true
+end
+
 function _M.evaluate(ctx)
     if not ctx.automation_observed then return true, false end
     local c = conf()
@@ -169,10 +199,34 @@ function _M.run(ctx)
     ctx.automation_tier = ctx.automation_tier or "unknown"
     ctx.automation_principal = ctx.automation_principal or "automation-client"
 
+    -- Suspension is decided here but APPLIED after the meters below, so a
+    -- suspended principal still shows its real pull in the log. Thoat ngay o
+    -- day thi `pair()` khong chay va `autcost=`/`autps=`/`autfs=`/`autss=`
+    -- thanh `-` — tuc mat dung cot dung de tra loi "gptbot dang keo bao nhieu"
+    -- va khong con so sanh duoc truoc/sau khi bat cong tac. 403 van den TRUOC
+    -- backend vi `run()` la buoc 3 cua STEPS_ADMISSION, truoc l7_admission,
+    -- endpoint_guard, circuit va surge.
+    local suspended_now = false
+    do
+        local p = tostring(ctx.automation_principal):lower()
+        local suspended = c.suspended_principals
+        suspended_now = ctx.automation_mode == "enforce"
+            and ctx.automation_tier == "operator"
+            and type(suspended) == "table"
+            and suspended[p] == true
+    end
+
     local dict = ngx.shared and ngx.shared.antibot_cache
     if not dict then
         ctx.automation_observed = true
         ctx.automation_degraded = true
+        -- Meter hong thi KHONG fail-open o day: suspend la quyet dinh cua
+        -- operator, khong phu thuoc mot con so doc duoc. `throttle()` moi can
+        -- fail-open vi no throttle THEO so.
+        if suspended_now then
+            return false, suspend_operator(ctx, c,
+                tostring(ctx.automation_principal):lower())
+        end
         return _M.evaluate(ctx)
     end
 
@@ -180,7 +234,7 @@ function _M.run(ctx)
     local cost = tonumber((c.costs or {})[class]) or 1
     local host = ((ctx.req and ctx.req.host) or ngx.var.host or "-"):lower()
     local ip = tostring(ctx.ip or "-")
-    local principal = tostring(ctx.automation_principal)
+    principal = tostring(ctx.automation_principal)
     local now = ngx.time()
     local windows = c.windows or { short = 10, long = 60 }
 
@@ -217,6 +271,14 @@ function _M.run(ctx)
     ctx.automation_fleet_short = fs
     ctx.automation_fleet_long  = fl
     if pe or ie or he or se or fe then ctx.automation_degraded = true end
+
+    -- Ap dung suspend SAU khi moi dong ho da cong: `autfs`/`autfl`/`autps`
+    -- giu nguyen gia tri that, nen `autthr.sh` muc 5 van doc duoc dinh tai
+    -- cua principal bi tam dung va so sanh duoc voi truoc khi bat cong tac.
+    if suspended_now then
+        return false, suspend_operator(ctx, c,
+            tostring(ctx.automation_principal):lower())
+    end
 
     return _M.evaluate(ctx)
 end
