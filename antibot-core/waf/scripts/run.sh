@@ -313,4 +313,11 @@ echo
 echo "── ephours.sh (luu luong theo gio: oembed vs AI bot) ────"
 sh_suite ephours_test "$HERE/ephours_test.sh" || rc=1
 
+# `fleetstat.sh` nhin TOAN MAY thay vi mot domain. No ton tai vi han muc cua
+# `automation_guard` khoa theo (host, principal): mot bot quet N domain co N
+# ngan sach doc lap, nen moi bang chi nhin mot domain deu bo sot dung cho do.
+echo
+echo "── fleetstat.sh (toan may: domain, principal, phanh) ───"
+sh_suite fleetstat_test "$HERE/fleetstat_test.sh" || rc=1
+
 exit $rc
