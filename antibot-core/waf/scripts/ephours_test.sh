@@ -56,9 +56,22 @@ N=$(date +%s)
 # Neo vao dau gio thi khoang cach giua H1 va H2 luon la DUNG mot gio, khong
 # phu thuoc phut hien tai.
 HOUR0=$(( N - (N % 3600) ))   # dau gio hien tai
-H1=$(( HOUR0 - 5400 ))        # giua gio truoc-truoc — NGOAI cua so 1h
-H2=$(( HOUR0 - 1800 ))        # giua gio truoc        — cung NGOAI 1h nhung
-                              # luon la MOT gio khac H1
+# Hai moc phai thoa DONG THOI hai dieu, o MOI phut trong gio:
+#   (a) khac GIO nhau  -> `ephours` tao hai dong rieng
+#   (b) ca hai NGOAI cua so 1h -> phep thu "cua so 1h chi con gio gan nhat"
+#       cho ket qua 1, khong phu thuoc dong ho
+#
+# Dieu (b) la rang buoc that: cutoff = N - 3600 = HOUR0 + p - 3600 voi
+# p = phut:giay hien tai. Moc o `HOUR0 - k` nam NGOAI cua so khi
+# k > 3600 - p, va xau nhat la p = 0, nen k phai > 3600.
+#
+# Ban `5400 / 1800` KHONG thoa: `HOUR0 - 1800` nam TRONG cua so khi p < 1800,
+# tuc test dat o nua sau moi gio va DO o nua dau. Do duoc 18-10 luc 17:11
+# (`cua so 1h chi con gio gan nhat: mong=1 thuc=2`) sau khi chinh phep kiem
+# truoc do chi doi "khac gio" ma khong doi "ngoai cua so".
+H1=$(( HOUR0 - 9000 ))        # 2,5 gio truoc — NGOAI cua so 1h moi phut
+H2=$(( HOUR0 - 5400 ))        # 1,5 gio truoc — NGOAI cua so 1h moi phut,
+                              # va luon la MOT gio khac H1
 # Mot moc TRONG gio hien tai, cho rieng phep thu "cua so 1h".
 #
 # `N - 60` KHONG dung: o phut 00 no roi ve gio TRUOC va trung voi H2 (kiem
@@ -120,6 +133,30 @@ ck "dong qua cu bi loai (TONG CONG=6)" "6" \
 out1h=$(run 1)
 ck "cua so 1h chi con gio gan nhat" "1" \
    "$(printf '%s' "$out1h" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2} ')"
+
+# GHIM BAT BIEN CUA CHINH FIXTURE, khong phai cua `ephours.sh`.
+#
+# Phep thu ngay tren chi dung o MOT thoi diem dong ho neu moc dat sai, va no
+# da do THAT luc 17:11 ngay 18-10 (`mong=1 thuc=2`) voi moc 5400/1800. Kiem
+# bang so hoc tai MOI giay trong gio thi lan sau doi moc se bi bat ngay, thay
+# vi doi den luc chay dung nua gio "xau".
+#
+# Dieu kien: moc o `HOUR0 - k` nam NGOAI cua so 1h khi k > 3600 - p voi
+# p = giay-trong-gio hien tai; xau nhat p = 0 nen can k > 3600.
+ck "moc H1/H2 ngoai cua so 1h o MOI giay trong gio" "0" \
+   "$(awk -v k1=$(( HOUR0 - H1 )) -v k2=$(( HOUR0 - H2 )) 'BEGIN{
+        bad = 0
+        for (p = 0; p < 3600; p++) {
+            cut = p - 3600
+            if (-k1 >= cut) bad++
+            if (-k2 >= cut) bad++
+            if (1 < cut)    bad++      # NOWH = HOUR0 + 1 phai TRONG cua so
+        }
+        print bad
+      }')"
+ck "moc H1 va H2 khac GIO nhau" "yes" \
+   "$([ "$(date -d "@$H1" '+%Y%m%d%H')" != "$(date -d "@$H2" '+%Y%m%d%H')" ] \
+      && echo yes || echo no)"
 
 echo "── 4. thu tu gio tang dan ───────────────────────────"
 ck "gio sap tang dan" "yes" \
