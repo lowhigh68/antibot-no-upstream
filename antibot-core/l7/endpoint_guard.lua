@@ -100,6 +100,185 @@ local function base_key(ctx)
     return "ep:" .. safe_scope(ctx) .. ":" .. tostring(ctx.endpoint_id)
 end
 
+-- Collapse caller addresses to a network-sized diversity token.  The token is
+-- evidence that one endpoint shape is arriving from many source networks; it
+-- is never used as a ban subject.  IPv4 uses /24 and IPv6 uses /64 so privacy
+-- addresses from one client/network cannot manufacture unlimited diversity.
+local function ipv4_network(ip)
+    local a, b, c, d = tostring(ip or ""):match(
+        "^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+    if not a or a > 255 or b > 255 or c > 255 or d > 255 then return nil end
+    return string.format("v4:%d.%d.%d.0/24", a, b, c)
+end
+
+local function append_ipv6_part(out, part)
+    if part == "" then return true end
+    for token in part:gmatch("[^:]+") do
+        if token:find("%.") then
+            local v4 = ipv4_network(token)
+            if not v4 then return false end
+            local a, b, c, d = token:match(
+                "^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+            out[#out + 1] = tonumber(a) * 256 + tonumber(b)
+            out[#out + 1] = tonumber(c) * 256 + tonumber(d)
+        elseif #token <= 4 and token:match("^%x+$") then
+            out[#out + 1] = tonumber(token, 16)
+        else
+            return false
+        end
+    end
+    return true
+end
+
+local function ipv6_network(ip)
+    ip = tostring(ip or ""):lower():gsub("^%[", ""):gsub("%]$", "")
+    ip = ip:gsub("%%[^%%]+$", "") -- strip a local zone id, if present
+    if ip == "" or not ip:find(":", 1, true) then return nil end
+
+    -- Treat IPv4-mapped forms as IPv4.  This also keeps their diversity
+    -- semantics identical on hosts where the socket family representation
+    -- changes across listeners.
+    local tail4 = ip:match("(%d+%.%d+%.%d+%.%d+)$")
+    if tail4 then return ipv4_network(tail4) end
+
+    local first = ip:find("::", 1, true)
+    if first and ip:find("::", first + 2, true) then return nil end
+    local left, right, compressed
+    if first then
+        left, right, compressed = ip:sub(1, first - 1), ip:sub(first + 2), true
+    else
+        left, right, compressed = ip, "", false
+    end
+
+    local lhs, rhs = {}, {}
+    if not append_ipv6_part(lhs, left) or not append_ipv6_part(rhs, right) then
+        return nil
+    end
+    local missing = 8 - #lhs - #rhs
+    if (compressed and missing < 1) or (not compressed and missing ~= 0) then
+        return nil
+    end
+    local words = {}
+    for i = 1, #lhs do words[#words + 1] = lhs[i] end
+    for _ = 1, missing do words[#words + 1] = 0 end
+    for i = 1, #rhs do words[#words + 1] = rhs[i] end
+    if #words ~= 8 then return nil end
+    return string.format("v6:%x:%x:%x:%x::/64",
+        words[1], words[2], words[3], words[4])
+end
+
+local function source_network(ip)
+    return ipv4_network(ip) or ipv6_network(ip)
+end
+
+local function swarm_config(spec)
+    local swarm = type(spec.swarm) == "table" and spec.swarm or {}
+    local mode = tostring(swarm.mode or "off")
+    if mode ~= "shadow" and mode ~= "enforce" then mode = "off" end
+    return swarm, mode
+end
+
+-- Route-shape swarm meter.  Policy has already reduced attacker-controlled
+-- path/query variants to a bounded endpoint_id, so none of those raw values
+-- enter a shared-dict key.  The per-network seen-set is also capped: after the
+-- configured diversity floor is reached no new source keys are allocated.
+-- This catches N rotating IPs sending only one or two requests each, while a
+-- single noisy IP can never establish the distributed evidence on its own.
+local function observe_swarm(ctx, spec, c)
+    local swarm, mode = swarm_config(spec)
+    if mode == "off" then return false end
+    ctx.endpoint_swarm_mode = mode
+
+    local dict = dictionary()
+    if not dict then
+        ctx.endpoint_swarm_degraded = true
+        return false
+    end
+
+    local t = now()
+    local scope = tostring(swarm.scope or "tenant") == "server"
+        and "server" or "tenant"
+    -- endpoint_id comes only from the finite config table selected by
+    -- endpoint_spec(); unlike URI/query/Host it is not attacker-controlled.
+    -- Server scope closes the multi-domain multiplication gap, while the
+    -- existing rate/inflight budget remains tenant-scoped.
+    local base = scope == "server"
+        and ("epsw:server:" .. tostring(ctx.endpoint_id)) or base_key(ctx)
+    ctx.endpoint_swarm_scope = scope
+    local window = math.max(math.floor(tonumber(swarm.window) or 10), 1)
+    local min_requests = math.max(math.floor(tonumber(swarm.requests) or 12), 2)
+    local min_networks = math.max(math.floor(tonumber(swarm.networks) or 6), 2)
+    min_networks = math.min(min_networks, min_requests)
+    local hold = math.max(math.floor(tonumber(swarm.hold) or 60), 1)
+    ctx.endpoint_swarm_request_limit = min_requests
+    ctx.endpoint_swarm_network_limit = min_networks
+
+    local open_key = base .. ":sw:open"
+    local raw_open = dict:get(open_key)
+    if raw_open then
+        local until_s, hits_s, networks_s = tostring(raw_open):match(
+            "^([%d%.]+):(%d+):(%d+)$")
+        local until_n = tonumber(until_s)
+        if until_n and until_n > t then
+            ctx.endpoint_swarm_open = true
+            ctx.endpoint_swarm_until = until_n
+            ctx.endpoint_swarm_hits = tonumber(hits_s) or 0
+            ctx.endpoint_swarm_networks = tonumber(networks_s) or 0
+            return true
+        end
+        delete_key(dict, open_key)
+    end
+
+    local bucket = math.floor(t / window)
+    local prefix = base .. ":sw:" .. tostring(bucket)
+    local ttl = window * 2 + 2
+
+    local hits, hit_err = increment(dict, prefix .. ":n", ttl)
+    if not hits then
+        ctx.endpoint_swarm_degraded = true
+        log_dict_error("swarm_hits", hit_err)
+        return false
+    end
+
+    local unique_key = prefix .. ":u"
+    local networks = tonumber(dict:get(unique_key)) or 0
+    local network = source_network((ctx and ctx.ip) or ngx.var.remote_addr)
+    if network and networks < min_networks then
+        local digest = ngx.md5 and ngx.md5(network):sub(1, 16)
+            or network:gsub("[^%w]", "_"):sub(1, 48)
+        local added, add_err = dict:add(prefix .. ":seen:" .. digest, 1, ttl)
+        if added then
+            local n, nerr = increment(dict, unique_key, ttl)
+            if n then
+                networks = n
+            else
+                ctx.endpoint_swarm_degraded = true
+                log_dict_error("swarm_networks", nerr)
+            end
+        elseif add_err ~= "exists" then
+            ctx.endpoint_swarm_degraded = true
+            log_dict_error("swarm_seen", add_err)
+        end
+    end
+
+    ctx.endpoint_swarm_hits = hits
+    ctx.endpoint_swarm_networks = networks
+    if hits < min_requests or networks < min_networks then return false end
+
+    local open_until = t + hold
+    local value = string.format("%.3f:%d:%d", open_until, hits, networks)
+    local stored, set_err = dict:set(open_key, value, hold)
+    if not stored then
+        ctx.endpoint_swarm_degraded = true
+        log_dict_error("swarm_open", set_err)
+        return false
+    end
+    ctx.endpoint_swarm_open = true
+    ctx.endpoint_swarm_until = open_until
+    return true
+end
+
 local function window_settings(c)
     local windows = type(c.windows) == "table" and c.windows or {}
     return math.max(math.floor(tonumber(windows.short) or 10), 1),
@@ -139,19 +318,27 @@ end
 local function modes(spec)
     local rate = type(spec.rate) == "table" and spec.rate or {}
     local inflight = type(spec.inflight) == "table" and spec.inflight or {}
+    local emergency = type(spec.emergency) == "table" and spec.emergency or {}
     return tostring(rate.mode or "off"),
            tostring(inflight.mode or "off"),
            tostring(spec.shape_mode or "off"),
-           tostring(spec.cross_host_mode or "off")
+           tostring(spec.cross_host_mode or "off"),
+           tostring(emergency.mode or "off")
 end
 
-local function cause_state(ctx, spec, short_n, long_n, inflight_n)
-    local rate_mode, inflight_mode, shape_mode, cross_mode = modes(spec)
+local function cause_state(ctx, spec, short_n, long_n, inflight_n, swarm_active)
+    local rate_mode, inflight_mode, shape_mode, cross_mode, emergency_mode = modes(spec)
     local causes, enforced = {}, {}
     local function add(name, mode)
         if mode == "off" then return end
         causes[#causes + 1] = name
         if mode == "enforce" then enforced[#enforced + 1] = name end
+    end
+
+    add("emergency", emergency_mode)
+    if swarm_active then
+        local _, swarm_mode = swarm_config(spec)
+        add("swarm", swarm_mode)
     end
 
     local shape = tostring(ctx.endpoint_shape or "ok")
@@ -176,35 +363,53 @@ end
 
 local function observed_mode(spec, causes)
     if #causes == 0 then
-        local rate, inflight, shape, cross = modes(spec)
+        local rate, inflight, shape, cross, emergency = modes(spec)
+        local _, swarm = swarm_config(spec)
         if rate == "enforce" or inflight == "enforce"
-           or shape == "enforce" or cross == "enforce" then return "enforce" end
+           or shape == "enforce" or cross == "enforce"
+           or emergency == "enforce" or swarm == "enforce" then return "enforce" end
         if rate == "shadow" or inflight == "shadow"
-           or shape == "shadow" or cross == "shadow" then return "shadow" end
+           or shape == "shadow" or cross == "shadow"
+           or emergency == "shadow" or swarm == "shadow" then return "shadow" end
         return "off"
     end
-    local rate, inflight, shape, cross = modes(spec)
+    local rate, inflight, shape, cross, emergency = modes(spec)
+    local _, swarm = swarm_config(spec)
     for i = 1, #causes do
         local cause = causes[i]
         if (cause == "inflight" and inflight == "enforce")
            or (cause:find("^rate_") and rate == "enforce")
            or (cause:find("^shape_") and shape == "enforce")
-           or (cause == "cross_host" and cross == "enforce") then
+           or (cause == "cross_host" and cross == "enforce")
+           or (cause == "emergency" and emergency == "enforce")
+           or (cause == "swarm" and swarm == "enforce") then
             return "enforce"
         end
     end
     return "shadow"
 end
 
-local function reject(ctx, c, enforced_causes)
+local function reject(ctx, c, spec, enforced_causes)
     local joined = table.concat(enforced_causes, ",")
     local status = tonumber(c.rate_status) or 429
+    local retry_after = tonumber(c.retry_after) or 2
     for i = 1, #enforced_causes do
-        if enforced_causes[i] == "inflight" then
+        if enforced_causes[i] == "emergency" then
+            local emergency = type(spec.emergency) == "table"
+                and spec.emergency or {}
+            status = tonumber(emergency.status) or status
+            retry_after = tonumber(emergency.retry_after) or retry_after
+            break
+        elseif enforced_causes[i] == "inflight" then
             status = tonumber(c.inflight_status) or 503
             break
+        elseif enforced_causes[i] == "swarm" then
+            local swarm = type(spec.swarm) == "table" and spec.swarm or {}
+            status = tonumber(swarm.status) or status
+            retry_after = tonumber(swarm.retry_after) or retry_after
         elseif enforced_causes[i]:find("^shape_") then
-            status = tonumber(c.shape_status) or 400
+            status = tonumber(spec.shape_status)
+                or tonumber(c.shape_status) or 400
         end
     end
 
@@ -212,10 +417,15 @@ local function reject(ctx, c, enforced_causes)
     ctx.action = "throttled"
     ctx.action_reason = "endpoint_guard:" .. tostring(ctx.endpoint_id)
         .. ":" .. joined
-    ngx.header["Retry-After"] = tostring(c.retry_after or 2)
+    -- Retry-After belongs to capacity responses.  A deterministic malformed
+    -- path returned as 400/404 will not become valid by retrying later.
+    if status == 429 or status == 503 then
+        ngx.header["Retry-After"] = tostring(retry_after)
+    end
     ngx.status = status
     ngx.say(status == 503 and "Service temporarily unavailable."
-        or (status == 400 and "Bad request." or "Too many requests."))
+        or (status == 404 and "Not found."
+        or (status == 400 and "Bad request." or "Too many requests.")))
     ngx.exit(status)
     return false, true
 end
@@ -225,6 +435,21 @@ end
 function _M.before(ctx)
     local spec, c = endpoint_spec(ctx)
     if not spec or ngx.is_subrequest then return true, false end
+
+    -- Count the bounded route shape before any emergency/shape exit.  Rejected
+    -- attempts are exactly the population needed to recognize a distributed
+    -- rotating-IP attack; backend rate counters intentionally exclude them.
+    local swarm_active = observe_swarm(ctx, spec, c)
+
+    -- Emergency endpoint shutdown is a policy switch, not a counter decision.
+    -- It must keep protecting PHP even when the shared dict is unavailable.
+    local _, _, _, _, emergency_mode = modes(spec)
+    if emergency_mode == "enforce" then
+        ctx.endpoint_would_reject = true
+        ctx.endpoint_cause = "emergency"
+        ctx.endpoint_mode = "enforce"
+        return reject(ctx, c, spec, { "emergency" })
+    end
 
     local dict = dictionary()
     if not dict then
@@ -249,12 +474,12 @@ function _M.before(ctx)
     -- cause_state uses `>` because this request is not counted yet.  Supply
     -- +1 to ask whether admitting it would cross the configured boundary.
     local causes, enforce, enforced_causes = cause_state(
-        ctx, spec, short_n + 1, long_n + 1, inflight_n + 1)
+        ctx, spec, short_n + 1, long_n + 1, inflight_n + 1, swarm_active)
     if enforce then
         ctx.endpoint_would_reject = true
         ctx.endpoint_cause = table.concat(causes, ",")
         ctx.endpoint_mode = observed_mode(spec, causes)
-        return reject(ctx, c, enforced_causes)
+        return reject(ctx, c, spec, enforced_causes)
     end
     return true, false
 end
@@ -322,7 +547,8 @@ function _M.admit(ctx)
     ctx.endpoint_inflight_limit = inflight_limit
 
     local causes, enforce, enforced_causes = cause_state(
-        ctx, spec, short_n, long_n, inflight_n)
+        ctx, spec, short_n, long_n, inflight_n,
+        ctx.endpoint_swarm_open == true)
     ctx.endpoint_mode = observed_mode(spec, causes)
     if #causes > 0 then
         ctx.endpoint_would_reject = true
@@ -333,7 +559,7 @@ function _M.admit(ctx)
         decrement(dict, request_slot_key, slot_ttl)
         ctx.endpoint_released = true
         ctx.endpoint_admitted = false
-        return reject(ctx, c, enforced_causes)
+        return reject(ctx, c, spec, enforced_causes)
     end
     return true, false
 end

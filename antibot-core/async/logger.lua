@@ -852,6 +852,8 @@ function _M.run(ctx)
         endpoint_str = string.format(
             " ep=%s epcand=%s epmode=%s eps=%s/%s epl=%s/%s epif=%s/%s" ..
             " epwould=%s epcause=%s epshape=%s epurl=%s epsrc=%s epproof=%s" ..
+            " epq=%s epck=%s epswarm=%s epswh=%s/%s epswn=%s/%s" ..
+            " epswmode=%s epswscope=%s epswuntil=%s epswdeg=%s" ..
             " epdeg=%s epexp=%s epdur=%s epactual=%s epup=%s epuptime=%s",
             tostring(ctx.endpoint_id or "-"),
             tostring(ctx.endpoint_candidate or "-"),
@@ -868,6 +870,18 @@ function _M.run(ctx)
             tostring(ctx.endpoint_url_relation or "-"),
             tostring(ctx.endpoint_route_source or "-"),
             tostring(ctx.endpoint_policy_state or "-"),
+            tostring(ctx.endpoint_query_state or "-"),
+            tostring(ctx.endpoint_cookie_state or "-"),
+            tostring(ctx.endpoint_swarm_open or false),
+            tostring(ctx.endpoint_swarm_hits or "-"),
+            tostring(ctx.endpoint_swarm_request_limit or "-"),
+            tostring(ctx.endpoint_swarm_networks or "-"),
+            tostring(ctx.endpoint_swarm_network_limit or "-"),
+            tostring(ctx.endpoint_swarm_mode or "-"),
+            tostring(ctx.endpoint_swarm_scope or "-"),
+            ctx.endpoint_swarm_until
+                and string.format("%.3f", ctx.endpoint_swarm_until) or "-",
+            tostring(ctx.endpoint_swarm_degraded or false),
             tostring(ctx.endpoint_degraded
                 or ctx.endpoint_policy_degraded or false),
             tostring(ctx.endpoint_slot_expired or false),

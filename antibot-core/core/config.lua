@@ -744,12 +744,22 @@ _M.endpoint_guard = {
         -- remaining far above ordinary on-demand embed discovery.  The more
         -- important signal is 3 concurrent requests per WordPress root.
         wp_oembed_embed = {
+            -- Emergency brake 18-10-2026: public discovery is temporarily
+            -- disabled before backend.  `wp_oembed_proxy` (editor/admin) is a
+            -- separate endpoint and remains available.  Set mode="off" to
+            -- restore the measured rate/inflight policy below.
+            emergency  = { mode = "enforce", status = 429, retry_after = 300 },
+            -- Route-shape swarm is independent of caller identity.  It records
+            -- whether many source networks converge on this one endpoint;
+            -- emergency remains the active brake during the incident.
+            swarm      = { mode = "shadow", scope = "server", window = 10,
+                           requests = 12, networks = 6, hold = 60 },
             rate       = { mode = "shadow", short = 20, long = 100 },
             -- ENFORCE 18-10-2026 after production showed about 17 concurrent
             -- oEmbed calls against one docroot: 31/34 ended as 499/500 and
-            -- requests held up to 29s. This gate limits backend occupancy; it
-            -- does not score or ban the caller. Rate/shape/cross-host remain
-            -- independent shadow signals.
+            -- requests held up to 29s. This is the backup capacity gate after
+            -- emergency is turned off; it does not score or ban the caller.
+            -- Rate/shape/cross-host remain independent shadow signals.
             inflight   = { mode = "enforce", limit = 3 },
             shape_mode = "shadow",
             -- Cross-host URL is measured separately.  Do not enforce until
@@ -788,6 +798,45 @@ _M.endpoint_guard = {
         wp_rest_embed_expand = {
             rate       = { mode = "shadow", short = 100, long = 600 },
             inflight   = { mode = "shadow", limit = 10 },
+            shape_mode = "off",
+            cross_host_mode = "off",
+        },
+        -- Generic invariant: `.html` is the end of a WordPress permalink on
+        -- this fleet.  Any non-empty PATH_INFO after `.html/` is rejected,
+        -- independent of whether today's bot writes tel:, sms: or a new token.
+        wp_html_pathinfo = {
+            rate       = { mode = "off" },
+            inflight   = { mode = "off" },
+            -- Every suffix variant is already collapsed to this one bounded
+            -- endpoint id.  Shape enforcement blocks from request one; swarm
+            -- telemetry labels the cross-IP campaign without banning callers.
+            swarm      = { mode = "shadow", scope = "server", window = 10,
+                           requests = 12, networks = 6, hold = 60 },
+            shape_mode = "enforce",
+            shape_status = 404,
+            cross_host_mode = "off",
+        },
+        -- Same incident: item reads against tags/posts consumed roughly
+        -- 1,004s/756s respectively, but these are legitimate public REST API
+        -- routes.  Measure query/cookie split and real concurrency on every
+        -- server before promoting either axis independently.
+        wp_rest_tags_read = {
+            -- Emergency brake: block GET/HEAD collection and every tags
+            -- sub-route locally.  This can affect Gutenberg/tag consumers;
+            -- turn only this switch off after backend pressure is stable.
+            emergency  = { mode = "enforce", status = 429, retry_after = 300 },
+            swarm      = { mode = "shadow", scope = "server", window = 10,
+                           requests = 12, networks = 6, hold = 60 },
+            rate       = { mode = "shadow", short = 20, long = 100 },
+            inflight   = { mode = "shadow", limit = 4 },
+            shape_mode = "off",
+            cross_host_mode = "off",
+        },
+        wp_rest_posts_item = {
+            swarm      = { mode = "shadow", scope = "server", window = 10,
+                           requests = 12, networks = 6, hold = 60 },
+            rate       = { mode = "shadow", short = 20, long = 100 },
+            inflight   = { mode = "shadow", limit = 4 },
             shape_mode = "off",
             cross_host_mode = "off",
         },

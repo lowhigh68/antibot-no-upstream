@@ -525,6 +525,9 @@ do
     local eg = real.endpoint_guard or {}
     local oembed = (eg.endpoints or {}).wp_oembed_embed or {}
     local proxy  = (eg.endpoints or {}).wp_oembed_proxy  or {}
+    local html   = (eg.endpoints or {}).wp_html_pathinfo or {}
+    local posts  = (eg.endpoints or {}).wp_rest_posts_item or {}
+    local tags   = (eg.endpoints or {}).wp_rest_tags_read or {}
 
     eq(eg.enabled, true, "endpoint_guard bat trong config that")
     eq(eg.inflight_status, 503,
@@ -547,6 +550,40 @@ do
     -- la chan nguoi dang soan bai, nen no phai o shadow.
     eq((proxy.inflight or {}).mode, "shadow",
        "oEmbed proxy (editor WordPress) van shadow — khong chan admin")
+
+    -- `.html/tel:` / `.html/sms:` is an exact malformed-shape rule proven by
+    -- the incident log.  It must stay independent of the legitimate REST item
+    -- rollout, which has only telemetry until fleet data exists.
+    eq(html.shape_mode, "enforce", "WP html pathinfo ENFORCE generic")
+    eq(html.shape_status, 404, "WP html pathinfo tra local 404")
+    eq((html.rate or {}).mode, "off", "html pathinfo khong can rate counter")
+    eq((html.inflight or {}).mode, "off", "html pathinfo khong lay backend slot")
+    eq((posts.rate or {}).mode, "shadow", "wp/v2 posts item rate van shadow")
+    eq((posts.inflight or {}).mode, "shadow", "wp/v2 posts item inflight shadow")
+    eq((tags.rate or {}).mode, "shadow", "wp/v2 tags item rate van shadow")
+    eq((tags.inflight or {}).mode, "shadow", "wp/v2 tags item inflight shadow")
+    eq(((oembed.emergency or {}).mode), "enforce",
+       "oEmbed public emergency ENFORCE de cuu backend")
+    eq(((tags.emergency or {}).mode), "enforce",
+       "wp/v2 tags read emergency ENFORCE de cuu backend")
+    eq(((oembed.emergency or {}).retry_after), 300,
+       "oEmbed emergency yeu cau crawler lui 300s")
+    eq(((tags.emergency or {}).retry_after), 300,
+       "tags emergency yeu cau crawler lui 300s")
+    eq(((html.swarm or {}).mode), "shadow",
+       "html pathinfo swarm chi gan nhan; shape da chan tu request dau")
+    eq(((oembed.swarm or {}).mode), "shadow",
+       "oEmbed route swarm do xuyen IP nhung emergency van la cong hien tai")
+    eq(((tags.swarm or {}).mode), "shadow",
+       "tags route swarm mac dinh shadow de khong them FP")
+    eq(((posts.swarm or {}).mode), "shadow",
+       "posts item route swarm mac dinh shadow")
+    eq(((html.swarm or {}).networks), 6,
+       "route swarm can nhieu source-network, khong chi nhieu request")
+    eq(((html.swarm or {}).requests), 12,
+       "route swarm can dong thoi du request")
+    eq(((html.swarm or {}).scope), "server",
+       "route swarm khong bi nhan budget theo so domain")
 
     -- `automation_guard`: chi operator/contradicted bi chan. `unknown` la noi
     -- khach that bi phan loai nham roi vao; `verified` la Googlebot/Bingbot.
@@ -596,6 +633,10 @@ do
     }) do
         ok(logger_src:find(field, 1, true) ~= nil,
            "logger giu cot operator concurrency " .. field)
+    end
+    for _, field in ipairs({ " epq=", " epck=" }) do
+        ok(logger_src:find(field, 1, true) ~= nil,
+           "logger giu cot REST query/cookie " .. field)
     end
     -- `server` DA GO TINH TOAN 18-10. Khong dat han muc -> `consider()` tra ve
     -- ngay, truc chi con dem. Hai vong do tren 28-246 cho thay no khong the

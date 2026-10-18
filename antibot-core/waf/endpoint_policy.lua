@@ -72,7 +72,10 @@ local function routed_value(value)
             -- shape telemetry below records that the route was ambiguous.
             if normalized == "/oembed/1.0/embed"
                or normalized == "/oembed/1.0/proxy"
-               or normalized == "/wp/v2/users" then
+               or normalized == "/wp/v2/users"
+               or normalized:match("^/wp/v2/posts/%d+$")
+               or normalized == "/wp/v2/tags"
+               or normalized:match("^/wp/v2/tags/") then
                 return candidate, true
             end
         end
@@ -134,13 +137,42 @@ local function endpoint_for(rest, method, args)
         return "wp_users_mutation"
     end
 
+    -- Emergency tags policy owns the whole GET/HEAD route family.  Keep this
+    -- before `_embed`; otherwise adding `?_embed` would reclassify a tags
+    -- request into the broad telemetry family and bypass the shutdown.
+    if method == "GET" or method == "HEAD" then
+        if rest == "/wp/v2/tags" or rest:match("^/wp/v2/tags/") then
+            return "wp_rest_tags_read"
+        end
+    end
+
     -- `_embed` is not the oEmbed provider endpoint.  It asks the REST server
     -- to expand linked resources and can multiply application work, so it gets
     -- a separate, deliberately broad telemetry family.
     if args and args._embed ~= nil then return "wp_rest_embed_expand" end
+    -- Item reads are kept separate because production showed that distributed
+    -- callers can rotate IPs across these individually cheap-looking routes
+    -- while collectively occupying PHP/DB workers.  Collections and writes
+    -- are intentionally not folded into the same budget.
+    if method == "GET" or method == "HEAD" then
+        if rest:match("^/wp/v2/posts/%d+$") then
+            return "wp_rest_posts_item"
+        end
+    end
     return nil
 end
 _M.endpoint_for = endpoint_for
+
+-- A permalink configured to END in `.html` has no valid application PATH_INFO
+-- after that extension on this fleet.  Match the invariant, not the two tokens
+-- (`tel:`/`sms:`) used by one bot run: tomorrow's random suffix must hit the
+-- same bounded endpoint.  The WordPress inventory gate in run() keeps this
+-- policy away from custom CMS/application routes.
+local function html_pathinfo(uri)
+    local path = lower(uri):match("^([^?]*)") or ""
+    return path:match("%.html/.+$") ~= nil
+end
+_M.html_pathinfo = html_pathinfo
 
 local function normalize_host(host)
     host = lower(host):gsub("%.$", "")
@@ -259,11 +291,52 @@ local function scope_id(docroot)
     return raw:sub(1, 64)
 end
 
+-- Presence only: never retain query/cookie values. `epck=present` is not an
+-- authentication claim (any client can send a Cookie header); it is a fleet
+-- split for measuring compatibility before REST rules leave shadow.
+local function request_markers(ctx, raw_args)
+    ctx.endpoint_query_state = raw_args ~= "" and "present" or "none"
+    local cookie = ngx.var.http_cookie
+    ctx.endpoint_cookie_state = type(cookie) == "string"
+        and cookie:find("%S") ~= nil and "present" or "none"
+end
+
 function _M.run(ctx, opts)
     ctx = ctx or {}
     local raw_args = ngx.var.args or ""
     local uri = ngx.var.uri or (ctx.req and ctx.req.uri) or "/"
     local low_uri = lower(uri)
+
+    -- This branch is independent of REST parsing and remains bounded: one
+    -- exact route family, one existing WP-root lookup, no attacker-derived
+    -- counter key.  Root proof uses prefix="" deliberately; deriving a prefix
+    -- from arbitrary permalink text would let an attacker create inventory
+    -- lookup cardinality.  Language-prefixed permalinks still belong to the
+    -- same document root and are covered when that root is proven WordPress.
+    local has_html_pathinfo = html_pathinfo(low_uri)
+    if has_html_pathinfo then
+        local endpoint = "wp_html_pathinfo"
+        ctx.endpoint_candidate = endpoint
+        ctx.endpoint_route_source = "permalink_pathinfo"
+        request_markers(ctx, raw_args)
+
+        local host = ngx.var.host or (ctx.req and ctx.req.host) or ""
+        local docroot = ngx.var.document_root or ""
+        local is_wp = (opts and opts.is_wp_root) or wp_paths.is_wp_root
+        local proven = is_wp and is_wp(host, "", docroot)
+        if proven ~= true then
+            ctx.endpoint_policy_state = proven == nil and "lookup_failed" or "not_wp"
+            if proven == nil then ctx.endpoint_policy_degraded = true end
+            return true, false
+        end
+
+        ctx.endpoint_policy_state = "wp"
+        ctx.endpoint_id = endpoint
+        ctx.endpoint_scope = scope_id(docroot)
+        ctx.endpoint_wp_prefix = ""
+        ctx.endpoint_shape = "unexpected_pathinfo"
+        return true, false
+    end
 
     -- Zero parsing/Redis work for the overwhelming majority of requests.
     local pretty_rest = low_uri:find("/wp%-json") ~= nil
@@ -291,6 +364,7 @@ function _M.run(ctx, opts)
 
     ctx.endpoint_candidate = endpoint
     ctx.endpoint_route_source = source
+    request_markers(ctx, raw_args)
 
     local host = ngx.var.host or (ctx.req and ctx.req.host) or ""
     local docroot = ngx.var.document_root or ""

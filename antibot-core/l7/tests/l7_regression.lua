@@ -842,6 +842,123 @@ local ep5 = classify_endpoint({
 }, { _embed = "1" })
 eq(ep5.endpoint_id, "wp_rest_embed_expand", "REST _embed la family rieng")
 
+do
+    local ep = classify_endpoint({
+        uri = "/wp-json/wp/v2/posts/123", args = "context=view",
+        request_method = "GET", host = "example.test",
+        document_root = "/home/u/public_html",
+        http_cookie = "wordpress_logged_in_example=secret",
+    }, { context = "view" })
+    eq(ep.endpoint_id, "wp_rest_posts_item", "GET wp/v2 posts item duoc do rieng")
+    eq(ep.endpoint_query_state, "present", "REST item ghi query presence")
+    eq(ep.endpoint_cookie_state, "present", "REST item ghi cookie presence")
+    eq(ep.endpoint_shape, "ok", "REST item hop le khong bi gan shape xau")
+end
+
+do
+    local ep = classify_endpoint({
+        uri = "/wp-json/wp/v2/tags/456", args = "", request_method = "HEAD",
+        host = "example.test", document_root = "/home/u/public_html",
+    }, {})
+    eq(ep.endpoint_id, "wp_rest_tags_read", "HEAD wp/v2 tags item vao read family")
+    eq(ep.endpoint_query_state, "none", "REST item khong query duoc tach rieng")
+    eq(ep.endpoint_cookie_state, "none", "REST item khong cookie duoc tach rieng")
+end
+
+do
+    local ep = classify_endpoint({
+        uri = "/wp-json/wp/v2/posts/123", args = "_embed=1",
+        request_method = "GET", host = "example.test",
+        document_root = "/home/u/public_html",
+    }, { _embed = "1" })
+    eq(ep.endpoint_id, "wp_rest_embed_expand",
+       "_embed tren posts item van giu family expand uu tien")
+end
+
+do
+    local ep = classify_endpoint({
+        uri = "/wp-json/wp/v2/tags/456", args = "_embed=1",
+        request_method = "GET", host = "example.test",
+        document_root = "/home/u/public_html",
+    }, { _embed = "1" })
+    eq(ep.endpoint_id, "wp_rest_tags_read",
+       "_embed khong duoc doi family de bypass emergency tags")
+end
+
+do
+    local write = classify_endpoint({
+        uri = "/wp-json/wp/v2/posts/123", args = "", request_method = "POST",
+        host = "example.test", document_root = "/home/u/public_html",
+    }, {})
+    eq(write.endpoint_id, nil, "REST posts write khong tron vao read budget")
+    local collection = classify_endpoint({
+        uri = "/wp-json/wp/v2/tags", args = "", request_method = "GET",
+        host = "example.test", document_root = "/home/u/public_html",
+    }, {})
+    eq(collection.endpoint_id, "wp_rest_tags_read",
+       "REST tags collection cung vao emergency read family")
+end
+
+do
+    local pseudo = classify_endpoint({
+        uri = "/vi/bai-viet.html/tel:0901494677", args = "utm=x",
+        request_method = "GET", host = "example.test",
+        document_root = "/home/u/public_html",
+    }, { utm = "x" })
+    eq(pseudo.endpoint_id, "wp_html_pathinfo",
+       ".html/tel:number duoc nhan dien boi generic pathinfo")
+    eq(pseudo.endpoint_shape, "unexpected_pathinfo", "html pathinfo co shape on dinh")
+    eq(pseudo.test_prefix, "",
+       "pseudo suffix chi proof docroot, khong tao prefix tu input attacker")
+    eq(pseudo.endpoint_query_state, "present", "pseudo suffix cung co query marker")
+end
+
+do
+    local pseudo = classify_endpoint({
+        uri = "/bai-viet.html/SMS:+84-901-494-677", args = "",
+        request_method = "GET", host = "example.test",
+        document_root = "/home/u/public_html",
+    }, {})
+    eq(pseudo.endpoint_id, "wp_html_pathinfo", "sms van trung generic pathinfo")
+    eq(pseudo.endpoint_shape, "unexpected_pathinfo", "sms khong can token rieng")
+end
+
+do
+    for _, uri in ipairs({
+        "/post.html/feed/", "/post.html/embed/", "/post.html/trackback/",
+        "/post.html/amp/", "/post.html/tel:not-a-phone",
+        "/post.html/callto:0901494677", "/post.html/ngay-mai-bot-doi-token",
+        "/post.html/a/b/c",
+    }) do
+        local garbage = classify_endpoint({
+            uri = uri, args = "", request_method = "GET",
+            host = "example.test", document_root = "/home/u/public_html",
+        }, {})
+        eq(garbage.endpoint_id, "wp_html_pathinfo",
+           "generic .html/<rac> khong phu thuoc token: " .. uri)
+    end
+end
+
+do
+    for _, uri in ipairs({ "/post.html", "/post.html/" }) do
+        local canonical = classify_endpoint({
+            uri = uri, args = "", request_method = "GET",
+            host = "example.test", document_root = "/home/u/public_html",
+        }, {})
+        eq(canonical.endpoint_id, nil, "khong chan permalink html khong co PATH_INFO: " .. uri)
+    end
+end
+
+do
+    local pseudo = classify_endpoint({
+        uri = "/post.html/tel:0901494677", args = "", request_method = "GET",
+        host = "custom.test", document_root = "/srv/custom",
+    }, {}, false)
+    eq(pseudo.endpoint_id, nil, "custom CMS khong nhan WordPress pseudo policy")
+    eq(pseudo.endpoint_candidate, "wp_html_pathinfo",
+       "html pathinfo candidate van de lai proof telemetry tren non-WP")
+end
+
 local ep6 = classify_endpoint({
     uri = "/wp-json/oembed/1.0/embed", args = "", request_method = "GET",
     host = "example.test", document_root = "/home/u/public_html",
@@ -871,9 +988,26 @@ cfg.endpoint_guard = {
     slot_bucket_seconds = 30, slot_retention_seconds = 180,
     endpoints = {
         wp_oembed_embed = {
+            swarm = { mode = "shadow", scope = "server", window = 10, requests = 4,
+                      networks = 3, hold = 30 },
             rate = { mode = "shadow", short = 2, long = 5 },
             inflight = { mode = "shadow", limit = 2 },
             shape_mode = "shadow", cross_host_mode = "shadow",
+        },
+        wp_html_pathinfo = {
+            rate = { mode = "off" }, inflight = { mode = "off" },
+            swarm = { mode = "shadow", scope = "server", window = 10, requests = 4,
+                      networks = 3, hold = 30 },
+            shape_mode = "enforce", shape_status = 404,
+            cross_host_mode = "off",
+        },
+        wp_rest_tags_read = {
+            emergency = { mode = "enforce", status = 429, retry_after = 300 },
+            swarm = { mode = "shadow", scope = "server", window = 10, requests = 4,
+                      networks = 3, hold = 30 },
+            rate = { mode = "shadow", short = 20, long = 100 },
+            inflight = { mode = "shadow", limit = 4 },
+            shape_mode = "off", cross_host_mode = "off",
         },
     },
 }
@@ -897,6 +1031,151 @@ fake_ngx.header = {}
 fake_ngx.var = { upstream_status = "200", upstream_response_time = "0.250" }
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_stats = Dict.new()
+
+do
+    exits = {}
+    fake_ngx.status = 200
+    fake_ngx.header = {}
+    local malformed = {
+        endpoint_id = "wp_html_pathinfo",
+        endpoint_scope = "tenant_html", endpoint_shape = "unexpected_pathinfo",
+    }
+    local _, did_exit = endpoint_guard.before(malformed)
+    eq(did_exit, true, "pseudo suffix enforce chan o early endpoint gate")
+    eq(exits[#exits], 404, "pseudo suffix tra local 404, khong day vao PHP")
+    eq(malformed.action, "throttled",
+       "malformed route khong bi quy thanh reputation block")
+    eq(fake_ngx.header["Retry-After"], nil,
+       "deterministic 404 khong gui Retry-After vo nghia")
+    eq(malformed.endpoint_admitted, nil,
+       "pseudo suffix bi chan truoc khi lay backend slot")
+end
+
+do
+    -- Four attempts from three /24s all share one bounded route-shape key.
+    -- Each source contributes only 1-2 requests, so a per-IP limiter cannot
+    -- see this campaign; the endpoint swarm meter must.
+    clock = 1420
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local attempts = {
+        { scope = "tenant_a", ip = "192.0.2.1",      open = false },
+        { scope = "tenant_b", ip = "198.51.100.2",   open = false },
+        { scope = "tenant_c", ip = "203.0.113.3",    open = false },
+        { scope = "tenant_d", ip = "192.0.2.99",     open = true  },
+    }
+    local last
+    for _, item in ipairs(attempts) do
+        exits = {}
+        local malformed = {
+            endpoint_id = "wp_html_pathinfo",
+            endpoint_scope = item.scope,
+            endpoint_shape = "unexpected_pathinfo",
+            ip = item.ip,
+        }
+        local _, did_exit = endpoint_guard.before(malformed)
+        eq(did_exit, true, "shape van chan moi rotating-IP attempt")
+        eq(exits[#exits], 404, "swarm telemetry khong doi local 404")
+        eq(malformed.endpoint_swarm_open or false, item.open,
+           "swarm chi mo khi du ca hit va source-network")
+        last = malformed
+    end
+    eq(last.endpoint_swarm_hits, 4, "swarm gom hit xuyen cac IP")
+    eq(last.endpoint_swarm_networks, 3, "hai IP cung /24 chi tinh mot network")
+    eq(last.endpoint_swarm_mode, "shadow",
+       "shape invalid da enforce; swarm chi gan nhan chien dich")
+    eq(last.endpoint_swarm_scope, "server",
+       "swarm gom cung route-shape xuyen nhieu WordPress docroot")
+
+    exits = {}
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local ipv6_same64 = {
+        endpoint_id = "wp_html_pathinfo", endpoint_scope = "tenant_v6",
+        endpoint_shape = "unexpected_pathinfo", ip = "2001:db8:1:2::1",
+    }
+    endpoint_guard.before(ipv6_same64)
+    exits = {}
+    ipv6_same64.ip = "2001:db8:1:2::ffff"
+    endpoint_guard.before(ipv6_same64)
+    eq(ipv6_same64.endpoint_swarm_networks, 1,
+       "IPv6 privacy addresses cung /64 khong nhan diversity")
+    clock = 1400
+end
+
+do
+    -- Prove the generic gate can be promoted independently for a bounded
+    -- endpoint.  Repeating one /24 must never satisfy distributed evidence;
+    -- three networks across four tenants must trip one server-wide budget.
+    local spec = cfg.endpoint_guard.endpoints.wp_oembed_embed
+    spec.swarm.mode = "enforce"
+    spec.swarm.status = 429
+    spec.swarm.retry_after = 45
+    clock = 1430
+    fake_ngx.shared.antibot_cache = Dict.new()
+
+    for i = 1, 8 do
+        exits = {}
+        local one_net = epctx("noisy_tenant_" .. tostring(i),
+            "192.0.2." .. tostring(i))
+        local _, did_exit = endpoint_guard.before(one_net)
+        eq(did_exit, false,
+           "mot /24 on khong duoc suy thanh distributed route swarm")
+    end
+
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local distributed = {
+        { "site_a", "192.0.2.1" },
+        { "site_b", "198.51.100.2" },
+        { "site_c", "203.0.113.3" },
+        { "site_d", "192.0.2.99" },
+    }
+    for i, item in ipairs(distributed) do
+        exits = {}
+        fake_ngx.header = {}
+        local candidate = epctx(item[1], item[2])
+        local _, did_exit = endpoint_guard.before(candidate)
+        eq(did_exit, i == 4,
+           "swarm enforce chi chan khi du hai cong hit+network")
+        if i == 4 then
+            eq(exits[#exits], 429, "route swarm enforce tra local 429")
+            eq(fake_ngx.header["Retry-After"], "45",
+               "route swarm co retry-after rieng")
+            eq(candidate.endpoint_admitted, nil,
+               "route swarm chan truoc backend slot")
+            ok(tostring(candidate.endpoint_cause):find("swarm", 1, true) ~= nil,
+               "route swarm co causal reason rieng")
+        end
+    end
+    spec.swarm.mode = "shadow"
+    spec.swarm.status = nil
+    spec.swarm.retry_after = nil
+    clock = 1400
+end
+
+
+do
+    -- A temporary shutdown must not fail open merely because capacity
+    -- telemetry has lost its shared dict: no counter is needed to say OFF.
+    exits = {}
+    fake_ngx.status = 200
+    fake_ngx.header = {}
+    local saved_cache = fake_ngx.shared.antibot_cache
+    fake_ngx.shared.antibot_cache = nil
+    local tags = {
+        endpoint_id = "wp_rest_tags_read", endpoint_scope = "tenant_tags",
+        endpoint_shape = "ok",
+    }
+    local _, did_exit = endpoint_guard.before(tags)
+    eq(did_exit, true, "emergency tags chan ca khi shared dict mat")
+    eq(exits[#exits], 429, "emergency tags tra local 429")
+    eq(fake_ngx.header["Retry-After"], "300", "emergency dung retry-after rieng")
+    eq(tags.endpoint_cause, "emergency", "emergency co cause khong nhap voi rate")
+    eq(tags.endpoint_admitted, nil, "emergency dung truoc backend slot")
+    fake_ngx.shared.antibot_cache = saved_cache
+end
+
+exits = {}
+fake_ngx.status = 200
+fake_ngx.header = {}
 
 local eg1 = epctx("tenant_a", "192.0.2.1")
 local eg2 = epctx("tenant_a", "198.51.100.2")
