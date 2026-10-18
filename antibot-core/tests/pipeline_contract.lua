@@ -449,18 +449,28 @@ do
     eq(aut.mode, "enforce", "automation_guard enforce")
     eq(tiers.operator, true, "operator tier bi chan")
     local server_limit = ((aut.provisional_limits or {}).server or {})
-    eq(server_limit.short, 20,
-       "server-axis = 20 cost units / 10s de gom tai qua domain")
-    eq(server_limit.long, 60,
-       "server-axis = 60 cost units / 60s de bao ve backend chung")
+    eq(server_limit.short, 45,
+       "server-axis = 45 / 10s: LUOI AN TOAN, khong phai truc rang buoc")
+    eq(server_limit.long, 180,
+       "server-axis = 180 / 60s: ba principal cung dat tran rieng moi phanh")
     -- Truc `fleet` (principal toan may) chua duoc ghim thi ai cung ha duoc
     -- trong im lang — dung lo ma MUT 2 phat hien hom nay (moi test dung config
     -- stub nen gia tri SHIP khong co gi bao ve).
     local fleet_limit = ((aut.provisional_limits or {}).fleet or {})
-    eq(fleet_limit.short, 15,
-       "fleet-axis = 15 cost units / 10s: chan DOT cua mot principal")
-    eq(fleet_limit.long, 60,
-       "fleet-axis = 60 / 60s: OpenAI 1,641 req/s -> ve ~61% toc do keo")
+    eq(fleet_limit.short, 10,
+       "fleet-axis = 10 / 10s: chan DOT cua mot principal")
+    eq(fleet_limit.long, 30,
+       "fleet-axis = 30 / 60s: gptbot (autfl 122,7) vuot 4,1x")
+    -- BAT BIEN: `server` phai LONG HON `fleet`.
+    --
+    -- Day la bai hoc do duoc 18-10: voi server 60 va fleet 60, truc `server`
+    -- vo 3937 luot con `fleet` chi 186 — tuc `server` thanh truc rang buoc, va
+    -- vi no GOP MOI PRINCIPAL nen claudebot bi chan 20 luot du `autfl` cua no
+    -- moi la 12,0/60. Dao nguoc quan he nay la tai tao dung FP do.
+    ok((server_limit.long or 0) > (fleet_limit.long or 0) * 2,
+       "server.long phai > 2x fleet.long — neu khong `server` thanh truc rang buoc")
+    ok((server_limit.short or 0) > (fleet_limit.short or 0) * 2,
+       "server.short phai > 2x fleet.short — cung ly do")
     -- Hai truc phai CUNG ton tai. `server` mot minh thi Anthropic+Perplexity
     -- (20/5.929 request operator) bi chan chi vi OpenAI dang keo; `fleet` mot
     -- minh thi khong co tran nao cho tong tai cua moi principal cong lai.

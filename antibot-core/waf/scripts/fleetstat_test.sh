@@ -60,7 +60,9 @@ OLD=$((N - 86400))
   LINE $T b.test 'auttier=unknown autwould=true autthr=false autdeg=false action=allow'
   LINE $T c.test 'autp=gptbot auttier=operator opnet=openai autwould=false autthr=false autdeg=false action=allow'
   LINE $T c.test 'action=block'
-  LINE $T d.test 'action=allow'
+  # BAY 4: `reason` lap lai class=. Bao cao chi duoc lay class cau truc DAU
+  # dong, neu khong tong phan loai se lon hon tong dong.
+  LINE $T d.test 'reason=score=12.0 class=unknown top=x action=allow'
   # BAY 1a: cot KET THUC bang ten cot khac (`subdomain=`, `xautp=`). Khong co
   # guard `(^|[[:space:]])` thi `field domain` se bat ca `subdomain=...` va
   # dem no nhu mot domain that. Dong nay CO ts= hop le nen no THUC SU vao
@@ -180,6 +182,21 @@ ck "cham nhat 15s" "15.000s" \
    "$(printf '%s' "$out2" | sed -n 's/.*cham nhat=\([0-9.]*s\).*/\1/p')"
 ck ">10s dem 1" "1" \
    "$(printf '%s' "$out2" | sed -n 's/.*>10s=\([0-9]*\) .*/\1/p')"
+
+echo "-- 6b. moi cot chi tinh mot lan moi dong ----------------"
+class_nav=$(printf '%s\n' "$out2" | awk '
+  /--- phan loai request ---/ { inside=1; next }
+  /--- hanh dong cuoi ---/   { inside=0 }
+  inside && / navigation$/   { print $1; exit }
+')
+class_unknown=$(printf '%s\n' "$out2" | awk '
+  /--- phan loai request ---/ { inside=1; next }
+  /--- hanh dong cuoi ---/   { inside=0 }
+  inside && / unknown$/      { print $1; exit }
+')
+# 13 LINE trong log hien tai + 1 LINE trong .gz; dong nhi phan khong co class.
+ck "class cau truc navigation dem dung 14" "14" "${class_nav:-0}"
+ck "class= trong reason khong bi dem lan hai" "0" "${class_unknown:-0}"
 
 echo "── 7. dau vao xau ───────────────────────────────────"
 ck "so phut rac -> rc=2" "2" \

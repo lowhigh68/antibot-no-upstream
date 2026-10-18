@@ -485,7 +485,14 @@ _M.automation = {
         -- 0,0056 req/s — cach nguong fleet 293 lan nen KHONG THE bi chan oan.
         -- Truc `server` thi gop moi principal, nen chung bi chan chi vi OpenAI
         -- dang keo. Hai truc do hai thu khac nhau va deu can.
-        fleet  = { short = 15,  long = 60  },
+        -- SIET 15/60 -> 10/30 (18-10-2026, sau khi do `autthr.sh` tren 28-246).
+        -- Truc nay CO phan biet, nen no la truc nen gong tai:
+        --     gptbot        autfs max  66.4 | autfl max 122.7  -> vuot 4,1x
+        --     oai-searchbot autfs max   6.0 | autfl max  14.0  -> 0,47x
+        --     claudebot     autfs max   6.0 | autfl max  12.0  -> 0,40x
+        -- O muc 10/30, claudebot con cach tran 2,5 lan nen khong the bi chan
+        -- oan, trong khi gptbot bi siet manh hon truoc.
+        fleet  = { short = 10,  long = 30  },
 
         -- HA 300/1200 -> 20/60 (18-10-2026), sau so lieu production 60 phut:
         -- 5.516 automation request da vao upstream, trung binh 6,905 giay
@@ -501,7 +508,31 @@ _M.automation = {
         -- qua meter nay; verified/unknown automation chi gop ap luc va tu no
         -- van khong bi throttle. Counter nam trong ngx.shared.antibot_cache,
         -- chung giua worker/domain tren MOT may, khong phai Redis/fleet-global.
-        server = { short = 20, long = 60 },
+        -- NOI 20/60 -> 45/180 (18-10-2026). Day la sua mot FP DA DO DUOC, khong
+        -- phai noi long cho de chiu.
+        --
+        -- `autthr.sh` tren 28-246 sau moc deploy:
+        --     server:long  2459 luot vuot  ┐ 3937 tong — vo GAN NHU LIEN TUC
+        --     server:short 1478 luot vuot  ┘
+        --     fleet:short    95 luot       ┐  186 tong
+        --     fleet:long     91 luot       ┘
+        -- Truc `server` vo gap 21,2 lan truc `fleet`, dung nhu phep tinh truoc
+        -- deploy da canh bao (luu luong automation 2,86 don vi/s so voi nguong
+        -- 1,000 don vi/s = 2,9 lan).
+        --
+        -- FP that, doc tu muc 3 cua autthr.sh:
+        --     claudebot bi chan 20 luot — TAT CA qua `server:*`, 0 qua `fleet:*`
+        --     trong khi `autfl max` cua no chi la 12,0 tren tran 60 (0,20x).
+        -- Tuc Anthropic bi 429 CHI VI OpenAI dang keo. Do la dieu truc `server`
+        -- khong the tranh: no gop MOI principal vao mot counter.
+        -- (6 luot `googlebot` bi chan la tier `contradicted` =
+        -- `registered_evidence_mismatch`, tuc Googlebot GIA — chan dung.)
+        --
+        -- 45/180 = gap 3 lan `fleet` (10/30), nghia la "BA principal lon cung
+        -- dat tran rieng thi moi phanh toan may". Do moi la luoi an toan.
+        -- Mot may chi co vai principal lon (gptbot, oai-searchbot, claudebot,
+        -- bingbot), nen 3x la nguong co that chu khong phai ma chet.
+        server = { short = 45, long = 180 },
     },
 }
 

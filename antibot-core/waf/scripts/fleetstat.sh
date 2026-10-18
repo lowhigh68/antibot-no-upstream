@@ -80,7 +80,22 @@ if [ "$TOTAL" -eq 0 ]; then
     exit 0
 fi
 
-field() { grep -aoE "(^|[[:space:]])$1=[^[:space:]]+" "$W" | sed "s/.*$1=//"; }
+# Moi cot cau truc chi duoc doc MOT LAN tren mot dong. `reason` co the chua
+# lai `class=` (vi du "score=... class=navigation"), nen grep -o tat ca token
+# se lam tong class/action lon hon tong so dong. Cot cau truc cua logger nam
+# truoc reason; lay occurrence dau tien vua dung schema vua khong dem kep.
+field() {
+    awk -v wanted="$1" '
+    {
+        prefix = wanted "="
+        for (i = 1; i <= NF; i++) {
+            if (index($i, prefix) == 1) {
+                print substr($i, length(prefix) + 1)
+                break
+            }
+        }
+    }' "$W"
+}
 
 echo
 echo "=============================================================="
@@ -197,7 +212,8 @@ CACH DOC
 =============================================================
 Muc 1 "TAI TRAI DEU" + muc 2 mot principal tren NHIEU domain
   -> han muc theo (host,principal) bi nhan len bang so domain.
-     Cho siet la truc `server` (toan may), khong phai truc principal.
+     Truc `server` (toan may) la cong gom tai; sau khi ha nguong, xem
+     `autbreach=server:short|server:long` de xac nhan cong nay dang shed.
 Muc 3 autwould>0 nhung autthr=0
   -> tang do khong nam trong `enforce_tiers`, hoac meter degraded.
 Muc 4 `autuptime` cao ma `class` phan lon la navigation
