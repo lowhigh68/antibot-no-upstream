@@ -532,7 +532,34 @@ _M.automation = {
         -- dat tran rieng thi moi phanh toan may". Do moi la luoi an toan.
         -- Mot may chi co vai principal lon (gptbot, oai-searchbot, claudebot,
         -- bingbot), nen 3x la nguong co that chu khong phai ma chet.
-        server = { short = 45, long = 180 },
+        -- GO TINH TOAN 18-10-2026. Khong dat `server` nua -> `consider()` tra
+        -- ve ngay o dong `if not limits then return top end`, nen truc nay chi
+        -- con DEM (`autss=`/`autsl=` van ghi log) ma khong rang buoc ai.
+        --
+        -- VI SAO GO, do duoc qua hai vong tren 28-246:
+        --   vong 1, server 20/60 : server:* vuot 3937 | fleet:* 186
+        --   vong 2, server 45/180: server:* vuot 4781 | fleet:* 667
+        -- Noi tran len GAP BA ma so luot vuot lai TANG. Doc code ra ly do:
+        -- `pair()` cong counter o dong 187-205 CON `evaluate()` chay o dong
+        -- 221, nen mot request da bi 429 VAN cong du chi phi vao `server`.
+        -- Truc nay do "tong request DEN", khong do "tai thuc vao backend", nen
+        -- khong co tran nao thang duoc mot principal dang keo manh.
+        --
+        -- Va no khong phan biet duoc. Toan bo 22 luot FP vong 2 di qua no:
+        --   claudebot      9 luot | autfl max  6,0 / tran 30 = 0,20x
+        --   oai-searchbot 10 luot | autfl max 17,0 / tran 30 = 0,57x
+        --   chatgpt-user   1 luot | autfl max  8,0 / tran 30 = 0,27x
+        --   perplexitybot  2 luot | (14 luot khac qua principal: DUNG)
+        -- Khong con nao tu cham tran rieng; chung bi chan vi OpenAI dang keo.
+        --
+        -- Gia phai tra: mat 856 luot chan cua gptbot. Nhung gptbot VAN bi chan
+        -- 608 luot qua `fleet` va cac request do se day `fleet` len cao hon,
+        -- nen phan lon se bi chan lai boi truc CO phan biet.
+        --
+        -- Mo lai chi khi do duoc mot ca NHIEU principal cung keo manh ma
+        -- `fleet` khong giu duoc — luc do sua `pair()` de khong cong vao
+        -- `server` sau khi da chan, roi moi dat tran.
+        -- server = { short = 45, long = 180 },
     },
 }
 

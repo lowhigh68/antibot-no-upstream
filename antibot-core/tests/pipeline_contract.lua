@@ -448,11 +448,15 @@ do
     local tiers = aut.enforce_tiers or {}
     eq(aut.mode, "enforce", "automation_guard enforce")
     eq(tiers.operator, true, "operator tier bi chan")
-    local server_limit = ((aut.provisional_limits or {}).server or {})
-    eq(server_limit.short, 45,
-       "server-axis = 45 / 10s: LUOI AN TOAN, khong phai truc rang buoc")
-    eq(server_limit.long, 180,
-       "server-axis = 180 / 60s: ba principal cung dat tran rieng moi phanh")
+    -- `server` DA GO TINH TOAN 18-10. Khong dat han muc -> `consider()` tra ve
+    -- ngay, truc chi con dem. Hai vong do tren 28-246 cho thay no khong the
+    -- lam truc rang buoc: noi tran gap ba (20/60 -> 45/180) ma so luot vuot
+    -- TANG (3937 -> 4781), vi `pair()` cong counter TRUOC `evaluate()` nen
+    -- request da bi 429 van cong du chi phi. Va toan bo 22 luot FP vong 2 di
+    -- qua truc nay.
+    local server_limit = (aut.provisional_limits or {}).server
+    eq(server_limit, nil,
+       "server-axis KHONG dat han muc — go tinh toan, giu telemetry")
     -- Truc `fleet` (principal toan may) chua duoc ghim thi ai cung ha duoc
     -- trong im lang — dung lo ma MUT 2 phat hien hom nay (moi test dung config
     -- stub nen gia tri SHIP khong co gi bao ve).
@@ -461,21 +465,27 @@ do
        "fleet-axis = 10 / 10s: chan DOT cua mot principal")
     eq(fleet_limit.long, 30,
        "fleet-axis = 30 / 60s: gptbot (autfl 122,7) vuot 4,1x")
-    -- BAT BIEN: `server` phai LONG HON `fleet`.
+    -- BAT BIEN: neu ai dat lai `server`, no PHAI long hon `fleet` nhieu.
     --
-    -- Day la bai hoc do duoc 18-10: voi server 60 va fleet 60, truc `server`
-    -- vo 3937 luot con `fleet` chi 186 — tuc `server` thanh truc rang buoc, va
-    -- vi no GOP MOI PRINCIPAL nen claudebot bi chan 20 luot du `autfl` cua no
-    -- moi la 12,0/60. Dao nguoc quan he nay la tai tao dung FP do.
-    ok((server_limit.long or 0) > (fleet_limit.long or 0) * 2,
-       "server.long phai > 2x fleet.long — neu khong `server` thanh truc rang buoc")
-    ok((server_limit.short or 0) > (fleet_limit.short or 0) * 2,
-       "server.short phai > 2x fleet.short — cung ly do")
-    -- Hai truc phai CUNG ton tai. `server` mot minh thi Anthropic+Perplexity
-    -- (20/5.929 request operator) bi chan chi vi OpenAI dang keo; `fleet` mot
-    -- minh thi khong co tran nao cho tong tai cua moi principal cong lai.
-    ok(next(server_limit) ~= nil and next(fleet_limit) ~= nil,
-       "giu CA HAI truc: fleet phan biet principal, server dat tran toan may")
+    -- Bat bien nay giu lai du `server` dang nil, vi do la cai bay se quay lai:
+    -- voi server 60 / fleet 60 thi `server` vo 3937 luot con `fleet` 186, va
+    -- vi `server` GOP MOI PRINCIPAL nen claudebot bi chan 20 luot du `autfl`
+    -- cua no moi la 12,0/60. Dat lai `server` chat hon `fleet` la tai tao
+    -- dung FP do.
+    if server_limit ~= nil then
+        ok((server_limit.long or 0) > (fleet_limit.long or 0) * 2,
+           "server.long phai > 2x fleet.long neu dat lai")
+        ok((server_limit.short or 0) > (fleet_limit.short or 0) * 2,
+           "server.short phai > 2x fleet.short neu dat lai")
+    end
+    -- Truc `fleet` la truc rang buoc duy nhat o cap toan may bay gio, nen no
+    -- KHONG duoc phep nil — go ca hai thi khong con gi chan phep nhan mau so.
+    ok(next(fleet_limit) ~= nil,
+       "fleet PHAI co han muc — no la truc toan may duy nhat con tinh toan")
+    -- Ban truoc cua khoi nay doi "giu CA HAI truc". So lieu vong 2 tren
+    -- 28-246 da BAC BO dieu do: `server` khong the lam truc rang buoc (noi
+    -- tran gap ba ma luot vuot tang) va toan bo 22 luot FP di qua no. Bat bien
+    -- dung la truc CO PHAN BIET phai ton tai, con tran gop thi khong.
     eq(tiers.unknown, nil, "unknown KHONG bi chan — rao chan FP chinh")
     eq(tiers.verified, nil, "verified (Googlebot/Bingbot) KHONG bi chan")
 end

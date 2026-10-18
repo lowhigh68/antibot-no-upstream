@@ -664,5 +664,65 @@ ok(tostring(victim.action_reason):find("server", 1, true) ~= nil,
 cfg_stub.provisional_limits.fleet = nil
 cfg_stub.provisional_limits.server = { short = 100, long = 200 }
 
+-- 12. COUNTER DUOC CONG TRUOC KHI QUYET DINH CHAN.
+--
+-- Day la co che giai thich mot quan sat tuong nhu vo ly tren 28-246: noi tran
+-- `server` gap BA (20/60 -> 45/180) ma so luot vuot lai TANG (3937 -> 4781).
+-- `pair()` cong counter o `run()` CON `evaluate()` chay sau, nen mot request
+-- da bi 429 VAN cong du chi phi vao moi truc. Truc `server` do do do "tong
+-- request DEN", khong do "tai thuc vao backend".
+--
+-- Ghim bang test vi no la ly do `server` khong the lam truc rang buoc, va
+-- neu ai doi thu tu nay thi ket luan tren se khong con dung.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.tiers.operator = { short = 1, long = 100 }
+cfg_stub.provisional_limits.ip = { short = 100, long = 200 }
+cfg_stub.provisional_limits.host = { short = 100, long = 200 }
+cfg_stub.provisional_limits.fleet = { short = 100, long = 200 }
+cfg_stub.provisional_limits.server = { short = 100, long = 200 }
+
+local c1 = op_sample("cnt1.test")
+c1.ip, c1.automation_principal = "192.0.2.51", "gptbot"
+local _, cx1 = guard.run(c1)
+eq(cx1, true, "tran principal = 1 nen request dau da bi chan")
+eq(c1.automation_server_short, 1, "request BI CHAN van cong 1 vao server")
+
+local c2 = op_sample("cnt2.test")
+c2.ip, c2.automation_principal = "192.0.2.52", "gptbot"
+local _, cx2 = guard.run(c2)
+eq(cx2, true, "request thu hai cung bi chan")
+eq(c2.automation_server_short, 2,
+   "counter server LEN 2 du CA HAI request deu bi 429 — day la co che")
+eq(c2.automation_fleet_short, 2,
+   "fleet cung vay: chan khong lam giam counter")
+
+-- 13. `server` khong dat han muc -> truc im lang nhung VAN DEM.
+-- Do la hinh dang dang ship: go tinh toan, giu telemetry.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+cfg_stub.provisional_limits.tiers.operator = { short = 100, long = 200 }
+cfg_stub.provisional_limits.fleet = { short = 100, long = 200 }
+cfg_stub.provisional_limits.server = nil
+
+local s1 = op_sample("sv1.test")
+s1.ip, s1.automation_principal = "192.0.2.61", "gptbot"
+guard.run(s1)
+local s2 = op_sample("sv2.test")
+s2.ip, s2.automation_principal = "192.0.2.62", "claudebot"
+local _, sx2 = guard.run(s2)
+eq(s2.automation_server_short, 2,
+   "khong dat han muc nhung VAN DEM — telemetry `autss=` con nguyen")
+eq(sx2, false, "va khong con chan ai qua truc server")
+eq(s2.automation_would_throttle, false,
+   "truc im lang khong lam `autwould` bao dong gia")
+eq(#exits, 0, "khong co ngx.exit nao")
+
+-- Khoi phuc cho lan chay lai.
+cfg_stub.provisional_limits.fleet = nil
+cfg_stub.provisional_limits.server = { short = 100, long = 200 }
+
 io.write(string.format("automation_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end
