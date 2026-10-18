@@ -1037,6 +1037,11 @@ cfg.automation_concurrency = {
     status = 429, retry_after = 10,
     slot_bucket_seconds = 30, slot_retention_seconds = 180,
     principals = { gptbot = { mode = "shadow", limit = 2 } },
+    tiers = {
+        cloud_automation = {
+            mode = "enforce", limit = 2, source_limit = 2,
+        },
+    },
 }
 package.loaded["antibot.l7.operator_concurrency"] = nil
 local operator_concurrency = require "antibot.l7.operator_concurrency"
@@ -1127,6 +1132,62 @@ eq(spoof_net.automation_concurrency_admitted, nil,
    "mang nguon khong xac thuc bi loai du tier=operator")
 eq(spoof_net.automation_concurrency_principal, nil,
    "va khong cap phat khoa principal nao")
+
+-- Cloud fallback is evidence of automation, not vendor identity. It therefore
+-- uses TWO axes: principal catches IP rotation; source catches one cloud IP
+-- rotating copied GrokBot/DeepSeekBot identities as seen in production.
+local function cloudctx(principal, ip)
+    local c = opctx(principal, "cloud.test", ip, "/")
+    c.automation_tier = "cloud_automation"
+    c.operator_network_verified = false
+    c.automation_proof = "contact_cloud_ptr"
+    c.automation_cloud_claimed = true
+    return c
+end
+
+clock = 1650
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local cg = cloudctx("grokbot", "198.51.100.20")
+local cd1 = cloudctx("deepseekbot", "198.51.100.20")
+local cd2 = cloudctx("deepseekbot", "198.51.100.20")
+operator_concurrency.admit(cg)
+operator_concurrency.admit(cd1)
+local _, cloud_source_exit = operator_concurrency.admit(cd2)
+eq(cloud_source_exit, true,
+   "mot cloud IP doi Grok/DeepSeek van bi source concurrency")
+eq(cd2.automation_concurrency_axis, "source",
+   "telemetry chi dung truc source da vo")
+eq(cd2.automation_concurrency_inflight, 2,
+   "principal DeepSeek rieng van chua vuot tran")
+eq(cd2.automation_concurrency_source_inflight, 3,
+   "nhung source chung da la request thu ba")
+eq(cd2.automation_concurrency_source_remaining, 2,
+   "reject rollback source slot cua chinh request")
+operator_concurrency.after(cg)
+operator_concurrency.after(cd1)
+
+clock = 1660
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local gp1 = cloudctx("grokbot", "198.51.100.31")
+local gp2 = cloudctx("grokbot", "198.51.100.32")
+local gp3 = cloudctx("grokbot", "198.51.100.33")
+operator_concurrency.admit(gp1)
+operator_concurrency.admit(gp2)
+local _, cloud_principal_exit = operator_concurrency.admit(gp3)
+eq(cloud_principal_exit, true,
+   "cloud principal xoay IP van bi pool toan may")
+eq(gp3.automation_concurrency_axis, "principal",
+   "principal axis bat IP rotation")
+operator_concurrency.after(gp1)
+operator_concurrency.after(gp2)
+
+local cloud_claim_only = cloudctx("grokbot", "198.51.100.40")
+cloud_claim_only.automation_proof = "claim_only"
+operator_concurrency.admit(cloud_claim_only)
+eq(cloud_claim_only.automation_concurrency_admitted, nil,
+   "UA cloud tu khai khong co PTR proof khong cap slot")
 
 -- Enforce is per-principal.  Exactly N requests live; N+1 is atomically rolled
 -- back and receives a local 429 without changing reputation/ban state.

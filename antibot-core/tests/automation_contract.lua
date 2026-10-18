@@ -24,21 +24,37 @@ package.loaded["antibot.detection.bot.ua_check"] = {
             ctx.good_bot_suffixes = {}
             ctx.good_bot_registered = ctx.fixture_registered == true
             ctx.bot_score = ctx.good_bot_registered and 0 or 0.4
+            if ctx.fixture_cloud or ctx.fixture_strong then
+                ctx.bot_ua_compliant = true
+                ctx.bot_contact_host = "x.ai"
+                ctx.automation_claimed = true
+                ctx.automation_principal = "grokbot"
+            end
         end
     end,
 }
 package.loaded["antibot.detection.bot.dns_reverse"] = {
-    run = function(ctx) ctx.dns_rev_valid = false; return true, false end,
+    run = function(ctx)
+        ctx.dns_rev_valid = false
+        if ctx.fixture_cloud then
+            ctx.dns_rev = "vm-1.googleusercontent.com"
+        elseif ctx.fixture_strong then
+            ctx.dns_rev = "crawl.x.ai"
+        end
+        return true, false
+    end,
 }
 package.loaded["antibot.detection.bot.dns_forward"] = {
     run = function() return true, false end,
 }
 package.loaded["antibot.detection.bot.bot_score"] = { run = function() end }
 package.loaded["antibot.detection.bot.cloud_suffixes"] = {
-    CLOUD_PTR_SUFFIXES = {},
+    CLOUD_PTR_SUFFIXES = { "googleusercontent.com" },
 }
 package.loaded["antibot.detection.bot.asn_policy"] = {}
-package.loaded["antibot.core.redis_pool"] = {}
+package.loaded["antibot.core.redis_pool"] = {
+    safe_set = function() return true end,
+}
 
 ngx = { INFO = 1, ERR = 3, log = function() end }
 local bot = assert(loadfile(src .. "detection/bot/init.lua"))()
@@ -101,6 +117,41 @@ eq(integrated_known.automation_tier, "contradicted",
    "full bot lane keeps registered NXDOMAIN contradicted")
 eq(integrated_known.bot_ua, "fake_good_bot",
    "registered mismatch still reaches hard fake verdict")
+
+-- Generic cloud PTR is machine provenance only. It must not preserve the old
+-- S2.5 zero-score/skip/cap trust, because the contact domain is copyable.
+local integrated_cloud = {
+    fixture_claim = true, fixture_cloud = true,
+    fixture_registered = false, ip = "203.0.113.22",
+}
+bot.run(integrated_cloud)
+eq(integrated_cloud.automation_tier, "cloud_automation",
+   "generic cloud PTR enters separate automation tier")
+eq(integrated_cloud.automation_proof, "contact_cloud_ptr",
+   "cloud tier records exact weak proof")
+eq(integrated_cloud.bot_identity_tier, "CLOUD",
+   "cloud claim is not labelled S2.5")
+eq(integrated_cloud.bot_score, 0.4,
+   "cloud claim keeps neutral automation score floor")
+eq(integrated_cloud.skip_layers, nil,
+   "cloud claim does not skip cluster/graph")
+eq(integrated_cloud.action_reason, "contact_cloud_claimed",
+   "reason no longer says vendor identity was attested")
+
+-- Domain-bound PTR remains the stronger, existing S2.5 path.
+local integrated_strong = {
+    fixture_claim = true, fixture_strong = true,
+    fixture_registered = false, ip = "203.0.113.23",
+}
+bot.run(integrated_strong)
+eq(integrated_strong.automation_tier, "attested",
+   "contact-domain PTR still earns attested tier")
+eq(integrated_strong.bot_identity_tier, "S2.5",
+   "domain-bound evidence retains S2.5")
+eq(integrated_strong.bot_score, 0.0,
+   "strong contact proof retains zero bot score")
+eq(integrated_strong.skip_layers.cluster, true,
+   "strong contact proof still skips cluster")
 
 package.loaded["antibot.core.redis_pool"] = {
     safe_get = function() return nil end,
@@ -823,6 +874,54 @@ ngx.shared.antibot_cache = saved_dict
 
 -- Khoi phuc cho lan chay lai.
 cfg_stub.suspended_principals = nil
+
+-- 15. Cloud proof arrives only in full detection, after the early request was
+-- counted as unknown. Late enforcement must reuse that count, not increment a
+-- second time, and must rebuild (not duplicate) the breached-axis list.
+dict = Dict.new()
+ngx.shared.antibot_cache = dict
+exits = {}
+ngx.status = 200
+cfg_stub.mode = "enforce"
+cfg_stub.enforce_tiers = { cloud_automation = true }
+cfg_stub.provisional_limits.tiers.unknown = { short = 100, long = 200 }
+cfg_stub.provisional_limits.tiers.cloud_automation = { short = 2, long = 20 }
+cfg_stub.provisional_limits.ip = { short = 100, long = 200 }
+cfg_stub.provisional_limits.host = { short = 100, long = 200 }
+cfg_stub.provisional_limits.fleet = { short = 100, long = 200 }
+cfg_stub.provisional_limits.server = nil
+
+local cloud1 = sample("cloud.test")
+cloud1.req_class = "navigation"
+guard.run(cloud1)
+cloud1.automation_tier = "cloud_automation"
+local _, cloud1_exit = guard.late_enforce(cloud1)
+eq(cloud1_exit, false, "cloud request dau duoi rate gate")
+eq(cloud1.automation_principal_short, 1,
+   "late enforcement khong cong counter lan hai")
+
+local cloud2 = sample("cloud.test")
+cloud2.req_class = "navigation"
+guard.run(cloud2)
+eq(cloud2.automation_principal_short, 2,
+   "early meter cong request thu hai dung mot lan")
+cloud2.automation_tier = "cloud_automation"
+local _, cloud2_exit = guard.late_enforce(cloud2)
+eq(cloud2_exit, true, "cloud automation cham tran bi pace muon")
+eq(exits[#exits], 429, "cloud late rate gate tra 429")
+eq(cloud2.automation_principal_short, 2,
+   "late reject van khong nhan doi counter")
+eq(#(cloud2.automation_breached or {}), 1,
+   "late evaluate khong lap autbreach")
+ok(tostring(cloud2.action_reason):find(
+    "automation_guard:cloud_automation:principal", 1, true) ~= nil,
+   "late throttle ghi dung tier cloud")
+
+local unknown_late = sample("unknown-late.test")
+guard.run(unknown_late)
+local _, unknown_late_exit = guard.late_enforce(unknown_late)
+eq(unknown_late_exit, false,
+   "claim unknown khong duoc late enforcement mo rong")
 
 cfg_stub.mode = "enforce"
 cfg_stub.suspended_principals = nil

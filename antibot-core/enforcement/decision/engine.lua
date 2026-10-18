@@ -454,7 +454,8 @@ function _M.run(ctx)
     end
 
     -- Trần tốc độ cho bot đã attest S2.5 (contact_ptr_match / contact_org_match
-    -- / contact_cloud_attested / analyzer_attested).
+    -- / analyzer_attested). Generic cloud contact claims are deliberately no
+    -- longer S2.5; the late automation governor handles that weaker tier.
     --
     -- Trước đây trần CHỈ nằm trong nhánh good_bot_verified phía trên, nên nhóm
     -- S2.5 hoàn toàn KHÔNG có trần nào. Đo 2026-08-09 trên cloud28-246:

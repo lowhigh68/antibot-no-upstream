@@ -229,6 +229,11 @@ end
 -- Keeping this separate from STEPS_ADMISSION is intentional: a request that
 -- WAF/challenge/ban terminates must never look like backend concurrency.
 local function admit_dynamic(ctx)
+    -- Generic cloud PTR proof is learned only during full bot detection. The
+    -- early automation pass has already counted the request; this late pass
+    -- only applies the now-correct tier policy and never increments again.
+    local _, automation_exit = automation_guard.late_enforce(ctx)
+    if automation_exit == true then return true end
     local _, endpoint_exit = endpoint_guard.admit(ctx)
     if endpoint_exit == true then return true end
     -- This is the principal-wide backend slot, not another rate counter.

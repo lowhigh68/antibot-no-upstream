@@ -432,7 +432,13 @@ _M.automation = {
     },
     suspend_status = 403,
 
-    -- Chi hai tang nay bi chan. `unknown` CO Y de ngoai: do la noi mot khach
+    -- Chỉ các tầng có bằng chứng máy đủ mạnh bên dưới mới bị pace. `unknown`
+    -- CỐ Ý để ngoài: đó là nơi một khách thật bị phân loại nhầm thành automation
+    -- sẽ rơi vào. `cloud_automation` không phải vendor trust; nó chỉ chứng minh
+    -- UA crawler có contact hợp lệ đang chạy từ hạ tầng cloud, đủ để giới hạn
+    -- tài nguyên nhưng không đủ để whitelist/cap quyết định.
+    --
+    -- `unknown` CO Y de ngoai: do la noi mot khach
     -- that bi phan loai nham thanh automation se roi vao, va uu tien so mot
     -- cua he thong nay la khong chan nham. `verified` (S3/S4 good bot) cung
     -- de ngoai: Googlebot/Bingbot da qua DNS hai chieu va viec ha xep hang
@@ -444,6 +450,10 @@ _M.automation = {
     -- `contradicted` = da co bang chung mau thuan voi loi tu khai.
     enforce_tiers = {
         operator     = true,
+        -- Compliant contact UA + generic cloud PTR proves machine automation,
+        -- not ownership of the claimed vendor. It is safe to pace but receives
+        -- none of the S2.5 trust/cap privileges.
+        cloud_automation = true,
         contradicted = true,
     },
 
@@ -483,6 +493,7 @@ _M.automation = {
             -- du de index het mot site vai nghin trang trong vai gio, nhung
             -- khong du de lam can mot pool `max_children=10`.
             operator     = { short = 8,  long = 30  },
+            cloud_automation = { short = 8, long = 30 },
             attested     = { short = 20, long = 60  },
             unknown      = { short = 12, long = 40  },
             contradicted = { short = 8,  long = 20  },
@@ -583,7 +594,7 @@ _M.automation = {
     },
 }
 
--- Whole-server, per-principal concurrency for proven automation operators.
+-- Whole-server concurrency for evidence-backed automation.
 --
 -- This is deliberately separate from the fixed-window governor above:
 -- `fleet=10/30` controls arrival bursts, while this gate controls how much
@@ -599,7 +610,7 @@ _M.automation = {
 -- `principals.gptbot.mode` to `enforce` in the same deployment.
 _M.automation_concurrency = {
     enabled = true,
-    mode = "shadow",             -- default for every proven operator
+    mode = "shadow",             -- default; tier/principal may opt into enforce
     limit = 3,
     status = 429,
     retry_after = 10,
@@ -615,6 +626,18 @@ _M.automation_concurrency = {
     -- change that also affects Claude/Perplexity/OAI-SearchBot.
     principals = {
         gptbot = { mode = "shadow", limit = 3 },
+    },
+
+    -- Unlike published-feed operators, a cloud claim is not bound to its
+    -- principal: production saw one IP alternate GrokBot and DeepSeekBot.
+    -- Enforce both a whole-server principal pool and a source-IP pool so a UA
+    -- swap cannot multiply capacity. Human traffic cannot enter this tier.
+    tiers = {
+        cloud_automation = {
+            mode = "enforce",
+            limit = 3,
+            source_limit = 3,
+        },
     },
 }
 

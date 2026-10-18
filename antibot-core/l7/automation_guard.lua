@@ -6,8 +6,9 @@
 -- It uses the existing shared dict only: no Redis RTT and no nginx.conf change.
 --
 -- `unknown` and verified automation remain observation-only. The separately
--- proven operator/contradicted tiers may be paced when config selects enforce;
--- `autwould` stays the measurement and `autthr` records an actual 429.
+-- evidence-backed operator/cloud_automation/contradicted tiers may be paced
+-- when config selects enforce; `autwould` stays the measurement and `autthr`
+-- records an actual 429.
 
 local _M = {}
 
@@ -141,6 +142,10 @@ function _M.evaluate(ctx)
     local top = { ratio = 0, axis = "-" }
 
     ctx.automation_would_throttle = false
+    -- evaluate() may run once at early admission and again after full evidence
+    -- promotes an unknown claim to cloud_automation. Rebuild this list instead
+    -- of duplicating the same axes in `autbreach=` on the second pass.
+    ctx.automation_breached = nil
     top = consider(ctx, "principal", ctx.automation_principal_short,
         ctx.automation_principal_long, tiers[tier] or tiers.unknown, top)
     top = consider(ctx, "ip", ctx.automation_ip_short,
@@ -180,6 +185,17 @@ function _M.evaluate(ctx)
 
     local axis = (ctx.automation_breached or {})[1] or top.axis
     return false, throttle(ctx, c, axis)
+end
+
+-- Cloud identity evidence is available only in full bot detection, after the
+-- early meter has already counted this request as `unknown`. Re-evaluate the
+-- SAME counters at late admission; never increment them twice. Other tiers
+-- keep their original phase and cost.
+function _M.late_enforce(ctx)
+    if not ctx or ctx.automation_tier ~= "cloud_automation" then
+        return true, false
+    end
+    return _M.evaluate(ctx)
 end
 
 function _M.run(ctx)

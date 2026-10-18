@@ -82,7 +82,14 @@ package.loaded["antibot.core.fingerprint"] = layer(
     end)
 package.loaded["antibot.transport"] = layer("transport", "run")
 package.loaded["antibot.l7"] = layer("l7", "run")
-package.loaded["antibot.detection"] = layer("detection", "run")
+package.loaded["antibot.detection"] = layer("detection", "run", function(ctx)
+    if scenario.cloud_automation then
+        ctx.automation_tier = "cloud_automation"
+        ctx.automation_principal = scenario.principal or "grokbot"
+        ctx.automation_proof = "contact_cloud_ptr"
+        ctx.automation_cloud_claimed = true
+    end
+end)
 package.loaded["antibot.intelligence"] = layer("intelligence", "run")
 package.loaded["antibot.enforcement"] = layer("enforcement", "run", function(ctx)
     if scenario.exit_at == "enforcement" then
@@ -103,12 +110,22 @@ package.loaded["antibot.l7.automation_guard"] = {
         end
         return true, exit_for("automation.guard")
     end,
+    late_enforce = function()
+        event("automation.late")
+        return true, exit_for("automation.late")
+    end,
 }
 package.loaded["antibot.l7.operator_concurrency"] = {
     admit = function(ctx)
         event("operator.admit")
-        if ngx.is_subrequest or ctx.automation_tier ~= "operator"
-           or ctx.operator_network_verified ~= true then return true, false end
+        local operator_ok = ctx.automation_tier == "operator"
+            and ctx.operator_network_verified == true
+        local cloud_ok = ctx.automation_tier == "cloud_automation"
+            and ctx.automation_proof == "contact_cloud_ptr"
+            and ctx.automation_cloud_claimed == true
+        if ngx.is_subrequest or not (operator_ok or cloud_ok) then
+            return true, false
+        end
         if not ctx.automation_concurrency_admitted then
             ctx.automation_concurrency_admitted = true
             counts.operator_admitted = counts.operator_admitted + 1
@@ -334,6 +351,8 @@ before("endpoint.before", "waf.pre",
 before("waf.pre", "access", "WAF chay truoc trust/access")
 before("access", "detection", "access chay truoc detection")
 before("enforcement", "surge.admit", "chi admit sau enforcement")
+before("automation.late", "endpoint.admit",
+    "cloud tier duoc pace muon truoc moi backend slot")
 before("endpoint.admit", "surge.admit",
     "endpoint atomic gate chay truoc global surge accounting")
 before("endpoint.admit", "operator.admit",
@@ -371,6 +390,24 @@ reset({ operator = true, subrequest = true })
 root.run()
 eq(counts.operator_admitted, 0,
    "operator subrequest khong bi dem lap")
+
+reset({ cloud_automation = true })
+root.run()
+eq(counts.operator_admitted, 1,
+   "cloud automation co PTR proof nhan concurrency slot")
+before("detection", "automation.late",
+   "cloud proof duoc tao truoc late enforcement")
+before("automation.late", "operator.admit",
+   "cloud rate gate chay truoc cloud concurrency")
+
+reset({ cloud_automation = true, exit_at = "automation.late" })
+root.run()
+eq(counts.endpoint_admitted, 0,
+   "cloud late-rate reject khong tieu endpoint slot")
+eq(counts.operator_admitted, 0,
+   "cloud late-rate reject khong tieu concurrency slot")
+eq(counts.admitted, 0,
+   "cloud late-rate reject khong toi surge/backend")
 
 reset({ endpoint = "wp_oembed_embed" })
 root.run()
@@ -517,6 +554,8 @@ do
     local tiers = aut.enforce_tiers or {}
     eq(aut.mode, "enforce", "automation_guard enforce")
     eq(tiers.operator, true, "operator tier bi chan")
+    eq(tiers.cloud_automation, true,
+       "cloud automation co bang chung duoc pace")
     local suspended = aut.suspended_principals or {}
     eq(suspended.gptbot, true,
        "GPTBot operator bi tam dung de tach nguyen nhan tai production")
@@ -535,6 +574,13 @@ do
        "GPTBot concurrency chua enforce khi suspension con bat")
     eq(((conc.principals or {}).gptbot or {}).limit, 3,
        "GPTBot dung mot pool ba slot tren toan may")
+    local cloud_conc = (conc.tiers or {}).cloud_automation or {}
+    eq(cloud_conc.mode, "enforce",
+       "cloud automation concurrency enforce tu production evidence")
+    eq(cloud_conc.limit, 3,
+       "cloud principal co ba slot toan may")
+    eq(cloud_conc.source_limit, 3,
+       "cloud source co ba slot, khong ne bang doi principal")
 
     -- Rollout bat dau o shadow nen telemetry la dau ra duy nhat de quyet dinh
     -- enforce.  Ghim schema de mot lan refactor logger khong bien module thanh
@@ -543,8 +589,9 @@ do
     local logger_src = logger_file:read("*a")
     logger_file:close()
     for _, field in ipairs({
-        "autcmode=", "autcn=", "autclim=", "autcwould=", "autcthr=",
-        "autcleft=", "autcdur=", "autcup=", "autcactual=", "autcdeg=",
+        "autcmode=", "autctier=", "autcaxis=", "autcn=", "autclim=",
+        "autcsn=", "autcslim=", "autcwould=", "autcthr=", "autcleft=",
+        "autcsleft=", "autcdur=", "autcup=", "autcactual=", "autcdeg=",
         "autcexp=",
     }) do
         ok(logger_src:find(field, 1, true) ~= nil,

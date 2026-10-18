@@ -22,6 +22,12 @@ function _M.run(ctx)
         score = math.max(score, 0.4)
     end
 
+    -- Generic cloud PTR proves machine provenance, not ownership of the
+    -- contact domain copied into the UA. It gets no S2.5 zero-score waiver.
+    if ctx.automation_tier == "cloud_automation" then
+        score = math.max(score, 0.4)
+    end
+
     if ctx.good_bot_claimed then
         if ctx.dns_rev_timeout or ctx.dns_rev_degraded then
             ctx.bot_score = score

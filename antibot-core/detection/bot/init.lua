@@ -36,7 +36,7 @@ local FAKE_VERDICT_TTL    = 1800
 --
 -- CHỈ cấp cho bằng chứng GẮN VỚI TÊN MIỀN của chính chủ:
 --   good_bot_verified (S4/S3 registry) | contact_ptr_match | contact_org_match
--- KHÔNG cấp cho contact_cloud_attested / analyzer_attested — hai đường đó chỉ
+-- KHÔNG cấp cho contact_cloud_claimed / analyzer_attested — hai đường đó chỉ
 -- chứng minh "có thuê máy ở cloud", mà "nhiều IP thuê ở cloud" đúng là thứ fleet
 -- sinh ra để bắt. Cấp dấu cho chúng là tự tháo chốt.
 local CRAWLER_PREFIX = "crawler:"
@@ -177,42 +177,59 @@ end
 --      chung (`com`/`co`/`ne`…) và nhãn dưới 4 ký tự bị loại — xem GENERIC_LABELS.
 --
 --   1b (cloud fallback) — compliant UA + PTR ends in a known cloud provider
---      suffix. Operator runs from major cloud but does NOT setup their
---      domain's reverse DNS for cloud-rented IPs (very common — only Pinterest,
---      Google, Microsoft do the full PTR-on-AWS-pool work).
+--      suffix. This proves only that the caller rents cloud infrastructure;
+--      it does NOT bind the copied contact domain to that caller.
 --      Example: UA `(pingbot/2.0; +http://www.pingdom.com/)` from AWS
 --               + PTR `ec2-54-153-18-201.us-west-1.compute.amazonaws.com`
 --               → contact URL host `pingdom.com` does NOT appear in PTR,
---               but PTR ends in `amazonaws.com` (cloud list) → S2.5
---               reason="contact_cloud_attested".
+--               but PTR ends in `amazonaws.com` (cloud list)
+--               → cloud_automation, NOT S2.5 identity trust.
 --
--- Threat model 1b: attacker needs domain (~$10) + cloud account (anti-abuse
--- friction) + matching compliant UA. Higher bar than UA-only residential spoof.
--- Cap monitor (engine.lua) still scores via anomaly/behavior — true bad actors
--- get caught by signals, not bypassed entirely.
+-- Production evidence 18-10-2026 disproved the old claim that the caller had
+-- to own the contact domain: 7/13 cloud IPs alternated copied GrokBot/x.ai and
+-- DeepSeekBot/deepseek.com identities, often with the same JA3. A cloud tenant
+-- only needs to copy the UA. Keep this as automation provenance, not trust.
 --
--- Both sub-paths set tier S2.5, bot_score=0, skip cluster+graph. Do NOT set
--- good_bot_verified (engine still scores, caps action at monitor).
+-- Only domain-bound 1a/1c set S2.5. Cloud fallback keeps full scoring active
+-- and is consumed by the late rate/concurrency gates.
 local function contact_attest(ctx)
     if not ctx.bot_ua_compliant then return false end
     if not ctx.bot_contact_host then return false end
     if not ctx.dns_rev then return false end
 
-    local reason
+    local reason, cloud_only
     if ptr_suffix_matches(ctx.dns_rev, ctx.bot_contact_host) then
         reason = "contact_ptr_match"
     elseif ptr_matches_org(ctx.dns_rev, ctx.bot_contact_host) then
         reason = "contact_org_match"
     elseif ptr_matches_cloud(ctx.dns_rev) then
-        reason = "contact_cloud_attested"
+        reason = "contact_cloud_claimed"
+        cloud_only = true
     else
         return false
+    end
+
+    ctx.automation_claimed = true
+    if cloud_only then
+        -- Positive evidence of automation on cloud is not positive evidence
+        -- that the caller owns the vendor identity written in its UA.
+        ctx.bot_identity_tier = "CLOUD"
+        ctx.bot_score = math.max(tonumber(ctx.bot_score) or 0, 0.4)
+        ctx.action_reason = reason
+        ctx.automation_tier = "cloud_automation"
+        ctx.automation_proof = "contact_cloud_ptr"
+        ctx.automation_cloud_claimed = true
+        ngx.log(ngx.INFO,
+            "[bot] cloud automation claim bot=", ctx.good_bot_name or "?",
+            " ip=", ctx.ip or "?",
+            " ptr=", ctx.dns_rev,
+            " claimed_host=", ctx.bot_contact_host)
+        return true
     end
 
     ctx.bot_identity_tier = "S2.5"
     ctx.bot_score         = 0.0
     ctx.action_reason     = reason
-    ctx.automation_claimed = true
     ctx.automation_tier    = "attested"
     ctx.automation_proof   = reason
     ctx.skip_layers       = ctx.skip_layers or {}
@@ -372,9 +389,11 @@ function _M.run(ctx)
         -- Bậc 2/3 — chỉ khi bậc 1 chưa xác minh được.
         if ctx.good_bot_verified ~= true then
             if contact_attest(ctx) then
-                -- bot_score=0 set inside; fall through to bot_score.run
-                -- which honors tier S2.5 and keeps it at 0.
-                ctx.bot_ua = "good_bot_contact_attested"
+                -- Domain-bound evidence keeps S2.5. Cloud-only evidence keeps
+                -- full scoring and the neutral automation floor.
+                ctx.bot_ua = ctx.automation_tier == "cloud_automation"
+                    and "cloud_automation_claim"
+                    or "good_bot_contact_attested"
             elseif asn_fallback_verify(ctx) then
                 -- Cho ptr_only bot (Meta family): fallback sang ASN verification.
                 -- Reverse DNS không đáng tin với rotating pool / no-PTR IP blocks.
@@ -413,7 +432,8 @@ function _M.run(ctx)
             ctx.automation_tier    = "verified"
             ctx.automation_proof   = ctx.dns_fwd_valid and "dns_forward"
                 or (ctx.dns_rev_valid and "dns_reverse") or "asn"
-        elseif ctx.bot_identity_tier ~= "S2.5" then
+        elseif ctx.bot_identity_tier ~= "S2.5"
+           and ctx.automation_tier ~= "cloud_automation" then
             _M.resolve_unverified(ctx)
             if ctx.good_bot_dns_degraded
                and ctx.good_bot_asn_corroborative then

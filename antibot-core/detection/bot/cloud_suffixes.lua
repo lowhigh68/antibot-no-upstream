@@ -1,10 +1,9 @@
 local _M = {}
 
 -- Cloud provider reverse-DNS suffixes — universal infrastructure identifiers,
--- NOT a bot/tool list. Used by Path 2 analyzer attest in bot/init.lua:
--- a browser-pattern UA with a tool marker tail (e.g. "Chrome-Lighthouse")
--- coming from an IP whose PTR ends in one of these suffixes is granted
--- S2.5 tier (cap action at monitor, waive bot_score/asn_rep).
+-- NOT a bot/tool list. Path 2 analyzer attest may grant S2.5 to a strict tool
+-- marker. A crawler/contact claim on the same generic cloud PTR receives only
+-- `cloud_automation`: machine provenance, no vendor identity trust.
 --
 -- PTR is set by the IP block owner — not spoofable. Cloud providers
 -- delegate PTR per-customer subdomain, so a hostname ending in these

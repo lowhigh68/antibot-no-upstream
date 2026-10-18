@@ -112,7 +112,6 @@ local REASON_GOODBOT = {
     good_bot_asn_lite      = true,
     contact_ptr_match      = true,
     contact_org_match      = true,
-    contact_cloud_attested = true,
     analyzer_attested      = true,
     s25_cap_monitor        = true,
     -- Nhà vận hành khai danh tính bằng danh sách IP công bố thay vì bằng UA
@@ -647,7 +646,7 @@ function _M.run(ctx)
             tostring(ngx.var.upstream_response_time or "-"))
     end
 
-    -- Whole-server concurrency for one proven operator principal.  This is
+    -- Whole-server concurrency for one evidence-backed automation principal.
     -- intentionally separate from `autfs/autfl`: those are fixed-window
     -- arrival costs, while `autcn` is work still alive after the last local
     -- verdict.  `autcdur-autcup` exposes slow-client/buffering overcount in the
@@ -655,15 +654,21 @@ function _M.run(ctx)
     local automation_concurrency_str = ""
     if ctx.automation_concurrency_principal then
         automation_concurrency_str = string.format(
-            " autcmode=%s autcn=%s autclim=%s autcwould=%s autcthr=%s" ..
-            " autcleft=%s autcdur=%s autcup=%s autcactual=%s" ..
-            " autcdeg=%s autcexp=%s",
+            " autcmode=%s autctier=%s autcaxis=%s" ..
+            " autcn=%s autclim=%s autcsn=%s autcslim=%s" ..
+            " autcwould=%s autcthr=%s autcleft=%s autcsleft=%s" ..
+            " autcdur=%s autcup=%s autcactual=%s autcdeg=%s autcexp=%s",
             tostring(ctx.automation_concurrency_mode or "-"),
+            tostring(ctx.automation_concurrency_tier or "-"),
+            tostring(ctx.automation_concurrency_axis or "-"),
             tostring(ctx.automation_concurrency_inflight or "-"),
             tostring(ctx.automation_concurrency_limit or "-"),
+            tostring(ctx.automation_concurrency_source_inflight or "-"),
+            tostring(ctx.automation_concurrency_source_limit or "-"),
             tostring(ctx.automation_concurrency_would_reject or false),
             tostring(ctx.automation_concurrency_rejected or false),
             tostring(ctx.automation_concurrency_remaining or "-"),
+            tostring(ctx.automation_concurrency_source_remaining or "-"),
             ctx.automation_concurrency_duration
                 and string.format("%.3f", ctx.automation_concurrency_duration)
                 or "-",
