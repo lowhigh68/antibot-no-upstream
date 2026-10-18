@@ -320,4 +320,10 @@ echo
 echo "── fleetstat.sh (toan may: domain, principal, phanh) ───"
 sh_suite fleetstat_test "$HERE/fleetstat_test.sh" || rc=1
 
+# `costrank.sh` xep hang theo CHI PHI TICH LUY chu khong theo so luot: mot bot
+# gui 1.498 request tra trong 50ms ton it hon 195 request treo 60 giay.
+echo
+echo "── costrank.sh (chi phi tich luy + phat hien treo) ─────"
+sh_suite costrank_test "$HERE/costrank_test.sh" || rc=1
+
 exit $rc
