@@ -64,13 +64,25 @@ eq(quarantine.keys(key_ctx, "global").ban, "gban:" .. same_a,
 ngx.var.server_name, ngx.var.host = "one.test", "one.test"
 
 -- In-memory Redis supporting the production pipeline shape.
-local store, writes = {}, {}
+local store, writes, ttl_map = {}, {}, {}
 local red = { queued = nil }
 local function write(op, key, value, ttl)
     writes[#writes + 1] = { op = op, key = key, value = value, ttl = ttl }
-    if op == "del" then store[key] = nil
-    elseif op == "incr" then store[key] = (tonumber(store[key]) or 0) + 1
-    elseif op ~= "expire" and op ~= "publish" then store[key] = value end
+    if op == "del" then
+        store[key], ttl_map[key] = nil, nil
+    elseif op == "expire" then
+        ttl_map[key] = ttl
+    elseif op == "incr" then
+        store[key] = (tonumber(store[key]) or 0) + 1
+    elseif op == "setex" then
+        store[key], ttl_map[key] = value, ttl
+    elseif op == "set" then
+        store[key], ttl_map[key] = value, -1
+    elseif op == "safe_set" then
+        store[key], ttl_map[key] = value, ttl or -1
+    elseif op ~= "publish" then
+        store[key] = value
+    end
 end
 function red:init_pipeline() self.queued = {} end
 function red:_queue(op, key, value, ttl)
@@ -90,6 +102,36 @@ function red:incr(k) return self:_queue("incr", k) end
 function red:expire(k, ttl) return self:_queue("expire", k, nil, ttl) end
 function red:del(k) return self:_queue("del", k) end
 function red:publish(k, v) return self:_queue("publish", k, v) end
+function red:eval(_script, numkeys, ...)
+    local a = {...}
+    eq(numkeys, 4, "atomic claim passes four Redis keys")
+    local ban, viol, hit, context = a[1], a[2], a[3], a[4]
+    local violation_ttl = tonumber(a[5])
+    local now = a[6]
+    local count = tonumber(a[7]) or 1
+    local context_template = a[8] or ""
+
+    if store[ban] == "1" then
+        local ttl = ttl_map[ban] or -1
+        write("setex", hit, now, 300)
+        return {0, tonumber(store[viol]) or 0, ttl}
+    end
+
+    local n = (tonumber(store[viol]) or 0) + 1
+    local idx = math.min(math.max(n, 1), count)
+    local ttl = tonumber(a[8 + idx])
+    write("incr", viol)
+    write("expire", viol, nil, violation_ttl)
+    write("setex", ban, "1", ttl)
+    write("setex", hit, now, 300)
+    if context_template ~= "" then
+        local json = context_template:gsub(
+            '"ban_viol":"__BAN_VIOL__"',
+            '"ban_viol":' .. tostring(n), 1)
+        write("setex", context, json, ttl)
+    end
+    return {1, n, ttl}
+end
 function red:commit_pipeline()
     local result, queued = {}, red.queued or {}
     red.queued = nil
@@ -138,7 +180,7 @@ local fresh = {
 }
 escalation.run(fresh)
 eq(fresh.ban_scope, "host", "ordinary block becomes host quarantine")
-eq(fresh.ban_ttl, 300, "first host quarantine lasts five minutes")
+eq(fresh.ban_ttl, 300, "escalation supplies a safe provisional sentence")
 local fresh_keys = quarantine.keys(fresh, "host")
 store[fresh_keys.viol] = 1
 local repeat_ctx = {
@@ -146,7 +188,8 @@ local repeat_ctx = {
     req_class = "navigation", action_reason = "score_threshold",
 }
 escalation.run(repeat_ctx)
-eq(repeat_ctx.ban_ttl, 3600, "second fresh host violation reaches one hour")
+eq(repeat_ctx.ban_ttl, 300,
+   "non-atomic escalation stage no longer reads violation history")
 
 local strong = {
     ip = ip, ua = ua_win, req = { host = "one.test" },
@@ -160,7 +203,7 @@ eq(strong.ban_key, "gban:" .. same_a, "global scope uses separate key family")
 -- itself to an IP ban merely because its violation count is high.
 package.loaded["antibot.core.ip_scope"] = { is_self = function() return false end }
 local writer = assert(loadfile(src .. "enforcement/ban/ban_store_write.lua"))()
-store, writes = {}, {}
+store, writes, ttl_map = {}, {}, {}
 local write_ctx = {
     ip = ip, ua = ua_win, req = { host = "one.test" },
     req_class = "navigation", action = "block", action_reason = "score_threshold",
@@ -172,6 +215,10 @@ writer.run(write_ctx)
 local wk = quarantine.keys(write_ctx, "host")
 eq(store[wk.ban], "1", "writer creates host quarantine seal")
 eq(store[wk.viol], 1, "fresh writer records one violation")
+eq(write_ctx.ban_created, true, "first concurrent claimant owns the sentence")
+eq(write_ctx.ban_persisted, true, "winning atomic claim is persisted")
+eq(write_ctx.ban_ttl, 300, "writer, not provisional input, selects first TTL")
+eq(write_ctx.ban_violation, 1, "writer returns authoritative violation number")
 local qviol_ttl_ok = false
 for _, w in ipairs(writes) do
     if w.op == "expire" and w.key == wk.viol and w.ttl == 172800 then
@@ -197,8 +244,71 @@ ok(host_payload:find('"network_id":"' .. same_a .. '"', 1, true) ~= nil,
 ok(host_payload:find('"scope":"host"', 1, true) ~= nil,
    "host quarantine publishes explicit scope")
 
+-- Two requests can both pass ban_store before either reaches the writer.  The
+-- second atomic claim must see the first seal, leave qviol unchanged and avoid
+-- publishing a duplicate sentence.
+local concurrent = {
+    ip = ip, ua = ua_win, req = { host = "one.test" },
+    req_class = "navigation", action = "block",
+    action_reason = "score_threshold", score = 100, effective_score = 100,
+    ip_risk = 0, swarm = false, session_richness = 0,
+}
+escalation.run(concurrent)
+writer.run(concurrent)
+eq(concurrent.ban_created, false, "concurrent loser does not recreate seal")
+eq(concurrent.ban_persisted, true, "concurrent loser observes persisted seal")
+eq(concurrent.ban_ttl, 300, "concurrent loser sees current sentence TTL")
+eq(store[wk.viol], 1, "one burst increments violation exactly once")
+writes = {}
+sync.run(concurrent)
+eq(#writes, 0, "concurrent loser does not publish duplicate ban event")
+-- Winner and loser must read the SAME number of prior incidents, because they
+-- ARE the same incident. The script returns a post-INCR count to the creator
+-- and a plain GET to the loser, but the loser's GET already contains the
+-- winner's INCR — so both subtract one and both land on the real history.
+-- `viol_count >= 4` is the boundary between 24h and 30 days, so a split here
+-- would hand different IP sentences to members of one burst.
+eq(concurrent.ban_previous_viol, write_ctx.ban_previous_viol,
+   "concurrent loser counts the same prior incidents as the winner")
+eq(concurrent.ban_previous_viol, 0,
+   "a first burst has no prior incident on either branch")
+
+-- Self traffic has no incident to count, so it must not invent one.
+package.loaded["antibot.core.ip_scope"] = { is_self = function() return true end }
+local self_writer = assert(loadfile(src .. "enforcement/ban/ban_store_write.lua"))()
+local self_ctx = {
+    ip = ip, ua = ua_win, req = { host = "one.test" },
+    req_class = "navigation", action = "block",
+    action_reason = "score_threshold", score = 100, effective_score = 100,
+    ip_risk = 0, swarm = false, session_richness = 0,
+}
+escalation.run(self_ctx)
+self_writer.run(self_ctx)
+eq(self_ctx.ban_violation, nil,
+   "self traffic does not fabricate a violation number for the log")
+eq(self_ctx.ban_created, false, "self traffic creates no sentence")
+eq(self_ctx.ban_persisted, false, "self traffic persists no sentence")
+package.loaded["antibot.core.ip_scope"] = { is_self = function() return false end }
+
+-- Once the sentence expires, a genuinely new incident may advance the ladder.
+store[wk.ban], store[wk.context] = nil, nil
+ttl_map[wk.ban], ttl_map[wk.context] = nil, nil
+local after_expiry = {
+    ip = ip, ua = ua_win, req = { host = "one.test" },
+    req_class = "navigation", action = "block",
+    action_reason = "score_threshold", score = 100, effective_score = 100,
+    ip_risk = 0, swarm = false, session_richness = 0,
+}
+escalation.run(after_expiry)
+writer.run(after_expiry)
+eq(after_expiry.ban_created, true, "post-expiry incident creates new sentence")
+eq(after_expiry.ban_violation, 2, "post-expiry incident advances violation")
+eq(after_expiry.ban_ttl, 3600, "second distinct incident reaches one hour")
+
 writes = {}
 strong.ban_ttl = 300
+strong.ban_created = true
+strong.ban_persisted = true
 sync.run(strong)
 local global_payload = writes[#writes] and writes[#writes].value or ""
 ok(global_payload:find('"identity":"' .. same_a .. '"', 1, true) ~= nil,
@@ -216,7 +326,7 @@ package.loaded["antibot.enforcement.challenge"] = {
 package.loaded["antibot.l7.ban.ban_store"] = nil
 local reader = assert(loadfile(src .. "l7/ban/ban_store.lua"))()
 
-store, writes = {}, {}
+store, writes, ttl_map = {}, {}, {}
 local function request(host, accept)
     ngx.var.server_name, ngx.var.host = host, host
     ngx.var.http_accept = accept or ""
@@ -272,7 +382,7 @@ eq(known.banned, false, "known session continues to live scoring")
 
 -- Migration is intentionally one-way: old keys are read, but their sentence
 -- and violation state are never refreshed by the new reader.
-store, writes = {}, {}
+store, writes, ttl_map = {}, {}, {}
 local legacy_ctx = request("one.test", "application/json")
 local legacy = quarantine.legacy_keys(legacy_ctx)
 store[legacy.ban], store[legacy.viol] = "1", 9

@@ -2,6 +2,11 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 
 function _M.run(ctx)
+    -- Only the request that atomically created a new sentence may publish it.
+    -- Concurrent engine blocks still receive 403, but publishing each loser
+    -- would make downstream consumers recreate/refresh one incident many times.
+    if ctx.ban_created ~= true or ctx.ban_persisted ~= true then return end
+
     local id  = ctx.ban_id or ctx.network_id or ctx.identity or ctx.fp_light
     local ip  = ctx.ip
     local ttl = ctx.ban_ttl

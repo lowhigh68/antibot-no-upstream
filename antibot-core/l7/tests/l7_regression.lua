@@ -191,7 +191,23 @@ local fake_ngx = {
     log = function() end,
     say = function() end,
     exit = function(code) exits[#exits + 1] = code; return code end,
-    md5 = function() return "0000000a000000000000000000000000" end,
+    -- Must DEPEND on the input. A constant made every hashed key collide, so
+    -- any test asking "do two different subjects get different keys" passed
+    -- vacuously — `endpoint_scope` keyed on docroot is exactly such a test.
+    -- Not a cryptographic hash; it only needs to separate distinct inputs
+    -- and to be stable within a run (line ~1960 derives a key from it).
+    md5 = function(s)
+        s = tostring(s or "")
+        local a, b = 5381, 52711
+        for i = 1, #s do
+            local c = s:byte(i)
+            a = (a * 33 + c) % 4294967296
+            b = (b * 31 + c * i) % 4294967296
+        end
+        return string.format("%08x%08x%08x%08x", a, b,
+            (a + #s * 2654435761) % 4294967296,
+            (b + a) % 4294967296)
+    end,
     crc32_short = function(s)
         local n = 0
         for i = 1, #s do n = (n + s:byte(i)) % 4294967296 end
@@ -738,6 +754,44 @@ local ep2 = classify_endpoint({
 eq(ep2.endpoint_id, "wp_oembed_embed", "rest_route oEmbed duoc canonicalize")
 eq(ep2.test_prefix, "/blog", "rest_route giu prefix WordPress thu muc con")
 eq(ep2.endpoint_url_relation, "www_alias", "www va apex duoc tach thanh alias")
+
+-- Bang chung san xuat cloud28-246 18-10: thailandtranslation.net chay WPML nen
+-- URI that la `/vi/wp-json/...`, `/ja/...`, `/zh/...`, `/TH/...` tren MOT ban
+-- WordPress dung CHUNG mot `public_html`. Khoa capacity theo `docroot|prefix`
+-- chia mot budget thanh bon, nen tran 3 thanh 3-moi-ngon-ngu va shadow ghi duoc
+-- `epif=15/3`. Budget bao ve mot pool PHP-FPM, va pool la theo docroot.
+local lang_scopes = {}
+for _, lang in ipairs({ "/vi", "/ja", "/zh", "/TH" }) do
+    local c = classify_endpoint({
+        uri = lang .. "/wp-json/oembed/1.0/embed", args = "url=x",
+        request_method = "GET", host = "thailandtranslation.test",
+        document_root = "/home/u/public_html",
+    }, { url = "https://thailandtranslation.test/p/" })
+    eq(c.endpoint_id, "wp_oembed_embed",
+       "tien to ngon ngu " .. lang .. " van duoc nhan dang")
+    lang_scopes[#lang_scopes + 1] = c.endpoint_scope
+end
+local root_scope = classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "url=x",
+    request_method = "GET", host = "thailandtranslation.test",
+    document_root = "/home/u/public_html",
+}, { url = "https://thailandtranslation.test/p/" }).endpoint_scope
+for i = 1, #lang_scopes do
+    eq(lang_scopes[i], root_scope,
+       "tien to ngon ngu dung CHUNG budget voi goc, khong chia pool")
+end
+ok(classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "url=x",
+    request_method = "GET", host = "other.test",
+    document_root = "/home/other/public_html",
+}, { url = "https://other.test/p/" }).endpoint_scope ~= root_scope,
+   "docroot khac van la budget khac")
+eq(classify_endpoint({
+    uri = "/wp-json/oembed/1.0/embed", args = "url=x",
+    request_method = "GET", host = "thailandtranslation.test",
+    document_root = "/home/u/public_html/",
+}, { url = "https://thailandtranslation.test/p/" }).endpoint_scope, root_scope,
+   "docroot co dau / cuoi khong tao budget thu hai")
 
 local ep2dup = classify_endpoint({
     uri = "/",

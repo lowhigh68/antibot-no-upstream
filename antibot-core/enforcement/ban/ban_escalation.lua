@@ -1,5 +1,4 @@
 local _M   = {}
-local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local quarantine = require "antibot.core.network_quarantine"
 
@@ -45,25 +44,25 @@ function _M.run(ctx)
         return true, false
     end
 
-    -- Only a fresh engine block reaches this function. A request that merely
-    -- hits an existing seal exits from l7/ban/ban_store.lua and never changes
-    -- the violation counter or the remaining sentence.
-    local previous = tonumber(pool.safe_get(keys.viol)) or 0
-    local viol = previous + 1
-    local idx  = math.min(viol, #steps)
-    ctx.ban_ttl = steps[idx]
-    ctx.ban_previous_viol = previous
-    ctx.ban_violation = viol
+    -- This module only selects the namespace and a safe provisional first
+    -- sentence.  Reading `viol` here and incrementing it later in the writer
+    -- used to leave a race: several concurrent requests could all pass the
+    -- seal reader, then each count as a separate repeat offence.  The writer
+    -- now performs "seal absent -> INCR viol -> choose step -> SETEX seal" in
+    -- one Redis EVAL.  Its returned values replace these provisional fields.
+    ctx.ban_ttl = steps[1]
+    ctx.ban_previous_viol = 0
+    ctx.ban_violation = 1
+    ctx.ban_created = nil
+    ctx.ban_persisted = nil
 
     ngx.log(ngx.INFO,
-        "[ban_escalation]",
+        "[ban_escalation] pending_atomic_claim",
         " class=", class,
         " id=", id:sub(1, 8), "...",
         " scope=", scope,
         " host=", keys.host,
-        " viol=", viol,
-        " step=", idx,
-        " ttl=", tostring(ctx.ban_ttl) .. "s")
+        " provisional_ttl=", tostring(ctx.ban_ttl) .. "s")
 
     return true, false
 end

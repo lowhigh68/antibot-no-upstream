@@ -4,14 +4,88 @@ local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
 local quarantine = require "antibot.core.network_quarantine"
 
+-- One incident must add exactly one violation, even when many requests from
+-- the same network-UA subject reach the engine concurrently.  Redis serializes
+-- this script: the first caller creates the seal and advances the ladder;
+-- callers arriving behind it only observe the existing sentence.
+--
+-- KEYS: ban, violation, last-hit, context
+-- ARGV: violation_ttl, now, step_count, context_json_template, step_1...
+local BAN_CLAIM_SCRIPT = [[
+local existing = redis.call("EXISTS", KEYS[1])
+if existing == 1 then
+    local viol = tonumber(redis.call("GET", KEYS[2])) or 0
+    local ttl  = redis.call("TTL", KEYS[1])
+    redis.call("SETEX", KEYS[3], 300, ARGV[2])
+    return {0, viol, ttl}
+end
+
+local viol = redis.call("INCR", KEYS[2])
+redis.call("EXPIRE", KEYS[2], tonumber(ARGV[1]))
+
+local count = tonumber(ARGV[3]) or 1
+local idx = viol
+if idx < 1 then idx = 1 end
+if idx > count then idx = count end
+local ttl = tonumber(ARGV[4 + idx])
+
+redis.call("SETEX", KEYS[1], ttl, "1")
+redis.call("SETEX", KEYS[3], 300, ARGV[2])
+
+local context = ARGV[4]
+if context and context ~= "" then
+    context = string.gsub(
+        context,
+        '"ban_viol":"__BAN_VIOL__"',
+        '"ban_viol":' .. tostring(viol),
+        1)
+    redis.call("SETEX", KEYS[4], ttl, context)
+end
+
+return {1, viol, ttl}
+]]
+
+local function sentence_steps(scope, qcfg)
+    local configured = scope == "global" and cfg.ttl.ban_steps
+        or qcfg.steps
+    local source = configured or {300, 3600, 86400}
+    local steps = {}
+    for i = 1, #source do
+        local ttl = math.floor(tonumber(source[i]) or 0)
+        if ttl > 0 then steps[#steps + 1] = ttl end
+    end
+    if #steps == 0 then steps[1] = 300 end
+    return steps
+end
+
+local function claim_identity(red, keys, steps, violation_ttl, now_ts,
+                              context_template)
+    local argv = {
+        BAN_CLAIM_SCRIPT, 4,
+        keys.ban, keys.viol, keys.hit, keys.context,
+        tostring(violation_ttl), tostring(now_ts), tostring(#steps),
+        context_template or "",
+    }
+    for i = 1, #steps do argv[#argv + 1] = tostring(steps[i]) end
+
+    local result, err = red:eval(unpack(argv))
+    if not result then return nil, err end
+
+    return {
+        created   = tonumber(result[1]) == 1,
+        violation = tonumber(result[2]) or 0,
+        ttl       = tonumber(result[3]) or -2,
+    }
+end
+
 function _M.run(ctx)
     local scope = ctx.ban_scope or "host"
     local keys  = quarantine.keys(ctx, scope)
     local id    = ctx.ban_id or (keys and keys.id)
     local ip    = ctx.ip
-    local ttl   = ctx.ban_ttl
     local class = ctx.req_class or "unknown"
     local qcfg  = cfg.network_quarantine or {}
+    local self_request = ip_scope.is_self()
 
     if not keys or not id then
         ngx.log(ngx.ERR, "[ban_write] missing network quarantine key")
@@ -30,7 +104,10 @@ function _M.run(ctx)
         return
     end
 
-    local ctx_json = ""
+    -- The atomic script knows the authoritative violation number.  Encode a
+    -- quoted marker now; the winning script replaces it with the numeric value
+    -- before storing the context in the same transaction as the seal.
+    local ctx_json_template = ""
     local ok, cjson = pcall(require, "cjson")
     if ok then
         local host = (ctx.req and ctx.req.host) or ngx.var.host or "unknown"
@@ -46,17 +123,73 @@ function _M.run(ctx)
             ban_scope   = scope,
             ban_host    = keys.host,
             ban_key     = keys.ban,
-            ban_viol    = ctx.ban_violation or 1,
+            ban_viol    = "__BAN_VIOL__",
             fp_deg      = ctx.fp_degraded or false,
             device_type = ctx.device_type or "unknown",
             ua          = (ctx.ua or ""):sub(1, 180),
             ip          = ctx.ip or "",
             bot_score   = ctx.bot_score or 0,
         })
-        if ok2 then ctx_json = json end
+        if ok2 then ctx_json_template = json end
     end
 
+    local steps = sentence_steps(scope, qcfg)
+    local now_ts = tostring(ngx.time())
+    if not self_request then
+        local claim, claim_err = claim_identity(
+            red, keys, steps,
+            qcfg.violation_ttl or cfg.ttl.violation or 172800,
+            now_ts, ctx_json_template)
+        if not claim then
+            ctx.ban_created = false
+            ctx.ban_persisted = false
+            pool.put(red)
+            ngx.log(ngx.ERR,
+                "[ban_write] atomic claim failed key=", keys.ban,
+                " err=", tostring(claim_err))
+            return
+        end
+
+        ctx.ban_created       = claim.created
+        ctx.ban_persisted     = true
+        ctx.ban_violation     = claim.violation
+        ctx.ban_ttl           = claim.ttl
+
+        -- `ban_previous_viol` feeds the IP ladder below and means "incidents
+        -- BEFORE this one". Both branches subtract one, and that is correct on
+        -- each for a different reason:
+        --
+        --   created=true   the script just INCRemented, so the number it
+        --                  returned already includes this incident.
+        --   created=false  a sentence was already sealed, which means the
+        --                  winner of this same burst did that INCR — so the
+        --                  plain GET also already includes this incident.
+        --
+        -- The two therefore agree, and a burst cannot hand different IP
+        -- sentences to its members. Worth stating explicitly because the
+        -- asymmetric-looking `created` flag invites a branch here: adding one
+        -- is wrong precisely because the loser is not a separate incident.
+        ctx.ban_previous_viol = math.max(claim.violation - 1, 0)
+    else
+        -- Self traffic is still blocked for the current request, but never
+        -- receives a lasting identity/IP sentence.
+        --
+        -- `ban_violation` stays nil on purpose. There is no incident to count
+        -- here, and writing 1 put a fabricated number in `bviol=` that read
+        -- exactly like a real first offence — the logger already renders nil
+        -- as `-`, which is the honest value.
+        ctx.ban_created = false
+        ctx.ban_persisted = false
+        ctx.ban_ttl = steps[1]
+        ctx.ban_previous_viol = 0
+        ctx.ban_violation = nil
+    end
+
+    local ttl = ctx.ban_ttl
     local ctx_ttl = (ttl and ttl > 0) and ttl or 86400
+    local ctx_json = ctx_json_template:gsub(
+        '"ban_viol":"__BAN_VIOL__"',
+        '"ban_viol":' .. tostring(ctx.ban_violation or 1), 1)
 
     local ip_risk_val   = ctx.ip_risk or 0.0
     -- HAI cơ chế swarm KHÁC NHAU — và chỉ còn MỘT được dùng ở đây.
@@ -82,8 +215,10 @@ function _M.run(ctx)
 
     -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
     -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
-    local viol_count = tonumber(ctx.ban_previous_viol)
-        or tonumber(pool.safe_get(keys.viol)) or 0
+    -- The atomic claim returned the only authoritative incident count.  Do not
+    -- read Redis again here: a second read can observe a later incident and
+    -- couple this request's IP sentence to another concurrent request.
+    local viol_count = tonumber(ctx.ban_previous_viol) or 0
 
     -- swarm case: distributed swarm (nhiều IP × ít request/IP) khiến ip_risk
     -- KHÔNG BAO GIỜ leo tới 0.5 (EMA cần ~4 hit/IP; swarm né đúng điều đó) nên
@@ -237,7 +372,6 @@ function _M.run(ctx)
     --   2. `detection/ip_tour.lua` nay cung can dung phep kiem ay. Hai ban sao
     --      cua mot phep kiem cap dac quyen se lech nhau — cung ly do da gom
     --      `is_private` ve `ip_scope`.
-    local self_request = ip_scope.is_self()
     if self_request then
         should_ban_ip = false
     end
@@ -245,8 +379,8 @@ function _M.run(ctx)
     -- Bậc cuối của thang leo — lấy từ cfg.ttl.ban_steps để KHÔNG lệch với thang
     -- identity ở l7/ban/ban_store.lua. 2026-08-06: đổi từ 0 (vĩnh viễn) sang
     -- hữu hạn (30 ngày) — xem chú thích tại config.lua ban_steps.
-    local steps       = cfg.ttl.ban_steps
-    local persist_ttl = steps[#steps]
+    local ip_steps    = cfg.ttl.ban_steps
+    local persist_ttl = ip_steps[#ip_steps]
 
     local ip_ban_ttl
     if viol_count >= 4 then
@@ -263,45 +397,16 @@ function _M.run(ctx)
         ip_ban_ttl = 180         -- 3 phút: swarm case
     end
 
-    red:init_pipeline()
-
-    local now_ts = tostring(ngx.time())
-
-    -- `not self_request`: xem khoi chu thich o tren. Cong nay doi xung voi cong
-    -- cua `should_ban_ip` — hai nhanh, mot quy tac: may khong tu ket an chinh no.
-    if id and not self_request then
-        if ttl and ttl > 0 then
-            red:setex(keys.ban, ttl, "1")
-        else
-            red:set(keys.ban, "1")
-        end
-        -- Fresh ban → ACTIVE ngay trong 5 phút đầu, không phải chờ hit kế tiếp.
-        red:setex(keys.hit, 300, now_ts)
-        -- Mỗi lần ban = +1 violation để ban_escalation lũy tiến TTL lần sau.
-        -- Trước đây viol chỉ tăng khi rate-limit/challenge-fail → score-based
-        -- block (GPTBot/DotBot...) luôn dừng ở step 1 = 5m dù quay lại nhiều lần.
-        red:incr(keys.viol)
-        red:expire(keys.viol, qcfg.violation_ttl or cfg.ttl.violation)
-    end
-
     if should_ban_ip then
+        red:init_pipeline()
         if ip_ban_ttl > 0 then
             red:setex("ban:" .. ip, ip_ban_ttl, "1")
         else
             red:set("ban:" .. ip, "1")  -- permanent
         end
         red:setex("ban:hit:" .. ip, 300, now_ts)
-    end
 
-    if ctx_json ~= "" then
-        -- Cung dieu kien voi nhanh ghi an o tren. Truoc day `id` co mat la chac
-        -- chan da ghi an, nen mot `if id` la du; nay khong con dung nua, va ho
-        -- so bang chung khong co ban an di kem chi la rac. Bat bien can giu:
-        -- `ban_ctx:<x>` ton tai <=> co mot ban an cho <x>.
-        if id and not self_request then
-            red:setex(keys.context, ctx_ttl, ctx_json)
-        end
-        if should_ban_ip then
+        if ctx_json ~= "" then
             -- Guard TTL: `SETEX key 0 val` là LỖI trong Redis, và lỗi trong
             -- pipeline bị nuốt im lặng ⇒ đúng những lệnh cấm nặng nhất lại mất
             -- hồ sơ bằng chứng. Hồ sơ phải sống ÍT NHẤT bằng bản án, nếu không
@@ -310,9 +415,14 @@ function _M.run(ctx)
             local ip_ctx_ttl = (ip_ban_ttl > 0) and ip_ban_ttl or ctx_ttl
             red:setex("ban_ctx:" .. ip, ip_ctx_ttl, ctx_json)
         end
-    end
 
-    red:commit_pipeline()
+        local results, commit_err = red:commit_pipeline()
+        if not results then
+            ngx.log(ngx.ERR,
+                "[ban_write] IP-ban pipeline failed ip=", ip or "?",
+                " err=", tostring(commit_err))
+        end
+    end
     pool.put(red)
 
     ngx.log(ngx.WARN,
@@ -327,6 +437,9 @@ function _M.run(ctx)
         " host=", keys.host,
         " key=", keys.ban,
         " ttl=", ttl == 0 and "permanent" or tostring(ttl) .. "s",
+        " created=", tostring(ctx.ban_created == true),
+        " persisted=", tostring(ctx.ban_persisted == true),
+        " viol=", tostring(ctx.ban_violation or "-"),
         " score=", ctx.score or 0,
         " eff=", ctx.effective_score or 0)
 end

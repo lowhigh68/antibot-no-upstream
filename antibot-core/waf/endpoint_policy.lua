@@ -231,8 +231,29 @@ local function validate_users(args)
     return "ok"
 end
 
-local function scope_id(docroot, prefix)
-    local raw = tostring(docroot or "") .. "|" .. tostring(prefix or "")
+-- The capacity scope is the DOCROOT, deliberately not `docroot|prefix`.
+--
+-- The budget exists to protect one PHP-FPM pool, and the pool is per docroot.
+-- A path prefix does not create a second pool, so making it part of the key
+-- splits one site's budget into several and multiplies the real ceiling.
+--
+-- Measured on cloud28-246, 18-10-2026, thailandtranslation.net: the live URIs
+-- are `/vi/wp-json/...`, `/ja/wp-json/...`, `/zh/wp-json/...`, `/TH/wp-json/...`
+-- — WPML/Polylang language prefixes on ONE WordPress install sharing ONE
+-- `public_html`. Keyed with the prefix, each language got its own in-flight
+-- budget, so a configured limit of 3 became an effective 3 per language. The
+-- shadow row `epif=15/3` is that arithmetic made visible: fifteen concurrent
+-- requests against a pool of ten workers, while every single language bucket
+-- still looked individually plausible.
+--
+-- The prefix is still passed to `is_wp_root()` above, because "is this a
+-- WordPress root" genuinely is a per-directory question. Only the capacity
+-- key drops it. `document_root` is already normalized without a trailing
+-- slash on the whole fleet (see `wordpress/paths.lua`), so no extra
+-- normalization is needed to keep `/a/b` and `/a/b/` from splitting.
+local function scope_id(docroot)
+    local raw = tostring(docroot or "")
+    if raw:sub(-1) == "/" then raw = raw:sub(1, -2) end
     if ngx.md5 then return ngx.md5(raw):sub(1, 16) end
     raw = raw:lower():gsub("[^%w%-_]", "_")
     return raw:sub(1, 64)
@@ -283,7 +304,7 @@ function _M.run(ctx, opts)
 
     ctx.endpoint_policy_state = "wp"
     ctx.endpoint_id = endpoint
-    ctx.endpoint_scope = scope_id(docroot, prefix)
+    ctx.endpoint_scope = scope_id(docroot)
     ctx.endpoint_wp_prefix = prefix
 
     if args_err == "truncated" then

@@ -651,13 +651,16 @@ function _M.run(ctx)
     local ban_str = ""
     if ctx.ban_scope or ctx.ban_id_kind then
         ban_str = string.format(
-            " bkind=%s bscope=%s bhost=%s blegacy=%s bviol=%s bttl=%s",
+            " bkind=%s bscope=%s bhost=%s blegacy=%s bviol=%s bttl=%s" ..
+            " bnew=%s bpersist=%s",
             tostring(ctx.ban_id_kind or "-"),
             tostring(ctx.ban_scope or "-"),
             tostring(ctx.ban_host or "-"),
             tostring(ctx.ban_legacy == true),
             tostring(ctx.ban_violation or "-"),
-            tostring(ctx.ban_ttl or "-"))
+            tostring(ctx.ban_ttl or "-"),
+            ctx.ban_created == nil and "-" or tostring(ctx.ban_created),
+            ctx.ban_persisted == nil and "-" or tostring(ctx.ban_persisted))
     end
 
     -- `safe_run` intentionally remains fail-open. Make that loss of evidence
