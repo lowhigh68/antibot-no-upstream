@@ -376,4 +376,12 @@ echo
 echo "── costrank.sh (chi phi tich luy + phat hien treo) ─────"
 sh_suite costrank_test "$HERE/costrank_test.sh" || rc=1
 
+# `autthr.sh` tra loi "GPTBot bi throttle NHU THE NAO". Can script rieng vi
+# cot `autaxis` KHONG tra loi duoc: no la truc co ti le cao nhat, duoc dat cho
+# MOI dong aut=1 ke ca khi khong co gi vuot nguong, nen `grep autaxis=fleet` dem
+# ca nhung bot chua he bi chan (ahrefsbot/bingbot trong output 18-10).
+echo
+echo "-- autthr.sh (ai bi chan that, truc nao vuot) ---------"
+sh_suite autthr_test "$HERE/autthr_test.sh" || rc=1
+
 exit $rc
