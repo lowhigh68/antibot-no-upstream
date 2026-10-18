@@ -305,4 +305,12 @@ echo
 echo "── epstat.sh (endpoint budget + mui gio log) ────────────"
 sh_suite epstat_test "$HERE/epstat_test.sh" || rc=1
 
+# `ephours.sh` tra loi "cot nao vot len truoc", tuc no quyet dinh huong chan
+# doan. Oracle cua no ghim dung hai bay da lam hong output that 18-10: cot
+# KET THUC bang `ts=` (`sclients=`, `xf_hits=`, `exists=`, `parts=`) va sap
+# xep theo chuoi tren `dd/Mon/yyyy`.
+echo
+echo "── ephours.sh (luu luong theo gio: oembed vs AI bot) ────"
+sh_suite ephours_test "$HERE/ephours_test.sh" || rc=1
+
 exit $rc
