@@ -174,6 +174,49 @@ local function html_pathinfo(uri)
 end
 _M.html_pathinfo = html_pathinfo
 
+-- WordPress' default tag archive has a bounded public suffix grammar.  Treat
+-- everything outside that grammar as ONE route-shape family; never put the
+-- attacker-controlled slug/suffix in a key.  This is deliberately telemetry
+-- first: plugins may add custom rewrites below `/tag/<slug>/`, so policy must
+-- combine this shape with distributed-source and live-capacity evidence
+-- before it can be promoted.  No plugin/UA/token name is recognized here.
+local TAG_ARCHIVE_TERMINALS = {
+    feed = true, rdf = true, rss = true, rss2 = true, atom = true,
+    embed = true, amp = true,
+}
+
+local function tag_archive_unexpected_suffix(uri, method)
+    method = tostring(method or "GET"):upper()
+    if method ~= "GET" and method ~= "HEAD" then return false end
+
+    local path = trim_trailing_slash(lower(uri):match("^([^?]*)") or "")
+    local marker = path:find("/tag/", 1, true)
+    if not marker then return false end
+
+    -- Accept only a root archive or one virtual prefix (language/subdirectory).
+    -- This avoids turning an arbitrary deep path containing `/tag/` into a
+    -- WordPress inventory lookup controlled by the caller.
+    local prefix = path:sub(1, marker - 1)
+    if prefix ~= "" and not prefix:match("^/[^/]+$") then return false end
+
+    local tail = path:sub(marker + 5)
+    local slug, suffix = tail:match("^([^/]+)/(.+)$")
+    if not slug or not suffix then return false end
+    suffix = trim_trailing_slash(suffix)
+    if suffix == "" then return false end
+
+    if TAG_ARCHIVE_TERMINALS[suffix] then return false end
+    if suffix:match("^page/%d+$") then return false end
+    local feed_type = suffix:match("^feed/([^/]+)$")
+    if feed_type and TAG_ARCHIVE_TERMINALS[feed_type] then return false end
+    -- Common AMP pagination layouts remain outside the suspicious family.
+    if suffix:match("^amp/page/%d+$") or suffix:match("^page/%d+/amp$") then
+        return false
+    end
+    return true
+end
+_M.tag_archive_unexpected_suffix = tag_archive_unexpected_suffix
+
 local function normalize_host(host)
     host = lower(host):gsub("%.$", "")
     if host:sub(1, 1) == "[" then
@@ -306,6 +349,8 @@ function _M.run(ctx, opts)
     local raw_args = ngx.var.args or ""
     local uri = ngx.var.uri or (ctx.req and ctx.req.uri) or "/"
     local low_uri = lower(uri)
+    local method = tostring(ngx.var.request_method
+        or (ctx.req and ctx.req.method) or "GET"):upper()
 
     -- This branch is independent of REST parsing and remains bounded: one
     -- exact route family, one existing WP-root lookup, no attacker-derived
@@ -338,6 +383,34 @@ function _M.run(ctx, opts)
         return true, false
     end
 
+    -- Unlike `.html/<PATH_INFO>`, a custom plugin may legitimately add a tag
+    -- archive rewrite.  Therefore this branch only assigns a bounded family;
+    -- config keeps direct shape enforcement off and measures the compound
+    -- swarm + server-inflight condition instead.
+    if tag_archive_unexpected_suffix(low_uri, method) then
+        local endpoint = "wp_tag_archive_suffix"
+        ctx.endpoint_candidate = endpoint
+        ctx.endpoint_route_source = "tag_archive"
+        request_markers(ctx, raw_args)
+
+        local host = ngx.var.host or (ctx.req and ctx.req.host) or ""
+        local docroot = ngx.var.document_root or ""
+        local is_wp = (opts and opts.is_wp_root) or wp_paths.is_wp_root
+        local proven = is_wp and is_wp(host, "", docroot)
+        if proven ~= true then
+            ctx.endpoint_policy_state = proven == nil and "lookup_failed" or "not_wp"
+            if proven == nil then ctx.endpoint_policy_degraded = true end
+            return true, false
+        end
+
+        ctx.endpoint_policy_state = "wp"
+        ctx.endpoint_id = endpoint
+        ctx.endpoint_scope = scope_id(docroot)
+        ctx.endpoint_wp_prefix = ""
+        ctx.endpoint_shape = "unexpected_archive_suffix"
+        return true, false
+    end
+
     -- Zero parsing/Redis work for the overwhelming majority of requests.
     local pretty_rest = low_uri:find("/wp%-json") ~= nil
     local raw_rest = pretty_rest and nil or raw_values(raw_args, "rest_route")
@@ -357,8 +430,6 @@ function _M.run(ctx, opts)
     local prefix, rest, source, route_ambiguous = canonical_rest(uri, args)
     if not rest then return true, false end
 
-    local method = tostring(ngx.var.request_method
-        or (ctx.req and ctx.req.method) or "GET"):upper()
     local endpoint = endpoint_for(rest, method, args)
     if not endpoint then return true, false end
 

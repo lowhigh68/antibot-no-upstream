@@ -147,6 +147,9 @@ end
 -- 171-96 (17 luot/94.121 mau) ma truoc 06-10 KHONG co mot ca test nao.
 function Dict:add(key, value, ttl)
     if self.full then return nil, "no memory" end
+    if self.fail_prefix and key:find(self.fail_prefix, 1, true) == 1 then
+        return nil, "no memory"
+    end
     if self:_live(key) ~= nil then return nil, "exists" end
     self.data[key] = value
     self.expiry[key] = clock + ttl
@@ -950,6 +953,55 @@ do
 end
 
 do
+    -- The classifier is based on the WordPress archive contract, never on the
+    -- token used by today's bot.  All variants collapse to one bounded id.
+    for _, uri in ipairs({
+        "/tag/nhu-cao/tel:0934699229",
+        "/tag/a/amp/sms:1/other",
+        "/vi/tag/a/ngay-mai-bot-doi-token",
+        "/tag/a/x/y/z",
+    }) do
+        local archive = classify_endpoint({
+            uri = uri, args = "", request_method = "GET",
+            host = "example.test", document_root = "/home/u/public_html",
+        }, {})
+        eq(archive.endpoint_id, "wp_tag_archive_suffix",
+           "tag suffix la generic route family: " .. uri)
+        eq(archive.endpoint_shape, "unexpected_archive_suffix",
+           "tag suffix co mot shape on dinh: " .. uri)
+        eq(archive.endpoint_route_source, "tag_archive",
+           "tag suffix co source rieng: " .. uri)
+    end
+
+    for _, uri in ipairs({
+        "/tag/a/", "/tag/a/page/2/", "/tag/a/feed/",
+        "/tag/a/feed/rss2/", "/tag/a/embed/", "/tag/a/amp/",
+        "/tag/a/amp/page/2/", "/tag/a/page/2/amp/",
+    }) do
+        local archive = classify_endpoint({
+            uri = uri, args = "", request_method = "GET",
+            host = "example.test", document_root = "/home/u/public_html",
+        }, {})
+        eq(archive.endpoint_id, nil,
+           "tag archive hop le khong vao suspicious family: " .. uri)
+    end
+
+    local write = classify_endpoint({
+        uri = "/tag/a/custom", args = "", request_method = "POST",
+        host = "example.test", document_root = "/home/u/public_html",
+    }, {})
+    eq(write.endpoint_id, nil, "tag archive policy chi ap dung GET/HEAD")
+
+    local nonwp = classify_endpoint({
+        uri = "/tag/a/custom", args = "", request_method = "GET",
+        host = "custom.test", document_root = "/srv/custom",
+    }, {}, false)
+    eq(nonwp.endpoint_id, nil, "tag suffix khong ap vao CMS chua proof WordPress")
+    eq(nonwp.endpoint_candidate, "wp_tag_archive_suffix",
+       "non-WP chi de lai candidate telemetry")
+end
+
+do
     local pseudo = classify_endpoint({
         uri = "/post.html/tel:0901494677", args = "", request_method = "GET",
         host = "custom.test", document_root = "/srv/custom",
@@ -990,6 +1042,9 @@ cfg.endpoint_guard = {
         wp_oembed_embed = {
             swarm = { mode = "shadow", scope = "server", window = 10, requests = 4,
                       networks = 3, hold = 30 },
+            server_inflight = { mode = "shadow", limit = 10,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
             rate = { mode = "shadow", short = 2, long = 5 },
             inflight = { mode = "shadow", limit = 2 },
             shape_mode = "shadow", cross_host_mode = "shadow",
@@ -1007,6 +1062,16 @@ cfg.endpoint_guard = {
                       networks = 3, hold = 30 },
             rate = { mode = "shadow", short = 20, long = 100 },
             inflight = { mode = "shadow", limit = 4 },
+            shape_mode = "off", cross_host_mode = "off",
+        },
+        wp_tag_archive_suffix = {
+            swarm = { mode = "shadow", scope = "server", window = 10, requests = 4,
+                      networks = 3, hold = 30 },
+            server_inflight = { mode = "shadow", limit = 3,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
+            rate = { mode = "off", short = 20, long = 100 },
+            inflight = { mode = "shadow", limit = 2 },
             shape_mode = "off", cross_host_mode = "off",
         },
     },
@@ -1208,6 +1273,113 @@ local eg_other = epctx("tenant_b", "192.0.2.1")
 endpoint_guard.admit(eg_other)
 eq(eg_other.endpoint_short_count, 1, "endpoint budget tach theo WordPress root")
 endpoint_guard.after(eg_other)
+
+do
+    -- Whole-server occupancy must aggregate the same bounded endpoint across
+    -- tenants, but `require_swarm` prevents occupancy alone from becoming a
+    -- reject candidate.  This is the central FP boundary of the replacement.
+    local spec = cfg.endpoint_guard.endpoints.wp_oembed_embed
+    spec.server_inflight.limit = 2
+    spec.server_inflight.mode = "shadow"
+    spec.server_inflight.require_swarm = true
+    clock = 1470
+    fake_ngx.shared.antibot_cache = Dict.new()
+    exits = {}
+
+    local quiet = {
+        epctx("quiet_a", "192.0.2.1"),
+        epctx("quiet_b", "198.51.100.2"),
+        epctx("quiet_c", "203.0.113.3"),
+    }
+    for i = 1, #quiet do endpoint_guard.admit(quiet[i]) end
+    eq(quiet[3].endpoint_inflight, 1,
+       "moi tenant van co inflight rieng")
+    eq(quiet[3].endpoint_server_inflight, 3,
+       "server inflight gom mot endpoint xuyen ba tenant")
+    eq(quiet[3].endpoint_server_inflight_over, true,
+       "raw server over duoc ghi du swarm chua mo")
+    eq(quiet[3].endpoint_would_reject, nil,
+       "server over don le khong tao would khi require_swarm")
+    for i = 1, #quiet do endpoint_guard.after(quiet[i]) end
+    eq(fake_ngx.shared.antibot_cache:get(quiet[1].endpoint_server_slot_key), nil,
+       "release tra het server endpoint slot")
+
+    -- Open distributed evidence first, then keep three backend requests alive.
+    -- All three tenants share the server axis while their tenant axis stays 1.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local evidence = {
+        epctx("evidence_a", "192.0.2.1"),
+        epctx("evidence_b", "198.51.100.2"),
+        epctx("evidence_c", "203.0.113.3"),
+        epctx("evidence_d", "192.0.2.99"),
+    }
+    for i = 1, #evidence do endpoint_guard.before(evidence[i]) end
+    eq(evidence[4].endpoint_swarm_open, true,
+       "fixture mo dung distributed swarm")
+
+    local live = {
+        epctx("live_a", "192.0.2.10"),
+        epctx("live_b", "198.51.100.20"),
+        epctx("live_c", "203.0.113.30"),
+    }
+    for i = 1, #live do
+        endpoint_guard.before(live[i])
+        endpoint_guard.admit(live[i])
+    end
+    eq(live[3].endpoint_server_inflight, 3,
+       "compound gate thay ba live request toan may")
+    eq(live[3].endpoint_would_reject, true,
+       "server over + swarm tao shadow candidate")
+    ok(tostring(live[3].endpoint_cause):find("server_inflight", 1, true) ~= nil,
+       "compound candidate co cause server_inflight")
+    eq(#exits, 0, "server inflight shadow khong chan")
+    for i = 1, #live do endpoint_guard.after(live[i]) end
+
+    -- If shared-dict pressure strikes between the tenant and server atomic
+    -- increments, the first slot must be rolled back before failing open.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    fake_ngx.shared.antibot_cache.fail_prefix = "epg:server:"
+    local degraded = epctx("rollback", "192.0.2.1")
+    local _, degraded_exit = endpoint_guard.admit(degraded)
+    eq(degraded_exit, false, "server slot failure fail-open")
+    eq(degraded.endpoint_server_inflight_degraded, true,
+       "server slot failure co telemetry")
+    eq(degraded.endpoint_admitted, nil,
+       "server slot failure khong tao admitted ao")
+    eq(fake_ngx.shared.antibot_cache:get(
+        "ep:rollback:wp_oembed_embed:slot:" .. tostring(math.floor(clock / 30))), nil,
+       "server slot failure rollback tenant slot")
+
+    -- The late atomic gate remains authoritative.  A race that passes before()
+    -- but increments slot number 3 must roll back BOTH axes before returning.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    spec.server_inflight.mode = "enforce"
+    local a = epctx("atomic_a", "192.0.2.1")
+    local b = epctx("atomic_b", "198.51.100.2")
+    local c = epctx("atomic_c", "203.0.113.3")
+    a.endpoint_swarm_open = true
+    b.endpoint_swarm_open = true
+    c.endpoint_swarm_open = true
+    endpoint_guard.admit(a)
+    endpoint_guard.admit(b)
+    exits = {}
+    fake_ngx.header = {}
+    local _, server_exit = endpoint_guard.admit(c)
+    eq(server_exit, true, "server inflight enforce bat atomic limit+1")
+    eq(exits[#exits], 503, "server capacity shed tra 503")
+    eq(c.endpoint_admitted, false, "request bi shed khong giu tenant slot")
+    eq(fake_ngx.shared.antibot_cache:get(a.endpoint_server_slot_key), 2,
+       "late reject rollback server slot tu 3 ve 2")
+    eq(fake_ngx.shared.antibot_cache:get(c.endpoint_slot_key), nil,
+       "late reject rollback tenant slot")
+    endpoint_guard.after(a)
+    endpoint_guard.after(b)
+    eq(fake_ngx.shared.antibot_cache:get(a.endpoint_server_slot_key), nil,
+       "hai request con lai release server slot")
+
+    spec.server_inflight.mode = "shadow"
+    spec.server_inflight.limit = 10
+end
 
 -- Incident replay shape: every request uses another IP and releases before
 -- the next one, so neither per-IP nor concurrency is required for detection;

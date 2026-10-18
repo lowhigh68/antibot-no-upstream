@@ -854,6 +854,7 @@ function _M.run(ctx)
             " epwould=%s epcause=%s epshape=%s epurl=%s epsrc=%s epproof=%s" ..
             " epq=%s epck=%s epswarm=%s epswh=%s/%s epswn=%s/%s" ..
             " epswmode=%s epswscope=%s epswuntil=%s epswdeg=%s" ..
+            " epsif=%s/%s epsifmode=%s epsifgate=%s epsifover=%s epsifdeg=%s" ..
             " epdeg=%s epexp=%s epdur=%s epactual=%s epup=%s epuptime=%s",
             tostring(ctx.endpoint_id or "-"),
             tostring(ctx.endpoint_candidate or "-"),
@@ -882,6 +883,13 @@ function _M.run(ctx)
             ctx.endpoint_swarm_until
                 and string.format("%.3f", ctx.endpoint_swarm_until) or "-",
             tostring(ctx.endpoint_swarm_degraded or false),
+            tostring(ctx.endpoint_server_inflight or "-"),
+            tostring(ctx.endpoint_server_inflight_limit or "-"),
+            tostring(ctx.endpoint_server_inflight_mode or "-"),
+            ctx.endpoint_server_inflight_requires_swarm == nil and "-"
+                or (ctx.endpoint_server_inflight_requires_swarm and "swarm" or "none"),
+            tostring(ctx.endpoint_server_inflight_over or false),
+            tostring(ctx.endpoint_server_inflight_degraded or false),
             tostring(ctx.endpoint_degraded
                 or ctx.endpoint_policy_degraded or false),
             tostring(ctx.endpoint_slot_expired or false),

@@ -87,7 +87,8 @@ fi
 
 MISSING=""
 for col in epif epwould epcause epshape epsrc epproof epmode epq epck \
-           epswarm epswh epswn epswmode epswscope epswuntil epswdeg; do
+           epswarm epswh epswn epswmode epswscope epswuntil epswdeg \
+           epsif epsifmode epsifgate epsifover epsifdeg; do
     grep -q "$col=" "$LOGGER" || MISSING="$MISSING $col"
 done
 if [ -n "$MISSING" ]; then
@@ -211,6 +212,36 @@ grep -oE 'epif=[0-9]+/[0-9]+' "$WIN" \
           ($2 + 0 > $3 + 0 ? "   <-- VUOT TRAN" : "")}'
 
 echo
+echo "-- epsif (whole-server live occupancy per endpoint family) --"
+echo "  epsifover=true = raw occupancy only; epcause=server_inflight means"
+echo "  every configured evidence gate (normally swarm) also passed."
+awk '
+function value(name,    i, p) {
+    p = name "="
+    for (i = 1; i <= NF; i++) if (index($i, p) == 1) return substr($i, length(p) + 1)
+    return "-"
+}
+{
+    ep = value("ep")
+    split(value("epsif"), pair, "/")
+    if (ep != "-" && pair[1] ~ /^[0-9]+$/ && pair[2] ~ /^[0-9]+$/) {
+        key = ep " mode=" value("epsifmode") " gate=" value("epsifgate")
+        rows[key]++
+        if (value("epsifover") == "true") over[key]++
+        if (value("epsifdeg") == "true") degraded[key]++
+        if (pair[1] + 0 > maximum[key] + 0) maximum[key] = pair[1] + 0
+        limit[key] = pair[2] + 0
+        if (value("epcause") ~ /(^|,)server_inflight(,|$)/) candidate[key]++
+    }
+}
+END {
+    for (key in rows)
+        printf "%s rows=%d raw_over=%d compound_candidate=%d degraded=%d max=%d/%d\n",
+            key, rows[key], over[key] + 0, candidate[key] + 0,
+            degraded[key] + 0, maximum[key] + 0, limit[key] + 0
+}' "$WIN" | sort
+
+echo
 echo "── would / cause ────────────────────────────────────"
 grep -oE 'epwould=(true|false)' "$WIN" | sort | uniq -c
 grep -oE 'epcause=[a-z_,]+' "$WIN" | sort | uniq -c | sort -rn
@@ -282,6 +313,7 @@ function value(name,    i, p) {
             if (cause ~ /(^|,)rate_short(,|$)/) would_rs[key]++
             if (cause ~ /(^|,)rate_long(,|$)/) would_rl[key]++
             if (cause ~ /(^|,)emergency(,|$)/) would_em[key]++
+            if (cause ~ /(^|,)server_inflight(,|$)/) would_sif[key]++
         }
         if ((value("rown") + 0) > 0) trusted[key]++
 
@@ -296,17 +328,21 @@ function value(name,    i, p) {
         split(inf, pair, "/")
         if (pair[1] ~ /^[0-9]+$/ && pair[1] + 0 > ifmax[key] + 0)
             ifmax[key] = pair[1] + 0
+        sinf = value("epsif")
+        split(sinf, spair, "/")
+        if (spair[1] ~ /^[0-9]+$/ && spair[1] + 0 > sifmax[key] + 0)
+            sifmax[key] = spair[1] + 0
     }
 }
 END {
     for (key in rows)
-        printf "%s rows=%d would=%d em=%d if=%d rs=%d rl=%d trusted=%d upstream=%d avg_up=%.3f max_up=%.3f max_if=%d\n",
+        printf "%s rows=%d would=%d em=%d if=%d sif=%d rs=%d rl=%d trusted=%d upstream=%d avg_up=%.3f max_up=%.3f max_if=%d max_sif=%d\n",
             key, rows[key], would[key] + 0, would_em[key] + 0,
-            would_if[key] + 0,
+            would_if[key] + 0, would_sif[key] + 0,
             would_rs[key] + 0, would_rl[key] + 0, trusted[key] + 0,
             upstream[key] + 0,
             upstream[key] ? upsum[key] / upstream[key] : 0,
-            upmax[key] + 0, ifmax[key] + 0
+            upmax[key] + 0, ifmax[key] + 0, sifmax[key] + 0
 }' "$WIN" | sort
 
 echo

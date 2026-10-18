@@ -50,7 +50,7 @@ end
 ctx.endpoint_scope = scope_id(docroot)
 EOF
 echo '-- endpoint guard' > "$W/new/l7/endpoint_guard.lua"
-echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg=' \
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
     > "$W/new/async/logger.lua"
 
 # ── Cay deploy GIA: ban CU (con chia theo prefix) ────────────────────
@@ -94,7 +94,7 @@ T_AFTER1=$((MOC + 600))
 T_AFTER2=$((MOC + 1200))
 
 L="$W/log/antibot.log"
-E='epsrc=pretty epproof=wp epmode=shadow epq=none epck=none epswarm=false epswh=1/12 epswn=1/6 epswmode=shadow epswscope=server epswuntil=- epswdeg=false'
+E='epsrc=pretty epproof=wp epmode=shadow epq=none epck=none epswarm=false epswh=1/12 epswn=1/6 epswmode=shadow epswscope=server epswuntil=- epswdeg=false epsif=1/6 epsifmode=shadow epsifgate=swarm epsifover=false epsifdeg=false'
 {
   LINE $T_BEFORE "ep=wp_oembed_embed epif=9/3 epwould=true epcause=inflight epshape=ok $E"
   LINE $T_BEFORE "ep=wp_oembed_embed epif=8/3 epwould=true epcause=inflight epshape=ok $E"
@@ -104,7 +104,7 @@ E='epsrc=pretty epproof=wp epmode=shadow epq=none epck=none epswarm=false epswh=
   LINE $T_AFTER1 "ep=wp_oembed_embed epif=3/3 epwould=false epcause=- epshape=ok $E"
   LINE $T_AFTER2 "ep=wp_oembed_embed epif=4/3 epwould=true epcause=inflight epshape=ok $E rown=0.00"
   LINE $T_AFTER2 "ep=wp_oembed_embed epif=5/3 epwould=true epcause=inflight epshape=bad_url $E rown=0.00"
-  LINE $T_AFTER2 "ep=wp_rest_tags_read epif=1/6 epwould=false epcause=- epshape=scan epsrc=rest_route epproof=wp epmode=shadow epq=present epck=present epswarm=true epswh=12/12 epswn=6/6 epswmode=shadow epswscope=server epswuntil=9999999999.000 epswdeg=false epuptime=2.500 rown=0.80"
+  LINE $T_AFTER2 "ep=wp_rest_tags_read epif=1/6 epwould=false epcause=- epshape=scan epsrc=rest_route epproof=wp epmode=shadow epq=present epck=present epswarm=true epswh=12/12 epswn=6/6 epswmode=shadow epswscope=server epswuntil=9999999999.000 epswdeg=false epsif=7/6 epsifmode=shadow epsifgate=swarm epsifover=true epsifdeg=false epuptime=2.500 rown=0.80"
   LINE $T_AFTER2 "ep=wp_oembed_embed epif=7/3 epwould=true epcause=inflight epshape=ok $E rown=0.00"
   LINE $T_AFTER2 "reason=allow score=1.0 rown=0.80"
 } > "$L"
@@ -172,10 +172,13 @@ ck "thay epshape=scan" "yes" \
 ck "thay epsrc=rest_route" "yes" \
    "$(printf '%s' "$out_new" | grep -q 'epsrc=rest_route' && echo yes || echo no)"
 ck "wp/v2 tach query + cookie + cost" "yes" \
-   "$(printf '%s' "$out_new" | grep -q 'wp_rest_tags_read query=present cookie=present rows=1 would=0 em=0 if=0 rs=0 rl=0 trusted=1 upstream=1 avg_up=2.500 max_up=2.500 max_if=1' \
+   "$(printf '%s' "$out_new" | grep -q 'wp_rest_tags_read query=present cookie=present rows=1 would=0 em=0 if=0 sif=0 rs=0 rl=0 trusted=1 upstream=1 avg_up=2.500 max_up=2.500 max_if=1 max_sif=7' \
       && echo yes || echo no)"
 ck "swarm gom route, co hit va source-network rieng" "yes" \
    "$(printf '%s' "$out_new" | grep -q 'wp_rest_tags_read mode=shadow scope=server rows=1 open=1 degraded=0 max_hits=12/12 max_networks=6/6' \
+      && echo yes || echo no)"
+ck "server occupancy tach raw over khoi compound candidate" "yes" \
+   "$(printf '%s' "$out_new" | grep -q 'wp_rest_tags_read mode=shadow gate=swarm rows=1 raw_over=1 compound_candidate=0 degraded=0 max=7/6' \
       && echo yes || echo no)"
 
 echo "── 6. cong FP: khach that trong tap would ───────────"
@@ -233,22 +236,31 @@ rc_mut=$(run new >/dev/null 2>&1; echo $?)
 ck "dot bien scope_id bi bat" "3" "$rc_mut"
 cp "$W/keep.lua" "$W/new/waf/endpoint_policy.lua"
 
-echo 'epif= epwould= epcause= epshape= epsrc= epproof= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg=' \
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
     > "$W/new/async/logger.lua"
 out_mut2=$(run new); rc_mut2=$?
 ck "dot bien thieu cot epmode bi bat" "3" "$rc_mut2"
 ck "cong chi ro cot thieu" "yes" \
    "$(printf '%s' "$out_mut2" | grep -q 'epmode' && echo yes || echo no)"
-echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg=' \
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
     > "$W/new/async/logger.lua"
 
-echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg=' \
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
     > "$W/new/async/logger.lua"
 out_mut3=$(run new); rc_mut3=$?
 ck "dot bien thieu cot epswarm bi bat" "3" "$rc_mut3"
 ck "cong chi ro cot swarm thieu" "yes" \
    "$(printf '%s' "$out_mut3" | grep -q 'epswarm' && echo yes || echo no)"
-echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg=' \
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
+    > "$W/new/async/logger.lua"
+
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsifmode= epsifgate= epsifover= epsifdeg=' \
+    > "$W/new/async/logger.lua"
+out_mut4=$(run new); rc_mut4=$?
+ck "dot bien thieu cot epsif bi bat" "3" "$rc_mut4"
+ck "cong chi ro cot server inflight thieu" "yes" \
+   "$(printf '%s' "$out_mut4" | grep -q 'epsif' && echo yes || echo no)"
+echo 'epif= epwould= epcause= epshape= epsrc= epproof= epmode= epq= epck= epswarm= epswh= epswn= epswmode= epswscope= epswuntil= epswdeg= epsif= epsifmode= epsifgate= epsifover= epsifdeg=' \
     > "$W/new/async/logger.lua"
 
 # Moc khong phai so -> phai tu choi, khong coi nhu 0 (= doc ca file)

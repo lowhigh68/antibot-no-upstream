@@ -528,6 +528,7 @@ do
     local html   = (eg.endpoints or {}).wp_html_pathinfo or {}
     local posts  = (eg.endpoints or {}).wp_rest_posts_item or {}
     local tags   = (eg.endpoints or {}).wp_rest_tags_read or {}
+    local tag_archive = (eg.endpoints or {}).wp_tag_archive_suffix or {}
 
     eq(eg.enabled, true, "endpoint_guard bat trong config that")
     eq(eg.inflight_status, 503,
@@ -578,6 +579,22 @@ do
        "tags route swarm mac dinh shadow de khong them FP")
     eq(((posts.swarm or {}).mode), "shadow",
        "posts item route swarm mac dinh shadow")
+    for name, endpoint in pairs({
+        oembed = oembed, tags = tags, posts = posts, tag_archive = tag_archive,
+    }) do
+        eq(((endpoint.server_inflight or {}).mode), "shadow",
+           name .. " server-inflight bat dau SHADOW")
+        eq(((endpoint.server_inflight or {}).require_swarm), true,
+           name .. " server-inflight phai co swarm gate")
+        eq(((endpoint.server_inflight or {}).status), 503,
+           name .. " server-inflight dung capacity status 503")
+    end
+    eq(tag_archive.shape_mode, "off",
+       "tag archive custom rewrite khong bi shape block truc tiep")
+    eq(((tag_archive.swarm or {}).mode), "shadow",
+       "tag archive swarm chi do, khong block plugin/custom route")
+    eq(((tag_archive.swarm or {}).scope), "server",
+       "tag archive gom chien dich xuyen domain")
     eq(((html.swarm or {}).networks), 6,
        "route swarm can nhieu source-network, khong chi nhieu request")
     eq(((html.swarm or {}).requests), 12,
@@ -637,6 +654,12 @@ do
     for _, field in ipairs({ " epq=", " epck=" }) do
         ok(logger_src:find(field, 1, true) ~= nil,
            "logger giu cot REST query/cookie " .. field)
+    end
+    for _, field in ipairs({
+        " epsif=", " epsifmode=", " epsifgate=", " epsifover=", " epsifdeg=",
+    }) do
+        ok(logger_src:find(field, 1, true) ~= nil,
+           "logger giu cot endpoint server-inflight " .. field)
     end
     -- `server` DA GO TINH TOAN 18-10. Khong dat han muc -> `consider()` tra ve
     -- ngay, truc chi con dem. Hai vong do tren 28-246 cho thay no khong the

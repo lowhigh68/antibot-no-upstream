@@ -179,6 +179,23 @@ local function swarm_config(spec)
     return swarm, mode
 end
 
+-- Whole-server live occupancy for one bounded endpoint family.  This is not a
+-- request-rate counter: a 20-second request holds its slot for 20 seconds,
+-- while a 100ms request releases it immediately.  The key deliberately omits
+-- host, docroot, URI, query and caller identity, closing the multi-domain and
+-- rotating-IP multiplication gaps without learning anything about plugins.
+local function server_inflight_config(spec)
+    local server = type(spec.server_inflight) == "table"
+        and spec.server_inflight or {}
+    local mode = tostring(server.mode or "off")
+    if mode ~= "shadow" and mode ~= "enforce" then mode = "off" end
+    return server, mode
+end
+
+local function server_base_key(ctx)
+    return "epg:server:" .. tostring(ctx.endpoint_id)
+end
+
 -- Route-shape swarm meter.  Policy has already reduced attacker-controlled
 -- path/query variants to a bounded endpoint_id, so none of those raw values
 -- enter a shared-dict key.  The per-network seen-set is also capped: after the
@@ -326,7 +343,8 @@ local function modes(spec)
            tostring(emergency.mode or "off")
 end
 
-local function cause_state(ctx, spec, short_n, long_n, inflight_n, swarm_active)
+local function cause_state(ctx, spec, short_n, long_n, inflight_n,
+                           server_inflight_n, swarm_active)
     local rate_mode, inflight_mode, shape_mode, cross_mode, emergency_mode = modes(spec)
     local causes, enforced = {}, {}
     local function add(name, mode)
@@ -349,6 +367,19 @@ local function cause_state(ctx, spec, short_n, long_n, inflight_n, swarm_active)
     local limit = tonumber(inflight.limit)
     if limit and limit > 0 and inflight_n > limit then add("inflight", inflight_mode) end
 
+    local server, server_mode = server_inflight_config(spec)
+    local server_limit = tonumber(server.limit)
+    local server_over = server_limit and server_limit > 0
+        and server_inflight_n > server_limit or false
+    local require_swarm = server.require_swarm ~= false
+    if server_mode ~= "off" then
+        ctx.endpoint_server_inflight_over = server_over
+        ctx.endpoint_server_inflight_requires_swarm = require_swarm
+    end
+    if server_over and (not require_swarm or swarm_active) then
+        add("server_inflight", server_mode)
+    end
+
     local rate = type(spec.rate) == "table" and spec.rate or {}
     local short_limit, long_limit = tonumber(rate.short), tonumber(rate.long)
     if short_limit and short_limit > 0 and short_n > short_limit then
@@ -365,16 +396,20 @@ local function observed_mode(spec, causes)
     if #causes == 0 then
         local rate, inflight, shape, cross, emergency = modes(spec)
         local _, swarm = swarm_config(spec)
+        local _, server_inflight = server_inflight_config(spec)
         if rate == "enforce" or inflight == "enforce"
            or shape == "enforce" or cross == "enforce"
-           or emergency == "enforce" or swarm == "enforce" then return "enforce" end
+           or emergency == "enforce" or swarm == "enforce"
+           or server_inflight == "enforce" then return "enforce" end
         if rate == "shadow" or inflight == "shadow"
            or shape == "shadow" or cross == "shadow"
-           or emergency == "shadow" or swarm == "shadow" then return "shadow" end
+           or emergency == "shadow" or swarm == "shadow"
+           or server_inflight == "shadow" then return "shadow" end
         return "off"
     end
     local rate, inflight, shape, cross, emergency = modes(spec)
     local _, swarm = swarm_config(spec)
+    local _, server_inflight = server_inflight_config(spec)
     for i = 1, #causes do
         local cause = causes[i]
         if (cause == "inflight" and inflight == "enforce")
@@ -382,7 +417,8 @@ local function observed_mode(spec, causes)
            or (cause:find("^shape_") and shape == "enforce")
            or (cause == "cross_host" and cross == "enforce")
            or (cause == "emergency" and emergency == "enforce")
-           or (cause == "swarm" and swarm == "enforce") then
+           or (cause == "swarm" and swarm == "enforce")
+           or (cause == "server_inflight" and server_inflight == "enforce") then
             return "enforce"
         end
     end
@@ -402,6 +438,12 @@ local function reject(ctx, c, spec, enforced_causes)
             break
         elseif enforced_causes[i] == "inflight" then
             status = tonumber(c.inflight_status) or 503
+            break
+        elseif enforced_causes[i] == "server_inflight" then
+            local server = type(spec.server_inflight) == "table"
+                and spec.server_inflight or {}
+            status = tonumber(server.status) or tonumber(c.inflight_status) or 503
+            retry_after = tonumber(server.retry_after) or retry_after
             break
         elseif enforced_causes[i] == "swarm" then
             local swarm = type(spec.swarm) == "table" and spec.swarm or {}
@@ -461,6 +503,11 @@ function _M.before(ctx)
     local short_n = tonumber(dict:get(rate_key(base, "s", short_s, t))) or 0
     local long_n = tonumber(dict:get(rate_key(base, "l", long_s, t))) or 0
     local inflight_n = total_inflight(dict, base, c, t)
+    local server_cfg, server_mode = server_inflight_config(spec)
+    local server_inflight_n = 0
+    if server_mode ~= "off" then
+        server_inflight_n = total_inflight(dict, server_base_key(ctx), c, t)
+    end
 
     local rate = type(spec.rate) == "table" and spec.rate or {}
     local inflight = type(spec.inflight) == "table" and spec.inflight or {}
@@ -470,11 +517,17 @@ function _M.before(ctx)
     ctx.endpoint_long_limit = tonumber(rate.long) or 0
     ctx.endpoint_inflight = inflight_n + 1
     ctx.endpoint_inflight_limit = tonumber(inflight.limit) or 0
+    if server_mode ~= "off" then
+        ctx.endpoint_server_inflight = server_inflight_n + 1
+        ctx.endpoint_server_inflight_limit = tonumber(server_cfg.limit) or 0
+        ctx.endpoint_server_inflight_mode = server_mode
+    end
 
     -- cause_state uses `>` because this request is not counted yet.  Supply
     -- +1 to ask whether admitting it would cross the configured boundary.
     local causes, enforce, enforced_causes = cause_state(
-        ctx, spec, short_n + 1, long_n + 1, inflight_n + 1, swarm_active)
+        ctx, spec, short_n + 1, long_n + 1, inflight_n + 1,
+        server_inflight_n + 1, swarm_active)
     if enforce then
         ctx.endpoint_would_reject = true
         ctx.endpoint_cause = table.concat(causes, ",")
@@ -529,6 +582,33 @@ function _M.admit(ctx)
     end
 
     local inflight_n = total_inflight(dict, base, c, t, bucket_n)
+    local server_cfg, server_mode = server_inflight_config(spec)
+    local server_slot_key, server_inflight_n
+    if server_mode ~= "off" then
+        local server_base = server_base_key(ctx)
+        server_slot_key = slot_key(server_base, bucket)
+        local server_bucket_n, server_err = increment(
+            dict, server_slot_key, slot_ttl)
+        if not server_bucket_n then
+            -- Never leave a tenant slot behind when the second axis cannot be
+            -- acquired.  Capacity telemetry fails open, but the rollback is
+            -- exact and the degraded state remains visible in the log.
+            decrement(dict, request_slot_key, slot_ttl)
+            ctx.endpoint_degraded = true
+            ctx.endpoint_server_inflight_degraded = true
+            log_dict_error("server_slot", server_err)
+            return true, false
+        end
+        if server_err then
+            ctx.endpoint_degraded = true
+            ctx.endpoint_server_inflight_degraded = true
+            log_dict_error("server_slot_ttl", server_err)
+        end
+        server_inflight_n = total_inflight(
+            dict, server_base, c, t, server_bucket_n)
+    else
+        server_inflight_n = 0
+    end
     local short_limit = tonumber(rate.short) or 0
     local long_limit = tonumber(rate.long) or 0
     local inflight_cfg = type(spec.inflight) == "table" and spec.inflight or {}
@@ -538,6 +618,7 @@ function _M.admit(ctx)
     ctx.endpoint_released = false
     ctx.endpoint_admit_at = t
     ctx.endpoint_slot_key = request_slot_key
+    ctx.endpoint_server_slot_key = server_slot_key
     ctx.endpoint_base_key = base
     ctx.endpoint_short_count = short_n
     ctx.endpoint_long_count = long_n
@@ -545,9 +626,14 @@ function _M.admit(ctx)
     ctx.endpoint_long_limit = long_limit
     ctx.endpoint_inflight = inflight_n
     ctx.endpoint_inflight_limit = inflight_limit
+    if server_mode ~= "off" then
+        ctx.endpoint_server_inflight = server_inflight_n
+        ctx.endpoint_server_inflight_limit = tonumber(server_cfg.limit) or 0
+        ctx.endpoint_server_inflight_mode = server_mode
+    end
 
     local causes, enforce, enforced_causes = cause_state(
-        ctx, spec, short_n, long_n, inflight_n,
+        ctx, spec, short_n, long_n, inflight_n, server_inflight_n,
         ctx.endpoint_swarm_open == true)
     ctx.endpoint_mode = observed_mode(spec, causes)
     if #causes > 0 then
@@ -557,6 +643,7 @@ function _M.admit(ctx)
 
     if enforce then
         decrement(dict, request_slot_key, slot_ttl)
+        if server_slot_key then decrement(dict, server_slot_key, slot_ttl) end
         ctx.endpoint_released = true
         ctx.endpoint_admitted = false
         return reject(ctx, c, spec, enforced_causes)
@@ -600,6 +687,17 @@ function _M.after(ctx)
     elseif err then
         ctx.endpoint_degraded = true
         log_dict_error("release", err)
+    end
+
+    if ctx.endpoint_server_slot_key then
+        local _, server_err = decrement(dict, ctx.endpoint_server_slot_key, ttl)
+        if server_err == "not found" then
+            ctx.endpoint_slot_expired = true
+        elseif server_err then
+            ctx.endpoint_degraded = true
+            ctx.endpoint_server_inflight_degraded = true
+            log_dict_error("server_release", server_err)
+        end
     end
 end
 

@@ -754,6 +754,13 @@ _M.endpoint_guard = {
             -- emergency remains the active brake during the incident.
             swarm      = { mode = "shadow", scope = "server", window = 10,
                            requests = 12, networks = 6, hold = 60 },
+            -- Whole-server occupancy replacement for the emergency switch.
+            -- It remains shadow while emergency is on; after reopening, a
+            -- candidate exists only when both live occupancy AND distributed
+            -- swarm evidence are present.  Limit 6 is a measurement seed.
+            server_inflight = { mode = "shadow", limit = 6,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
             rate       = { mode = "shadow", short = 20, long = 100 },
             -- ENFORCE 18-10-2026 after production showed about 17 concurrent
             -- oEmbed calls against one docroot: 31/34 ended as 499/500 and
@@ -816,17 +823,41 @@ _M.endpoint_guard = {
             shape_status = 404,
             cross_host_mode = "off",
         },
+        -- Default WordPress tag archives accept only a bounded set of public
+        -- suffixes (pagination/feed/embed/AMP).  Anything else is collapsed
+        -- here without retaining the tag slug or suffix.  Direct shape block
+        -- stays OFF because custom rewrites can be legitimate; only the
+        -- compound distributed-swarm + whole-server occupancy candidate is
+        -- measured.  This policy knows no plugin, UA or attack token.
+        wp_tag_archive_suffix = {
+            swarm      = { mode = "shadow", scope = "server", window = 10,
+                           requests = 12, networks = 6, hold = 60 },
+            server_inflight = { mode = "shadow", limit = 4,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
+            rate       = { mode = "off", short = 20, long = 100 },
+            inflight   = { mode = "shadow", limit = 2 },
+            shape_mode = "off",
+            cross_host_mode = "off",
+        },
         -- Same incident: item reads against tags/posts consumed roughly
         -- 1,004s/756s respectively, but these are legitimate public REST API
         -- routes.  Measure query/cookie split and real concurrency on every
         -- server before promoting either axis independently.
         wp_rest_tags_read = {
             -- Emergency brake: block GET/HEAD collection and every tags
-            -- sub-route locally.  This can affect Gutenberg/tag consumers;
-            -- turn only this switch off after backend pressure is stable.
+            -- sub-route locally.  This affects every legitimate REST consumer
+            -- too; turn only this switch off after the server-inflight
+            -- replacement below has been measured and deliberately promoted.
             emergency  = { mode = "enforce", status = 429, retry_after = 300 },
             swarm      = { mode = "shadow", scope = "server", window = 10,
                            requests = 12, networks = 6, hold = 60 },
+            -- Emergency prevents backend admission, so this remains empty
+            -- until the endpoint is reopened.  Keep shadow; do not infer zero
+            -- capacity risk from zero samples while emergency is active.
+            server_inflight = { mode = "shadow", limit = 6,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
             rate       = { mode = "shadow", short = 20, long = 100 },
             inflight   = { mode = "shadow", limit = 4 },
             shape_mode = "off",
@@ -835,6 +866,13 @@ _M.endpoint_guard = {
         wp_rest_posts_item = {
             swarm      = { mode = "shadow", scope = "server", window = 10,
                            requests = 12, networks = 6, hold = 60 },
+            -- Valid endpoint, therefore no blanket shutdown.  Long requests
+            -- naturally accumulate here; fast consumers release immediately.
+            -- Requiring swarm prevents one legitimate client from turning a
+            -- capacity observation into a fleet-wide reject candidate.
+            server_inflight = { mode = "shadow", limit = 6,
+                                require_swarm = true, status = 503,
+                                retry_after = 5 },
             rate       = { mode = "shadow", short = 20, long = 100 },
             inflight   = { mode = "shadow", limit = 4 },
             shape_mode = "off",
