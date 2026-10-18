@@ -19,6 +19,7 @@ local transport_layer    = require "antibot.transport"
 local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
 local automation_guard   = require "antibot.l7.automation_guard"
+local operator_concurrency = require "antibot.l7.operator_concurrency"
 local endpoint_policy    = require "antibot.waf.endpoint_policy"
 local endpoint_guard     = require "antibot.l7.endpoint_guard"
 local l7_circuit         = require "antibot.l7.circuit_breaker"
@@ -230,6 +231,11 @@ end
 local function admit_dynamic(ctx)
     local _, endpoint_exit = endpoint_guard.admit(ctx)
     if endpoint_exit == true then return true end
+    -- This is the principal-wide backend slot, not another rate counter.
+    -- Keeping it after endpoint_guard means a per-docroot reject cannot also
+    -- appear as live operator work across the server.
+    local _, operator_exit = operator_concurrency.admit(ctx)
+    if operator_exit == true then return true end
     local _, exit = l7_surge.admit(ctx)
     return exit == true
 end
@@ -343,6 +349,7 @@ function _M.log()
     -- the completed upstream outcome.  Both expose their elected sample or
     -- transition in this same antibot.log line.
     endpoint_guard.after(ctx)
+    operator_concurrency.after(ctx)
     l7_surge.after(ctx)
     l7_circuit.after(ctx)
 

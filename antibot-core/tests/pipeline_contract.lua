@@ -92,7 +92,39 @@ package.loaded["antibot.enforcement"] = layer("enforcement", "run", function(ctx
 end)
 
 package.loaded["antibot.l7.admission"] = layer("admission", "run")
-package.loaded["antibot.l7.automation_guard"] = layer("automation.guard", "run")
+package.loaded["antibot.l7.automation_guard"] = {
+    run = function(ctx)
+        event("automation.guard")
+        if scenario.operator then
+            ctx.automation_observed = true
+            ctx.automation_tier = "operator"
+            ctx.automation_principal = scenario.principal or "gptbot"
+            ctx.operator_network_verified = true
+        end
+        return true, exit_for("automation.guard")
+    end,
+}
+package.loaded["antibot.l7.operator_concurrency"] = {
+    admit = function(ctx)
+        event("operator.admit")
+        if ngx.is_subrequest or ctx.automation_tier ~= "operator"
+           or ctx.operator_network_verified ~= true then return true, false end
+        if not ctx.automation_concurrency_admitted then
+            ctx.automation_concurrency_admitted = true
+            counts.operator_admitted = counts.operator_admitted + 1
+        end
+        if scenario.exit_at == "operator.admit" then return false, true end
+        return true, false
+    end,
+    after = function(ctx)
+        event("operator.after")
+        if ctx.automation_concurrency_admitted
+           and not ctx.automation_concurrency_released then
+            ctx.automation_concurrency_released = true
+            counts.operator_released = counts.operator_released + 1
+        end
+    end,
+}
 package.loaded["antibot.waf.endpoint_policy"] = {
     run = function(ctx)
         event("endpoint.policy")
@@ -273,6 +305,7 @@ local function reset(s)
     counts = {
         admitted = 0, released = 0, risk_calls = 0, intel_reports = 0,
         endpoint_admitted = 0, endpoint_released = 0,
+        operator_admitted = 0, operator_released = 0,
         timer_at = 0, memory_starts = 0, fleet_timer = 0, waf_ensure = 0,
     }
     worker_id = 1
@@ -303,6 +336,41 @@ before("access", "detection", "access chay truoc detection")
 before("enforcement", "surge.admit", "chi admit sau enforcement")
 before("endpoint.admit", "surge.admit",
     "endpoint atomic gate chay truoc global surge accounting")
+before("endpoint.admit", "operator.admit",
+    "endpoint reject duoc xu ly truoc principal concurrency")
+before("operator.admit", "surge.admit",
+    "principal concurrency nam o late-admit truoc surge telemetry")
+
+reset({ operator = true })
+root.run()
+eq(counts.operator_admitted, 1,
+   "proven operator nhan mot principal slot truoc content")
+eq(event_count("operator.admit"), 1,
+   "operator admit chi chay mot lan moi request")
+root.log()
+root.log()
+eq(counts.operator_released, 1,
+   "operator slot release log phase dung mot lan")
+
+reset({ operator = true, waf_block = true })
+root.run()
+eq(counts.operator_admitted, 0,
+   "WAF block khong tieu principal backend slot")
+
+reset({ operator = true, exit_at = "enforcement" })
+root.run()
+eq(counts.operator_admitted, 0,
+   "enforcement block khong tieu principal backend slot")
+
+reset({ operator = true, class = "resource", group = "resource" })
+root.run()
+eq(counts.operator_admitted, 1,
+   "operator resource van vao principal slot, khong phu thuoc URI/class")
+
+reset({ operator = true, subrequest = true })
+root.run()
+eq(counts.operator_admitted, 0,
+   "operator subrequest khong bi dem lap")
 
 reset({ endpoint = "wp_oembed_embed" })
 root.run()
@@ -413,6 +481,7 @@ do
         "antibot.core.config",
         "antibot.waf.endpoint_policy",
         "antibot.l7.endpoint_guard",
+        "antibot.l7.operator_concurrency",
     }) do package.loaded[name] = nil end
 
     local real = dofile(src .. "core/config.lua")
@@ -457,6 +526,30 @@ do
        "ChatGPT-User khong bi dung cung GPTBot")
     eq(aut.suspend_status, 403,
        "suspension dung 403, tach nghia voi rate throttle 429")
+    local conc = real.automation_concurrency or {}
+    eq(conc.enabled, true, "operator concurrency bat telemetry")
+    eq(conc.mode, "shadow",
+       "operator concurrency rollout SHADOW, chua mo GPTBot")
+    eq(conc.limit, 3, "operator concurrency shadow candidate N=3")
+    eq(((conc.principals or {}).gptbot or {}).mode, "shadow",
+       "GPTBot concurrency chua enforce khi suspension con bat")
+    eq(((conc.principals or {}).gptbot or {}).limit, 3,
+       "GPTBot dung mot pool ba slot tren toan may")
+
+    -- Rollout bat dau o shadow nen telemetry la dau ra duy nhat de quyet dinh
+    -- enforce.  Ghim schema de mot lan refactor logger khong bien module thanh
+    -- code chay nhung khong the do.
+    local logger_file = assert(io.open(src .. "async/logger.lua", "rb"))
+    local logger_src = logger_file:read("*a")
+    logger_file:close()
+    for _, field in ipairs({
+        "autcmode=", "autcn=", "autclim=", "autcwould=", "autcthr=",
+        "autcleft=", "autcdur=", "autcup=", "autcactual=", "autcdeg=",
+        "autcexp=",
+    }) do
+        ok(logger_src:find(field, 1, true) ~= nil,
+           "logger giu cot operator concurrency " .. field)
+    end
     -- `server` DA GO TINH TOAN 18-10. Khong dat han muc -> `consider()` tra ve
     -- ngay, truc chi con dem. Hai vong do tren 28-246 cho thay no khong the
     -- lam truc rang buoc: noi tran gap ba (20/60 -> 45/180) ma so luot vuot

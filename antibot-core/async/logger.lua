@@ -647,6 +647,34 @@ function _M.run(ctx)
             tostring(ngx.var.upstream_response_time or "-"))
     end
 
+    -- Whole-server concurrency for one proven operator principal.  This is
+    -- intentionally separate from `autfs/autfl`: those are fixed-window
+    -- arrival costs, while `autcn` is work still alive after the last local
+    -- verdict.  `autcdur-autcup` exposes slow-client/buffering overcount in the
+    -- Lua-only late-access -> log-phase slot before enforcement is promoted.
+    local automation_concurrency_str = ""
+    if ctx.automation_concurrency_principal then
+        automation_concurrency_str = string.format(
+            " autcmode=%s autcn=%s autclim=%s autcwould=%s autcthr=%s" ..
+            " autcleft=%s autcdur=%s autcup=%s autcactual=%s" ..
+            " autcdeg=%s autcexp=%s",
+            tostring(ctx.automation_concurrency_mode or "-"),
+            tostring(ctx.automation_concurrency_inflight or "-"),
+            tostring(ctx.automation_concurrency_limit or "-"),
+            tostring(ctx.automation_concurrency_would_reject or false),
+            tostring(ctx.automation_concurrency_rejected or false),
+            tostring(ctx.automation_concurrency_remaining or "-"),
+            ctx.automation_concurrency_duration
+                and string.format("%.3f", ctx.automation_concurrency_duration)
+                or "-",
+            ctx.automation_concurrency_upstream_time
+                and string.format("%.3f",
+                    ctx.automation_concurrency_upstream_time) or "-",
+            tostring(ctx.automation_concurrency_actual_status or "-"),
+            tostring(ctx.automation_concurrency_degraded or false),
+            tostring(ctx.automation_concurrency_slot_expired or false))
+    end
+
     -- Published-network provenance is independent from good-bot verification.
     -- `opmatch=true` means both network and self-identification matched early;
     -- `opbind=contact|stem` distinguishes strong domain binding from the weaker
@@ -1103,7 +1131,8 @@ function _M.run(ctx)
         surge_str,
         circuit_str
     )
-    line = line .. endpoint_str .. automation_str .. operator_str
+    line = line .. endpoint_str .. automation_str
+        .. automation_concurrency_str .. operator_str
         .. shared_ip_str .. ban_str
 
     write_log_line(line)

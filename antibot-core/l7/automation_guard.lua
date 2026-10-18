@@ -234,7 +234,7 @@ function _M.run(ctx)
     local cost = tonumber((c.costs or {})[class]) or 1
     local host = ((ctx.req and ctx.req.host) or ngx.var.host or "-"):lower()
     local ip = tostring(ctx.ip or "-")
-    principal = tostring(ctx.automation_principal)
+    local principal = tostring(ctx.automation_principal)
     local now = ngx.time()
     local windows = c.windows or { short = 10, long = 60 }
 

@@ -583,6 +583,41 @@ _M.automation = {
     },
 }
 
+-- Whole-server, per-principal concurrency for proven automation operators.
+--
+-- This is deliberately separate from the fixed-window governor above:
+-- `fleet=10/30` controls arrival bursts, while this gate controls how much
+-- backend work remains alive.  One canonical principal shares ONE slot pool
+-- across every source IP, tenant host and URI.  Slot lifetime naturally makes
+-- a 15-second request cost more capacity than a 200ms request without guessing
+-- from req_class.
+--
+-- SHADOW first.  GPTBot remains on the emergency suspension above, because
+-- removing it while this gate only observes would restore the production load
+-- incident.  Validate `autcn/autcwould/autcdur/autcup/autcdeg` on other proven
+-- operators; then remove only `suspended_principals.gptbot` and promote only
+-- `principals.gptbot.mode` to `enforce` in the same deployment.
+_M.automation_concurrency = {
+    enabled = true,
+    mode = "shadow",             -- default for every proven operator
+    limit = 3,
+    status = 429,
+    retry_after = 10,
+
+    -- Same leak-resistant slot geometry already proven by endpoint_guard.
+    -- Retention exceeds the measured GPTBot upstream maximum (~62s).  A request
+    -- living beyond 180s ages out fail-open and is exposed by `autcexp=true`.
+    slot_bucket_seconds = 30,
+    slot_retention_seconds = 180,
+
+    -- Per-principal rollout knob.  Keep explicit even while it equals the
+    -- default so reopening GPTBot is a one-principal change, not a fleet-wide
+    -- change that also affects Claude/Perplexity/OAI-SearchBot.
+    principals = {
+        gptbot = { mode = "shadow", limit = 3 },
+    },
+}
+
 _M.l7_admission = {
     enabled       = true,
     mode          = "enforce", -- shadow | enforce | off

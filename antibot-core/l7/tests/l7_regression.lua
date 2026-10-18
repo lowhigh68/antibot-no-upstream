@@ -93,6 +93,7 @@ local syntax_rel = {
     "async/logger.lua",
     "l7/admission.lua",
     "l7/automation_guard.lua",
+    "l7/operator_concurrency.lua",
     "l7/endpoint_guard.lua",
     "l7/circuit_breaker.lua",
     "l7/surge_guard.lua",
@@ -1024,6 +1025,208 @@ package.loaded["antibot.waf.endpoint_policy"] = nil
 package.loaded["antibot.waf.wordpress.paths"] = saved_wp_paths
 end
 run_endpoint_tests()
+
+-- Proven-operator concurrency: one principal shares one slot pool across all
+-- IPs, hosts and URIs.  Unlike endpoint_guard, no endpoint_id is required.
+-- Keep this in its own function scope: the regression chunk is deliberately
+-- broad and LuaJIT caps one function at 200 local variables.
+cfg.__run_operator_concurrency_tests = function()
+local old_operator_concurrency = cfg.automation_concurrency
+cfg.automation_concurrency = {
+    enabled = true, mode = "shadow", limit = 2,
+    status = 429, retry_after = 10,
+    slot_bucket_seconds = 30, slot_retention_seconds = 180,
+    principals = { gptbot = { mode = "shadow", limit = 2 } },
+}
+package.loaded["antibot.l7.operator_concurrency"] = nil
+local operator_concurrency = require "antibot.l7.operator_concurrency"
+
+local function opctx(principal, host, ip, uri, class)
+    return {
+        automation_observed = true,
+        automation_tier = "operator",
+        automation_principal = principal or "gptbot",
+        operator_network_verified = true,
+        req = { host = host or "a.test", uri = uri or "/" },
+        req_class = class or "navigation",
+        ip = ip or "192.0.2.1",
+        action = "allow",
+    }
+end
+
+clock = 1600
+exits = {}
+fake_ngx.status = 200
+fake_ngx.header = {}
+fake_ngx.var = { upstream_status = "200", upstream_response_time = "15.400" }
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_stats = Dict.new()
+
+local oc1 = opctx("GPTBot", "one.test", "192.0.2.1", "/")
+local oc2 = opctx("gptbot", "two.test", "198.51.100.2", "/tag/a")
+local oc3 = opctx("gptbot", "three.test", "203.0.113.3",
+    "/post.html/feed", "resource")
+operator_concurrency.admit(oc1)
+operator_concurrency.admit(oc2)
+local _, oc3_exit = operator_concurrency.admit(oc3)
+eq(oc3_exit, false, "operator concurrency shadow khong chan")
+eq(oc3.automation_concurrency_inflight, 3,
+   "principal gom moi IP host URI vao mot slot pool")
+eq(oc3.automation_concurrency_would_reject, true,
+   "request limit+1 ghi shadow candidate")
+eq(oc3.automation_concurrency_mode, "shadow",
+   "principal override van shadow khi rollout")
+eq(#exits, 0, "operator concurrency shadow khong ngx.exit")
+
+clock = 1615
+operator_concurrency.after(oc1)
+eq(oc1.automation_concurrency_duration, 15,
+   "slot duration do tu late admit toi log phase")
+eq(oc1.automation_concurrency_upstream_time, 15.4,
+   "telemetry tach upstream time khoi slot lifetime")
+eq(oc1.automation_concurrency_remaining, 2,
+   "release mot principal slot de lai hai")
+operator_concurrency.after(oc1)
+eq(oc1.automation_concurrency_remaining, 2,
+   "operator release idempotent")
+operator_concurrency.after(oc2)
+operator_concurrency.after(oc3)
+
+-- Another principal has an independent whole-server pool: GPTBot cannot make
+-- Claude hit its limit, unlike the removed aggregate server-axis.
+local claude = opctx("claudebot", "one.test", "192.0.2.9", "/")
+operator_concurrency.admit(claude)
+eq(claude.automation_concurrency_inflight, 1,
+   "principal khac co slot pool doc lap")
+operator_concurrency.after(claude)
+
+-- A UA/claim alone cannot allocate a principal key or poison the official
+-- operator's capacity budget.
+local spoof = opctx("gptbot", "evil.test", "198.51.100.99", "/")
+spoof.automation_tier = "unknown"
+spoof.operator_network_verified = false
+operator_concurrency.admit(spoof)
+eq(spoof.automation_concurrency_admitted, nil,
+   "claim-only GPTBot khong duoc vao operator slot")
+
+-- HAI co phai duoc kiem RIENG. Ca `spoof` o tren dat ca hai cung luc, nen bo
+-- mot trong hai phep kiem trong `eligible()` van bi co con lai chan — dot bien
+-- "bo kiem operator_network_verified" SONG SOT voi chi ca do. Moi co can mot ca.
+local spoof_tier = opctx("gptbot", "evil.test", "198.51.100.98", "/")
+spoof_tier.automation_tier = "unknown"          -- chi tier sai
+operator_concurrency.admit(spoof_tier)
+eq(spoof_tier.automation_concurrency_admitted, nil,
+   "tier khac operator bi loai du operator_network_verified=true")
+eq(spoof_tier.automation_concurrency_principal, nil,
+   "va khong cap phat khoa principal nao")
+
+local spoof_net = opctx("gptbot", "evil.test", "198.51.100.97", "/")
+spoof_net.operator_network_verified = false     -- chi mang nguon sai
+operator_concurrency.admit(spoof_net)
+eq(spoof_net.automation_concurrency_admitted, nil,
+   "mang nguon khong xac thuc bi loai du tier=operator")
+eq(spoof_net.automation_concurrency_principal, nil,
+   "va khong cap phat khoa principal nao")
+
+-- Enforce is per-principal.  Exactly N requests live; N+1 is atomically rolled
+-- back and receives a local 429 without changing reputation/ban state.
+cfg.automation_concurrency.principals.gptbot.mode = "enforce"
+clock = 1700
+exits = {}
+fake_ngx.status = 200
+fake_ngx.header = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local oe1, oe2 = opctx("gptbot"), opctx("gptbot", "b.test", "192.0.2.2")
+operator_concurrency.admit(oe1)
+operator_concurrency.admit(oe2)
+local oe3 = opctx("gptbot", "c.test", "192.0.2.3")
+local _, oe3_exit = operator_concurrency.admit(oe3)
+eq(oe3_exit, true, "operator enforce chan request limit+1")
+eq(exits[#exits], 429, "operator concurrency tra 429")
+eq(oe3.action, "throttled", "capacity reject khong gan bot verdict")
+eq(oe3.automation_concurrency_rejected, true,
+   "actual concurrency reject co telemetry")
+eq(oe3.automation_concurrency_remaining, 2,
+   "request bi reject rollback dung slot cua chinh no")
+operator_concurrency.after(oe3)
+eq(oe3.automation_concurrency_remaining, 2,
+   "log phase khong decrement lan hai sau rollback")
+operator_concurrency.after(oe1)
+operator_concurrency.after(oe2)
+
+-- Shared-dict exhaustion is fail-open and observable; a metering fault must
+-- not become a crawler outage.
+cfg.automation_concurrency.principals.gptbot.mode = "shadow"
+clock = 1800
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.full = true
+local degraded_op = opctx("gptbot")
+local _, degraded_exit = operator_concurrency.admit(degraded_op)
+eq(degraded_exit, false, "operator dict failure fail-open")
+eq(degraded_op.automation_concurrency_degraded, true,
+   "operator dict failure visible")
+
+-- A successful INCR with a failed EXPIRE is also degraded.  The live count is
+-- still useful for shadow telemetry, but it must not become an enforce denial
+-- because stale slots could otherwise survive after their requests disappear.
+cfg.automation_concurrency.principals.gptbot.mode = "enforce"
+clock = 1810
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.expire = function()
+    return nil, "expire failed"
+end
+local ttl_bad_1 = opctx("gptbot")
+local ttl_bad_2 = opctx("gptbot", "b.test", "192.0.2.2")
+local ttl_bad_3 = opctx("gptbot", "c.test", "192.0.2.3")
+operator_concurrency.admit(ttl_bad_1)
+operator_concurrency.admit(ttl_bad_2)
+local _, ttl_bad_exit = operator_concurrency.admit(ttl_bad_3)
+eq(ttl_bad_3.automation_concurrency_would_reject, true,
+   "TTL failure van ghi duoc would-reject")
+eq(ttl_bad_3.automation_concurrency_degraded, true,
+   "TTL failure danh dau meter degraded")
+eq(ttl_bad_exit, false,
+   "TTL failure fail-open du mode enforce")
+eq(#exits, 0, "TTL failure khong ngx.exit")
+operator_concurrency.after(ttl_bad_1)
+operator_concurrency.after(ttl_bad_2)
+operator_concurrency.after(ttl_bad_3)
+
+-- Slot RO: request giu slot lau hon `slot_retention_seconds` roi moi tra.
+-- Day la duong hong duy nhat cua moi co che concurrency, va no PHAI tu lanh:
+-- `total_inflight()` chi cong `span` bucket gan nhat, nen mot slot qua cu roi
+-- khoi pham vi do. `autcexp=true` la cach duy nhat nhan ra viec do trong log —
+-- khong co cot nay thi mot slot ro trong giong het mot crawler dang keo manh.
+cfg.automation_concurrency.principals.gptbot.mode = "shadow"
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3000
+local leak = opctx("gptbot")
+operator_concurrency.admit(leak)
+eq(leak.automation_concurrency_inflight, 1, "slot duoc cap")
+-- Tra slot SAU retention (180s) + mot bucket: slot cu da roi khoi cua so dem.
+clock = 3000 + 180 + 30 + 1
+operator_concurrency.after(leak)
+eq(leak.automation_concurrency_slot_expired, true,
+   "giu slot qua retention thi danh dau autcexp=true")
+ok(leak.automation_concurrency_duration >= 180,
+   "autcdur ghi dung thoi gian giu slot that")
+
+-- Va slot ro KHONG lam nghen principal vinh vien: request moi sau do thay
+-- dem sach, vi slot cu da roi khoi `span` bucket.
+clock = 3000 + 180 + 30 + 2
+local after_leak = opctx("gptbot", "d.test", "192.0.2.9")
+operator_concurrency.admit(after_leak)
+eq(after_leak.automation_concurrency_inflight, 1,
+   "slot ro tu lanh — principal khong bi nghen vinh vien")
+operator_concurrency.after(after_leak)
+
+cfg.automation_concurrency = old_operator_concurrency
+package.loaded["antibot.l7.operator_concurrency"] = nil
+end
+cfg.__run_operator_concurrency_tests()
+cfg.__run_operator_concurrency_tests = nil
 
 -- Classifier: extension chi duoc coi la resource khi GET/HEAD; Sec-Fetch-Dest
 -- chi la telemetry, khong con la quyen tu chon lane nhe.
