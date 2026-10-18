@@ -18,8 +18,19 @@
 # khong ghi URI (`logger.lua:936`).
 #
 # BAY DA GHIM:
-#   - Cot thoi gian KHONG phai `$NF` ($NF la User-Agent). Tim token dang
+#   - DOC `*.log` (format `antibot_fmt`), KHONG doc `*.bytes`. Hai file do HAI
+#     `log_format` khac nhau ghi ra, xem `nginx/nginx.conf:160-164`:
+#         bytes       = ... "$http_referer" "$http_user_agent"      <- HET
+#         antibot_fmt = ... ja3_partial=$sent_http_x_bot_ja3partial ${request_time}s
+#     `$request_time` CHI co trong `antibot_fmt`. Ban dau script doc `*.bytes`
+#     va in `co cot thoi gian: 0` tren 5.538 dong HOP LE — bo loc thoi gian
+#     chay dung, chi la file khong he chua cot can do. Nen gio script tu noi ro
+#     "dang doc gi / can doc gi" va tra rc=3, thay vi chi bao 0.
+#   - Cot thoi gian KHONG phai `$NF`: trong format `bytes` $NF la User-Agent,
+#     trong `antibot_fmt` moi la `${request_time}s`. Tim token dang
 #     `<so>.<so>s` quet tu PHAI sang, nen khong phu thuoc vi tri cot.
+#   - Cot status tim theo token SO TRAN 3 chu so: `fp=200` KHONG duoc nham la
+#     status (no co tien to), va `/a?b=404` KHONG duoc nham vi query bi cat.
 #   - `grep` gap byte nhi phan -> `grep -a`, neu khong no bo CA FILE.
 #   - Moi bang phai co MAU SO va phai in tong chi phi, khong chi dem luot.
 #
@@ -41,13 +52,15 @@ if [ ! -d "$LOGDIR" ]; then
     exit 2
 fi
 
-NFILES=$(find "$LOGDIR" -maxdepth 1 -name '*.bytes' 2>/dev/null | wc -l)
+# `*.log` chu KHONG `*.bytes`: chi `antibot_fmt` co `$request_time`.
+GLOB=${GLOB:-*.log}
+NFILES=$(find "$LOGDIR" -maxdepth 1 -name "$GLOB" 2>/dev/null | wc -l)
 if [ "$NFILES" -eq 0 ]; then
-    echo "khong thay file *.bytes trong $LOGDIR"
+    echo "khong thay file $GLOB trong $LOGDIR"
     ls -la "$LOGDIR" 2>/dev/null | head -5
     exit 2
 fi
-echo "thu muc : $LOGDIR  ($NFILES file)"
+echo "thu muc : $LOGDIR  ($NFILES file $GLOB)"
 echo "cua so  : ${MINUTES} phut gan nhat"
 
 W=$(mktemp) || exit 2
@@ -57,9 +70,9 @@ trap cleanup EXIT
 # Doc moi file, gan ten domain vao tung dong, loc theo cua so thoi gian.
 # Timestamp nginx la `dd/Mon/yyyy:HH:MM:SS +0700` -> phai doi sang epoch,
 # KHONG so sanh chuoi (`30/Apr` > `17/Oct` vi `3` > `1`).
-for f in "$LOGDIR"/*.bytes; do
+for f in "$LOGDIR"/$GLOB; do
     [ -r "$f" ] || continue
-    d=$(basename "$f" .bytes)
+    d=$(basename "$f" | sed 's/\.[^.]*$//')
     grep -a '' "$f" | tail -200000 | sed "s|^|$d |"
 done | awk -v mins="$MINUTES" '
 BEGIN {
@@ -121,9 +134,17 @@ awk '{
 SAMPLES=$(wc -l < "$W.p")
 echo "co cot thoi gian: $SAMPLES"
 if [ "$SAMPLES" -eq 0 ]; then
-    echo "KHONG tim thay cot thoi gian — in mot dong mau de doi chieu:"
-    head -1 "$W" | tr ' ' '\n' | head -20 | nl -ba | sed 's/^/   /'
-    exit 0
+    echo
+    echo "KHONG tim thay cot thoi gian tren $TOTAL dong HOP LE."
+    echo "Bo loc thoi gian da chay dung — file nay khong chua \$request_time."
+    echo
+    echo "  dang doc : $LOGDIR/$GLOB"
+    echo "  can doc  : *.log    (format antibot_fmt, nginx.conf:162)"
+    echo "  KHONG    : *.bytes  (format bytes, nginx.conf:164 — het o User-Agent)"
+    echo
+    echo "mot dong mau, TOAN BO truong:"
+    head -1 "$W" | tr ' ' '\n' | nl -ba | sed 's/^/   /'
+    exit 3
 fi
 
 echo

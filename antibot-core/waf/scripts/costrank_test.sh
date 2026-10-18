@@ -30,10 +30,26 @@ ck() {
 
 mkdir -p "$W/domains"
 
-# Dinh dang that (xem `nginx.conf` log_format): thoi gian o GIUA, UA o CUOI.
+# Dinh dang THAT = `antibot_fmt`, copy tung truong tu `nginx/nginx.conf:162`:
+#   $remote_addr [$time_local] "$request" $status score=.. action=.. fp=..
+#   tls13=.. ja3_partial=.. ${request_time}s
+# `$request_time` la token CUOI CUNG, khong phai o giua. Ban truoc cua fixture
+# nay dat `%ss` TRUOC User-Agent va ghi chu thich "thoi gian o GIUA, UA o CUOI"
+# — sai so voi nginx.conf, va vi sai nen 30 phep thu deu pass trong khi script
+# that doc `*.bytes` (file khong he co cot thoi gian) va tra ve 0 tren may.
+#
+# `fp=200` co Y de o day: cot status phai tim theo token SO TRAN, khong duoc
+# bat `fp=200`.
 LINE() { # LINE <epoch> <uri> <status> <rt>
-    printf '1.2.3.4 [%s] "GET %s HTTP/2.0" %s 1234 "-" %ss "Mozilla/5.0 Safari/537.36"\n' \
+    printf '1.2.3.4 [%s] "GET %s HTTP/2.0" %s score=- action=- fp=200 tls13=- ja3_partial=- %ss\n' \
         "$(date -d "@$1" '+%d/%b/%Y:%H:%M:%S %z')" "$2" "$3" "$4"
+}
+
+# Dinh dang `bytes` (nginx.conf:164) — KET THUC o User-Agent, KHONG co
+# `$request_time`. Day la file ma script da doc sai luc dau.
+BLINE() { # BLINE <epoch> <uri> <status>
+    printf '1.2.3.4 - - [%s] "GET %s HTTP/2.0" %s 1234 "-" "Mozilla/5.0 Safari/537.36"\n' \
+        "$(date -d "@$1" '+%d/%b/%Y:%H:%M:%S %z')" "$2" "$3"
 }
 
 N=$(date +%s)
@@ -52,13 +68,13 @@ OLD=$((N - 86400))
   LINE $T /slow 499 40.000
   LINE $T /fast 200 0.050
   LINE $OLD /ngoaicuaso 200 99.999
-} > "$W/domains/a.test.bytes"
+} > "$W/domains/a.test.log"
 {
   LINE $T /mid 200 12.000
   LINE $T /mid 200 12.000
   # BAY: byte nhi phan -> grep phai DOC duoc, khong bo ca file
   printf 'binary\x00junk\n'
-} > "$W/domains/b.test.bytes"
+} > "$W/domains/b.test.log"
 
 # BAY query-string: oembed that luon co `?url=...` khac nhau tung luot. Khong
 # cat query thi moi luot thanh MOT URI rieng va bang xep hang vo nghia — dung
@@ -68,7 +84,19 @@ OLD=$((N - 86400))
   LINE $T '/q?url=https%3A%2F%2Fa.test%2Fbai-1%2F' 200 5.000
   LINE $T '/q?url=https%3A%2F%2Fa.test%2Fbai-2%2F' 200 5.000
   LINE $T '/q?url=https%3A%2F%2Fa.test%2Fbai-3%2F' 200 5.000
-} > "$W/domains/c.test.bytes"
+} > "$W/domains/c.test.log"
+
+# `CR_KEEP=/duong/dan` giu output tho — xem ghi chu o duoi.
+# Dat o thu muc RIENG de khong lam lech cac con so da tinh tay o a/b/c.test.
+#
+# BAY STATUS DO KHACH DIEU KHIEN: URI la chuoi do client gui, nen `/abc404`
+# ket thuc bang ba chu so. Neu bieu thuc tim status thieu neo `^` thi
+# `/abc404` duoc coi la ma HTTP — muc 4 va muc 5 bao mot "ma" la duong dan.
+# Mot bot chi can gui `GET /x404` la lam sai lech ca hai bang.
+# `fp=200` KHONG bat duoc loi nay vi status that (cot 8) den TRUOC `fp=`
+# (cot 11) va vong lap `break` ngay, nen hai ban hanh xu giong nhau.
+mkdir -p "$W/digiturl"
+LINE $T /abc404 200 0.500 > "$W/digiturl/e.test.log"
 
 # `CR_KEEP=/duong/dan` giu output tho — de soi khi mot phep thu bao sai ma
 # chua ro loi o script hay o chinh phep thu.
@@ -84,7 +112,7 @@ out=$(run 60); rc=$?
 echo "── 1. doc nguon + loc cua so ────────────────────────"
 ck "rc=0" "0" "$rc"
 ck "thay 3 file" "3" \
-   "$(printf '%s' "$out" | sed -n 's/.*(\([0-9]*\) file)/\1/p')"
+   "$(printf '%s' "$out" | sed -n 's/.*(\([0-9]*\) file .*)/\1/p')"
 ck "khong in 'binary file matches'" "0" \
    "$(printf '%s' "$out" | grep -c 'binary file matches')"
 ck "mau = 8 (dong ngoai cua so bi loai)" "8" \
@@ -151,7 +179,7 @@ ck "thu muc rong -> rc=2" "2" \
 
 echo "── 7. dan so 0 ──────────────────────────────────────"
 mkdir -p "$W/cu"
-LINE $OLD /x 200 1.0 > "$W/cu/z.test.bytes"
+LINE $OLD /x 200 1.0 > "$W/cu/z.test.log"
 out_old=$(LOGDIR="$W/cu" bash "$SCRIPT" 60 2>&1); rc_old=$?
 ck "toan dong cu -> rc=0, khong vo" "0" "$rc_old"
 ck "noi ro khong co dong nao" "yes" \
@@ -159,13 +187,49 @@ ck "noi ro khong co dong nao" "yes" \
 ck "khong in bang chi phi tren dan so 0" "0" \
    "$(printf '%s' "$out_old" | grep -c 'GIAY-WORKER')"
 
-echo "── 8. cot thoi gian KHONG o \$NF ─────────────────────"
-# Neu lay $NF thi se ra `Safari/537.36"` va khong parse duoc -> mau = 0.
-# 6 dong co UA: 5 dong trong cua so + 1 dong ngoai cua so (/ngoaicuaso).
-ck "fixture co UA o cuoi dong" "9" \
-   "$(grep -ac 'Safari/537.36' "$W"/domains/*.bytes | awk -F: '{s+=$2} END{print s+0}')"
-ck "van tim duoc cot thoi gian" "8" \
+echo "── 8. DOC DUNG FILE: *.log chu khong *.bytes ────────"
+# Day la loi da lam output that vo dung ngay 18-10: script doc `*.bytes`,
+# in `co cot thoi gian: 0` tren 5.538 dong hop le. File `bytes` ket thuc o
+# User-Agent (nginx.conf:164) nen KHONG BAO GIO co `$request_time`.
+ck "van tim duoc cot thoi gian tren *.log" "8" \
    "$(printf '%s' "$out" | sed -n 's/^co cot thoi gian: *//p')"
+ck "in ro dang doc glob nao" "yes" \
+   "$(printf '%s' "$out" | grep -q 'file \*\.log' && echo yes || echo no)"
+
+# Dung thu muc chi co `*.bytes` (dinh dang THAT cua file do, khong co rt).
+mkdir -p "$W/bytesonly"
+{ BLINE $T /x 200; BLINE $T /y 200; } > "$W/bytesonly/d.test.bytes"
+ck "fixture bytes ket thuc o UA, khong co token rt" "0" \
+   "$(grep -aoE '(^| )[0-9]+\.[0-9]+s$' "$W/bytesonly/d.test.bytes" | wc -l)"
+# Khong co `*.log` -> phai rc=2 va noi khong thay file, KHONG lang le bao 0.
+out_b=$(LOGDIR="$W/bytesonly" bash "$SCRIPT" 60 2>&1); rc_b=$?
+ck "thu muc chi co .bytes -> rc=2" "2" "$rc_b"
+ck "noi khong thay *.log" "yes" \
+   "$(printf '%s' "$out_b" | grep -q 'khong thay file \*\.log' && echo yes || echo no)"
+
+# Ep doc `*.bytes` qua GLOB: dong HOP LE qua duoc bo loc thoi gian nhung
+# KHONG co cot thoi gian -> phai rc=3 va chi ro file nao can doc.
+out_g=$(LOGDIR="$W/bytesonly" GLOB='*.bytes' bash "$SCRIPT" 60 2>&1); rc_g=$?
+ck "ep doc .bytes -> rc=3 (khong phai 0)" "3" "$rc_g"
+ck "van thay 2 dong hop le (bo loc thoi gian DUNG)" "2" \
+   "$(printf '%s' "$out_g" | sed -n 's/^dong *: *//p')"
+ck "chi ro can doc *.log" "yes" \
+   "$(printf '%s' "$out_g" | grep -q 'can doc.*\*\.log' && echo yes || echo no)"
+ck "chi ro dung doc *.bytes" "yes" \
+   "$(printf '%s' "$out_g" | grep -q 'KHONG.*\*\.bytes' && echo yes || echo no)"
+
+echo "── 9. status: chi token SO TRAN, khong lay tu URI ───"
+# Fixture dat `fp=200` tren MOI dong, status that la 200/499.
+ck "muc 5 co ma 499" "yes" \
+   "$(printf '%s' "$out" | grep -qE '^ +1 luot .* 499$' && echo yes || echo no)"
+# Ca quyet dinh: URI `/abc404` ket thuc bang ba chu so. Thieu neo `^` thi
+# muc 5 bao "ma HTTP" la `/abc404`.
+out_d=$(LOGDIR="$W/digiturl" bash "$SCRIPT" 60 2>&1)
+ck "URI het bang 3 chu so -> status van la 200" "yes" \
+   "$(printf '%s' "$out_d" | grep -qE '^ +1 luot .* 200$' && echo yes || echo no)"
+# Chi soi MUC 5. O muc 3 thi `/abc404` xuat hien HOP LE — no la URI that.
+ck "muc 5 KHONG coi duong dan la ma HTTP" "0" \
+   "$(printf '%s' "$out_d" | sed -n '/^5\. MA HTTP/,$p' | grep -c '/abc404$')"
 
 echo
 echo "costrank_test: $pass qua, $fail hong"
