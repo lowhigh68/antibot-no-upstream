@@ -516,6 +516,16 @@ cfg.l7_admission = old_admission
 
 -- Per-host Lua-only dynamic in-flight guard.  A slot is acquired only after
 -- the request has survived local policy and is released exactly once at log.
+--
+-- `do ... end`: LuaJIT gioi han 200 bien `local` o MAIN FUNCTION. Khoi nay
+-- khong doi mot assert nao, chi dua bien cua nhom test ra khoi pham vi do.
+-- Thieu no thi CA FILE khong bien dich duoc va `deploy.sh` HUY o cong
+-- "bien dich duoc: moi file .lua".
+--
+-- Ba ten nay khai bao NGOAI khoi vi nhom test "bien enforce" o cuoi file
+-- dung lai chung. Gan gia tri ben trong, doc ben ngoai.
+local surge, sgvars, sgctx
+do
 local old_surge = cfg.l7_surge_guard
 cfg.l7_surge_guard = {
     enabled = true, mode = "shadow", status = 503, retry_after = 2,
@@ -528,9 +538,9 @@ cfg.l7_surge_guard = {
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_stats = Dict.new()
 package.loaded["antibot.l7.surge_guard"] = nil
-local surge = require "antibot.l7.surge_guard"
+surge = require "antibot.l7.surge_guard"
 
-local function sgvars(host, upstream_time)
+sgvars = function(host, upstream_time)
     fake_ngx.var = {
         server_name = host,
         host = host,
@@ -539,7 +549,7 @@ local function sgvars(host, upstream_time)
     }
 end
 
-local function sgctx(group)
+sgctx = function(group)
     return {
         ip = "192.0.2.30",
         req_class = group == "resource" and "resource" or "navigation",
@@ -712,6 +722,7 @@ eq(sg_degraded.surge_admitted, nil, "dict day khong tao slot ao")
 
 fake_ngx.shared.antibot_cache.full = nil
 cfg.l7_surge_guard = old_surge
+end
 
 -- Endpoint policy: canonicalize pretty REST, rest_route and sub-directory
 -- WordPress without applying the overlay to an unproven CMS root.
@@ -2655,6 +2666,11 @@ do
 end
 
 -- Slow 200 chi la candidate telemetry. Du 100% cham cung KHONG duoc ghi OPEN.
+--
+-- `do ... end`: cung ly le voi khoi surge-guard o tren — gioi han 200 bien
+-- `local` cua LuaJIT tinh theo MAIN FUNCTION. `print` tong ket nam NGOAI khoi
+-- nay vi `passed` la bien o pham vi ngoai cung.
+do
 fake_ngx.shared.antibot_cache = Dict.new()
 clock = 800
 cbvars("slow.test", "200", "2.500")
@@ -3219,4 +3235,6 @@ eq(b5_admit, false, "bien: admit() cho qua")
 surge.after(b5)
 surge.after(b2)
 cfg.l7_surge_guard = inv_cfg
+end
+
 print(string.format("L7_REGRESSION_OK %d", passed))
