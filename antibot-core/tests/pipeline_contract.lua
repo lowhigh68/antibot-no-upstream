@@ -589,21 +589,39 @@ do
        "inflight reject dung 503 (suc chua), khong phai 429 (toc do)")
     eq(tonumber(eg.retry_after) ~= nil, true, "co Retry-After cho client lui lai")
 
-    -- Generic guards ship telemetry-only.  Promoting a broad source/docroot or
-    -- pressure decision without production evidence is an FP regression, not
-    -- a harmless threshold edit.
+    -- Production evidence (2026-10-19) promoted only narrow source/structural
+    -- axes.  Pin both the modes and their safety margins: lowering a limit or
+    -- accidentally promoting the broad pressure breaker is a deployment
+    -- regression, not an ordinary tuning change.
     eq(dg.enabled, true, "dynamic_guard generic duoc bat telemetry")
-    eq((dg.tenant_client or {}).mode, "shadow",
-       "docroot+IP concurrency ships shadow")
-    eq((dg.server_client or {}).mode, "shadow",
-       "server+IP concurrency ships shadow")
-    eq((dg.path_spray or {}).mode, "shadow",
-       "generic path spray ships shadow")
-    eq((dg.uri_integrity or {}).mode, "shadow",
-       "generic URI integrity ships shadow")
+    eq((dg.tenant_client or {}).mode, "enforce",
+       "docroot+IP concurrency duoc promote sau production evidence")
+    eq((dg.tenant_client or {}).limit, 10,
+       "docroot+IP concurrency giu khoang dem browser hop le")
+    eq((dg.server_client or {}).mode, "enforce",
+       "server+IP concurrency chan source trai qua nhieu tenant")
+    eq((dg.server_client or {}).limit, 16,
+       "server+IP concurrency giu tran production da do")
+    eq((dg.path_spray or {}).mode, "enforce",
+       "generic path spray duoc promote doc lap")
+    eq((dg.path_spray or {}).min_hits, 12,
+       "path spray can du hit truoc khi shed")
+    eq((dg.path_spray or {}).min_paths, 8,
+       "path spray can da dang path")
+    eq((dg.path_spray or {}).min_costly, 2,
+       "path spray can completed-cost evidence")
+    eq((dg.uri_integrity or {}).mode, "enforce",
+       "generic URI integrity enforce protocol invariant")
     eq((dg.pressure or {}).mode, "shadow",
-       "generic backend pressure ships shadow")
-    eq(pc.mode, "shadow", "principal churn quarantine ships shadow")
+       "broad backend pressure van shadow")
+    eq((dg.pressure or {}).min_samples, 15,
+       "pressure can du completed samples")
+    eq((dg.pressure or {}).work_seconds, 180.0,
+       "pressure shadow chi danh dau backend incident lon")
+    eq(pc.mode, "enforce",
+       "principal churn quarantine duoc promote sau production evidence")
+    eq(pc.ip_threshold, 4, "principal churn IP threshold production")
+    eq(pc.ja3_threshold, 3, "principal churn JA3 threshold production")
 
     -- Day la cong DANG CUU HE THONG. Neu ai do ha ve shadow thi phai co mot
     -- phep thu do, khong phai mot lan deploy im lang.

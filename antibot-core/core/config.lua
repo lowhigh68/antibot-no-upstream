@@ -647,12 +647,14 @@ _M.automation_concurrency = {
 -- axis when transport evidence exists.  Reverse-proxy edges are skipped because
 -- they aggregate unrelated clients by design.
 --
--- Keep SHADOW until `pcipn/pcj3n/pcwould/pcproxy/pcdeg` have been measured on
--- production.  Promotion changes only this capacity quarantine; it never writes
--- reputation or a durable ban.
+-- Production observation on the two busiest WordPress nodes (2026-10-19)
+-- reduced every would-quarantine to three rotating source IPs per node.  Those
+-- sources claimed many unrelated canonical principals; verified proxy edges
+-- remained excluded.  Promotion changes only this temporary capacity
+-- quarantine; it never writes reputation or a durable ban.
 _M.principal_churn = {
     enabled        = true,
-    mode           = "shadow", -- shadow | enforce | off
+    mode           = "enforce", -- shadow | enforce | off
     window         = 30,
     ip_threshold   = 4,
     ja3_threshold  = 3,
@@ -912,13 +914,13 @@ _M.endpoint_guard = {
 --   path_spray: many distinct dynamic paths reinforced by slow completions;
 --   pressure: completed upstream seconds per docroot/wall-clock window.
 --
--- All are SHADOW first.  The seed limits are measurement thresholds, not a
--- claim that every server has the same PHP-FPM capacity.  This preserves the
--- existing rule that any new broad capacity decision must be validated on real
--- traffic before enforcement.
+-- Production evidence from the two busiest/highest-attack nodes promoted the
+-- narrow source and structural axes independently.  Pressure remains shadow:
+-- it is a broad docroot breaker and therefore needs a much stronger threshold
+-- plus another observation round after the narrow brakes remove their load.
 _M.dynamic_guard = {
     enabled     = true,
-    mode        = "shadow", -- master telemetry switch
+    mode        = "shadow", -- fallback mode; each axis below is authoritative
     status      = 429,
     retry_after = 3,
 
@@ -926,15 +928,18 @@ _M.dynamic_guard = {
     slot_retention_seconds = 180,
 
     tenant_client = {
-        mode  = "shadow",
-        limit = 8,
+        mode  = "enforce",
+        -- Observed attacks reached 20-57 live requests from one source.  Ten
+        -- leaves room for legitimate browser/AJAX fan-out while bounding one
+        -- source to one hosted tenant before it occupies the backend pool.
+        limit = 10,
     },
     server_client = {
-        mode  = "shadow",
+        mode  = "enforce",
         limit = 16,
     },
     path_spray = {
-        mode           = "shadow",
+        mode           = "enforce",
         window         = 10,
         shards         = 32, -- fixed cardinality; never retain raw paths
         min_hits       = 12,
@@ -945,17 +950,22 @@ _M.dynamic_guard = {
     },
     -- Protocol invariant, not a content signature: one request-target path
     -- must not contain a second absolute HTTP target serialized after a list
-    -- separator.  Shadow first because a custom URL-proxy application may
-    -- deliberately expose such a route even though normal CMS routing does not.
+    -- separator.  Production saw the candidate only from distributed no-cookie
+    -- clients, each reaching the backend only to receive a redirect; no custom
+    -- URL-proxy consumer appeared in the measured high-diversity fleet.
     uri_integrity = {
-        mode   = "shadow",
+        mode   = "enforce",
         status = 400,
     },
     pressure = {
         mode             = "shadow",
         window           = 10,
-        min_samples      = 5,
-        work_seconds     = 15.0,
+        -- 15s/5 and 60s/10 both opened on the quiet control node.  180s/15
+        -- separated all three measured load incidents on cloud168-101 from
+        -- cloud28-246's non-spike window.  Keep shadow: this is a telemetry
+        -- threshold, not yet authority to shed an entire docroot.
+        min_samples      = 15,
+        work_seconds     = 180.0,
         slow_seconds     = 2.5,
         hold_seconds     = 20,
         probe_timeout    = 10,

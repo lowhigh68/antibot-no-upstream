@@ -2126,6 +2126,65 @@ eq(fake_ngx.shared.antibot_cache:get(de1.dynamic_guard_slots[1].key), 2,
    "rejected generic slot is rolled back atomically")
 dynamic_guard.after(de1); dynamic_guard.after(de2)
 
+-- Whole-server source concurrency is independently enforceable across
+-- docroots.  The rejected request must roll back its slot on this axis too.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.tenant_client.mode = "off"
+cfg.dynamic_guard.server_client.mode = "enforce"
+cfg.dynamic_guard.server_client.limit = 2
+fake_ngx.var.document_root = "/home/server-a/public_html"
+fake_ngx.var.server_name = "server-a.test"
+local ds1 = dgctx("198.51.100.122", "/one")
+dynamic_guard.admit(ds1)
+fake_ngx.var.document_root = "/home/server-b/public_html"
+fake_ngx.var.server_name = "server-b.test"
+local ds2 = dgctx("198.51.100.122", "/two")
+local ds3 = dgctx("198.51.100.122", "/three")
+dynamic_guard.admit(ds2)
+local _, ds3_exit = dynamic_guard.admit(ds3)
+eq(ds3_exit, true, "server concurrency enforce rejects across docroots")
+eq(exits[#exits], 429, "whole-server source concurrency returns 429")
+eq(ds3.action_reason, "dynamic_guard:server_concurrency",
+   "whole-server concurrency reject has stable reason")
+eq(fake_ngx.shared.antibot_cache:get(ds1.dynamic_guard_slots[1].key), 2,
+   "rejected whole-server slot is rolled back atomically")
+dynamic_guard.after(ds1); dynamic_guard.after(ds2)
+
+-- Path-spray promotion keeps the same generic hit/diversity/cost contract.
+-- A prior costly completion supplies evidence; no URI token or CMS route is
+-- encoded in the decision.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.server_client.mode = "off"
+cfg.dynamic_guard.path_spray.mode = "enforce"
+fake_ngx.var.document_root = "/home/path-enforce/public_html"
+fake_ngx.var.server_name = "path-enforce.test"
+clock = 3350
+fake_ngx.var.uri = "/alpha"
+local dpe1 = dgctx("198.51.100.123", "/alpha")
+dynamic_guard.admit(dpe1)
+fake_ngx.var.upstream_status = "404"
+fake_ngx.var.upstream_response_time = "3.000"
+dynamic_guard.after(dpe1)
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.uri = "/beta"
+local dpe2 = dgctx("198.51.100.123", "/beta")
+dynamic_guard.admit(dpe2)
+fake_ngx.var.uri = "/gamma"
+local dpe3 = dgctx("198.51.100.123", "/gamma")
+local _, dpe3_exit = dynamic_guard.admit(dpe3)
+eq(dpe3_exit, true, "path spray enforce rejects generic costly diversity")
+eq(exits[#exits], 429, "generic path spray returns 429")
+eq(dpe3.action_reason, "dynamic_guard:path_spray",
+   "path spray reject has stable generic reason")
+eq(dpe3.dynamic_path_hits, 3,
+   "path enforce keeps the measured hit threshold")
+eq(dpe3.dynamic_path_distinct, 3,
+   "path enforce keeps the measured diversity threshold")
+eq(dpe3.dynamic_path_costly, 1,
+   "path enforce requires observed backend cost")
+dynamic_guard.after(dpe2)
+
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_cache.full = true
 local de_full = dgctx("198.51.100.121")
