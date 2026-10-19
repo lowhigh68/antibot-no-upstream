@@ -142,6 +142,41 @@ package.loaded["antibot.l7.operator_concurrency"] = {
         end
     end,
 }
+package.loaded["antibot.l7.principal_churn"] = {
+    before = function()
+        event("principal.before")
+        return true, exit_for("principal.before")
+    end,
+    admit = function()
+        event("principal.admit")
+        return true, exit_for("principal.admit")
+    end,
+}
+package.loaded["antibot.l7.dynamic_guard"] = {
+    before = function()
+        event("dynamic.before")
+        return true, exit_for("dynamic.before")
+    end,
+    admit = function(ctx)
+        event("dynamic.admit")
+        if ctx.admission_group ~= "dynamic" or ngx.is_subrequest then
+            return true, false
+        end
+        if not ctx.dynamic_guard_admitted then
+            ctx.dynamic_guard_admitted = true
+            counts.dynamic_admitted = counts.dynamic_admitted + 1
+        end
+        if scenario.exit_at == "dynamic.admit" then return false, true end
+        return true, false
+    end,
+    after = function(ctx)
+        event("dynamic.after")
+        if ctx.dynamic_guard_admitted and not ctx.dynamic_guard_released then
+            ctx.dynamic_guard_released = true
+            counts.dynamic_released = counts.dynamic_released + 1
+        end
+    end,
+}
 package.loaded["antibot.waf.endpoint_policy"] = {
     run = function(ctx)
         event("endpoint.policy")
@@ -323,6 +358,7 @@ local function reset(s)
         admitted = 0, released = 0, risk_calls = 0, intel_reports = 0,
         endpoint_admitted = 0, endpoint_released = 0,
         operator_admitted = 0, operator_released = 0,
+        dynamic_admitted = 0, dynamic_released = 0,
         timer_at = 0, memory_starts = 0, fleet_timer = 0, waf_ensure = 0,
     }
     worker_id = 1
@@ -340,10 +376,16 @@ end
 reset()
 root.run()
 eq(counts.admitted, 1, "dynamic thuong nhan dung mot slot")
+eq(counts.dynamic_admitted, 1,
+   "dynamic thuong nhan dung mot generic source/docroot slot")
 eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
 before("admission", "waf.pre", "admission chay truoc WAF")
 before("automation.guard", "admission",
     "automation claim duoc do truoc moi admission fast-exit")
+before("proxy", "principal.before",
+    "principal churn chi gom source sau khi da xac dinh reverse proxy")
+before("principal.before", "admission",
+    "principal churn som chay truoc admission fast-exit")
 before("admission", "endpoint.policy",
     "broad admission brake chay truoc endpoint overlay")
 before("endpoint.before", "waf.pre",
@@ -357,6 +399,10 @@ before("endpoint.admit", "surge.admit",
     "endpoint atomic gate chay truoc global surge accounting")
 before("endpoint.admit", "operator.admit",
     "endpoint reject duoc xu ly truoc principal concurrency")
+before("principal.admit", "dynamic.admit",
+    "JA3 principal churn duoc cap nhat truoc generic backend slot")
+before("dynamic.admit", "operator.admit",
+    "generic source/docroot slot khong phu thuoc principal")
 before("operator.admit", "surge.admit",
     "principal concurrency nam o late-admit truoc surge telemetry")
 
@@ -464,6 +510,8 @@ eq(counts.admitted, 1,
 reset({ waf_block = true })
 root.run()
 eq(counts.admitted, 0, "WAF block khong nhan slot")
+eq(counts.dynamic_admitted, 0,
+   "WAF block khong nhan generic backend slot")
 eq(event_count("access"), 0, "WAF block khong vao trust pipeline")
 reset({ endpoint = "wp_oembed_embed", waf_block = true })
 root.run()
@@ -481,6 +529,8 @@ eq(event_count("surge.admit"), 0, "enforcement exit khong goi admit")
 reset({ class = "resource", group = "resource" })
 root.run()
 eq(counts.admitted, 0, "resource khong chiem dynamic slot")
+eq(counts.dynamic_admitted, 0,
+   "resource khong chiem generic dynamic slot")
 reset({ subrequest = true })
 root.run()
 eq(counts.admitted, 0, "subrequest khong chiem dynamic slot")
@@ -490,6 +540,8 @@ root.run()
 root.log()
 root.log()
 eq(counts.released, 1, "slot release dung mot lan du log bi goi lap")
+eq(counts.dynamic_released, 1,
+   "generic backend slot release dung mot lan du log bi goi lap")
 eq(counts.risk_calls, 2, "moi log invocation goi risk_update dung mot lan")
 eq(counts.timer_at, 0, "root khong tao timer boc ngoai risk_update")
 
@@ -523,6 +575,8 @@ do
 
     local real = dofile(src .. "core/config.lua")
     local eg = real.endpoint_guard or {}
+    local dg = real.dynamic_guard or {}
+    local pc = real.principal_churn or {}
     local oembed = (eg.endpoints or {}).wp_oembed_embed or {}
     local proxy  = (eg.endpoints or {}).wp_oembed_proxy  or {}
     local html   = (eg.endpoints or {}).wp_html_pathinfo or {}
@@ -534,6 +588,22 @@ do
     eq(eg.inflight_status, 503,
        "inflight reject dung 503 (suc chua), khong phai 429 (toc do)")
     eq(tonumber(eg.retry_after) ~= nil, true, "co Retry-After cho client lui lai")
+
+    -- Generic guards ship telemetry-only.  Promoting a broad source/docroot or
+    -- pressure decision without production evidence is an FP regression, not
+    -- a harmless threshold edit.
+    eq(dg.enabled, true, "dynamic_guard generic duoc bat telemetry")
+    eq((dg.tenant_client or {}).mode, "shadow",
+       "docroot+IP concurrency ships shadow")
+    eq((dg.server_client or {}).mode, "shadow",
+       "server+IP concurrency ships shadow")
+    eq((dg.path_spray or {}).mode, "shadow",
+       "generic path spray ships shadow")
+    eq((dg.uri_integrity or {}).mode, "shadow",
+       "generic URI integrity ships shadow")
+    eq((dg.pressure or {}).mode, "shadow",
+       "generic backend pressure ships shadow")
+    eq(pc.mode, "shadow", "principal churn quarantine ships shadow")
 
     -- Day la cong DANG CUU HE THONG. Neu ai do ha ve shadow thi phai co mot
     -- phep thu do, khong phai mot lan deploy im lang.
@@ -650,6 +720,20 @@ do
     }) do
         ok(logger_src:find(field, 1, true) ~= nil,
            "logger giu cot operator concurrency " .. field)
+    end
+    for _, field in ipairs({
+        " pcmode=", " pcaxis=", " pcipn=", " pcj3n=", " pcopen=",
+        " pcwould=", " pcthr=", " pcproxy=", " pcdeg=",
+        " dgmode=", " dgscope=", " dgtn=", " dgsn=", " dgwould=",
+        " dgthr=", " dgcause=", " dgph=", " dgpd=", " dgpc=",
+        " dgpath=", " dguri=", " dgpopen=", " dgpmode=",
+        " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
+        " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
+        " dgdur=", " dgup=", " dgactual=", " dgleft=", " dgdeg=",
+        " dgexp=",
+    }) do
+        ok(logger_src:find(field, 1, true) ~= nil,
+           "logger giu cot generic dynamic guard " .. field)
     end
     for _, field in ipairs({ " epq=", " epck=" }) do
         ok(logger_src:find(field, 1, true) ~= nil,

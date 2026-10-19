@@ -641,6 +641,26 @@ _M.automation_concurrency = {
     },
 }
 
+-- Generic contradictory-automation detector.  It does not know vendor names:
+-- one source claiming several different canonical automation principals inside
+-- a short window is quarantined temporarily.  IP+JA3 is a stronger second
+-- axis when transport evidence exists.  Reverse-proxy edges are skipped because
+-- they aggregate unrelated clients by design.
+--
+-- Keep SHADOW until `pcipn/pcj3n/pcwould/pcproxy/pcdeg` have been measured on
+-- production.  Promotion changes only this capacity quarantine; it never writes
+-- reputation or a durable ban.
+_M.principal_churn = {
+    enabled        = true,
+    mode           = "shadow", -- shadow | enforce | off
+    window         = 30,
+    ip_threshold   = 4,
+    ja3_threshold  = 3,
+    hold_seconds   = 120,
+    status         = 429,
+    retry_after    = 30,
+}
+
 _M.l7_admission = {
     enabled       = true,
     mode          = "enforce", -- shadow | enforce | off
@@ -878,6 +898,70 @@ _M.endpoint_guard = {
             shape_mode = "off",
             cross_host_mode = "off",
         },
+    },
+}
+
+-- Generic dynamic-backend protection.  No route, CMS, plugin, UA or attack
+-- token appears in this policy.  The scope is a hash of document_root (falling
+-- back to Nginx-selected server_name), so aliases sharing one site share the
+-- same capacity state without accepting attacker-controlled Host cardinality.
+--
+-- Four independent axes are intentionally promoted separately:
+--   tenant_client: live backend work from one source to one docroot;
+--   server_client: the same source spreading work over many hosted sites;
+--   path_spray: many distinct dynamic paths reinforced by slow completions;
+--   pressure: completed upstream seconds per docroot/wall-clock window.
+--
+-- All are SHADOW first.  The seed limits are measurement thresholds, not a
+-- claim that every server has the same PHP-FPM capacity.  This preserves the
+-- existing rule that any new broad capacity decision must be validated on real
+-- traffic before enforcement.
+_M.dynamic_guard = {
+    enabled     = true,
+    mode        = "shadow", -- master telemetry switch
+    status      = 429,
+    retry_after = 3,
+
+    slot_bucket_seconds    = 30,
+    slot_retention_seconds = 180,
+
+    tenant_client = {
+        mode  = "shadow",
+        limit = 8,
+    },
+    server_client = {
+        mode  = "shadow",
+        limit = 16,
+    },
+    path_spray = {
+        mode           = "shadow",
+        window         = 10,
+        shards         = 32, -- fixed cardinality; never retain raw paths
+        min_hits       = 12,
+        min_paths      = 8,
+        min_costly     = 2,
+        costly_seconds = 2.0,
+        status         = 429,
+    },
+    -- Protocol invariant, not a content signature: one request-target path
+    -- must not contain a second absolute HTTP target serialized after a list
+    -- separator.  Shadow first because a custom URL-proxy application may
+    -- deliberately expose such a route even though normal CMS routing does not.
+    uri_integrity = {
+        mode   = "shadow",
+        status = 400,
+    },
+    pressure = {
+        mode             = "shadow",
+        window           = 10,
+        min_samples      = 5,
+        work_seconds     = 15.0,
+        slow_seconds     = 2.5,
+        hold_seconds     = 20,
+        probe_timeout    = 10,
+        recovery_seconds = 5,
+        eval_interval    = 1,
+        status           = 503,
     },
 }
 

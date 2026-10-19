@@ -14,6 +14,8 @@ security signals and reject identities that already have a supported ban.
 |---|---|---|
 | `admission.lua` | Mandatory local fixed-bucket budgets: global, host, host-group, route-shard and IP. Reuses the existing `antibot_cache`; internal endpoint handlers call it directly. Returns 429 only, never writes reputation/ban. **Static MISS is charged to the `dynamic` budget, not `resource`** — it probes `document_root .. uri` on disk (cached, short TTL) because `try_files` sends a miss to `@static_backend` → Apache/PHP, which is dynamic load whatever the extension says |
 | `surge_guard.lua` | Lua-only per-host dynamic in-flight guard. `before()` rejects an already-full host early in enforce mode; `admit()` atomically acquires only after WAF/antibot allows the request; `after()` releases exactly once in log phase. Static hits, subrequests and local blocks do not consume slots. Shadow by default; `sgdur` vs `sgup` exposes slow-client/buffering overcount before enforcement |
+| `dynamic_guard.lua` | Generic docroot/source and server/source live concurrency, bounded distinct-path spray, request-target integrity and completed-upstream-work pressure. No CMS/endpoint/plugin patterns; all axes ship shadow and fail open |
+| `principal_churn.lua` | Generic temporary quarantine telemetry when one IP or IP+JA3 claims several canonical automation principals. Reverse-proxy edges are skipped; no score or durable ban; shadow by default |
 | `circuit_breaker.lua` | Per-host backend health gate. Learns **only** from requests that reached an upstream (`ngx.var.upstream_status`), and only from dynamic ones — so static hits keep being served while an unhealthy PHP path is open. Only hard failures (502/503/504) open the state machine; a slow 200 is recorded as `cbslowcand` but **never** sheds traffic. 503 + `Retry-After`, never a ban |
 | `init.lua` | Per-class Redis L7 orchestrator: `ban_store`, `rate.counter`, `adaptive_limit`, `burst_counter`, `burst_decision` |
 | `ban/ip_ban_check.lua` | Read `ban:<ip>` from Redis. Hit → set `ctx.action="block"`, `ctx.action_reason="banned_ip"`, `ngx.exit(403)` |
@@ -34,6 +36,9 @@ security signals and reject identities that already have a supported ban.
 `resource_actual` (false = static miss, charged to the dynamic budget),
 `surge_state/mode/inflight/limit/use/remaining/would_reject/transition/degraded`,
 `surge_duration/upstream_time/sampled/slot_expired` (capacity telemetry, never reputation),
+`dynamic_guard_*`, `dynamic_tenant_*`, `dynamic_server_*`, `dynamic_path_*`,
+`dynamic_uri_*`, `dynamic_pressure_*`, `principal_churn_*` (generic capacity
+telemetry; never reputation),
 `circuit_state/mode/cause/would_reject/probe/probe_stale/no_sample/degraded`,
 `circuit_total/rps/slow_ratio/hard_ratio/slow_candidate/open_until/transition`,
 `backend_class`, `banned`, `rate`, `ip_rate`, `burst`, `burst_flag`, `ip_surge`,
@@ -47,6 +52,7 @@ security signals and reject identities that already have a supported ban.
 ## Flow
 ```
 ADMISSION → ctx + fast class + proxy origin
+          → principal_churn.before → observe contradictory automation claims
           → local admission      → immediate 429 on capacity budget
           → circuit_breaker.before → 503 while the host backend is OPEN
           → surge_guard.before   → early 503 if dynamic slots are already full
@@ -61,9 +67,14 @@ FULL/INT → ban_store             → 403 if identity ban is enforceable
          → adaptive_limit        → signal or immediate extreme-rate block
          → burst_counter         → fixed one-second count
          → burst_decision        → burst signal
-ALLOW    → surge_guard.admit      → atomically acquire one dynamic slot only
+ALLOW    → principal_churn.admit  → add JA3-backed churn evidence if present
+         → dynamic_guard.admit    → acquire (docroot,IP) + (server,IP) slots;
+                                     observe bounded path/URI shape
+         → surge_guard.admit      → atomically acquire one host dynamic slot
                                      after all local block/challenge decisions
-LOG      → surge_guard.after      → release exactly once, sample once/host/sec
+LOG      → dynamic_guard.after    → release source slots; learn completed
+                                     upstream work and costly path outcomes
+         → surge_guard.after      → release exactly once, sample once/host/sec
          → circuit_breaker.after  → learns from upstream_status, elects one
                                      evaluator per host/second
 

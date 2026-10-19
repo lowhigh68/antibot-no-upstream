@@ -93,6 +93,8 @@ local syntax_rel = {
     "async/logger.lua",
     "l7/admission.lua",
     "l7/automation_guard.lua",
+    "l7/principal_churn.lua",
+    "l7/dynamic_guard.lua",
     "l7/operator_concurrency.lua",
     "l7/endpoint_guard.lua",
     "l7/circuit_breaker.lua",
@@ -1740,6 +1742,394 @@ end
 cfg.__run_operator_concurrency_tests()
 cfg.__run_operator_concurrency_tests = nil
 
+-- Generic contradictory-principal churn: no vendor list, only the count of
+-- distinct canonical automation identities emitted by the existing registry.
+cfg.__run_generic_guard_tests = function()
+local old_principal_churn = cfg.principal_churn
+cfg.principal_churn = {
+    enabled = true, mode = "shadow", window = 30,
+    ip_threshold = 3, ja3_threshold = 2, hold_seconds = 60,
+    status = 429, retry_after = 10,
+}
+package.loaded["antibot.l7.principal_churn"] = nil
+local principal_churn = require "antibot.l7.principal_churn"
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var = { remote_addr = "198.51.100.90" }
+clock = 2000
+
+local function pcctx(name, ip, ja3)
+    return {
+        ip = ip or "198.51.100.90", ja3 = ja3,
+        admission_group = "dynamic",
+        automation_meter_claimed = true,
+        automation_principal = name, automation_tier = "unknown",
+        behind_proxy = false,
+    }
+end
+
+local pc1, pc2, pc3 = pcctx("vendor-a"), pcctx("vendor-b"), pcctx("vendor-c")
+principal_churn.before(pc1)
+principal_churn.before(pc1)
+eq(pc1.principal_churn_ip_count, 1,
+   "lap cung principal khong lam tang churn")
+principal_churn.before(pc2)
+local _, pc_exit = principal_churn.before(pc3)
+eq(pc_exit, false, "principal churn shadow khong chan")
+eq(pc3.principal_churn_ip_count, 3,
+   "principal churn dem canonical principal rieng biet")
+eq(pc3.principal_churn_open, true,
+   "ba principal mau thuan mo quarantine tam")
+eq(pc3.principal_churn_would_reject, true,
+   "shadow ghi dung would-reject")
+
+-- JA3 is available only at the late hook. The repeated IP observation remains
+-- idempotent while IP+JA3 independently reaches its stronger threshold.
+fake_ngx.shared.antibot_cache = Dict.new()
+local pj1 = pcctx("one", "198.51.100.91", "ja3-x")
+local pj2 = pcctx("two", "198.51.100.91", "ja3-x")
+principal_churn.before(pj1); principal_churn.admit(pj1)
+principal_churn.before(pj2); principal_churn.admit(pj2)
+eq(pj2.principal_churn_ip_count, 2,
+   "late JA3 observe khong dem doi principal tren IP")
+eq(pj2.principal_churn_ja3_count, 2,
+   "IP+JA3 gom principal tren cung TLS shape")
+eq(pj2.principal_churn_axis, "ip_ja3",
+   "JA3 threshold la bang chung churn manh hon")
+
+fake_ngx.shared.antibot_cache = Dict.new()
+local pc_refine = pcctx("early-name", "198.51.100.94", "ja3-y")
+principal_churn.before(pc_refine)
+pc_refine.automation_principal = "refined-name"
+principal_churn.admit(pc_refine)
+eq(pc_refine.principal_churn_ip_count, 1,
+   "one request cannot create IP churn when detection refines its name")
+eq(pc_refine.principal_churn_ja3_count, 1,
+   "refined principal is still observed on late JA3 axis")
+
+fake_ngx.shared.antibot_cache = Dict.new()
+local pc_proxy = pcctx("one", "203.0.113.10")
+pc_proxy.behind_proxy = true
+principal_churn.before(pc_proxy)
+eq(pc_proxy.principal_churn_proxy_skip, true,
+   "reverse-proxy edge khong bi coi la mot client churn")
+eq(pc_proxy.principal_churn_ip_count, nil,
+   "proxy skip khong cap phat churn counter")
+
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.principal_churn.mode = "enforce"
+cfg.principal_churn.ip_threshold = 2
+local pe1 = pcctx("one", "198.51.100.92")
+local pe2 = pcctx("two", "198.51.100.92")
+principal_churn.before(pe1)
+local _, pe_exit = principal_churn.before(pe2)
+eq(pe_exit, true, "principal churn enforce tra local throttle")
+eq(exits[#exits], 429, "principal churn dung 429 capacity response")
+eq(pe2.action_reason, "principal_churn:ip",
+   "principal churn co causal reason rieng")
+eq(pe2.automation_tier, "unknown",
+   "capacity quarantine khong sua tier/reputation")
+local pe_static = pcctx("three", "198.51.100.92")
+pe_static.admission_group = "resource"
+local _, pe_static_exit = principal_churn.before(pe_static)
+eq(pe_static_exit, false,
+   "principal churn does not shed a real static hit")
+eq(pe_static.principal_churn_would_reject, true,
+   "static claim still feeds churn telemetry")
+
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.expire = function()
+    return nil, "expire failed"
+end
+local pd1 = pcctx("one", "198.51.100.93")
+local pd2 = pcctx("two", "198.51.100.93")
+principal_churn.before(pd1)
+local _, pd_exit = principal_churn.before(pd2)
+eq(pd_exit, false, "principal churn TTL failure fails open")
+eq(pd2.principal_churn_degraded, true,
+   "principal churn TTL failure is observable")
+cfg.principal_churn = old_principal_churn
+
+-- Generic dynamic-backend guard.  The fixture deliberately contains no CMS,
+-- endpoint or attack-token name.
+local old_dynamic_guard = cfg.dynamic_guard
+cfg.dynamic_guard = {
+    enabled = true, mode = "shadow", status = 429, retry_after = 2,
+    slot_bucket_seconds = 10, slot_retention_seconds = 60,
+    tenant_client = { mode = "shadow", limit = 2 },
+    server_client = { mode = "shadow", limit = 4 },
+    path_spray = {
+        mode = "shadow", window = 10, shards = 16,
+        min_hits = 3, min_paths = 3, min_costly = 1,
+        costly_seconds = 2,
+    },
+    uri_integrity = { mode = "shadow", status = 400 },
+    pressure = {
+        mode = "shadow", window = 10, min_samples = 2,
+        work_seconds = 4, slow_seconds = 2,
+        hold_seconds = 5, probe_timeout = 3,
+        recovery_seconds = 2, eval_interval = 1, status = 503,
+    },
+}
+package.loaded["antibot.l7.dynamic_guard"] = nil
+local dynamic_guard = require "antibot.l7.dynamic_guard"
+
+local function dgctx(ip, uri)
+    return {
+        ip = ip or "198.51.100.100",
+        req_class = "unknown", admission_group = "dynamic",
+        req = { uri = uri or "/dynamic" },
+    }
+end
+
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var = {
+    document_root = "/home/a/public_html", server_name = "a.test",
+    remote_addr = "198.51.100.100", uri = "/dynamic",
+    upstream_status = nil, upstream_response_time = nil,
+}
+fake_ngx.status = 200
+clock = 3000
+local dg1, dg2, dg3 = dgctx(), dgctx(), dgctx()
+dynamic_guard.before(dg1); dynamic_guard.admit(dg1)
+dynamic_guard.before(dg2); dynamic_guard.admit(dg2)
+dynamic_guard.before(dg3); local _, dg3_exit = dynamic_guard.admit(dg3)
+eq(dg3_exit, false, "generic concurrency shadow khong chan")
+eq(dg3.dynamic_tenant_inflight, 3,
+   "docroot+IP gom live dynamic work")
+eq(dg3.dynamic_guard_would_reject, true,
+   "request limit+1 thanh shadow candidate")
+ok(tostring(dg3.dynamic_guard_cause):find(
+    "tenant_concurrency", 1, true) ~= nil,
+   "tenant concurrency co cause rieng")
+
+-- A new docroot gets a fresh tenant bucket but shares the whole-server IP pool.
+fake_ngx.var.document_root = "/home/b/public_html"
+fake_ngx.var.server_name = "b.test"
+local dg4 = dgctx("198.51.100.100", "/other")
+dynamic_guard.before(dg4); dynamic_guard.admit(dg4)
+eq(dg4.dynamic_tenant_inflight, 1,
+   "tenant concurrency tach theo docroot")
+eq(dg4.dynamic_server_inflight, 4,
+   "server source pool gom xuyen docroot")
+local dg5 = dgctx("198.51.100.100", "/fifth")
+dynamic_guard.before(dg5); dynamic_guard.admit(dg5)
+eq(dg5.dynamic_server_inflight, 5,
+   "server axis thay domain sharding")
+ok(tostring(dg5.dynamic_guard_cause):find(
+    "server_concurrency", 1, true) ~= nil,
+   "server concurrency co cause rieng")
+for _, item in ipairs({ dg1, dg2, dg3, dg4, dg5 }) do
+    dynamic_guard.after(item); dynamic_guard.after(item)
+end
+eq(dg5.dynamic_server_remaining, 0,
+   "generic slots release idempotent va het ve zero")
+
+fake_ngx.shared.antibot_cache = Dict.new()
+local dg_static = dgctx("198.51.100.101", "/a.css")
+dg_static.admission_group = "resource"
+dynamic_guard.admit(dg_static)
+eq(dg_static.dynamic_guard_admitted, nil,
+   "static hit khong nhan generic dynamic slot")
+fake_ngx.is_subrequest = true
+local dg_sub = dgctx("198.51.100.101", "/internal")
+dynamic_guard.admit(dg_sub)
+eq(dg_sub.dynamic_guard_admitted, nil,
+   "subrequest khong bi dem lap")
+fake_ngx.is_subrequest = false
+
+-- Distinct paths are represented by a fixed number of hash shards. A prior
+-- slow completion supplies cost evidence without retaining a raw URI.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.document_root = "/home/spray/public_html"
+fake_ngx.var.server_name = "spray.test"
+clock = 3100
+local paths, sprays = { "/alpha", "/beta", "/gamma" }, {}
+for i, path in ipairs(paths) do
+    fake_ngx.var.uri = path
+    local item = dgctx("198.51.100.102", path)
+    sprays[i] = item
+    dynamic_guard.before(item); dynamic_guard.admit(item)
+    if i == 1 then
+        fake_ngx.var.upstream_status = "404"
+        fake_ngx.var.upstream_response_time = "3.000"
+        dynamic_guard.after(item)
+    end
+end
+eq(sprays[3].dynamic_path_hits, 3,
+   "path spray dem dynamic hits theo source/docroot")
+eq(sprays[3].dynamic_path_distinct, 3,
+   "path spray nhan ba path shard rieng")
+eq(sprays[3].dynamic_path_costly, 1,
+   "slow completion cu tro thanh cost evidence")
+eq(sprays[3].dynamic_path_candidate, true,
+   "hit+diversity+cost tao generic spray candidate")
+for i = 2, #sprays do
+    fake_ngx.var.upstream_status = nil
+    fake_ngx.var.upstream_response_time = nil
+    dynamic_guard.after(sprays[i])
+end
+
+-- URI integrity is a protocol shape, not an endpoint pattern.  Ordinary URL-
+-- like slugs remain valid; only a second absolute target after a serialized
+-- list separator is a candidate, including one level of double encoding.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.document_root = "/home/uri/public_html"
+fake_ngx.var.server_name = "uri.test"
+fake_ngx.var.uri = "/article/https-example"
+fake_ngx.var.request_uri = "/article/https-example"
+local du_ok = dgctx("198.51.100.103", "/article/https-example")
+dynamic_guard.admit(du_ok)
+eq(du_ok.dynamic_uri_shape, "ok",
+   "URL-like slug is not a second absolute target")
+dynamic_guard.after(du_ok)
+fake_ngx.var.uri = "/image.jpg 1000w, https://cdn.test/image.jpg"
+fake_ngx.var.request_uri =
+    "/image.jpg%25201000w%252C%2520https%253A%252F%252Fcdn.test/image.jpg"
+local du_bad = dgctx("198.51.100.103", fake_ngx.var.uri)
+local _, du_bad_exit = dynamic_guard.admit(du_bad)
+eq(du_bad_exit, false, "URI integrity shadow does not reject")
+eq(du_bad.dynamic_uri_shape, "second_absolute_target",
+   "double-encoded second absolute target is normalized generically")
+ok(tostring(du_bad.dynamic_guard_cause):find(
+    "uri_integrity", 1, true) ~= nil,
+   "URI integrity candidate has stable cause")
+dynamic_guard.after(du_bad)
+cfg.dynamic_guard.uri_integrity.mode = "enforce"
+local du_enforce = dgctx("198.51.100.104", fake_ngx.var.uri)
+local _, du_enforce_exit = dynamic_guard.admit(du_enforce)
+eq(du_enforce_exit, true, "URI integrity can be promoted independently")
+eq(exits[#exits], 400, "malformed request-target returns 400")
+eq(du_enforce.action_reason, "dynamic_guard:uri_integrity",
+   "URI integrity reject does not mention a CMS or token")
+cfg.dynamic_guard.uri_integrity.mode = "shadow"
+fake_ngx.var.request_uri = nil
+
+-- Backend pressure is completed upstream-seconds per docroot. The completion
+-- that opens it must itself be slow, preventing stale rolling-window residue.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.document_root = "/home/pressure/public_html"
+fake_ngx.var.server_name = "pressure.test"
+fake_ngx.var.uri = "/one"
+clock = 3200
+local dp1 = dgctx("198.51.100.110", "/one")
+dynamic_guard.before(dp1); dynamic_guard.admit(dp1)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "2.500"
+dynamic_guard.after(dp1)
+dynamic_guard.after(dp1)
+eq(fake_ngx.shared.antibot_cache:get(
+    "dg:pressure:" .. dp1.dynamic_guard_scope .. ":b:3200:n"), 1,
+   "log hook lap khong hoc outcome hai lan")
+clock = 3201.1
+fake_ngx.var.uri = "/two"
+local dp2 = dgctx("198.51.100.111", "/two")
+dynamic_guard.before(dp2); dynamic_guard.admit(dp2)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "2.500"
+dynamic_guard.after(dp2)
+eq(dp2.dynamic_pressure_candidate, true,
+   "upstream work alone creates pressure candidate")
+eq(dp2.dynamic_pressure_open, true,
+   "pressure opens per docroot after fresh slow evidence")
+ok(dp2.dynamic_pressure_work >= 5,
+   "pressure sums backend seconds, not only request count")
+clock = 3202
+fake_ngx.var.uri = "/three"
+local dp3 = dgctx("198.51.100.112", "/three")
+local _, dp3_exit = dynamic_guard.before(dp3)
+eq(dp3_exit, false, "pressure shadow does not reject")
+eq(dp3.dynamic_pressure_would_reject, true,
+   "open pressure records would-reject")
+
+-- After the hold, one request probes while concurrent arrivals still receive
+-- the pressure verdict. A fast probe closes the state and starts recovery.
+cfg.dynamic_guard.pressure.mode = "enforce"
+clock = 3207
+fake_ngx.var.uri = "/probe"
+local dp_probe = dgctx("198.51.100.113", "/probe")
+local _, dp_probe_exit = dynamic_guard.before(dp_probe)
+eq(dp_probe_exit, false, "half-open candidate survives early local guards")
+eq(dp_probe.dynamic_pressure_probe, nil,
+   "early hook does not consume the only backend probe lease")
+dynamic_guard.admit(dp_probe)
+eq(dp_probe.dynamic_pressure_probe, true,
+   "late-admitted request atomically becomes the probe")
+local dp_wait = dgctx("198.51.100.114", "/wait")
+local _, dp_wait_exit = dynamic_guard.before(dp_wait)
+eq(dp_wait_exit, false, "second half-open candidate may still cross local WAF")
+local _, dp_wait_admit_exit = dynamic_guard.admit(dp_wait)
+eq(dp_wait_admit_exit, true, "second late-admitted half-open request is shed")
+eq(exits[#exits], 503, "pressure breaker returns 503")
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "0.200"
+dynamic_guard.after(dp_probe)
+local dp_recovered = dgctx("198.51.100.115", "/recovered")
+local _, dp_recovered_exit = dynamic_guard.before(dp_recovered)
+eq(dp_recovered_exit, false, "fast probe closes pressure state")
+eq(dp_recovered.dynamic_pressure_would_reject, nil,
+   "closed pressure state no longer marks reject")
+
+-- Old work can support a decision but cannot create one when the latest
+-- completed response is fast.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.pressure.mode = "shadow"
+fake_ngx.var.document_root = "/home/fresh/public_html"
+clock = 3250
+local df1 = dgctx("198.51.100.116", "/slow")
+dynamic_guard.before(df1); dynamic_guard.admit(df1)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "3.500"
+dynamic_guard.after(df1)
+clock = 3251.1
+local df2 = dgctx("198.51.100.117", "/fast")
+dynamic_guard.before(df2); dynamic_guard.admit(df2)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "0.600"
+dynamic_guard.after(df2)
+eq(df2.dynamic_pressure_work >= 4, true,
+   "freshness fixture still exceeds aggregate work threshold")
+eq(df2.dynamic_pressure_candidate, false,
+   "fast latest completion cannot open on stale slow work")
+ok(df2.dynamic_pressure_open ~= true,
+   "freshness gate leaves docroot closed")
+
+-- Axis promotion is independent and rollback preserves valid live slots.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.tenant_client.mode = "enforce"
+cfg.dynamic_guard.pressure.mode = "off"
+cfg.dynamic_guard.path_spray.mode = "off"
+clock = 3300
+fake_ngx.var.document_root = "/home/enforce/public_html"
+fake_ngx.var.server_name = "enforce.test"
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+local de1, de2, de3 = dgctx("198.51.100.120"),
+    dgctx("198.51.100.120"), dgctx("198.51.100.120")
+dynamic_guard.admit(de1); dynamic_guard.admit(de2)
+local _, de3_exit = dynamic_guard.admit(de3)
+eq(de3_exit, true, "tenant concurrency enforce rejects limit+1")
+eq(exits[#exits], 429, "generic source concurrency returns 429")
+eq(de3.action_reason, "dynamic_guard:tenant_concurrency",
+   "generic concurrency reject has stable reason")
+eq(fake_ngx.shared.antibot_cache:get(de1.dynamic_guard_slots[1].key), 2,
+   "rejected generic slot is rolled back atomically")
+dynamic_guard.after(de1); dynamic_guard.after(de2)
+
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.shared.antibot_cache.full = true
+local de_full = dgctx("198.51.100.121")
+local _, de_full_exit = dynamic_guard.admit(de_full)
+eq(de_full_exit, false, "generic guard fail-open when shared dict is full")
+eq(de_full.dynamic_guard_degraded, true,
+   "generic guard exposes degraded measurement")
+fake_ngx.shared.antibot_cache.full = nil
+cfg.dynamic_guard = old_dynamic_guard
+package.loaded["antibot.l7.principal_churn"] = nil
+package.loaded["antibot.l7.dynamic_guard"] = nil
+end
+cfg.__run_generic_guard_tests()
+cfg.__run_generic_guard_tests = nil
+
 -- Classifier: extension chi duoc coi la resource khi GET/HEAD; Sec-Fetch-Dest
 -- chi la telemetry, khong con la quyen tu chon lane nhe.
 package.loaded["antibot.core.req_classifier"] = nil
@@ -2545,18 +2935,25 @@ ok(init_src:find("xfilter_guard%.run%(ctx%)", verified_pos) ~= nil,
 local admission_steps = assert(init_src:match(
     "local STEPS_ADMISSION%s*=%s*{(.-)\n}"))
 local automation_pos = assert(admission_steps:find("layer%s*=%s*automation_guard"))
+local proxy_pos = assert(admission_steps:find("layer%s*=%s*proxy_origin"))
+local principal_pos = assert(admission_steps:find("layer%s*=%s*principal_churn"))
 local local_brake_pos = assert(admission_steps:find("layer%s*=%s*l7_admission"))
 local circuit_pos = assert(admission_steps:find("layer%s*=%s*l7_circuit"))
 local surge_pos = assert(admission_steps:find("layer%s*=%s*l7_surge"))
+local dynamic_pos = assert(admission_steps:find("layer%s*=%s*dynamic_guard"))
 local redis_ban_pos = assert(admission_steps:find("layer%s*=%s*ip_ban_check"))
 ok(automation_pos < local_brake_pos,
    "automation telemetry runs before admission fast-exit")
+ok(proxy_pos < principal_pos and principal_pos < local_brake_pos,
+   "principal churn sees verified proxy state before admission exit")
 ok(local_brake_pos < circuit_pos,
    "circuit breaker reuses admission dynamic/static decision")
 ok(circuit_pos < redis_ban_pos,
    "OPEN host sheds work before Redis-backed IP ban lookup")
 ok(circuit_pos < surge_pos and surge_pos < redis_ban_pos,
    "surge early gate runs before Redis-backed IP ban lookup")
+ok(surge_pos < dynamic_pos and dynamic_pos < redis_ban_pos,
+   "generic pressure gate runs before Redis-backed IP ban lookup")
 ok(local_brake_pos < redis_ban_pos,
    "local admission shields Redis-backed IP ban lookup")
 
@@ -2567,8 +2964,11 @@ ok(init_src:find("if not exited then admit_dynamic%(ctx%) end") ~= nil,
    "normal pipeline acquires slot only when enforcement did not exit")
 
 local surge_after_pos = assert(init_src:find("l7_surge%.after%(ctx%)"))
+local dynamic_after_pos = assert(init_src:find("dynamic_guard%.after%(ctx%)"))
 local circuit_after_pos = assert(init_src:find("l7_circuit%.after%(ctx%)"))
 local logger_pos = assert(init_src:find("logger%.run%(ctx%)", circuit_after_pos))
+ok(dynamic_after_pos < surge_after_pos,
+   "generic source slots release before broad surge telemetry")
 ok(surge_after_pos < circuit_after_pos,
    "log phase releases surge slot before circuit learning")
 ok(circuit_after_pos < logger_pos,

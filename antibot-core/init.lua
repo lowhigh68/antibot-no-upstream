@@ -20,6 +20,8 @@ local l7_layer           = require "antibot.l7"
 local l7_admission       = require "antibot.l7.admission"
 local automation_guard   = require "antibot.l7.automation_guard"
 local operator_concurrency = require "antibot.l7.operator_concurrency"
+local principal_churn    = require "antibot.l7.principal_churn"
+local dynamic_guard      = require "antibot.l7.dynamic_guard"
 local endpoint_policy    = require "antibot.waf.endpoint_policy"
 local endpoint_guard     = require "antibot.l7.endpoint_guard"
 local l7_circuit         = require "antibot.l7.circuit_breaker"
@@ -47,6 +49,9 @@ local STEPS_ADMISSION = {
     -- ban/WAF hits remain measurable; it never changes a verdict in shadow.
     { layer = automation_guard,  fn = "run"           },
     { layer = proxy_origin,      fn = "run"           },
+    -- Generic contradictory-principal telemetry.  It runs after proxy origin
+    -- so a shared reverse-proxy edge is never treated as one source.
+    { layer = principal_churn,   fn = "before"        },
     { layer = l7_admission,      fn = "run"           },
     -- Generic capacity engine, WordPress policy overlay.  Classification is
     -- cheap for ordinary traffic and runs after the broad admission brake;
@@ -59,6 +64,9 @@ local STEPS_ADMISSION = {
     -- Cheap early capacity gate.  The actual slot is acquired only after the
     -- request survives WAF/detection, immediately before content/upstream.
     { layer = l7_surge,          fn = "before"        },
+    -- Read-only pressure gate.  Its live slots are acquired only at the late
+    -- common point, after all local verdicts, by admit_dynamic().
+    { layer = dynamic_guard,     fn = "before"        },
     -- Redis ban lookup dung SAU local budget: flood tu mot IP da ban khong duoc
     -- phep bien thanh unlimited Redis traffic.
     { layer = ip_ban_check,      fn = "run"           },
@@ -236,6 +244,15 @@ local function admit_dynamic(ctx)
     if automation_exit == true then return true end
     local _, endpoint_exit = endpoint_guard.admit(ctx)
     if endpoint_exit == true then return true end
+    -- Observe JA3-backed principal churn after transport/full detection.  The
+    -- early IP observation uses the same markers, so this cannot double-count
+    -- one canonical principal.
+    local _, churn_exit = principal_churn.admit(ctx)
+    if churn_exit == true then return true end
+    -- Generic source/docroot slots precede vendor-specific operator slots.  A
+    -- UA/principal rotation therefore cannot multiply backend concurrency.
+    local _, dynamic_exit = dynamic_guard.admit(ctx)
+    if dynamic_exit == true then return true end
     -- This is the principal-wide backend slot, not another rate counter.
     -- Keeping it after endpoint_guard means a per-docroot reject cannot also
     -- appear as live operator work across the server.
@@ -354,6 +371,7 @@ function _M.log()
     -- the completed upstream outcome.  Both expose their elected sample or
     -- transition in this same antibot.log line.
     endpoint_guard.after(ctx)
+    dynamic_guard.after(ctx)
     operator_concurrency.after(ctx)
     l7_surge.after(ctx)
     l7_circuit.after(ctx)

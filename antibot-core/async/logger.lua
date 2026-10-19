@@ -680,6 +680,82 @@ function _M.run(ctx)
             tostring(ctx.automation_concurrency_slot_expired or false))
     end
 
+    -- Generic contradictory-principal telemetry.  This is intentionally not
+    -- part of good-bot verification: it asks whether one source alternates
+    -- unrelated canonical automation identities, not whether any named vendor
+    -- is trusted.  Reverse-proxy skips remain visible for FP auditing.
+    local principal_churn_str = ""
+    if ctx.principal_churn_ip_count or ctx.principal_churn_proxy_skip
+       or ctx.principal_churn_degraded then
+        principal_churn_str = string.format(
+            " pcmode=%s pcaxis=%s pcipn=%s/%s pcj3n=%s/%s" ..
+            " pcopen=%s pcwould=%s pcthr=%s pcproxy=%s pcdeg=%s",
+            tostring(ctx.principal_churn_mode or "-"),
+            tostring(ctx.principal_churn_axis or "-"),
+            tostring(ctx.principal_churn_ip_count or "-"),
+            tostring(ctx.principal_churn_ip_limit or "-"),
+            tostring(ctx.principal_churn_ja3_count or "-"),
+            tostring(ctx.principal_churn_ja3_limit or "-"),
+            tostring(ctx.principal_churn_open or false),
+            tostring(ctx.principal_churn_would_reject or false),
+            tostring(ctx.principal_churn_rejected or false),
+            tostring(ctx.principal_churn_proxy_skip or false),
+            tostring(ctx.principal_churn_degraded or false))
+    end
+
+    -- Generic dynamic-backend telemetry.  No raw docroot, path or source IP is
+    -- emitted.  `dgpwork` is completed upstream-seconds inside the pressure
+    -- window; `dgdur-dgup` exposes slow-client/buffering inflation of live
+    -- slots.  All axes have independent would/reject fields and remain capacity
+    -- controls, never reputation evidence.
+    local dynamic_guard_str = ""
+    if ctx.dynamic_guard_scope then
+        dynamic_guard_str = string.format(
+            " dgmode=%s dgscope=%s dgtn=%s/%s dgsn=%s/%s" ..
+            " dgwould=%s dgthr=%s dgcause=%s" ..
+            " dgph=%s/%s dgpd=%s/%s dgpc=%s/%s dgpath=%s dguri=%s" ..
+            " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
+            " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
+            " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s",
+            tostring(ctx.dynamic_guard_mode or "-"),
+            tostring(ctx.dynamic_guard_scope or "-"),
+            tostring(ctx.dynamic_tenant_inflight or "-"),
+            tostring(ctx.dynamic_tenant_limit or "-"),
+            tostring(ctx.dynamic_server_inflight or "-"),
+            tostring(ctx.dynamic_server_limit or "-"),
+            tostring(ctx.dynamic_guard_would_reject or false),
+            tostring(ctx.dynamic_guard_rejected or false),
+            tostring(ctx.dynamic_guard_cause or "-"),
+            tostring(ctx.dynamic_path_hits or "-"),
+            tostring(ctx.dynamic_path_hit_limit or "-"),
+            tostring(ctx.dynamic_path_distinct or "-"),
+            tostring(ctx.dynamic_path_distinct_limit or "-"),
+            tostring(ctx.dynamic_path_costly or "-"),
+            tostring(ctx.dynamic_path_costly_limit or "-"),
+            tostring(ctx.dynamic_path_candidate or false),
+            tostring(ctx.dynamic_uri_shape or "-"),
+            tostring(ctx.dynamic_pressure_open or false),
+            tostring(ctx.dynamic_pressure_mode or "-"),
+            tostring(ctx.dynamic_pressure_would_reject or false),
+            tostring(ctx.dynamic_pressure_half_open or false),
+            tostring(ctx.dynamic_pressure_probe or false),
+            ctx.dynamic_pressure_work
+                and string.format("%.3f", ctx.dynamic_pressure_work) or "-",
+            tostring(ctx.dynamic_pressure_samples or "-"),
+            tostring(ctx.dynamic_pressure_slow or "-"),
+            tostring(ctx.dynamic_pressure_candidate or false),
+            tostring(ctx.dynamic_pressure_transition or "-"),
+            ctx.dynamic_guard_duration
+                and string.format("%.3f", ctx.dynamic_guard_duration) or "-",
+            ctx.dynamic_guard_upstream_time
+                and string.format("%.3f", ctx.dynamic_guard_upstream_time) or "-",
+            tostring(ctx.dynamic_guard_actual_status or "-"),
+            tostring(ctx.dynamic_tenant_remaining or "-"),
+            tostring(ctx.dynamic_server_remaining or "-"),
+            tostring(ctx.dynamic_guard_degraded or false),
+            tostring(ctx.dynamic_guard_slot_expired or false))
+    end
+
     -- Published-network provenance is independent from good-bot verification.
     -- `opmatch=true` means both network and self-identification matched early;
     -- `opbind=contact|stem` distinguishes strong domain binding from the weaker
@@ -1159,7 +1235,8 @@ function _M.run(ctx)
         circuit_str
     )
     line = line .. endpoint_str .. automation_str
-        .. automation_concurrency_str .. operator_str
+        .. automation_concurrency_str .. principal_churn_str
+        .. dynamic_guard_str .. operator_str
         .. shared_ip_str .. ban_str
 
     write_log_line(line)
