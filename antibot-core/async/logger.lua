@@ -716,6 +716,7 @@ function _M.run(ctx)
             " dgph=%s/%s dgpd=%s/%s dgpc=%s/%s dgpath=%s dguri=%s" ..
             " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
             " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
+            " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
             " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s",
             tostring(ctx.dynamic_guard_mode or "-"),
             tostring(ctx.dynamic_guard_scope or "-"),
@@ -745,6 +746,12 @@ function _M.run(ctx)
             tostring(ctx.dynamic_pressure_slow or "-"),
             tostring(ctx.dynamic_pressure_candidate or false),
             tostring(ctx.dynamic_pressure_transition or "-"),
+            tostring(ctx.dynamic_pressure_policy or "-"),
+            tostring(ctx.dynamic_pressure_disposition or "-"),
+            tostring(ctx.dynamic_pressure_selective_candidate or false),
+            tostring(ctx.dynamic_pressure_selective_rejected or false),
+            tostring(ctx.dynamic_pressure_reserve_inflight or "-"),
+            tostring(ctx.dynamic_pressure_reserve_limit or "-"),
             ctx.dynamic_guard_duration
                 and string.format("%.3f", ctx.dynamic_guard_duration) or "-",
             ctx.dynamic_guard_upstream_time

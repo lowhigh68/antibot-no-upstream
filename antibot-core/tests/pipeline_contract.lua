@@ -589,10 +589,9 @@ do
        "inflight reject dung 503 (suc chua), khong phai 429 (toc do)")
     eq(tonumber(eg.retry_after) ~= nil, true, "co Retry-After cho client lui lai")
 
-    -- Production evidence (2026-10-19) promoted only narrow source/structural
-    -- axes.  Pin both the modes and their safety margins: lowering a limit or
-    -- accidentally promoting the broad pressure breaker is a deployment
-    -- regression, not an ordinary tuning change.
+    -- Production evidence first promoted narrow source/structural axes.  The
+    -- broad pressure state may now enforce only through the late selective
+    -- policy; reverting to an early blanket 503 is a deployment regression.
     eq(dg.enabled, true, "dynamic_guard generic duoc bat telemetry")
     eq((dg.tenant_client or {}).mode, "enforce",
        "docroot+IP concurrency duoc promote sau production evidence")
@@ -612,12 +611,18 @@ do
        "path spray can completed-cost evidence")
     eq((dg.uri_integrity or {}).mode, "enforce",
        "generic URI integrity enforce protocol invariant")
-    eq((dg.pressure or {}).mode, "shadow",
-       "broad backend pressure van shadow")
-    eq((dg.pressure or {}).min_samples, 15,
-       "pressure can du completed samples")
+    eq((dg.pressure or {}).mode, "enforce",
+       "backend pressure selective enforcement duoc bat")
+    eq((dg.pressure or {}).policy, "selective",
+       "pressure khong duoc quay lai blanket reject")
+    eq((dg.pressure or {}).min_samples, 12,
+       "pressure cover workload it completion nhung rat dat")
     eq((dg.pressure or {}).work_seconds, 180.0,
-       "pressure shadow chi danh dau backend incident lon")
+       "pressure chi mo tren backend incident lon")
+    eq((dg.pressure or {}).first_party_reserve, 4,
+       "verified human co ngan sach song nho khi overload")
+    eq((dg.pressure or {}).first_party_richness, 0.5,
+       "cookie registry phai kem richness truoc khi uu tien")
     eq(pc.mode, "enforce",
        "principal churn quarantine duoc promote sau production evidence")
     eq(pc.ip_threshold, 4, "principal churn IP threshold production")
@@ -747,6 +752,8 @@ do
         " dgpath=", " dguri=", " dgpopen=", " dgpmode=",
         " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
         " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
+        " dgppol=", " dgpsel=", " dgpswould=", " dgpsthr=",
+        " dgpr=",
         " dgdur=", " dgup=", " dgactual=", " dgleft=", " dgdeg=",
         " dgexp=",
     }) do

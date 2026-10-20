@@ -915,9 +915,9 @@ _M.endpoint_guard = {
 --   pressure: completed upstream seconds per docroot/wall-clock window.
 --
 -- Production evidence from the two busiest/highest-attack nodes promoted the
--- narrow source and structural axes independently.  Pressure remains shadow:
--- it is a broad docroot breaker and therefore needs a much stronger threshold
--- plus another observation round after the narrow brakes remove their load.
+-- narrow source and structural axes independently.  Pressure is enforced only
+-- as a late selective shed: it never blanket-rejects a docroot before bot and
+-- first-party evidence exists.
 _M.dynamic_guard = {
     enabled     = true,
     mode        = "shadow", -- fallback mode; each axis below is authoritative
@@ -958,13 +958,16 @@ _M.dynamic_guard = {
         status = 400,
     },
     pressure = {
-        mode             = "shadow",
+        mode             = "enforce",
+        policy           = "selective",
         window           = 10,
-        -- 15s/5 and 60s/10 both opened on the quiet control node.  180s/15
-        -- separated all three measured load incidents on cloud168-101 from
-        -- cloud28-246's non-spike window.  Keep shadow: this is a telemetry
-        -- threshold, not yet authority to shed an entire docroot.
-        min_samples      = 15,
+        -- Full-log simulation on the two representative nodes:
+        --   180/15: cloud28=49 candidates/3 domains; cloud168=0
+        --   180/12: cloud28 unchanged; cloud168=4, all focusasiatravel.vn
+        -- The missed cloud168 incident held 444.424 upstream-seconds with only
+        -- 13 completions, so 15 measured request count rather than backend
+        -- pain.  Twelve covers it without widening the cloud28 candidate set.
+        min_samples      = 12,
         work_seconds     = 180.0,
         slow_seconds     = 2.5,
         hold_seconds     = 20,
@@ -972,6 +975,15 @@ _M.dynamic_guard = {
         recovery_seconds = 5,
         eval_interval    = 1,
         status           = 503,
+
+        -- While open, automation and clients without proven first-party state
+        -- yield first.  A Cookie header alone is never enough: registry-known
+        -- state must also carry richness >= 0.5.  Verified humans and those
+        -- sessions share four live slots per docroot; explicit whitelist and
+        -- internal callback policy bypass this ranker.  One half-open probe is
+        -- still elected atomically after the hold interval.
+        first_party_richness = 0.5,
+        first_party_reserve  = 4,
     },
 }
 

@@ -1875,10 +1875,12 @@ cfg.dynamic_guard = {
     },
     uri_integrity = { mode = "shadow", status = 400 },
     pressure = {
-        mode = "shadow", window = 10, min_samples = 2,
+        mode = "shadow", policy = "selective",
+        window = 10, min_samples = 2,
         work_seconds = 4, slow_seconds = 2,
         hold_seconds = 5, probe_timeout = 3,
         recovery_seconds = 2, eval_interval = 1, status = 503,
+        first_party_richness = 0.5, first_party_reserve = 2,
     },
 }
 package.loaded["antibot.l7.dynamic_guard"] = nil
@@ -2051,10 +2053,83 @@ local _, dp3_exit = dynamic_guard.before(dp3)
 eq(dp3_exit, false, "pressure shadow does not reject")
 eq(dp3.dynamic_pressure_would_reject, true,
    "open pressure records would-reject")
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+
+-- Pressure enforcement is deliberately late and selective.  Early access has
+-- no bot/session proof and therefore never blanket-rejects.  At late-admit,
+-- automation and stateless traffic yield; explicit policy and a bounded
+-- first-party reserve keep real users moving.
+cfg.dynamic_guard.pressure.mode = "enforce"
+clock = 3202.1
+local dp_untrusted = dgctx("198.51.100.116", "/untrusted")
+local _, dp_untrusted_early = dynamic_guard.before(dp_untrusted)
+eq(dp_untrusted_early, false,
+   "open pressure never blanket-rejects in early hook")
+local _, dp_untrusted_exit = dynamic_guard.admit(dp_untrusted)
+eq(dp_untrusted_exit, true, "stateless dynamic client is shed late")
+eq(dp_untrusted.dynamic_pressure_disposition, "shed_untrusted",
+   "stateless pressure disposition is explicit")
+eq(dp_untrusted.dynamic_pressure_selective_rejected, true,
+   "actual selective pressure reject is observable")
+
+local dp_bot = dgctx("198.51.100.117", "/crawler")
+dp_bot.good_bot_verified = true
+dynamic_guard.before(dp_bot)
+local _, dp_bot_exit = dynamic_guard.admit(dp_bot)
+eq(dp_bot_exit, true, "verified automation yields under backend pressure")
+eq(dp_bot.dynamic_pressure_disposition, "shed_automation",
+   "crawler is ranked as automation without vendor names")
+
+local dp_whitelist = dgctx("198.51.100.118", "/callback")
+dp_whitelist.whitelisted = true
+dynamic_guard.before(dp_whitelist)
+local _, dp_whitelist_exit = dynamic_guard.admit(dp_whitelist)
+eq(dp_whitelist_exit, false, "explicit callback policy survives pressure")
+eq(dp_whitelist.dynamic_pressure_disposition, "keep_whitelist",
+   "whitelist bypass is visible")
+dynamic_guard.after(dp_whitelist)
+
+local dp_h1 = dgctx("198.51.100.119", "/human-one")
+local dp_h2 = dgctx("198.51.100.120", "/human-two")
+local dp_h3 = dgctx("198.51.100.121", "/human-three")
+dp_h1.verified, dp_h2.verified, dp_h3.verified = true, true, true
+for _, item in ipairs({ dp_h1, dp_h2, dp_h3 }) do
+    dynamic_guard.before(item)
+end
+local _, dp_h1_exit = dynamic_guard.admit(dp_h1)
+local _, dp_h2_exit = dynamic_guard.admit(dp_h2)
+local _, dp_h3_exit = dynamic_guard.admit(dp_h3)
+eq(dp_h1_exit, false, "verified human gets first reserve slot")
+eq(dp_h2_exit, false, "verified human gets second reserve slot")
+eq(dp_h3_exit, true, "verified human above bounded reserve is shed")
+eq(dp_h3.dynamic_pressure_disposition, "shed_reserve",
+   "reserve exhaustion is distinct from untrusted traffic")
+eq(dp_h3.dynamic_pressure_reserve_inflight, 3,
+   "reserve measures live eligible requests")
+dynamic_guard.after(dp_h1); dynamic_guard.after(dp_h2)
+
+local dp_state = dgctx("198.51.100.122", "/known-state")
+dp_state.session_cookie_known = true
+dp_state.session_richness_own = 0.7
+dynamic_guard.before(dp_state)
+local _, dp_state_exit = dynamic_guard.admit(dp_state)
+eq(dp_state_exit, false, "registry-known rich first-party state gets reserve")
+eq(dp_state.dynamic_pressure_disposition, "keep_first_party",
+   "first-party keep is separately observable")
+dynamic_guard.after(dp_state)
+
+local dp_spoof = dgctx("198.51.100.123", "/cookie-header-only")
+dp_spoof.session_cookie_known = false
+dp_spoof.session_richness_own = 1.0
+dynamic_guard.before(dp_spoof)
+local _, dp_spoof_exit = dynamic_guard.admit(dp_spoof)
+eq(dp_spoof_exit, true, "richness without known cookie cannot buy priority")
+eq(dp_spoof.dynamic_pressure_disposition, "shed_untrusted",
+   "spoofable Cookie state remains untrusted")
 
 -- After the hold, one request probes while concurrent arrivals still receive
 -- the pressure verdict. A fast probe closes the state and starts recovery.
-cfg.dynamic_guard.pressure.mode = "enforce"
 clock = 3207
 fake_ngx.var.uri = "/probe"
 local dp_probe = dgctx("198.51.100.113", "/probe")

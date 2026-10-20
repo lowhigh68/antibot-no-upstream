@@ -287,6 +287,7 @@ end
 local function read_pressure(dict, ctx, c, scope, t, acquire_probe)
     local spec, mode = pressure_config(c)
     ctx.dynamic_pressure_mode = mode
+    ctx.dynamic_pressure_policy = tostring(spec.policy or "blanket")
     if mode == "off" then return false end
     local base = pressure_keys(scope)
     local until_at = tonumber(dict:get(base .. ":open_until"))
@@ -332,6 +333,103 @@ local function read_pressure(dict, ctx, c, scope, t, acquire_probe)
     return true
 end
 
+local function pressure_automation(ctx)
+    return ctx.automation_observed == true
+        or ctx.automation_claimed == true
+        or ctx.automation_meter_claimed == true
+        or ctx.good_bot_claimed == true
+        or ctx.good_bot_verified == true
+end
+
+-- Pressure is a capacity verdict, not a reputation verdict.  Once a docroot
+-- is open, shed the traffic least likely to represent an active human first;
+-- never turn a Cookie header by itself into trust.  Human/stateful traffic is
+-- bounded by a small live reserve, so it can make progress without defeating
+-- the breaker.  The reserve uses the same crash-bounded slot primitive as the
+-- other concurrency axes and is released in log phase.
+local function pressure_select(dict, ctx, c, scope, t, slots)
+    if not ctx.dynamic_pressure_would_reject then
+        if ctx.dynamic_pressure_probe then
+            ctx.dynamic_pressure_disposition = "probe"
+        end
+        return false
+    end
+
+    local spec = type(c.pressure) == "table" and c.pressure or {}
+    local policy = tostring(spec.policy or "blanket")
+    ctx.dynamic_pressure_policy = policy
+
+    if policy ~= "selective" then
+        ctx.dynamic_pressure_disposition = "shed_all"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    -- Explicit operator policy (including internal callbacks) wins over the
+    -- overload ranker.  This is deliberately narrower than any Cookie claim.
+    if ctx.whitelisted == true then
+        ctx.dynamic_pressure_disposition = "keep_whitelist"
+        return false
+    end
+
+    -- Verified crawlers are legitimate identities, but they are still
+    -- automation and must yield while a tenant is consuming extreme backend
+    -- work.  No vendor/principal name is needed here.
+    if pressure_automation(ctx) then
+        ctx.dynamic_pressure_disposition = "shed_automation"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    local verified = ctx.verified == true
+    local richness = tonumber(ctx.session_richness_own) or 0
+    local first_party = ctx.session_cookie_known == true
+        and richness >= (tonumber(spec.first_party_richness) or 0.5)
+    if not verified and not first_party then
+        ctx.dynamic_pressure_disposition = "shed_untrusted"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    local reserve = math.max(math.floor(
+        tonumber(spec.first_party_reserve) or 4), 0)
+    ctx.dynamic_pressure_reserve_limit = reserve
+    if reserve <= 0 then
+        ctx.dynamic_pressure_disposition = "shed_reserve"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    local slot, err = acquire(dict, pressure_keys(scope) .. ":priority",
+        "pressure_reserve", reserve, c, t)
+    if not slot then
+        -- An uncertain capacity read must not lock out an authenticated user.
+        ctx.dynamic_guard_degraded = true
+        ctx.dynamic_pressure_degraded = true
+        ctx.dynamic_pressure_disposition = "keep_degraded"
+        log_dict_error("pressure_reserve", err)
+        return false
+    end
+    slots[#slots + 1] = slot
+    ctx.dynamic_pressure_reserve_inflight = slot.count
+    if err then
+        ctx.dynamic_guard_degraded = true
+        ctx.dynamic_pressure_degraded = true
+        ctx.dynamic_pressure_disposition = "keep_degraded"
+        log_dict_error("pressure_reserve_ttl", err)
+        return false
+    end
+    if slot.count > reserve then
+        ctx.dynamic_pressure_disposition = "shed_reserve"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    ctx.dynamic_pressure_disposition = verified
+        and "keep_verified" or "keep_first_party"
+    return false
+end
+
 local function reject(ctx, c, cause, status)
     status = tonumber(status) or tonumber(c.status) or 429
     ctx.dynamic_guard_rejected = true
@@ -361,13 +459,10 @@ function _M.before(ctx)
     end
     local scope = scope_id()
     ctx.dynamic_guard_scope = scope
-    local pressure_active = read_pressure(dict, ctx, c, scope, now(), false)
-    local _, pressure_mode = pressure_config(c)
-    if pressure_active and pressure_mode == "enforce"
-       and not ctx.dynamic_guard_degraded then
-        local spec = type(c.pressure) == "table" and c.pressure or {}
-        return reject(ctx, c, "pressure", spec.status or 503)
-    end
+    -- Detection has not run yet, so this hook cannot distinguish automation,
+    -- a verified human or a first-party session.  It only exposes breaker
+    -- state; late-admit is the sole authority for selective shedding.
+    read_pressure(dict, ctx, c, scope, now(), false)
     return true, false
 end
 
@@ -466,7 +561,9 @@ function _M.admit(ctx)
         read_pressure(dict, ctx, c, scope, t, true)
     end
     local _, pressure_mode = pressure_config(c)
-    if ctx.dynamic_pressure_would_reject then
+    local pressure_shed = pressure_select(
+        dict, ctx, c, scope, t, slots)
+    if pressure_shed then
         add("pressure", pressure_mode)
     end
 
@@ -481,6 +578,9 @@ function _M.admit(ctx)
         ctx.dynamic_guard_released = true
         ctx.dynamic_guard_admitted = false
         local cause = enforced[1]
+        if cause == "pressure" then
+            ctx.dynamic_pressure_selective_rejected = true
+        end
         local status = cause == "pressure"
             and ((type(c.pressure) == "table" and c.pressure.status) or 503)
             or (cause == "path_spray" and spray_spec.status or nil)
@@ -665,6 +765,8 @@ function _M.after(ctx)
                 ctx.dynamic_tenant_remaining = remaining
             elseif slot.axis == "server" then
                 ctx.dynamic_server_remaining = remaining
+            elseif slot.axis == "pressure_reserve" then
+                ctx.dynamic_pressure_reserve_remaining = remaining
             end
         end
     end
