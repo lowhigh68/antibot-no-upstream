@@ -717,6 +717,8 @@ function _M.run(ctx)
             " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
             " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
             " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
+            " dgpckind=%s dgpcid=%s dgpcwork=%s dgpcn=%s dgpccand=%s" ..
+            " dgpcshare=%s dgpcmatch=%s dgpattr=%s" ..
             " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s",
             tostring(ctx.dynamic_guard_mode or "-"),
             tostring(ctx.dynamic_guard_scope or "-"),
@@ -752,6 +754,20 @@ function _M.run(ctx)
             tostring(ctx.dynamic_pressure_selective_rejected or false),
             tostring(ctx.dynamic_pressure_reserve_inflight or "-"),
             tostring(ctx.dynamic_pressure_reserve_limit or "-"),
+            tostring(ctx.dynamic_pressure_cohort_kind or "-"),
+            tostring(ctx.dynamic_pressure_cohort_id or "-"),
+            (ctx.dynamic_pressure_cohort_work
+                or ctx.dynamic_pressure_cohort_hot_work)
+                and string.format("%.3f", tonumber(
+                    ctx.dynamic_pressure_cohort_work
+                    or ctx.dynamic_pressure_cohort_hot_work) or 0) or "-",
+            tostring(ctx.dynamic_pressure_cohort_samples or "-"),
+            tostring(ctx.dynamic_pressure_cohort_candidate or false),
+            ctx.dynamic_pressure_cohort_share ~= nil
+                and string.format("%.3f",
+                    tonumber(ctx.dynamic_pressure_cohort_share) or 0) or "-",
+            tostring(ctx.dynamic_pressure_cohort_match or false),
+            tostring(ctx.dynamic_pressure_attributed or false),
             ctx.dynamic_guard_duration
                 and string.format("%.3f", ctx.dynamic_guard_duration) or "-",
             ctx.dynamic_guard_upstream_time

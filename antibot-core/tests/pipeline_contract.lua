@@ -613,8 +613,8 @@ do
        "generic URI integrity enforce protocol invariant")
     eq((dg.pressure or {}).mode, "enforce",
        "backend pressure selective enforcement duoc bat")
-    eq((dg.pressure or {}).policy, "selective",
-       "pressure khong duoc quay lai blanket reject")
+    eq((dg.pressure or {}).policy, "cohort",
+       "pressure chi shed cohort da tao chi phi")
     eq((dg.pressure or {}).min_samples, 12,
        "pressure cover workload it completion nhung rat dat")
     eq((dg.pressure or {}).work_seconds, 180.0,
@@ -623,6 +623,12 @@ do
        "verified human co ngan sach song nho khi overload")
     eq((dg.pressure or {}).first_party_richness, 0.5,
        "cookie registry phai kem richness truoc khi uu tien")
+    eq((dg.pressure or {}).cohort_min_samples, 3,
+       "cohort can nhieu slow completion, khong phan quyet tu mot request")
+    eq((dg.pressure or {}).cohort_work_seconds, 30.0,
+       "cohort phai tu tao backend work dang ke")
+    eq((dg.pressure or {}).cohort_min_share, 0.15,
+       "cohort phai chiem ty trong incident du lon")
     eq(pc.mode, "enforce",
        "principal churn quarantine duoc promote sau production evidence")
     eq(pc.ip_threshold, 4, "principal churn IP threshold production")
@@ -753,7 +759,9 @@ do
         " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
         " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
         " dgppol=", " dgpsel=", " dgpswould=", " dgpsthr=",
-        " dgpr=",
+        " dgpr=", " dgpckind=", " dgpcid=", " dgpcwork=",
+        " dgpcn=", " dgpccand=", " dgpcshare=", " dgpcmatch=",
+        " dgpattr=",
         " dgdur=", " dgup=", " dgactual=", " dgleft=", " dgdeg=",
         " dgexp=",
     }) do

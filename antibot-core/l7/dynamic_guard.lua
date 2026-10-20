@@ -284,7 +284,7 @@ local function pressure_keys(scope)
     return "dg:pressure:" .. scope
 end
 
-local function read_pressure(dict, ctx, c, scope, t, acquire_probe)
+local function read_pressure(dict, ctx, c, scope, t, _acquire_probe)
     local spec, mode = pressure_config(c)
     ctx.dynamic_pressure_mode = mode
     ctx.dynamic_pressure_policy = tostring(spec.policy or "blanket")
@@ -300,37 +300,13 @@ local function read_pressure(dict, ctx, c, scope, t, acquire_probe)
         return true
     end
 
-    -- Do not elect the half-open probe in the early hook: that request may
-    -- still be terminated by WAF/ban/challenge and would then hold the only
-    -- probe lease without ever touching upstream.  Late-admit is the atomic
-    -- authority; early access merely marks the state as half-open.
-    if not acquire_probe then
-        ctx.dynamic_pressure_open = true
-        ctx.dynamic_pressure_until = until_at
-        ctx.dynamic_pressure_half_open = true
-        return false
-    end
-
-    -- Exactly one late-admitted request probes after the hold interval. Others
-    -- remain candidates until that request completes or the lease expires.
-    local probe_ttl = math.max(tonumber(spec.probe_timeout) or 10, 1)
-    local acquired, err = dict:add(base .. ":probe", 1, probe_ttl)
-    if acquired then
-        ctx.dynamic_pressure_probe = true
-        ctx.dynamic_pressure_half_open = false
-        ctx.dynamic_pressure_open = true
-        ctx.dynamic_pressure_until = until_at
-        return false
-    end
-    if err ~= "exists" then
-        ctx.dynamic_guard_degraded = true
-        log_dict_error("pressure_probe", err)
-        return false
-    end
+    -- Cohort identity does not exist in the early hook.  Late-admit elects a
+    -- probe per contributing cohort; a global probe would let one unrelated
+    -- request decide recovery for every traffic family on the docroot.
     ctx.dynamic_pressure_open = true
     ctx.dynamic_pressure_until = until_at
-    ctx.dynamic_pressure_would_reject = true
-    return true
+    ctx.dynamic_pressure_half_open = true
+    return false
 end
 
 local function pressure_automation(ctx)
@@ -341,32 +317,197 @@ local function pressure_automation(ctx)
         or ctx.good_bot_verified == true
 end
 
--- Pressure is a capacity verdict, not a reputation verdict.  Once a docroot
--- is open, shed the traffic least likely to represent an active human first;
--- never turn a Cookie header by itself into trust.  Human/stateful traffic is
--- bounded by a small live reserve, so it can make progress without defeating
--- the breaker.  The reserve uses the same crash-bounded slot primitive as the
--- other concurrency axes and is released in log phase.
-local function pressure_select(dict, ctx, c, scope, t, slots)
-    if not ctx.dynamic_pressure_would_reject then
-        if ctx.dynamic_pressure_probe then
-            ctx.dynamic_pressure_disposition = "probe"
-        end
-        return false
-    end
+local function length_bucket(n)
+    if n <= 3 then return "s" end
+    if n <= 8 then return "m" end
+    if n <= 16 then return "l" end
+    return "x"
+end
 
+local function segment_shape(segment)
+    local value = tostring(segment or ""):lower()
+    local ext = value:match("%.([%w]+)$")
+    if ext and #ext > 8 then ext = "long" end
+    local core = ext and value:sub(1, #value - #ext - 1) or value
+    local kind
+    if core:match("^%d+$") then
+        kind = "n"
+    elseif core:match("^%x+$") and core:match("%d") then
+        kind = "h"
+    elseif core:match("^[a-z]+$") then
+        kind = "a"
+    elseif core:match("^[a-z0-9_-]+$") then
+        kind = "w"
+    else
+        kind = "m"
+    end
+    return kind .. length_bucket(#core) .. "." .. tostring(ext or "-")
+end
+
+local function query_shape(ctx)
+    local args = ngx.var.args
+    if args == nil then
+        args = tostring((ctx.req and ctx.req.uri) or ""):match("%?(.*)$")
+    end
+    if not args or args == "" then return "-" end
+    local keys, overflow = {}, false
+    for field in tostring(args):gmatch("[^&;]+") do
+        local key = (field:match("^([^=]+)") or ""):lower()
+        key = key:gsub("%%[%x][%x]", "_"):gsub("[^%w_.-]", "_")
+        if key ~= "" then
+            if #keys < 8 then
+                keys[#keys + 1] = key:sub(1, 32)
+            else
+                overflow = true
+                break
+            end
+        end
+    end
+    table.sort(keys)
+    return digest(table.concat(keys, ",") .. (overflow and ",+" or ""))
+end
+
+local function request_shape(ctx)
+    local uri = tostring(ngx.var.uri
+        or (ctx.req and ctx.req.uri) or "/")
+    uri = (uri:match("^([^?]*)") or uri):lower()
+    local parts, count = {}, 0
+    for segment in uri:gmatch("[^/]+") do
+        count = count + 1
+        if #parts < 6 then parts[#parts + 1] = segment_shape(segment) end
+    end
+    if count > #parts then parts[#parts + 1] = "+" end
+    if #parts == 0 then parts[1] = "root" end
+    local method = tostring(ngx.var.request_method
+        or (ctx.req and ctx.req.method) or "GET"):upper()
+    return table.concat({
+        method,
+        tostring(ctx.req_class or "unknown"),
+        tostring(ctx.admission_group or "dynamic"),
+        table.concat(parts, "/"),
+        query_shape(ctx),
+    }, "|")
+end
+
+local function client_shape(ctx)
+    local ja3 = tostring(ctx.ja3 or "")
+    local transport
+    if ja3 ~= "" and ja3 ~= "-" then
+        transport = "j:" .. ja3
+    else
+        local ua = tostring(ctx.ua or ngx.var.http_user_agent or ""):lower()
+        -- Browser patch/minor versions are churn, not new clients.  Keep the
+        -- product grammar but erase numeric runs before hashing.
+        ua = ua:gsub("%d+", "#"):sub(1, 192)
+        transport = "u:" .. digest(ua)
+    end
+    return table.concat({
+        tostring(ctx.device_type or "unknown"),
+        transport,
+        tostring((ctx.req and ctx.req.proto) or ngx.var.server_protocol or "-"),
+    }, "|")
+end
+
+local function pressure_cohort(ctx)
+    if ctx.dynamic_pressure_cohort_id then
+        return ctx.dynamic_pressure_cohort_id,
+               ctx.dynamic_pressure_cohort_kind
+    end
+    local kind, signature
+    if pressure_automation(ctx) then
+        -- Multiple crawler principals can jointly exhaust a tenant without
+        -- any one principal crossing a rate limit.  They share the automation
+        -- capacity lane, but only while that lane itself has measured work.
+        kind, signature = "automation", "automation"
+    else
+        kind = "shape"
+        signature = request_shape(ctx) .. "|" .. client_shape(ctx)
+    end
+    local id = digest("cohort:" .. kind .. ":" .. signature)
+    ctx.dynamic_pressure_cohort_kind = kind
+    ctx.dynamic_pressure_cohort_id = id
+    return id, kind
+end
+
+local function pressure_cohort_base(base, id)
+    return base .. ":c:" .. tostring(id)
+end
+
+-- Pressure detects an incident; measured cohort contribution decides who is
+-- shed.  A docroot-wide overload is never authority to reject an unrelated
+-- first visitor.  Cohorts contain no IP, raw URI, query value or CMS token.
+local function pressure_select(dict, ctx, c, scope, t, slots)
     local spec = type(c.pressure) == "table" and c.pressure or {}
     local policy = tostring(spec.policy or "blanket")
     ctx.dynamic_pressure_policy = policy
 
-    if policy ~= "selective" then
+    if not ctx.dynamic_pressure_open then return false end
+    if policy == "blanket" and ctx.dynamic_pressure_would_reject then
         ctx.dynamic_pressure_disposition = "shed_all"
         ctx.dynamic_pressure_selective_candidate = true
         return true
     end
+    if policy ~= "cohort" then
+        ctx.dynamic_pressure_disposition = "keep_policy"
+        return false
+    end
+
+    local id, kind = pressure_cohort(ctx)
+    local base = pressure_keys(scope)
+    local cohort_base = pressure_cohort_base(base, id)
+    local hot_work = tonumber(dict:get(cohort_base .. ":hot"))
+    local hot_n = tonumber(dict:get(cohort_base .. ":hot_n"))
+    local open_work = tonumber(dict:get(base .. ":open_work"))
+    local min_share = math.max(math.min(
+        tonumber(spec.cohort_min_share) or 0.15, 1), 0)
+    local share = hot_work and open_work and open_work > 0
+        and (hot_work / open_work) or 0
+    local cohort_candidate = hot_work ~= nil and hot_n ~= nil
+    local match = cohort_candidate
+        and open_work ~= nil and share >= min_share
+    ctx.dynamic_pressure_cohort_hot_work = hot_work
+    ctx.dynamic_pressure_cohort_samples = hot_n
+    ctx.dynamic_pressure_cohort_share = share
+    ctx.dynamic_pressure_cohort_candidate = cohort_candidate
+    ctx.dynamic_pressure_cohort_match = match
+    ctx.dynamic_pressure_attributed = match
+
+    if not match then
+        ctx.dynamic_pressure_disposition = "keep_normal"
+        return false
+    end
+
+    -- After the global hold, each contributing cohort owns its probe lease.
+    -- Unrelated traffic never consumes it and never decides recovery for it.
+    if ctx.dynamic_pressure_half_open then
+        local probe_ttl = math.max(tonumber(spec.probe_timeout) or 10, 1)
+        local acquired, err = dict:add(cohort_base .. ":probe", 1, probe_ttl)
+        if acquired then
+            ctx.dynamic_pressure_probe = true
+            ctx.dynamic_pressure_probe_cohort = id
+            ctx.dynamic_pressure_half_open = false
+            ctx.dynamic_pressure_disposition = "probe"
+            return false
+        end
+        if err ~= "exists" then
+            ctx.dynamic_guard_degraded = true
+            ctx.dynamic_pressure_degraded = true
+            ctx.dynamic_pressure_disposition = "keep_degraded"
+            log_dict_error("pressure_cohort_probe", err)
+            return false
+        end
+        ctx.dynamic_pressure_disposition = "shed_incident_wait"
+        ctx.dynamic_pressure_selective_candidate = true
+        return true
+    end
+
+    if not ctx.dynamic_pressure_would_reject then
+        ctx.dynamic_pressure_disposition = "keep_normal"
+        return false
+    end
 
     -- Explicit operator policy (including internal callbacks) wins over the
-    -- overload ranker.  This is deliberately narrower than any Cookie claim.
+    -- incident scheduler.  This is deliberately narrower than any Cookie.
     if ctx.whitelisted == true then
         ctx.dynamic_pressure_disposition = "keep_whitelist"
         return false
@@ -376,7 +517,7 @@ local function pressure_select(dict, ctx, c, scope, t, slots)
     -- automation and must yield while a tenant is consuming extreme backend
     -- work.  No vendor/principal name is needed here.
     if pressure_automation(ctx) then
-        ctx.dynamic_pressure_disposition = "shed_automation"
+        ctx.dynamic_pressure_disposition = "shed_incident_automation"
         ctx.dynamic_pressure_selective_candidate = true
         return true
     end
@@ -386,7 +527,7 @@ local function pressure_select(dict, ctx, c, scope, t, slots)
     local first_party = ctx.session_cookie_known == true
         and richness >= (tonumber(spec.first_party_richness) or 0.5)
     if not verified and not first_party then
-        ctx.dynamic_pressure_disposition = "shed_untrusted"
+        ctx.dynamic_pressure_disposition = "shed_incident"
         ctx.dynamic_pressure_selective_candidate = true
         return true
     end
@@ -557,6 +698,9 @@ function _M.admit(ctx)
 
     -- before() normally populated this.  Keep admit independently correct for
     -- verified/whitelist/test call sites that invoke only the late hook.
+    -- Compute the cohort on every admitted request so log phase can attribute
+    -- completed work even before any aggregate pressure state exists.
+    pressure_cohort(ctx)
     if ctx.dynamic_pressure_open == nil or ctx.dynamic_pressure_half_open then
         read_pressure(dict, ctx, c, scope, t, true)
     end
@@ -626,18 +770,38 @@ local function pressure_bucket(base, second, suffix)
     return base .. ":b:" .. tostring(second) .. ":" .. suffix
 end
 
+local function sum_pressure_buckets(dict, base, second, window)
+    local samples, work, slow = 0, 0, 0
+    for s = second - window + 1, second do
+        samples = samples + (tonumber(dict:get(
+            pressure_bucket(base, s, "n"))) or 0)
+        work = work + (tonumber(dict:get(
+            pressure_bucket(base, s, "work"))) or 0)
+        slow = slow + (tonumber(dict:get(
+            pressure_bucket(base, s, "slow"))) or 0)
+    end
+    return samples, work, slow
+end
+
 local function open_pressure(dict, ctx, spec, base, t, work, samples, slow)
     local hold = math.max(tonumber(spec.hold_seconds) or 20, 1)
     local probe = math.max(tonumber(spec.probe_timeout) or 10, 1)
     local until_at = t + hold
-    local ok, err = dict:set(base .. ":open_until", until_at,
-        hold + probe + 5)
+    local state_ttl = hold + probe + 5
+    local ok, err = dict:set(base .. ":open_until", until_at, state_ttl)
     if not ok then
         ctx.dynamic_guard_degraded = true
         log_dict_error("pressure_open", err)
         return
     end
-    delete_key(dict, base .. ":probe")
+    local work_ok, work_err = dict:set(base .. ":open_work", work, state_ttl)
+    local n_ok, n_err = dict:set(base .. ":open_n", samples, state_ttl)
+    if not work_ok or not n_ok then
+        -- Without the denominator no cohort share can be proven.  Leave the
+        -- aggregate state visible, but cohort matching will fail open.
+        ctx.dynamic_guard_degraded = true
+        log_dict_error("pressure_open_evidence", work_err or n_err)
+    end
     ctx.dynamic_pressure_open = true
     ctx.dynamic_pressure_until = until_at
     ctx.dynamic_pressure_transition = "open"
@@ -645,6 +809,36 @@ local function open_pressure(dict, ctx, spec, base, t, work, samples, slow)
     ctx.dynamic_pressure_samples = samples
     ctx.dynamic_pressure_slow = slow
     stat("pressure_open")
+end
+
+local function reopen_pressure_cohort(dict, ctx, spec, base, cohort_base, t, up)
+    local hold = math.max(tonumber(spec.hold_seconds) or 20, 1)
+    local probe = math.max(tonumber(spec.probe_timeout) or 10, 1)
+    local window = math.max(math.floor(tonumber(spec.window) or 10), 2)
+    local state_ttl = hold + probe + 5
+    local cohort_ttl = window + state_ttl
+    local until_at = t + hold
+    local hot_work = math.max(tonumber(dict:get(cohort_base .. ":hot")) or 0,
+        tonumber(up) or 0)
+    local hot_n = math.max(tonumber(dict:get(cohort_base .. ":hot_n")) or 0, 1)
+    local ok1, err1 = dict:set(base .. ":open_until", until_at, state_ttl)
+    local ok2, err2 = dict:set(base .. ":open_work", hot_work, state_ttl)
+    local ok3, err3 = dict:set(base .. ":open_n", hot_n, state_ttl)
+    local ok4, err4 = dict:set(cohort_base .. ":hot", hot_work, cohort_ttl)
+    local ok5, err5 = dict:set(cohort_base .. ":hot_n", hot_n, cohort_ttl)
+    if not ok1 or not ok2 or not ok3 or not ok4 or not ok5 then
+        ctx.dynamic_guard_degraded = true
+        log_dict_error("pressure_cohort_reopen",
+            err1 or err2 or err3 or err4 or err5)
+        return
+    end
+    ctx.dynamic_pressure_open = true
+    ctx.dynamic_pressure_until = until_at
+    ctx.dynamic_pressure_transition = "cohort_reopen"
+    ctx.dynamic_pressure_cohort_hot_work = hot_work
+    ctx.dynamic_pressure_cohort_samples = hot_n
+    ctx.dynamic_pressure_cohort_match = true
+    stat("pressure_reopen")
 end
 
 local function record_pressure(dict, ctx, c, up, t)
@@ -657,6 +851,9 @@ local function record_pressure(dict, ctx, c, up, t)
     local window = math.max(math.floor(tonumber(spec.window) or 10), 2)
     local ttl = window * 3 + 5
     local slow_seconds = tonumber(spec.slow_seconds) or 2.5
+    local cohort_id = ctx.dynamic_pressure_cohort_id
+        or select(1, pressure_cohort(ctx))
+    local cohort_base = pressure_cohort_base(base, cohort_id)
 
     local _, nerr = increment(dict,
         pressure_bucket(base, second, "n"), 1, ttl)
@@ -673,22 +870,75 @@ local function record_pressure(dict, ctx, c, up, t)
         return
     end
 
-    -- Probe result is direct evidence and must be handled before aggregate
-    -- window evaluation.  A fast completion closes; a slow completion reopens.
-    if ctx.dynamic_pressure_probe then
-        delete_key(dict, base .. ":probe")
-        if up < slow_seconds then
-            delete_key(dict, base .. ":open_until")
-            local recovery = math.max(tonumber(spec.recovery_seconds) or 5, 1)
-            dict:set(base .. ":recovery", 1, recovery)
-            ctx.dynamic_pressure_open = false
-            ctx.dynamic_pressure_transition = "close"
-            stat("pressure_close")
+    -- Cohort cardinality is bounded by completed *slow* work, not arrivals.
+    -- An attacker cannot fill shared memory with cheap unique URI/UA shapes.
+    local cohort_samples, cohort_work, cohort_slow = 0, 0, 0
+    if up >= slow_seconds then
+        local _, cnerr = increment(dict,
+            pressure_bucket(cohort_base, second, "n"), 1, ttl)
+        local _, cwerr = increment(dict,
+            pressure_bucket(cohort_base, second, "work"), up, ttl)
+        local _, cserr = increment(dict,
+            pressure_bucket(cohort_base, second, "slow"), 1, ttl)
+        if cnerr or cwerr or cserr then
+            ctx.dynamic_guard_degraded = true
+            log_dict_error("pressure_cohort_record", cnerr or cwerr or cserr)
             return
+        end
+        cohort_samples, cohort_work, cohort_slow =
+            sum_pressure_buckets(dict, cohort_base, second, window)
+        ctx.dynamic_pressure_cohort_samples = cohort_samples
+        ctx.dynamic_pressure_cohort_work = cohort_work
+        ctx.dynamic_pressure_cohort_slow = cohort_slow
+
+        local cohort_min_samples = math.max(math.floor(
+            tonumber(spec.cohort_min_samples) or 3), 1)
+        local cohort_work_limit = math.max(
+            tonumber(spec.cohort_work_seconds) or 30, 0.1)
+        local cohort_candidate = cohort_samples >= cohort_min_samples
+            and cohort_work >= cohort_work_limit
+        ctx.dynamic_pressure_cohort_candidate = cohort_candidate
+        if cohort_candidate
+           and not dict:get(cohort_base .. ":recovery") then
+            local hot_ttl = window
+                + math.max(tonumber(spec.hold_seconds) or 20, 1)
+                + math.max(tonumber(spec.probe_timeout) or 10, 1) + 5
+            local hok, herr = dict:set(
+                cohort_base .. ":hot", cohort_work, hot_ttl)
+            local nok, nseterr = dict:set(
+                cohort_base .. ":hot_n", cohort_samples, hot_ttl)
+            if not hok or not nok then
+                ctx.dynamic_guard_degraded = true
+                log_dict_error("pressure_cohort_hot", herr or nseterr)
+                return
+            end
         end
     end
 
-    if dict:get(base .. ":recovery") then return end
+    -- Probe result is direct evidence and must be handled before aggregate
+    -- window evaluation.  A fast completion closes only its cohort; a slow
+    -- completion directly renews that cohort and the aggregate hold.  It must
+    -- not depend on rebuilding 180/12 after the breaker just shed arrivals.
+    if ctx.dynamic_pressure_probe then
+        local probe_id = ctx.dynamic_pressure_probe_cohort or cohort_id
+        local probe_base = pressure_cohort_base(base, probe_id)
+        delete_key(dict, probe_base .. ":probe")
+        if up < slow_seconds then
+            delete_key(dict, probe_base .. ":hot")
+            delete_key(dict, probe_base .. ":hot_n")
+            local recovery = math.max(tonumber(spec.recovery_seconds) or 5, 1)
+            dict:set(probe_base .. ":recovery", 1, recovery)
+            ctx.dynamic_pressure_open = false
+            ctx.dynamic_pressure_cohort_match = false
+            ctx.dynamic_pressure_transition = "cohort_close"
+            stat("pressure_close")
+            return
+        end
+        reopen_pressure_cohort(
+            dict, ctx, spec, base, probe_base, t, up)
+        return
+    end
+
     local interval = math.max(tonumber(spec.eval_interval) or 1, 0.1)
     local elected, elect_err = dict:add(base .. ":eval:"
         .. tostring(math.floor(t / interval)), 1, interval + 1)
@@ -700,15 +950,8 @@ local function record_pressure(dict, ctx, c, up, t)
         return
     end
 
-    local samples, work, slow = 0, 0, 0
-    for s = second - window + 1, second do
-        samples = samples + (tonumber(dict:get(
-            pressure_bucket(base, s, "n"))) or 0)
-        work = work + (tonumber(dict:get(
-            pressure_bucket(base, s, "work"))) or 0)
-        slow = slow + (tonumber(dict:get(
-            pressure_bucket(base, s, "slow"))) or 0)
-    end
+    local samples, work, slow =
+        sum_pressure_buckets(dict, base, second, window)
     ctx.dynamic_pressure_samples = samples
     ctx.dynamic_pressure_work = work
     ctx.dynamic_pressure_slow = slow
@@ -723,6 +966,12 @@ local function record_pressure(dict, ctx, c, up, t)
     local candidate = samples >= min_samples and work >= work_limit
         and up >= slow_seconds
     ctx.dynamic_pressure_candidate = candidate
+    ctx.dynamic_pressure_cohort_share = work > 0 and cohort_work / work or 0
+    local min_share = math.max(math.min(
+        tonumber(spec.cohort_min_share) or 0.15, 1), 0)
+    ctx.dynamic_pressure_attributed =
+        ctx.dynamic_pressure_cohort_candidate == true
+        and ctx.dynamic_pressure_cohort_share >= min_share
     if candidate then
         open_pressure(dict, ctx, spec, base, t, work, samples, slow)
     end

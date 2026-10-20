@@ -959,7 +959,7 @@ _M.dynamic_guard = {
     },
     pressure = {
         mode             = "enforce",
-        policy           = "selective",
+        policy           = "cohort",
         window           = 10,
         -- Full-log simulation on the two representative nodes:
         --   180/15: cloud28=49 candidates/3 domains; cloud168=0
@@ -976,12 +976,23 @@ _M.dynamic_guard = {
         eval_interval    = 1,
         status           = 503,
 
-        -- While open, automation and clients without proven first-party state
-        -- yield first.  A Cookie header alone is never enough: registry-known
-        -- state must also carry richness >= 0.5.  Verified humans and those
-        -- sessions share four live slots per docroot; explicit whitelist and
-        -- internal callback policy bypass this ranker.  One half-open probe is
-        -- still elected atomically after the hold interval.
+        -- Aggregate pressure only declares an incident; it cannot identify a
+        -- culprit.  Enforcement requires a recent completed-slow cohort that
+        -- itself contributed >=3 samples, >=30 upstream-seconds and >=15% of
+        -- the aggregate work.  Automation shares one capacity lane; browser-
+        -- like traffic is keyed by method/class + URI/query morphology +
+        -- client/transport shape.  No IP, raw URI, query value or CMS token is
+        -- retained.  Unattributed/new traffic remains normal even while the
+        -- docroot is hot.
+        cohort_min_samples  = 3,
+        cohort_work_seconds = 30.0,
+        cohort_min_share    = 0.15,
+
+        -- A Cookie header alone is never enough.  If a real user happens to
+        -- match the incident cohort, registry-known state must also carry
+        -- richness >=0.5 before it can use the four-slot priority reserve.
+        -- Explicit whitelist/callback policy bypasses the scheduler.  Probe
+        -- leases are per cohort; slow renews it, fast closes only that cohort.
         first_party_richness = 0.5,
         first_party_reserve  = 4,
     },

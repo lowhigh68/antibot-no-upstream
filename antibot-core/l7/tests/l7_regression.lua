@@ -1875,11 +1875,13 @@ cfg.dynamic_guard = {
     },
     uri_integrity = { mode = "shadow", status = 400 },
     pressure = {
-        mode = "shadow", policy = "selective",
+        mode = "shadow", policy = "cohort",
         window = 10, min_samples = 2,
         work_seconds = 4, slow_seconds = 2,
         hold_seconds = 5, probe_timeout = 3,
         recovery_seconds = 2, eval_interval = 1, status = 503,
+        cohort_min_samples = 2, cohort_work_seconds = 4,
+        cohort_min_share = 0.5,
         first_party_richness = 0.5, first_party_reserve = 2,
     },
 }
@@ -2047,41 +2049,57 @@ eq(dp2.dynamic_pressure_open, true,
 ok(dp2.dynamic_pressure_work >= 5,
    "pressure sums backend seconds, not only request count")
 clock = 3202
-fake_ngx.var.uri = "/three"
-local dp3 = dgctx("198.51.100.112", "/three")
-local _, dp3_exit = dynamic_guard.before(dp3)
-eq(dp3_exit, false, "pressure shadow does not reject")
-eq(dp3.dynamic_pressure_would_reject, true,
-   "open pressure records would-reject")
 fake_ngx.var.upstream_status = nil
 fake_ngx.var.upstream_response_time = nil
 
--- Pressure enforcement is deliberately late and selective.  Early access has
--- no bot/session proof and therefore never blanket-rejects.  At late-admit,
--- automation and stateless traffic yield; explicit policy and a bounded
--- first-party reserve keep real users moving.
+-- Aggregate pressure is not a verdict on every request to the docroot.  A
+-- different request/client shape remains normal even without Cookie state.
+fake_ngx.var.uri = "/different-name.json"
+local dp_normal = dgctx("198.51.100.112", "/different-name.json")
+local _, dp_normal_early = dynamic_guard.before(dp_normal)
+eq(dp_normal_early, false, "pressure shadow never rejects in early hook")
+eq(dp_normal.dynamic_pressure_would_reject, true,
+   "aggregate open state remains observable")
+local _, dp_normal_exit = dynamic_guard.admit(dp_normal)
+eq(dp_normal_exit, false,
+   "unrelated stateless request survives docroot pressure")
+eq(dp_normal.dynamic_pressure_disposition, "keep_normal",
+   "unrelated request is explicitly kept normal")
+eq(dp_normal.dynamic_pressure_cohort_match, false,
+   "unrelated cohort did not create measured work")
+dynamic_guard.after(dp_normal)
+
+-- Cohort enforcement is deliberately late.  Same-shape contributors are
+-- shed; explicit policy and a bounded first-party reserve keep users moving.
 cfg.dynamic_guard.pressure.mode = "enforce"
 clock = 3202.1
-local dp_untrusted = dgctx("198.51.100.116", "/untrusted")
+fake_ngx.var.uri = "/six"
+local dp_untrusted = dgctx("198.51.100.116", "/six")
 local _, dp_untrusted_early = dynamic_guard.before(dp_untrusted)
 eq(dp_untrusted_early, false,
    "open pressure never blanket-rejects in early hook")
 local _, dp_untrusted_exit = dynamic_guard.admit(dp_untrusted)
-eq(dp_untrusted_exit, true, "stateless dynamic client is shed late")
-eq(dp_untrusted.dynamic_pressure_disposition, "shed_untrusted",
-   "stateless pressure disposition is explicit")
+eq(dp_untrusted_exit, true, "matching incident cohort is shed late")
+eq(dp_untrusted.dynamic_pressure_disposition, "shed_incident",
+   "cohort pressure disposition is explicit")
+eq(dp_untrusted.dynamic_pressure_cohort_match, true,
+   "matching request inherits measured cohort work")
 eq(dp_untrusted.dynamic_pressure_selective_rejected, true,
    "actual selective pressure reject is observable")
 
+fake_ngx.var.uri = "/crawler"
 local dp_bot = dgctx("198.51.100.117", "/crawler")
 dp_bot.good_bot_verified = true
 dynamic_guard.before(dp_bot)
 local _, dp_bot_exit = dynamic_guard.admit(dp_bot)
-eq(dp_bot_exit, true, "verified automation yields under backend pressure")
-eq(dp_bot.dynamic_pressure_disposition, "shed_automation",
-   "crawler is ranked as automation without vendor names")
+eq(dp_bot_exit, false,
+   "unrelated verified crawler is not blamed for shape incident")
+eq(dp_bot.dynamic_pressure_disposition, "keep_normal",
+   "automation must contribute work before pressure can shed it")
+dynamic_guard.after(dp_bot)
 
-local dp_whitelist = dgctx("198.51.100.118", "/callback")
+fake_ngx.var.uri = "/ten"
+local dp_whitelist = dgctx("198.51.100.118", "/ten")
 dp_whitelist.whitelisted = true
 dynamic_guard.before(dp_whitelist)
 local _, dp_whitelist_exit = dynamic_guard.admit(dp_whitelist)
@@ -2090,26 +2108,27 @@ eq(dp_whitelist.dynamic_pressure_disposition, "keep_whitelist",
    "whitelist bypass is visible")
 dynamic_guard.after(dp_whitelist)
 
-local dp_h1 = dgctx("198.51.100.119", "/human-one")
-local dp_h2 = dgctx("198.51.100.120", "/human-two")
-local dp_h3 = dgctx("198.51.100.121", "/human-three")
+local dp_h1 = dgctx("198.51.100.119", "/abc")
+local dp_h2 = dgctx("198.51.100.120", "/def")
+local dp_h3 = dgctx("198.51.100.121", "/ghi")
 dp_h1.verified, dp_h2.verified, dp_h3.verified = true, true, true
-for _, item in ipairs({ dp_h1, dp_h2, dp_h3 }) do
+for i, item in ipairs({ dp_h1, dp_h2, dp_h3 }) do
+    fake_ngx.var.uri = ({ "/abc", "/def", "/ghi" })[i]
     dynamic_guard.before(item)
+    local _, exited = dynamic_guard.admit(item)
+    item.test_exited = exited
 end
-local _, dp_h1_exit = dynamic_guard.admit(dp_h1)
-local _, dp_h2_exit = dynamic_guard.admit(dp_h2)
-local _, dp_h3_exit = dynamic_guard.admit(dp_h3)
-eq(dp_h1_exit, false, "verified human gets first reserve slot")
-eq(dp_h2_exit, false, "verified human gets second reserve slot")
-eq(dp_h3_exit, true, "verified human above bounded reserve is shed")
+eq(dp_h1.test_exited, false, "verified human gets first reserve slot")
+eq(dp_h2.test_exited, false, "verified human gets second reserve slot")
+eq(dp_h3.test_exited, true, "verified human above bounded reserve is shed")
 eq(dp_h3.dynamic_pressure_disposition, "shed_reserve",
    "reserve exhaustion is distinct from untrusted traffic")
 eq(dp_h3.dynamic_pressure_reserve_inflight, 3,
    "reserve measures live eligible requests")
 dynamic_guard.after(dp_h1); dynamic_guard.after(dp_h2)
 
-local dp_state = dgctx("198.51.100.122", "/known-state")
+fake_ngx.var.uri = "/jkl"
+local dp_state = dgctx("198.51.100.122", "/jkl")
 dp_state.session_cookie_known = true
 dp_state.session_richness_own = 0.7
 dynamic_guard.before(dp_state)
@@ -2119,41 +2138,139 @@ eq(dp_state.dynamic_pressure_disposition, "keep_first_party",
    "first-party keep is separately observable")
 dynamic_guard.after(dp_state)
 
-local dp_spoof = dgctx("198.51.100.123", "/cookie-header-only")
+fake_ngx.var.uri = "/mno"
+local dp_spoof = dgctx("198.51.100.123", "/mno")
 dp_spoof.session_cookie_known = false
 dp_spoof.session_richness_own = 1.0
 dynamic_guard.before(dp_spoof)
 local _, dp_spoof_exit = dynamic_guard.admit(dp_spoof)
 eq(dp_spoof_exit, true, "richness without known cookie cannot buy priority")
-eq(dp_spoof.dynamic_pressure_disposition, "shed_untrusted",
+eq(dp_spoof.dynamic_pressure_disposition, "shed_incident",
    "spoofable Cookie state remains untrusted")
 
--- After the hold, one request probes while concurrent arrivals still receive
--- the pressure verdict. A fast probe closes the state and starts recovery.
+-- After the hold, the measured cohort owns one probe.  Unrelated traffic is
+-- allowed and cannot consume its lease.  A slow probe must renew the hold
+-- directly; rebuilding the aggregate after shedding would be impossible.
 clock = 3207
-fake_ngx.var.uri = "/probe"
-local dp_probe = dgctx("198.51.100.113", "/probe")
+fake_ngx.var.uri = "/pqr"
+local dp_probe = dgctx("198.51.100.113", "/pqr")
 local _, dp_probe_exit = dynamic_guard.before(dp_probe)
 eq(dp_probe_exit, false, "half-open candidate survives early local guards")
 eq(dp_probe.dynamic_pressure_probe, nil,
    "early hook does not consume the only backend probe lease")
 dynamic_guard.admit(dp_probe)
 eq(dp_probe.dynamic_pressure_probe, true,
-   "late-admitted request atomically becomes the probe")
-local dp_wait = dgctx("198.51.100.114", "/wait")
+   "late-admitted matching cohort atomically becomes probe")
+
+fake_ngx.var.uri = "/other-long.json"
+local dp_other = dgctx("198.51.100.124", "/other-long.json")
+dynamic_guard.before(dp_other)
+local _, dp_other_exit = dynamic_guard.admit(dp_other)
+eq(dp_other_exit, false, "unrelated traffic passes during half-open")
+eq(dp_other.dynamic_pressure_disposition, "keep_normal",
+   "unrelated traffic does not consume cohort probe")
+dynamic_guard.after(dp_other)
+
+fake_ngx.var.uri = "/stu"
+local dp_wait = dgctx("198.51.100.114", "/stu")
 local _, dp_wait_exit = dynamic_guard.before(dp_wait)
 eq(dp_wait_exit, false, "second half-open candidate may still cross local WAF")
 local _, dp_wait_admit_exit = dynamic_guard.admit(dp_wait)
 eq(dp_wait_admit_exit, true, "second late-admitted half-open request is shed")
 eq(exits[#exits], 503, "pressure breaker returns 503")
 fake_ngx.var.upstream_status = "200"
-fake_ngx.var.upstream_response_time = "0.200"
+fake_ngx.var.upstream_response_time = "2.500"
 dynamic_guard.after(dp_probe)
-local dp_recovered = dgctx("198.51.100.115", "/recovered")
-local _, dp_recovered_exit = dynamic_guard.before(dp_recovered)
-eq(dp_recovered_exit, false, "fast probe closes pressure state")
-eq(dp_recovered.dynamic_pressure_would_reject, nil,
-   "closed pressure state no longer marks reject")
+eq(dp_probe.dynamic_pressure_transition, "cohort_reopen",
+   "slow probe directly reopens its cohort")
+ok(dp_probe.dynamic_pressure_until > clock,
+   "slow probe moves open_until into the future")
+
+clock = 3208
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.uri = "/vwx"
+local dp_renewed = dgctx("198.51.100.125", "/vwx")
+dynamic_guard.before(dp_renewed)
+local _, dp_renewed_exit = dynamic_guard.admit(dp_renewed)
+eq(dp_renewed_exit, true,
+   "matching cohort is shed throughout renewed hold")
+
+-- A later fast probe closes only this cohort.  The expired aggregate key may
+-- remain for telemetry, but a matching request becomes keep_normal.
+clock = 3213.1
+fake_ngx.var.uri = "/yzq"
+local dp_fast_probe = dgctx("198.51.100.126", "/yzq")
+dynamic_guard.before(dp_fast_probe)
+dynamic_guard.admit(dp_fast_probe)
+eq(dp_fast_probe.dynamic_pressure_probe, true,
+   "cohort receives another probe after renewed hold")
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "0.200"
+dynamic_guard.after(dp_fast_probe)
+eq(dp_fast_probe.dynamic_pressure_transition, "cohort_close",
+   "fast probe closes only measured cohort")
+
+clock = 3213.5
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.uri = "/abc"
+local dp_recovered = dgctx("198.51.100.127", "/abc")
+dynamic_guard.before(dp_recovered)
+local _, dp_recovered_exit = dynamic_guard.admit(dp_recovered)
+eq(dp_recovered_exit, false, "closed cohort returns to normal admission")
+eq(dp_recovered.dynamic_pressure_disposition, "keep_normal",
+   "global residue cannot shed a closed cohort")
+dynamic_guard.after(dp_recovered)
+
+-- Automation is another measured cohort, not a permanent low-priority label.
+-- Two different bot principals jointly heat the automation lane; only then
+-- does a later verified crawler yield, while a browser cohort stays normal.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.document_root = "/home/automation-pressure/public_html"
+fake_ngx.var.server_name = "automation-pressure.test"
+clock = 3230
+local da1 = dgctx("198.51.100.130", "/first")
+da1.automation_observed = true
+fake_ngx.var.uri = "/first"
+dynamic_guard.before(da1); dynamic_guard.admit(da1)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "2.500"
+dynamic_guard.after(da1)
+clock = 3231.1
+local da2 = dgctx("198.51.100.131", "/second-long")
+da2.good_bot_verified = true
+fake_ngx.var.uri = "/second-long"
+dynamic_guard.before(da2); dynamic_guard.admit(da2)
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "2.500"
+dynamic_guard.after(da2)
+eq(da2.dynamic_pressure_candidate, true,
+   "mixed principals can create measured automation incident")
+eq(da2.dynamic_pressure_attributed, true,
+   "automation lane owns enough incident work")
+
+clock = 3232
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.uri = "/ordinary-browser"
+local da_human = dgctx("198.51.100.132", "/ordinary-browser")
+dynamic_guard.before(da_human)
+local _, da_human_exit = dynamic_guard.admit(da_human)
+eq(da_human_exit, false,
+   "browser request is not shed by automation incident")
+eq(da_human.dynamic_pressure_disposition, "keep_normal",
+   "automation incident does not become docroot breaker")
+dynamic_guard.after(da_human)
+
+fake_ngx.var.uri = "/third"
+local da3 = dgctx("198.51.100.133", "/third")
+da3.good_bot_verified = true
+dynamic_guard.before(da3)
+local _, da3_exit = dynamic_guard.admit(da3)
+eq(da3_exit, true, "verified crawler yields to measured automation lane")
+eq(da3.dynamic_pressure_disposition, "shed_incident_automation",
+   "automation shed requires cohort contribution")
 
 -- Old work can support a decision but cannot create one when the latest
 -- completed response is fast.
