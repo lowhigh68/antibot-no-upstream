@@ -2,6 +2,51 @@ local _M = {}
 
 local VERSION = "v1"
 
+-- Token tu dong GAN O DUOI mot UA browser that.
+--
+-- Su co 21-10-2026 (no1computer.vn): khach iPhone chia se link san pham, app
+-- tu fetch preview TU CHINH IP CUA KHACH voi UA
+--   `Mozilla/5.0 (iPhone; ...) Version/26.0 Mobile/15E148 Safari/604.1
+--    facebookexternalhit/1.1 (+http://...)`
+-- UA nay KHONG co `(compatible; ...)` nen nhanh `bot_in_compat` khong thay,
+-- va no roi xuong `Version/(%d+)[%d.]*%s+Mobile` -> `MobileSafari/26` — TRUNG
+-- HOAN TOAN voi Safari iOS 26 that. Do duoc:
+--   FB tren iPhone   -> MobileSafari/26  id=bb5c23932d437a1a1777abb8a4786a0a
+--   Safari iOS thuan -> MobileSafari/26  id=bb5c23932d437a1a1777abb8a4786a0a
+-- PTR cua IP khach (FPT, AS18403) khong khop `facebook.com`/`fbsv.net` nen
+-- `fake_good_bot` chan dung request do, roi `network_quarantine` ghi
+-- `gban:bb5c2393...` 300 giay — ban LUON moi khach Safari iOS 26 cung IP.
+-- Ket qua: 79 luot `banned_ip` tren mot phien co `ckn=true richness=0.58`.
+--
+-- Day KHONG rieng Facebook: moi link-preview scraper deu ghep kieu nay
+-- (Twitterbot, WhatsApp, TelegramBot, Slackbot, Discordbot, LinkedInBot,
+-- SkypeUriPreview). Tren CGNAT/4G Viet Nam, mot rổ browser la NHIEU khach.
+--
+-- Giu `identity.lua` KHONG `require` gi (module nay pure va nam duoi
+-- `goodbot_registry`), nen danh sach dat tai cho. `contract_test` ghim no la
+-- TAP CON cua `OPERATOR_SUBSTRINGS` de hai ben khong the lech nhau.
+local BOT_TOKENS = {
+    "bot", "spider", "crawler", "facebookexternal", "mediapartners",
+    "bingpreview", "meta-external", "feedfetcher",
+}
+
+-- Tra token XUAT HIEN SOM NHAT, khong phai token dau tien trong bang: mot UA
+-- ghep nhieu scraper (`facebookexternalhit/1.1 Facebot Twitterbot/1.0`) phai
+-- lay ten o dau chuoi, neu khong thi `bot` trong `facebot` thang
+-- `facebookexternal` va cot log tro nen kho doc. Khong anh huong tinh dung —
+-- moi nhanh nay deu nam ngoai ro browser — chi anh huong kha nang doc log.
+local function bot_token_in_ua(lower)
+    local best_pos, best_token
+    for i = 1, #BOT_TOKENS do
+        local p = lower:find(BOT_TOKENS[i], 1, true)
+        if p and (not best_pos or p < best_pos
+                  or (p == best_pos and #BOT_TOKENS[i] > #best_token)) then
+            best_pos, best_token = p, BOT_TOKENS[i]
+        end
+    end
+    return best_token
+end
+
 local function normalize_ua(ua)
     if ua == nil then return "?" end
 
@@ -13,6 +58,25 @@ local function normalize_ua(ua)
     if not s:find("[%g%s]") then return "?" end
 
     if #s > 512 then s = s:sub(1, 512) end
+
+    -- TRUOC moi nhanh browser: mot UA mang token tu dong KHONG duoc chia ro
+    -- voi browser that, du token do nam o duoi va khong trong `(compatible;)`.
+    --
+    -- Dat o day chu khong sau `bot_in_compat` co y: cac nhanh `Edg/`,
+    -- `CriOS/`, `Chrome/`, `Version/...Mobile` deu `return` ngay khi khop, nen
+    -- mot nhanh bot dat SAU chung se khong bao gio chay voi UA ghep duoi.
+    --
+    -- Chi doi hoi token; KHONG doi `+http`/`+mailto` vi `facebookexternalhit`
+    -- co dang `/1.1 (+http://...)` con `Facebot`/`Twitterbot/1.0` thi khong.
+    local lower = s:lower()
+    local bot_token = bot_token_in_ua(lower)
+    if bot_token then
+        -- Giu ten san pham khi doc duoc de log con phan biet duoc tung
+        -- scraper; neu khong thi gop theo token. Ca hai deu nam ngoai ro
+        -- browser, va do la tinh chat duy nhat can thiet.
+        local product = lower:match("([%a][%w%-_.]*" .. bot_token .. "[%w%-_.]*)")
+        return "bot:" .. (product and product:sub(1, 32) or bot_token)
+    end
 
     local v = s:match("Edg/(%d+)")
     if v then return "Edge/" .. v end

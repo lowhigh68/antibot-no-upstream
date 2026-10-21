@@ -48,6 +48,49 @@ ok(identity.build_from(ip, ua_win) ~= identity.build_from(ip, ua_win:gsub("149",
 ok(identity.build_from(ip, ua_win) ~= identity.build_from("198.51.100.45", ua_win),
    "network change rotates network id")
 
+-- Su co 21-10-2026 (no1computer.vn): mot link-preview scraper ghep token vao
+-- DUOI UA browser that. UA do khong co `(compatible; ...)` nen nhanh bot cu
+-- khong thay, va no roi vao `Version/(%d+)...Mobile` -> `MobileSafari/26`,
+-- TRUNG voi Safari iOS 26 that. `fake_good_bot` chan dung request do (PTR cua
+-- IP khach khong khop `facebook.com`), roi `network_quarantine` ghi
+-- `gban:<md5(ip|MobileSafari/26)>` 300 giay -> ban LUON moi khach Safari iOS
+-- cung IP. Do duoc: 79 luot `banned_ip` tren mot phien `ckn=true
+-- richness=0.58`, va khach vao lai duoc dung sau khi bac TTL 300s het.
+--
+-- Bat bien: mot UA mang token tu dong KHONG BAO GIO chung ro voi browser that.
+do
+    local ua_ios = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) " ..
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 " ..
+        "Mobile/15E148 Safari/604.1"
+    local ua_ios_fb = ua_ios ..
+        " facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+    local ua_ios_multi = ua_ios .. " facebookexternalhit/1.1 Facebot Twitterbot/1.0"
+
+    ok(identity.build_from(ip, ua_ios_fb) ~= identity.build_from(ip, ua_ios),
+       "scraper ghep duoi UA KHONG duoc chung network id voi Safari iOS that")
+    ok(identity.build_from(ip, ua_ios_multi) ~= identity.build_from(ip, ua_ios),
+       "UA ghep nhieu scraper cung phai tach khoi ro browser")
+    eq(identity._normalize_ua(ua_ios), "MobileSafari/26",
+       "browser that GIU nguyen bucket cu — ban va khong duoc doi ro cua ho")
+    eq(identity._normalize_ua(ua_ios_fb):sub(1, 4), "bot:",
+       "scraper vao ro bot:")
+
+    -- Cac nhanh browser dat TRUOC nhanh bot cu deu `return` ngay khi khop, nen
+    -- nhanh bot phai nam TRUOC chung. Ba ca nay chet neu ai do doi lai thu tu.
+    eq(identity._normalize_ua(
+        "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/149.0.0.0 " ..
+        "Safari/537.36 Edg/149.0.0.0"), "Edge/149",
+       "Edge khong bi nhanh bot an")
+    eq(identity._normalize_ua(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 26_4_1 like Mac OS X) " ..
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/155.0.8059.37 " ..
+        "Mobile/15E148 Safari/604.1"), "CriOS/155",
+       "Chrome iOS khong bi nhanh bot an")
+    eq(identity._normalize_ua(
+        "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+        :sub(1, 4), "bot:", "Googlebot van la bot:")
+end
+
 local key_ctx = { ip = ip, ua = ua_win, req = { host = "one.test" } }
 local one = quarantine.keys(key_ctx, "host")
 -- `$server_name` is the primary name of the selected vhost. Request aliases

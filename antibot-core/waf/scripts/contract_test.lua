@@ -2272,6 +2272,68 @@ do
     else pass = pass + 1 end
 end
 
+-- [24b] `BOT_TOKENS` trong identity.lua phai la TAP CON cua
+-- `OPERATOR_SUBSTRINGS` trong goodbot_registry.lua.
+--
+-- `identity.lua` co y KHONG `require` gi (module pure, nam DUOI registry), nen
+-- danh sach token bot bi nhan doi. Hai ban sao thi lech nhau — day la cach
+-- chung lech im lang: them token vao registry ma quen identity thi mot
+-- scraform moi lai chung ro voi browser that, dung lo da gay su co 21-10-2026.
+do
+    local idsrc  = slurp(SRC .. "core/fingerprint/identity.lua")
+    local regsrc = slurp(SRC .. "core/goodbot_registry.lua")
+    if not idsrc or not regsrc then
+        bad("  SAI  thieu identity.lua hoac goodbot_registry.lua\n")
+    else
+        local idblock  = idsrc:match("local BOT_TOKENS%s*=%s*{(.-)}")
+        local regblock = regsrc:match("local OPERATOR_SUBSTRINGS%s*=%s*{(.-)}")
+        if not idblock then
+            bad("  SAI  khong tim thay `BOT_TOKENS` trong identity.lua\n")
+        elseif not regblock then
+            bad("  SAI  khong tim thay `OPERATOR_SUBSTRINGS` trong registry\n")
+        else
+            local regset = {}
+            for t in regblock:gmatch('"([^"]+)"') do regset[t] = true end
+            local n, missing = 0, nil
+            for t in idblock:gmatch('"([^"]+)"') do
+                n = n + 1
+                if not regset[t] then missing = missing or t end
+            end
+            if n == 0 then
+                bad("  SAI  `BOT_TOKENS` rong — moi scraper se chung ro browser\n")
+            elseif missing then
+                bad("  SAI  token `%s` co trong identity.BOT_TOKENS nhung KHONG\n" ..
+                    "       co trong goodbot_registry.OPERATOR_SUBSTRINGS. Hai\n" ..
+                    "       danh sach da lech; dong bo lai hoac bo token do.\n",
+                    missing)
+            else
+                io.write(string.format(
+                    "  OK   BOT_TOKENS (%d) la tap con cua OPERATOR_SUBSTRINGS\n", n))
+                pass = pass + 1
+            end
+        end
+    end
+
+    -- Nhanh bot phai dat TRUOC moi nhanh browser. Cac nhanh browser `return`
+    -- ngay khi khop, nen mot nhanh bot dat SAU chung se khong bao gio chay voi
+    -- UA ghep token o duoi — dung hinh dang da gay su co.
+    -- Neo vao CHO GOI thuc su (`local bot_token = bot_token_in_ua(`) va vao
+    -- `v = s:match("Edg/` — KHONG neo vao manh pattern nhu `%s+Mobile`: ban
+    -- dau tien lam vay va `find(..., true)` da khop chinh chuoi do trong KHOI
+    -- CHU THICH o dau tep, cho ra mot canh bao gia.
+    local idsrc2 = slurp(SRC .. "core/fingerprint/identity.lua") or ""
+    local bot_pos = idsrc2:find("local bot_token = bot_token_in_ua(", 1, true)
+    local edg_pos = idsrc2:find('local v = s:match("Edg/', 1, true)
+    local mob_pos = idsrc2:find('v = s:match("Version/', 1, true)
+    if not bot_pos or not edg_pos then
+        bad("  SAI  khong doc duoc vi tri nhanh bot / nhanh Edg trong identity\n")
+    elseif bot_pos > edg_pos or (mob_pos and bot_pos > mob_pos) then
+        bad("  SAI  nhanh `bot_token_in_ua` dat SAU nhanh browser. Browser\n" ..
+            "       `return` ngay khi khop nen UA ghep token o duoi se chung\n" ..
+            "       ro voi browser that => ban tap the tren CGNAT.\n")
+    else pass = pass + 1 end
+end
+
 -- [25] BAT BIEN THU TU CO: khong co `ctx.<co>` nao duoc DOC o mot buoc chay
 -- TRUOC buoc GHI no.
 --
