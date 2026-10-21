@@ -638,6 +638,16 @@ _M.automation_concurrency = {
             limit = 3,
             source_limit = 3,
         },
+        -- Generic verified-crawler capacity class.  Production on cloud168-118
+        -- saw 36 DNS-verified aggressive-crawler requests occupy ~368 upstream
+        -- seconds across two domains while staying just below the fixed
+        -- 20/min rate ceiling (19 then 17).  Two live slots cap backend share;
+        -- the gate still requires S3/S4 verification AND the existing class
+        -- policy, so a forged UA and polite/moderate crawlers cannot enter.
+        verified_aggressive = {
+            mode = "enforce",
+            limit = 2,
+        },
     },
 }
 
@@ -995,6 +1005,42 @@ _M.dynamic_guard = {
         -- leases are per cohort; slow renews it, fast closes only that cohort.
         first_party_richness = 0.5,
         first_party_reserve  = 4,
+    },
+
+    -- A client-aborted upstream still occupied backend capacity, but a 499 can
+    -- be either cause or consequence of an already slow server.  Keep it in a
+    -- separate telemetry plane: it must never teach path cost, create a hot
+    -- cohort, open a breaker or write reputation.  Both docroot and whole-node
+    -- rolling totals are logged so production can distinguish one hot tenant
+    -- from shared-pool saturation.
+    aborted_pressure = {
+        enabled      = true,
+        window       = 10,
+        slow_seconds = 2.5,
+    },
+
+    -- Whole-node completed-work observer.  Per-docroot pressure above remains
+    -- authoritative and unchanged.  This axis starts SHADOW because a shared
+    -- hosting node has no measured steady-state baseline yet.  Even after a
+    -- future promotion it may shed only a measured principal/shape cohort;
+    -- whitelist and registry-known/verified first-party traffic are absolute
+    -- keep paths, with no finite reserve that could become a cross-site FP.
+    -- Evidence-backed automation is keyed by canonical principal, so one
+    -- aggressive crawler cannot make another crawler inherit its incident.
+    server_pressure = {
+        mode                = "shadow",
+        policy              = "cohort",
+        window              = 10,
+        min_samples         = 12,
+        work_seconds        = 180.0,
+        slow_seconds        = 2.5,
+        hold_seconds        = 20,
+        eval_interval       = 1,
+        status              = 503,
+        cohort_min_samples  = 3,
+        cohort_work_seconds = 30.0,
+        cohort_min_share    = 0.15,
+        first_party_richness = 0.5,
     },
 }
 

@@ -7,7 +7,9 @@
 --   2. live dynamic requests from one source IP across the whole server;
 --   3. many distinct dynamic paths from one (docroot, source IP), reinforced
 --      by completed expensive responses;
---   4. completed upstream work per docroot and wall-clock window.
+--   4. completed upstream work per docroot and wall-clock window;
+--   5. whole-node completed work with evidence-bound selective shedding;
+--   6. client-aborted upstream work as telemetry only.
 --
 -- Slots are acquired only at the last common point before content/upstream and
 -- released in log phase.  Static hits, subrequests and local WAF/ban/challenge
@@ -280,8 +282,28 @@ local function pressure_config(c)
     return spec, tostring(spec.mode or "off")
 end
 
+local function server_pressure_config(c)
+    local spec = type(c.server_pressure) == "table"
+        and c.server_pressure or {}
+    return spec, tostring(spec.mode or "off")
+end
+
+local function aborted_pressure_config(c)
+    local spec = type(c.aborted_pressure) == "table"
+        and c.aborted_pressure or {}
+    return spec, spec.enabled == true
+end
+
 local function pressure_keys(scope)
     return "dg:pressure:" .. scope
+end
+
+local function server_pressure_keys()
+    return "dg:server_pressure"
+end
+
+local function aborted_pressure_keys(scope)
+    return "dg:aborted:" .. scope
 end
 
 local function read_pressure(dict, ctx, c, scope, t, _acquire_probe)
@@ -307,6 +329,22 @@ local function read_pressure(dict, ctx, c, scope, t, _acquire_probe)
     ctx.dynamic_pressure_until = until_at
     ctx.dynamic_pressure_half_open = true
     return false
+end
+
+local function read_server_pressure(dict, ctx, c, t)
+    local spec, mode = server_pressure_config(c)
+    ctx.dynamic_server_pressure_mode = mode
+    ctx.dynamic_server_pressure_policy = tostring(spec.policy or "cohort")
+    if mode == "off" then return false end
+    local until_at = tonumber(dict:get(
+        server_pressure_keys() .. ":open_until"))
+    if not until_at or t >= until_at then
+        ctx.dynamic_server_pressure_open = false
+        return false
+    end
+    ctx.dynamic_server_pressure_open = true
+    ctx.dynamic_server_pressure_until = until_at
+    return true
 end
 
 local function pressure_automation(ctx)
@@ -431,6 +469,95 @@ end
 
 local function pressure_cohort_base(base, id)
     return base .. ":c:" .. tostring(id)
+end
+
+-- Server-wide automation attribution must remain principal-specific.  The old
+-- fixed-window server axis demonstrated why: one aggressive vendor made quiet
+-- Claude/Perplexity traffic inherit its overload.  Weak self-claims share one
+-- unverified lane; evidence-backed identities get independent lanes.
+local function server_pressure_cohort(ctx)
+    if ctx.dynamic_server_pressure_cohort_id then
+        return ctx.dynamic_server_pressure_cohort_id,
+               ctx.dynamic_server_pressure_cohort_kind
+    end
+
+    local kind, signature
+    if pressure_automation(ctx) then
+        kind = "automation"
+        local principal = tostring(ctx.automation_principal
+            or ctx.good_bot_name or ""):lower()
+        local evidence_bound = ctx.good_bot_verified == true
+            or (ctx.automation_tier == "operator"
+                and ctx.operator_network_verified == true)
+            or (ctx.automation_tier == "cloud_automation"
+                and ctx.automation_proof == "contact_cloud_ptr")
+        if evidence_bound and principal ~= "" and principal ~= "-" then
+            signature = "principal:" .. principal
+        else
+            signature = "unverified_automation"
+        end
+    else
+        kind = "shape"
+        signature = request_shape(ctx) .. "|" .. client_shape(ctx)
+    end
+
+    local id = digest("server-cohort:" .. kind .. ":" .. signature)
+    ctx.dynamic_server_pressure_cohort_kind = kind
+    ctx.dynamic_server_pressure_cohort_id = id
+    return id, kind
+end
+
+local function server_pressure_select(dict, ctx, c)
+    local spec, mode = server_pressure_config(c)
+    ctx.dynamic_server_pressure_mode = mode
+    ctx.dynamic_server_pressure_policy = tostring(spec.policy or "cohort")
+    if mode == "off" or not ctx.dynamic_server_pressure_open then return false end
+
+    local id, kind = server_pressure_cohort(ctx)
+    local base = server_pressure_keys()
+    local cohort_base = pressure_cohort_base(base, id)
+    local hot_work = tonumber(dict:get(cohort_base .. ":hot"))
+    local hot_n = tonumber(dict:get(cohort_base .. ":hot_n"))
+    local open_work = tonumber(dict:get(base .. ":open_work"))
+    local min_share = math.max(math.min(
+        tonumber(spec.cohort_min_share) or 0.15, 1), 0)
+    local share = hot_work and open_work and open_work > 0
+        and hot_work / open_work or 0
+    local match = hot_work ~= nil and hot_n ~= nil
+        and open_work ~= nil and share >= min_share
+
+    ctx.dynamic_server_pressure_cohort_hot_work = hot_work
+    ctx.dynamic_server_pressure_cohort_samples = hot_n
+    ctx.dynamic_server_pressure_cohort_share = share
+    ctx.dynamic_server_pressure_cohort_match = match
+    ctx.dynamic_server_pressure_attributed = match
+
+    if not match then
+        ctx.dynamic_server_pressure_disposition = "keep_normal"
+        return false
+    end
+
+    -- Server pressure can never spend a finite reserve belonging to an
+    -- unrelated tenant.  Explicit policy and strong first-party state are
+    -- unconditional keep paths on this cross-site axis.
+    local richness = tonumber(ctx.session_richness_own) or 0
+    local first_party = ctx.verified == true
+        or (ctx.session_cookie_known == true
+            and richness >= (tonumber(spec.first_party_richness) or 0.5))
+    if ctx.whitelisted == true then
+        ctx.dynamic_server_pressure_disposition = "keep_whitelist"
+        return false
+    end
+    if first_party then
+        ctx.dynamic_server_pressure_disposition = "keep_first_party"
+        return false
+    end
+
+    ctx.dynamic_server_pressure_would_reject = true
+    ctx.dynamic_server_pressure_selective_candidate = true
+    ctx.dynamic_server_pressure_disposition = kind == "automation"
+        and "shed_incident_automation" or "shed_incident_cohort"
+    return true
 end
 
 -- Pressure detects an incident; measured cohort contribution decides who is
@@ -604,6 +731,7 @@ function _M.before(ctx)
     -- a verified human or a first-party session.  It only exposes breaker
     -- state; late-admit is the sole authority for selective shedding.
     read_pressure(dict, ctx, c, scope, now(), false)
+    read_server_pressure(dict, ctx, c, now())
     return true, false
 end
 
@@ -701,6 +829,7 @@ function _M.admit(ctx)
     -- Compute the cohort on every admitted request so log phase can attribute
     -- completed work even before any aggregate pressure state exists.
     pressure_cohort(ctx)
+    server_pressure_cohort(ctx)
     if ctx.dynamic_pressure_open == nil or ctx.dynamic_pressure_half_open then
         read_pressure(dict, ctx, c, scope, t, true)
     end
@@ -709,6 +838,15 @@ function _M.admit(ctx)
         dict, ctx, c, scope, t, slots)
     if pressure_shed then
         add("pressure", pressure_mode)
+    end
+
+    if ctx.dynamic_server_pressure_open == nil then
+        read_server_pressure(dict, ctx, c, t)
+    end
+    local _, server_pressure_mode = server_pressure_config(c)
+    local server_pressure_shed = server_pressure_select(dict, ctx, c)
+    if server_pressure_shed then
+        add("server_pressure", server_pressure_mode)
     end
 
     if #causes > 0 then
@@ -724,10 +862,17 @@ function _M.admit(ctx)
         local cause = enforced[1]
         if cause == "pressure" then
             ctx.dynamic_pressure_selective_rejected = true
+        elseif cause == "server_pressure" then
+            ctx.dynamic_server_pressure_rejected = true
         end
         local status = cause == "pressure"
             and ((type(c.pressure) == "table" and c.pressure.status) or 503)
             or (cause == "path_spray" and spray_spec.status or nil)
+        if cause == "server_pressure" then
+            local server_spec = type(c.server_pressure) == "table"
+                and c.server_pressure or {}
+            status = tonumber(server_spec.status) or 503
+        end
         if cause == "uri_integrity" then
             local uri_spec = type(c.uri_integrity) == "table"
                 and c.uri_integrity or {}
@@ -977,6 +1122,167 @@ local function record_pressure(dict, ctx, c, up, t)
     end
 end
 
+local function record_server_pressure(dict, ctx, c, up, t)
+    local spec, mode = server_pressure_config(c)
+    if mode == "off" or not up then return end
+    local base = server_pressure_keys()
+    local second = math.floor(t)
+    local window = math.max(math.floor(tonumber(spec.window) or 10), 2)
+    local hold = math.max(tonumber(spec.hold_seconds) or 20, 1)
+    local ttl = window * 3 + hold + 5
+    local slow_seconds = tonumber(spec.slow_seconds) or 2.5
+    local cohort_id = ctx.dynamic_server_pressure_cohort_id
+        or select(1, server_pressure_cohort(ctx))
+    local cohort_base = pressure_cohort_base(base, cohort_id)
+
+    local _, nerr = increment(dict,
+        pressure_bucket(base, second, "n"), 1, ttl)
+    local _, werr = increment(dict,
+        pressure_bucket(base, second, "work"), up, ttl)
+    local serr
+    if up >= slow_seconds then
+        _, serr = increment(dict,
+            pressure_bucket(base, second, "slow"), 1, ttl)
+    end
+    if nerr or werr or serr then
+        ctx.dynamic_server_pressure_degraded = true
+        log_dict_error("server_pressure_record", nerr or werr or serr)
+        return
+    end
+
+    local cohort_samples, cohort_work, cohort_slow = 0, 0, 0
+    if up >= slow_seconds then
+        local _, cnerr = increment(dict,
+            pressure_bucket(cohort_base, second, "n"), 1, ttl)
+        local _, cwerr = increment(dict,
+            pressure_bucket(cohort_base, second, "work"), up, ttl)
+        local _, cserr = increment(dict,
+            pressure_bucket(cohort_base, second, "slow"), 1, ttl)
+        if cnerr or cwerr or cserr then
+            ctx.dynamic_server_pressure_degraded = true
+            log_dict_error("server_pressure_cohort_record",
+                cnerr or cwerr or cserr)
+            return
+        end
+        cohort_samples, cohort_work, cohort_slow =
+            sum_pressure_buckets(dict, cohort_base, second, window)
+        ctx.dynamic_server_pressure_cohort_samples = cohort_samples
+        ctx.dynamic_server_pressure_cohort_work = cohort_work
+        ctx.dynamic_server_pressure_cohort_slow = cohort_slow
+
+        local cohort_min_samples = math.max(math.floor(
+            tonumber(spec.cohort_min_samples) or 3), 1)
+        local cohort_work_limit = math.max(
+            tonumber(spec.cohort_work_seconds) or 30, 0.1)
+        local cohort_candidate = cohort_samples >= cohort_min_samples
+            and cohort_work >= cohort_work_limit
+        ctx.dynamic_server_pressure_cohort_candidate = cohort_candidate
+        if cohort_candidate then
+            local hot_ttl = window + hold + 5
+            local hok, herr = dict:set(
+                cohort_base .. ":hot", cohort_work, hot_ttl)
+            local nok, nseterr = dict:set(
+                cohort_base .. ":hot_n", cohort_samples, hot_ttl)
+            if not hok or not nok then
+                ctx.dynamic_server_pressure_degraded = true
+                log_dict_error("server_pressure_cohort_hot",
+                    herr or nseterr)
+                return
+            end
+        end
+    end
+
+    local interval = math.max(tonumber(spec.eval_interval) or 1, 0.1)
+    local elected, elect_err = dict:add(base .. ":eval:"
+        .. tostring(math.floor(t / interval)), 1, interval + 1)
+    if not elected then
+        if elect_err ~= "exists" then
+            ctx.dynamic_server_pressure_degraded = true
+            log_dict_error("server_pressure_elect", elect_err)
+        end
+        return
+    end
+
+    local samples, work, slow =
+        sum_pressure_buckets(dict, base, second, window)
+    ctx.dynamic_server_pressure_samples = samples
+    ctx.dynamic_server_pressure_work = work
+    ctx.dynamic_server_pressure_slow = slow
+    ctx.dynamic_server_pressure_evaluated = true
+    local min_samples = math.max(math.floor(
+        tonumber(spec.min_samples) or 12), 1)
+    local work_limit = math.max(tonumber(spec.work_seconds) or 180, 0.1)
+    local candidate = samples >= min_samples and work >= work_limit
+        and up >= slow_seconds
+    ctx.dynamic_server_pressure_candidate = candidate
+    ctx.dynamic_server_pressure_cohort_share = work > 0
+        and cohort_work / work or 0
+    local min_share = math.max(math.min(
+        tonumber(spec.cohort_min_share) or 0.15, 1), 0)
+    ctx.dynamic_server_pressure_attributed =
+        ctx.dynamic_server_pressure_cohort_candidate == true
+        and ctx.dynamic_server_pressure_cohort_share >= min_share
+    if not candidate then return end
+
+    local until_at = t + hold
+    local state_ttl = hold + window + 5
+    local ok1, err1 = dict:set(base .. ":open_until", until_at, state_ttl)
+    local ok2, err2 = dict:set(base .. ":open_work", work, state_ttl)
+    local ok3, err3 = dict:set(base .. ":open_n", samples, state_ttl)
+    if not ok1 or not ok2 or not ok3 then
+        ctx.dynamic_server_pressure_degraded = true
+        log_dict_error("server_pressure_open", err1 or err2 or err3)
+        return
+    end
+    ctx.dynamic_server_pressure_open = true
+    ctx.dynamic_server_pressure_until = until_at
+    ctx.dynamic_server_pressure_transition = "open"
+    stat("server_pressure_open")
+end
+
+local function record_aborted_pressure(dict, ctx, c, up, t)
+    local spec, enabled = aborted_pressure_config(c)
+    if not enabled or not up then return end
+    local window = math.max(math.floor(tonumber(spec.window) or 10), 2)
+    local ttl = window * 3 + 5
+    local second = math.floor(t)
+    local slow_seconds = tonumber(spec.slow_seconds) or 2.5
+
+    local function record_one(base, label)
+        local _, nerr = increment(dict,
+            pressure_bucket(base, second, "n"), 1, ttl)
+        local _, werr = increment(dict,
+            pressure_bucket(base, second, "work"), up, ttl)
+        local serr
+        if up >= slow_seconds then
+            _, serr = increment(dict,
+                pressure_bucket(base, second, "slow"), 1, ttl)
+        end
+        if nerr or werr or serr then
+            ctx.dynamic_aborted_degraded = true
+            log_dict_error("aborted_" .. label, nerr or werr or serr)
+            return nil
+        end
+        return { sum_pressure_buckets(dict, base, second, window) }
+    end
+
+    local doc = record_one(
+        aborted_pressure_keys(ctx.dynamic_guard_scope), "docroot")
+    local server = record_one(aborted_pressure_keys("server"), "server")
+    ctx.dynamic_aborted_sample = true
+    ctx.dynamic_aborted_upstream_time = up
+    if doc then
+        ctx.dynamic_aborted_doc_samples = doc[1]
+        ctx.dynamic_aborted_doc_work = doc[2]
+        ctx.dynamic_aborted_doc_slow = doc[3]
+    end
+    if server then
+        ctx.dynamic_aborted_server_samples = server[1]
+        ctx.dynamic_aborted_server_work = server[2]
+        ctx.dynamic_aborted_server_slow = server[3]
+    end
+end
+
 function _M.after(ctx)
     if not ctx or not ctx.dynamic_guard_scope then return end
     local c = conf()
@@ -1020,13 +1326,24 @@ function _M.after(ctx)
         end
     end
 
-    -- Only completed upstream work teaches cost.  Local 4xx/429/503 responses
-    -- never poison the pressure or expensive-path evidence.
-    if not ctx.dynamic_guard_outcome_recorded
+    -- A 499 carried real occupancy but not a completed upstream verdict.  It is
+    -- recorded on an isolated telemetry plane and can never teach path cost,
+    -- cohort guilt or breaker state.  This distinction prevents an overloaded
+    -- server's client aborts from becoming self-amplifying enforcement proof.
+    local aborted = tonumber(ngx.status) == 499 and up ~= nil
+    if aborted and not ctx.dynamic_guard_aborted_recorded then
+        ctx.dynamic_guard_aborted_recorded = true
+        record_aborted_pressure(dict, ctx, c, up, t)
+    end
+
+    -- Only completed, non-aborted upstream work teaches cost.  Local
+    -- 4xx/429/503 responses never poison pressure or expensive-path evidence.
+    if not aborted and not ctx.dynamic_guard_outcome_recorded
        and upstream and upstream ~= "" and upstream ~= "-" and up then
         ctx.dynamic_guard_outcome_recorded = true
         record_path_cost(dict, ctx, c, up, t)
         record_pressure(dict, ctx, c, up, t)
+        record_server_pressure(dict, ctx, c, up, t)
     end
 end
 

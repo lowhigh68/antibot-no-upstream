@@ -629,6 +629,18 @@ do
        "cohort phai tu tao backend work dang ke")
     eq((dg.pressure or {}).cohort_min_share, 0.15,
        "cohort phai chiem ty trong incident du lon")
+    eq((dg.aborted_pressure or {}).enabled, true,
+       "499 occupancy duoc do rieng, khong tron completed pressure")
+    eq((dg.aborted_pressure or {}).window, 10,
+       "499 telemetry dung cung cua so doi chieu incident")
+    eq((dg.server_pressure or {}).mode, "shadow",
+       "whole-server pressure phai do production truoc enforce")
+    eq((dg.server_pressure or {}).policy, "cohort",
+       "whole-server pressure khong duoc blanket shed")
+    eq((dg.server_pressure or {}).min_samples, 12,
+       "whole-server observer giu floor mau bao thu")
+    eq((dg.server_pressure or {}).work_seconds, 180.0,
+       "whole-server observer giu work floor de do")
     eq(pc.mode, "enforce",
        "principal churn quarantine duoc promote sau production evidence")
     eq(pc.ip_threshold, 4, "principal churn IP threshold production")
@@ -734,6 +746,12 @@ do
        "cloud principal co ba slot toan may")
     eq(cloud_conc.source_limit, 3,
        "cloud source co ba slot, khong ne bang doi principal")
+    local verified_aggressive =
+        (conc.tiers or {}).verified_aggressive or {}
+    eq(verified_aggressive.mode, "enforce",
+       "verified aggressive crawler dung concurrency ngay")
+    eq(verified_aggressive.limit, 2,
+       "verified aggressive crawler chi giu hai backend slot")
 
     -- Rollout bat dau o shadow nen telemetry la dau ra duy nhat de quyet dinh
     -- enforce.  Ghim schema de mot lan refactor logger khong bien module thanh
@@ -762,6 +780,13 @@ do
         " dgpr=", " dgpckind=", " dgpcid=", " dgpcwork=",
         " dgpcn=", " dgpccand=", " dgpcshare=", " dgpcmatch=",
         " dgpattr=",
+         " dgab=", " dgabup=", " dgabn=", " dgabw=", " dgabslow=",
+         " dgabsn=", " dgabsw=", " dgabsslow=", " dgabdeg=",
+         " dgsvmode=", " dgsvopen=", " dgsvwould=", " dgsvthr=",
+         " dgsvwork=", " dgsvn=", " dgsvslow=", " dgsvcand=",
+         " dgsvtrans=", " dgsvsel=", " dgsvkind=", " dgsvid=",
+         " dgsvcwork=", " dgsvcn=", " dgsvcshare=", " dgsvmatch=",
+         " dgsvattr=", " dgsvdeg=",
         " dgdur=", " dgup=", " dgactual=", " dgleft=", " dgdeg=",
         " dgexp=",
     }) do

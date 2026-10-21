@@ -1505,6 +1505,7 @@ cfg.automation_concurrency = {
         cloud_automation = {
             mode = "enforce", limit = 2, source_limit = 2,
         },
+        verified_aggressive = { mode = "enforce", limit = 2 },
     },
 }
 package.loaded["antibot.l7.operator_concurrency"] = nil
@@ -1652,6 +1653,48 @@ cloud_claim_only.automation_proof = "claim_only"
 operator_concurrency.admit(cloud_claim_only)
 eq(cloud_claim_only.automation_concurrency_admitted, nil,
    "UA cloud tu khai khong co PTR proof khong cap slot")
+
+-- Verified crawler concurrency is generic by the existing policy class, not a
+-- vendor allow/deny list.  Both S3/S4 proof and class=aggressive are required;
+-- a copied UA or a polite crawler cannot enter this pool.
+local function verified_aggressive_ctx(principal, ip)
+    local c = opctx(principal, "crawler.test", ip, "/crawl")
+    c.automation_tier = "verified"
+    c.operator_network_verified = false
+    c.good_bot_verified = true
+    c.good_bot_class = "aggressive"
+    return c
+end
+
+clock = 1670
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+local va1 = verified_aggressive_ctx("amazonbot", "192.0.2.41")
+local va2 = verified_aggressive_ctx("amazonbot", "192.0.2.42")
+local va3 = verified_aggressive_ctx("amazonbot", "192.0.2.43")
+operator_concurrency.admit(va1)
+operator_concurrency.admit(va2)
+local _, va3_exit = operator_concurrency.admit(va3)
+eq(va3_exit, true,
+   "verified aggressive crawler bi chan o request dong thoi thu ba")
+eq(va3.automation_concurrency_tier, "verified_aggressive",
+   "telemetry noi ro generic verified-aggressive policy")
+eq(va3.automation_concurrency_axis, "principal",
+   "verified aggressive pool gom IP va domain theo principal")
+operator_concurrency.after(va1)
+operator_concurrency.after(va2)
+
+local polite = verified_aggressive_ctx("googlebot", "192.0.2.44")
+polite.good_bot_class = "polite"
+operator_concurrency.admit(polite)
+eq(polite.automation_concurrency_admitted, nil,
+   "verified polite crawler khong bi aggressive concurrency")
+
+local forged_verified = verified_aggressive_ctx("amazonbot", "192.0.2.45")
+forged_verified.good_bot_verified = false
+operator_concurrency.admit(forged_verified)
+eq(forged_verified.automation_concurrency_admitted, nil,
+   "class aggressive khong thay the bang chung good-bot verified")
 
 -- Enforce is per-principal.  Exactly N requests live; N+1 is atomically rolled
 -- back and receives a local 429 without changing reputation/ban state.
@@ -1883,6 +1926,17 @@ cfg.dynamic_guard = {
         cohort_min_samples = 2, cohort_work_seconds = 4,
         cohort_min_share = 0.5,
         first_party_richness = 0.5, first_party_reserve = 2,
+    },
+    aborted_pressure = {
+        enabled = true, window = 10, slow_seconds = 2,
+    },
+    server_pressure = {
+        mode = "off", policy = "cohort",
+        window = 10, min_samples = 2,
+        work_seconds = 4, slow_seconds = 2,
+        hold_seconds = 5, eval_interval = 1, status = 503,
+        cohort_min_samples = 2, cohort_work_seconds = 4,
+        cohort_min_share = 0.5, first_party_richness = 0.5,
     },
 }
 package.loaded["antibot.l7.dynamic_guard"] = nil
@@ -2295,6 +2349,137 @@ eq(df2.dynamic_pressure_candidate, false,
    "fast latest completion cannot open on stale slow work")
 ok(df2.dynamic_pressure_open ~= true,
    "freshness gate leaves docroot closed")
+
+-- A client-aborted upstream consumed capacity but did not complete an upstream
+-- verdict.  Keep it in isolated docroot/server telemetry and never let it
+-- teach path cost, completed pressure or cohort guilt.  The hook is idempotent.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.pressure.mode = "shadow"
+cfg.dynamic_guard.server_pressure.mode = "shadow"
+fake_ngx.var.document_root = "/home/abort-a/public_html"
+fake_ngx.var.server_name = "abort-a.test"
+fake_ngx.var.uri = "/slow-abort"
+clock = 3270
+local dab1 = dgctx("198.51.100.140", "/slow-abort")
+dynamic_guard.before(dab1); dynamic_guard.admit(dab1)
+fake_ngx.status = 499
+fake_ngx.var.upstream_status = "-"
+fake_ngx.var.upstream_response_time = "10.000"
+dynamic_guard.after(dab1); dynamic_guard.after(dab1)
+eq(dab1.dynamic_aborted_sample, true,
+   "499 with upstream time is explicit aborted sample")
+eq(dab1.dynamic_aborted_doc_samples, 1,
+   "499 counted once in docroot telemetry")
+eq(dab1.dynamic_aborted_doc_work, 10,
+   "499 occupancy seconds retained separately")
+eq(dab1.dynamic_aborted_server_samples, 1,
+   "499 also visible in whole-server telemetry")
+eq(fake_ngx.shared.antibot_cache:get(
+    "dg:pressure:" .. dab1.dynamic_guard_scope .. ":b:3270:n"), nil,
+   "499 never enters completed docroot pressure")
+eq(fake_ngx.shared.antibot_cache:get(
+    "dg:server_pressure:b:3270:n"), nil,
+   "499 never enters completed server pressure")
+eq(dab1.dynamic_pressure_candidate, nil,
+   "499 cannot open completed-work breaker")
+
+fake_ngx.var.document_root = "/home/abort-b/public_html"
+fake_ngx.var.server_name = "abort-b.test"
+local dab2 = dgctx("198.51.100.141", "/another-abort")
+dynamic_guard.before(dab2); dynamic_guard.admit(dab2)
+fake_ngx.var.upstream_response_time = "12.000"
+dynamic_guard.after(dab2)
+eq(dab2.dynamic_aborted_doc_samples, 1,
+   "aborted docroot counters remain tenant-scoped")
+eq(dab2.dynamic_aborted_server_samples, 2,
+   "aborted server counter combines tenants")
+eq(dab2.dynamic_aborted_server_work, 22,
+   "aborted server work exposes shared-pool pressure")
+
+-- Whole-server completed pressure is an incident observer, not an aggregate
+-- crawler ban.  Evidence-backed automation is keyed by canonical principal so
+-- Amazon cannot make Meta inherit its hot cohort.  It starts shadow in the real
+-- config; enforce capability is nevertheless regression-tested here.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.status = 200
+fake_ngx.var.upstream_status = "200"
+fake_ngx.var.upstream_response_time = "2.500"
+clock = 3280
+local function server_bot(principal, root, ip)
+    fake_ngx.var.document_root = root
+    fake_ngx.var.server_name = principal .. ".test"
+    fake_ngx.var.uri = "/crawl"
+    local c = dgctx(ip, "/crawl")
+    c.automation_observed = true
+    c.automation_principal = principal
+    c.automation_tier = "verified"
+    c.good_bot_verified = true
+    return c
+end
+local dsp1 = server_bot("amazonbot", "/home/server-a/public_html",
+    "198.51.100.150")
+dynamic_guard.before(dsp1); dynamic_guard.admit(dsp1)
+dynamic_guard.after(dsp1)
+clock = 3281.1
+local dsp2 = server_bot("amazonbot", "/home/server-b/public_html",
+    "198.51.100.151")
+dynamic_guard.before(dsp2); dynamic_guard.admit(dsp2)
+dynamic_guard.after(dsp2)
+eq(dsp2.dynamic_server_pressure_candidate, true,
+   "completed work across docroots creates server candidate")
+eq(dsp2.dynamic_server_pressure_open, true,
+   "server pressure opens after fresh completed evidence")
+eq(dsp2.dynamic_server_pressure_attributed, true,
+   "principal cohort owns measured server work")
+
+clock = 3282
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+local dsp_same = server_bot("amazonbot", "/home/server-c/public_html",
+    "198.51.100.152")
+dynamic_guard.before(dsp_same)
+local _, dsp_same_exit = dynamic_guard.admit(dsp_same)
+eq(dsp_same_exit, false, "server pressure ship mode shadow does not reject")
+eq(dsp_same.dynamic_server_pressure_would_reject, true,
+   "matching principal is a measurable server shed candidate")
+eq(dsp_same.dynamic_server_pressure_disposition,
+   "shed_incident_automation",
+   "server automation disposition is explicit")
+
+local dsp_other = server_bot("meta-externalagent",
+    "/home/server-d/public_html", "198.51.100.153")
+dynamic_guard.before(dsp_other)
+local _, dsp_other_exit = dynamic_guard.admit(dsp_other)
+eq(dsp_other_exit, false,
+   "different verified principal never inherits Amazon incident")
+eq(dsp_other.dynamic_server_pressure_cohort_match, false,
+   "server automation attribution stays principal-specific")
+eq(dsp_other.dynamic_server_pressure_disposition, "keep_normal",
+   "unrelated automation is explicitly kept")
+
+local dsp_first = server_bot("amazonbot", "/home/server-e/public_html",
+    "198.51.100.154")
+dsp_first.session_cookie_known = true
+dsp_first.session_richness_own = 0.8
+dynamic_guard.before(dsp_first)
+local _, dsp_first_exit = dynamic_guard.admit(dsp_first)
+eq(dsp_first_exit, false,
+   "strong first-party state is absolute keep across server pressure")
+eq(dsp_first.dynamic_server_pressure_disposition, "keep_first_party",
+   "cross-site pressure has no finite first-party reserve")
+
+cfg.dynamic_guard.server_pressure.mode = "enforce"
+local dsp_enforce = server_bot("amazonbot", "/home/server-f/public_html",
+    "198.51.100.155")
+dynamic_guard.before(dsp_enforce)
+local _, dsp_enforce_exit = dynamic_guard.admit(dsp_enforce)
+eq(dsp_enforce_exit, true,
+   "server pressure can enforce only matching measured cohort")
+eq(dsp_enforce.dynamic_server_pressure_rejected, true,
+   "server selective reject is observable")
+eq(exits[#exits], 503, "server pressure returns local capacity 503")
+cfg.dynamic_guard.server_pressure.mode = "off"
+fake_ngx.status = 200
 
 -- Axis promotion is independent and rollback preserves valid live slots.
 fake_ngx.shared.antibot_cache = Dict.new()

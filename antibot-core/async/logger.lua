@@ -719,6 +719,12 @@ function _M.run(ctx)
             " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
             " dgpckind=%s dgpcid=%s dgpcwork=%s dgpcn=%s dgpccand=%s" ..
             " dgpcshare=%s dgpcmatch=%s dgpattr=%s" ..
+            " dgab=%s dgabup=%s dgabn=%s dgabw=%s dgabslow=%s" ..
+            " dgabsn=%s dgabsw=%s dgabsslow=%s dgabdeg=%s" ..
+            " dgsvmode=%s dgsvopen=%s dgsvwould=%s dgsvthr=%s" ..
+            " dgsvwork=%s dgsvn=%s dgsvslow=%s dgsvcand=%s dgsvtrans=%s" ..
+            " dgsvsel=%s dgsvkind=%s dgsvid=%s dgsvcwork=%s dgsvcn=%s" ..
+            " dgsvcshare=%s dgsvmatch=%s dgsvattr=%s dgsvdeg=%s" ..
             " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s",
             tostring(ctx.dynamic_guard_mode or "-"),
             tostring(ctx.dynamic_guard_scope or "-"),
@@ -768,6 +774,44 @@ function _M.run(ctx)
                     tonumber(ctx.dynamic_pressure_cohort_share) or 0) or "-",
             tostring(ctx.dynamic_pressure_cohort_match or false),
             tostring(ctx.dynamic_pressure_attributed or false),
+            tostring(ctx.dynamic_aborted_sample or false),
+            ctx.dynamic_aborted_upstream_time
+                and string.format("%.3f",
+                    ctx.dynamic_aborted_upstream_time) or "-",
+            tostring(ctx.dynamic_aborted_doc_samples or "-"),
+            ctx.dynamic_aborted_doc_work
+                and string.format("%.3f", ctx.dynamic_aborted_doc_work) or "-",
+            tostring(ctx.dynamic_aborted_doc_slow or "-"),
+            tostring(ctx.dynamic_aborted_server_samples or "-"),
+            ctx.dynamic_aborted_server_work
+                and string.format("%.3f", ctx.dynamic_aborted_server_work) or "-",
+            tostring(ctx.dynamic_aborted_server_slow or "-"),
+            tostring(ctx.dynamic_aborted_degraded or false),
+            tostring(ctx.dynamic_server_pressure_mode or "-"),
+            tostring(ctx.dynamic_server_pressure_open or false),
+            tostring(ctx.dynamic_server_pressure_would_reject or false),
+            tostring(ctx.dynamic_server_pressure_rejected or false),
+            ctx.dynamic_server_pressure_work
+                and string.format("%.3f", ctx.dynamic_server_pressure_work) or "-",
+            tostring(ctx.dynamic_server_pressure_samples or "-"),
+            tostring(ctx.dynamic_server_pressure_slow or "-"),
+            tostring(ctx.dynamic_server_pressure_candidate or false),
+            tostring(ctx.dynamic_server_pressure_transition or "-"),
+            tostring(ctx.dynamic_server_pressure_disposition or "-"),
+            tostring(ctx.dynamic_server_pressure_cohort_kind or "-"),
+            tostring(ctx.dynamic_server_pressure_cohort_id or "-"),
+            (ctx.dynamic_server_pressure_cohort_work
+                or ctx.dynamic_server_pressure_cohort_hot_work)
+                and string.format("%.3f", tonumber(
+                    ctx.dynamic_server_pressure_cohort_work
+                    or ctx.dynamic_server_pressure_cohort_hot_work) or 0) or "-",
+            tostring(ctx.dynamic_server_pressure_cohort_samples or "-"),
+            ctx.dynamic_server_pressure_cohort_share ~= nil
+                and string.format("%.3f", tonumber(
+                    ctx.dynamic_server_pressure_cohort_share) or 0) or "-",
+            tostring(ctx.dynamic_server_pressure_cohort_match or false),
+            tostring(ctx.dynamic_server_pressure_attributed or false),
+            tostring(ctx.dynamic_server_pressure_degraded or false),
             ctx.dynamic_guard_duration
                 and string.format("%.3f", ctx.dynamic_guard_duration) or "-",
             ctx.dynamic_guard_upstream_time

@@ -7,6 +7,10 @@
 -- operator cannot multiply its backend budget by spreading work across tenant
 -- domains or published source ranges. Weaker cloud-only evidence also gets a
 -- source-IP axis because one production IP alternated multiple vendor claims.
+-- Verified crawlers enter only when the existing good-bot policy has placed
+-- them in the generic `aggressive` class.  This is deliberately class-based:
+-- Amazonbot supplied the production evidence, but no vendor name belongs in
+-- this capacity primitive and polite/moderate search crawlers remain outside.
 --
 -- The slot primitive mirrors endpoint_guard: acquire in late access, release in
 -- log phase, and age counters in bounded time buckets.  A slow request therefore
@@ -118,6 +122,12 @@ local function eligible(ctx, c)
                 source = source,
             }
         end
+    end
+
+    if ctx.automation_tier == "verified"
+       and ctx.good_bot_verified == true
+       and ctx.good_bot_class == "aggressive" then
+        return { principal = principal, tier = "verified_aggressive" }
     end
     return nil
 end
