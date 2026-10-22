@@ -276,6 +276,53 @@ eq(store["ban:" .. same_a], nil, "writer never creates legacy identity seal")
 eq(store["ban:" .. ip], nil,
    "host quarantine repeats do not promote to collective IP ban")
 
+-- Production regression 21-22/10/2026, cloud168-123. A fourth host-scoped
+-- Python-urllib incident had enough current IP risk to justify a short IP
+-- brake. The old TTL ladder then (incorrectly) reused host violation history
+-- and stretched that collective IP sentence to 24h. A browser receiving the
+-- dynamic IP 15h later was blocked before identity/cookie classification.
+-- Host history may lengthen qban, never the IP sentence; global history keeps
+-- its original escalation semantics.
+do
+    local saved_store, saved_writes, saved_ttl = store, writes, ttl_map
+
+    store, writes, ttl_map = {}, {}, {}
+    local host_repeat = {
+        ip = ip, ua = "Python-urllib/3.14",
+        req = { host = "one.test" }, req_class = "unknown",
+        action = "block", action_reason = "score_threshold",
+        ban_scope = "host", score = 129, effective_score = 84,
+        ip_risk = 0.7, swarm = false, session_richness = 0,
+    }
+    local host_keys = quarantine.keys(host_repeat, "host")
+    store[host_keys.viol] = 3
+    writer.run(host_repeat)
+    eq(host_repeat.ban_violation, 4,
+       "production fixture reaches fourth host incident")
+    eq(ttl_map["ban:" .. ip], 300,
+       "host violation history cannot stretch IP ban beyond current risk tier")
+    eq(ttl_map[host_keys.ban], 86400,
+       "host network-UA quarantine still escalates independently")
+
+    store, writes, ttl_map = {}, {}, {}
+    local global_repeat = {
+        ip = ip, ua = "Python-urllib/3.14",
+        req = { host = "one.test" }, req_class = "unknown",
+        action = "block", action_reason = "fake_good_bot",
+        ban_scope = "global", score = 129, effective_score = 84,
+        ip_risk = 0.7, swarm = false, session_richness = 0,
+    }
+    local global_keys = quarantine.keys(global_repeat, "global")
+    store[global_keys.viol] = 3
+    writer.run(global_repeat)
+    eq(global_repeat.ban_violation, 4,
+       "global fixture reaches fourth incident")
+    eq(ttl_map["ban:" .. ip], 86400,
+       "global violation history retains 24-hour IP escalation")
+
+    store, writes, ttl_map = saved_store, saved_writes, saved_ttl
+end
+
 -- A legacy fleet subscriber must not reinterpret a host-scoped network id as
 -- the old global `ban:<id>`. New consumers still receive the explicit fields.
 ngx.timer = { at = function(_, fn) fn(false); return true end }

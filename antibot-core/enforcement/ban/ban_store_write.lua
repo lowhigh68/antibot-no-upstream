@@ -383,10 +383,24 @@ function _M.run(ctx)
     local persist_ttl = ip_steps[#ip_steps]
 
     local ip_ban_ttl
-    if viol_count >= 4 then
-        ip_ban_ttl = persist_ttl -- bậc cuối: confirmed repeat bot
-    elseif viol_count >= 3 then
-        ip_ban_ttl = 86400       -- 24h: cảnh báo nặng
+    -- Chỉ tiền án GLOBAL mới được nâng thời hạn của án IP. Tiền án host thuộc
+    -- network-UA cụ thể; dùng nó để nâng `ban:<ip>` là quy tội mọi thiết bị
+    -- nhận lại cùng IP động.
+    --
+    -- Sự cố production 21-22/10/2026, cloud168-123: Python-urllib/3.14 bị
+    -- quarantine đúng trên quatructuyen.vn ở vi phạm thứ 4. Vì ip_risk đồng
+    -- thời đủ 0.7, nhánh IP cũng mở; đoạn cũ đọc viol_count=3 mà không kiểm
+    -- scope rồi kéo án IP từ 5 phút lên 24 giờ. Sau 15h33, nhà mạng cấp
+    -- 14.231.226.59 cho Chrome/124 và 62 request người dùng bị `banned_ip`
+    -- trước khi identity/cookie kịp chạy. `ban:hit` không gia hạn án, nhưng TTL
+    -- gốc đã quá dài.
+    --
+    -- Host scope vẫn được IP ban NGẮN theo bằng chứng IP hiện tại ở các nhánh
+    -- ip_risk/swarm bên dưới; offender dài hạn tiếp tục bị qban theo network-UA.
+    if scope == "global" and viol_count >= 4 then
+        ip_ban_ttl = persist_ttl -- bậc cuối: confirmed global repeat bot
+    elseif scope == "global" and viol_count >= 3 then
+        ip_ban_ttl = 86400       -- 24h: cảnh báo global nặng
     elseif ip_risk_val >= 0.95 then
         ip_ban_ttl = 1800        -- 30 phút: bot tấn công tích cực
     elseif ip_risk_val >= 0.85 then
