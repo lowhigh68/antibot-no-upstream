@@ -12,6 +12,7 @@ local policy    = require "antibot.waf.policy"
 local config    = require "antibot.waf.config"
 local telemetry = require "antibot.waf.telemetry"
 local pool      = require "antibot.core.redis_pool"
+local decision_ledger = require "antibot.core.decision"
 
 local compiled_config = config.compile()
 local host_config_cache = {}
@@ -179,6 +180,11 @@ local function terminate(ctx, state, decision, rt)
         uri  = state.request.uri,
         host = state.request.host,
     }
+    decision_ledger.set(ctx, {
+        kind = "security", source = "waf", rule = ctx.action_reason,
+        mode = decision.rule_mode or "enforce", scope = "request",
+        subject = state.request.host, upstream = false,
+    })
 
     complete(ctx, state, decision, rt)
     if rt.log then

@@ -5,9 +5,22 @@ local pow         = require "antibot.enforcement.challenge.pow_challenge"
 local nonce_store = require "antibot.enforcement.challenge.nonce_store"
 local pool        = require "antibot.core.redis_pool"
 local cfg         = require "antibot.core.config"
+local decision    = require "antibot.core.decision"
 
 function _M.run(ctx)
-    issue_token.run(ctx)
+    local _, issue_err = issue_token.run(ctx)
+    if issue_err then
+        -- A missing secret is a deployment failure, not evidence against the
+        -- visitor.  Prefer a measurable FN over a challenge page that can
+        -- never verify and loops real users forever.
+        ctx.action        = "monitor"
+        ctx.action_reason = issue_err
+        decision.set(ctx, {
+            kind = "challenge", source = "challenge_issue", rule = issue_err,
+            mode = "degraded", scope = "request",
+        })
+        return false
+    end
     pow.run(ctx)
 
     -- KHÔNG phục vụ một thách đố không thể giải được.
@@ -20,6 +33,11 @@ function _M.run(ctx)
     if not nonce_store.run(ctx) then
         ctx.action        = "monitor"
         ctx.action_reason = "challenge_store_failed"
+        decision.set(ctx, {
+            kind = "challenge", source = "challenge_store",
+            rule = "challenge_store_failed", mode = "degraded",
+            scope = "request",
+        })
         ngx.log(ngx.ERR, "[challenge] khong luu duoc trang thai, cho qua ip=",
                 ctx.ip or "?")
         return false
@@ -36,6 +54,11 @@ function _M.run(ctx)
     ctx.inject_candidate = false
 
     ngx.status = 200
+    decision.set(ctx, {
+        kind = "challenge", source = "challenge", rule = "pow_challenge",
+        mode = "enforce", scope = "identity",
+        subject = ctx.identity or ctx.fp_light, upstream = false,
+    })
     ngx.header["Content-Type"] = "text/html; charset=utf-8"
     -- Trang này MANG một nonce dùng một lần và nằm ở ĐÚNG URL bài viết. Để
     -- trình duyệt giữ lại bản sao ⇒ sau khi verify xong, `location.replace`

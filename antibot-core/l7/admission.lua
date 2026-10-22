@@ -6,6 +6,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -228,6 +229,14 @@ local function reject(ctx, reason, value, limit, window, status, retry_after)
     if ctx then
         ctx.action        = "throttled"
         ctx.action_reason = "l7_admission:" .. reason
+        decision.set(ctx, {
+            kind = "capacity", source = "l7_admission", rule = reason,
+            mode = "enforce",
+            scope = tostring(reason):find("^server") and "server" or "ip",
+            subject = tostring(reason):find("^server")
+                and server_host(ctx) or client_ip(ctx),
+            upstream = false,
+        })
     end
 
     ngx.header["Retry-After"]      = tostring(retry_after or 2)

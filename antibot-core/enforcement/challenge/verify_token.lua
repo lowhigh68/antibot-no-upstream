@@ -3,6 +3,7 @@ local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local identity_mod = require "antibot.core.fingerprint.identity"
 local admission = require "antibot.l7.admission"
+local decision = require "antibot.core.decision"
 
 local ffi = require "ffi"
 local C   = ffi.C
@@ -258,6 +259,13 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash, dest_arg)
     ngx.header["Set-Cookie"] = cookie_flags
 
     ctx.verified = true
+    ctx.action = "allow"
+    ctx.action_reason = "verify_success"
+    decision.set(ctx, {
+        kind = "challenge", source = "challenge_verify",
+        rule = "verify_success", mode = "enforce", scope = "identity",
+        subject = id, ttl = verified_ttl, upstream = false,
+    })
     ngx.log(ngx.INFO, "[verify] passed id=", id:sub(1,8),
             " ip=", ctx.ip or "?",
             " device_id=", device_id and device_id:sub(1,8) or "nil")
@@ -311,6 +319,10 @@ local function refuse(ctx, status, reason)
     ctx.verified      = false
     ctx.action        = "block"
     ctx.action_reason = reason
+    decision.set(ctx, {
+        kind = "challenge", source = "challenge_verify", rule = reason,
+        mode = "enforce", scope = "request", upstream = false,
+    })
     ngx.exit(status)
     return false
 end

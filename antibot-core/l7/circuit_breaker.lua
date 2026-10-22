@@ -35,6 +35,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -130,6 +131,13 @@ local function reject(ctx, c, state, open_until, cause)
         circuit_open_until   = open_until,
         action               = "throttled",
         action_reason        = "l7_circuit:" .. state,
+    })
+    decision.set(ctx, {
+        kind = "capacity", source = "circuit_breaker",
+        rule = cause or state, mode = "enforce", scope = "host",
+        subject = safe_host(ctx),
+        ttl = open_until and math.max(0, open_until - now()) or nil,
+        upstream = false,
     })
 
     ngx.header["Retry-After"]   = tostring(c.retry_after or c.open_seconds or 5)

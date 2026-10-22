@@ -20,6 +20,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -217,6 +218,13 @@ local function reject(ctx, c, principal, tier, axis)
     ctx.action = "throttled"
     ctx.action_reason = "automation_concurrency:" .. tostring(tier)
         .. ":" .. tostring(axis) .. ":" .. principal
+    decision.set(ctx, {
+        kind = "capacity", source = "operator_concurrency", rule = axis,
+        mode = "enforce", scope = axis == "source" and "server_ip"
+            or "server_principal",
+        subject = axis == "source" and ctx.ip or principal,
+        upstream = false,
+    })
     ngx.header["Retry-After"] = tostring(c.retry_after or 10)
     ngx.header["Cache-Control"] = "no-store"
     ngx.header["Content-Type"] = "text/plain"

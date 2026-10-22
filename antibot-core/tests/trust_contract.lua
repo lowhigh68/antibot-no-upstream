@@ -14,6 +14,9 @@ end
 
 local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
 if src:sub(-1) ~= "/" then src = src .. "/" end
+package.loaded["antibot.core.decision"] = {
+    set = function() return true end,
+}
 local resty_md5 = ngx.md5
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()

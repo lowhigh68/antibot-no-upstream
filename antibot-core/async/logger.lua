@@ -11,6 +11,11 @@ local log_queue = {}
 local log_queue_bytes = 0
 local log_flush_scheduled = false
 
+local function log_token(value, maximum)
+    local s = tostring(value == nil and "-" or value):sub(1, maximum or 160)
+    return (s:gsub("[%s=\"]", "_"))
+end
+
 local DEVICE_GROUP = {
     mobile_chrome_android = "mobile",
     mobile_safari_ios     = "mobile",
@@ -1305,6 +1310,21 @@ function _M.run(ctx)
         .. automation_concurrency_str .. principal_churn_str
         .. dynamic_guard_str .. operator_str
         .. shared_ip_str .. ban_str
+        .. string.format(
+            " pver=%s dschema=%s dkind=%s dsrc=%s drule=%s dmode=%s"
+            .. " dscope=%s dsubject=%s dttl=%s dup=%s",
+            log_token(ctx.policy_version, 64),
+            log_token(ctx.decision_schema, 16),
+            log_token(ctx.decision_kind, 32),
+            log_token(ctx.decision_source, 64),
+            log_token(ctx.decision_rule, 160),
+            log_token(ctx.decision_mode, 16),
+            log_token(ctx.decision_scope, 64),
+            log_token(ctx.decision_subject, 160),
+            ctx.decision_ttl == nil and "-"
+                or tostring(math.max(0, math.floor(ctx.decision_ttl))),
+            ctx.decision_upstream_reached == nil and "-"
+                or tostring(ctx.decision_upstream_reached))
 
     write_log_line(line)
 

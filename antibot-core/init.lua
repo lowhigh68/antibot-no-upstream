@@ -37,6 +37,8 @@ local logger             = require "antibot.async.logger"
 local waf_layer          = require "antibot.waf"
 local waf_logger         = require "antibot.async.waf_logger"
 local verified_human     = require "antibot.core.access.verified_human"
+local decision_ledger    = require "antibot.core.decision"
+local secrets            = require "antibot.core.secrets"
 
 -- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
 -- Broad budgets chi dung local shared dict + IP ban; khong chay detection/Redis
@@ -174,6 +176,13 @@ local function run_steps(steps, ctx)
         if exit == true then return true end
         if ok == false and step.fatal then
             ngx.log(ngx.ERR, "[antibot] fatal error at step ", i)
+            ctx.action = "block"
+            ctx.action_reason = "pipeline_fatal_step_" .. tostring(i)
+            decision_ledger.set(ctx, {
+                kind = "policy", source = "pipeline",
+                rule = ctx.action_reason, mode = "degraded",
+                scope = "request", upstream = false,
+            })
             ngx.exit(500)
             return true
         end
@@ -192,6 +201,13 @@ local function check_verified_cookie(ctx)
         ctx.ip = ctx.ip or ngx.var.remote_addr
         ctx.ua = ctx.ua or ngx.var.http_user_agent or ""
         ctx.req = ctx.req or { uri = ngx.var.uri or "" }
+        ctx.action = "allow"
+        ctx.action_reason = "verified_human"
+        decision_ledger.set(ctx, {
+            kind = "policy", source = "verified_human",
+            rule = "verified_cookie", mode = "enforce",
+            scope = "identity", subject = cookie,
+        })
         fleet.aggregate(ctx)
         ngx.log(ngx.DEBUG, "[antibot] cookie_fast_path id=", cookie)
         return true
@@ -403,6 +419,7 @@ function _M.log()
     -- cham Redis qua `ngx.timer.at` vi cosocket bi CAM o day.
     cookie_registry.learn(ctx)
 
+    decision_ledger.finalize_upstream(ctx, ngx.var.upstream_status)
     logger.run(ctx)
     -- run_log TRƯỚC waf_logger: nó điền `ctx.waf_target_exists` mà waf.log đọc,
     -- và là nơi DUY NHẤT đánh dấu host là WordPress (access phase chỉ đọc cờ đó).
@@ -417,6 +434,12 @@ end
 function _M.init_worker()
     local mem_guard = require "antibot.async.memory_guard"
     local worker0 = ngx.worker.id() == 0
+    local secret_state, secret_err = secrets.load(false)
+    if not secret_state then
+        ngx.log(ngx.ERR, "[antibot] protected secret configuration invalid: ",
+                tostring(secret_err),
+                " — admin is closed and score challenges degrade to monitor")
+    end
     -- Redis SCAN cleanup la cong viec cap instance, khong phai cap worker.
     -- Chay tren moi worker nhan chi phi va delete race len N lan ma khong tang
     -- do bao phu.  Worker 0 da la owner cua cac periodic fleet job ben duoi.

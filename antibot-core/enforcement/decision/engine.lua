@@ -4,6 +4,7 @@ local pool = require "antibot.core.redis_pool"
 local goodbot_registry = require "antibot.core.goodbot_registry"
 local automation_guard = require "antibot.l7.automation_guard"
 local operator_network = require "antibot.core.operator_network"
+local decision = require "antibot.core.decision"
 
 -- ============================================================
 -- Good-bot expensive-request throttle (Hybrid scoring)
@@ -169,6 +170,11 @@ local function throttle_good_bot_rate(ctx)
 
     ctx.action        = "throttled"
     ctx.action_reason = "good_bot_rate_" .. eff_class
+    decision.set(ctx, {
+        kind = "capacity", source = "goodbot_rate", rule = eff_class,
+        mode = "enforce", scope = "server_principal", subject = bot,
+        upstream = false,
+    })
 
     ngx.log(ngx.WARN,
         "[engine] good_bot rate exceeded",
@@ -242,6 +248,11 @@ local function throttle_good_bot(ctx)
     ctx.action_reason = "good_bot_throttled"
     ctx.expensive_score   = score
     ctx.expensive_trigger = trigger
+    decision.set(ctx, {
+        kind = "capacity", source = "goodbot_expensive",
+        rule = trigger, mode = "enforce", scope = "server_principal",
+        subject = bot, upstream = false,
+    })
 
     ngx.log(ngx.WARN,
         "[engine] good_bot throttled bot=", bot,
@@ -426,6 +437,10 @@ function _M.run(ctx)
     if ctx.whitelisted == true then
         ctx.action        = "allow"
         ctx.action_reason = ctx.action_reason or "whitelisted"
+        decision.set(ctx, {
+            kind = "policy", source = "scoring_engine",
+            rule = ctx.action_reason, mode = "enforce", scope = "request",
+        })
         return "allow"
     end
 
@@ -450,6 +465,11 @@ function _M.run(ctx)
         -- Giữ reason riêng nếu đã set (vd "good_bot_asn_lite" từ
         -- lite_verify) để antibot.log distinguish path verification.
         ctx.action_reason = ctx.action_reason or "good_bot_verified"
+        decision.set(ctx, {
+            kind = "policy", source = "goodbot", rule = ctx.action_reason,
+            mode = "enforce", scope = "principal",
+            subject = ctx.good_bot_name,
+        })
         return "allow"
     end
 
@@ -827,6 +847,19 @@ function _M.run(ctx)
     end
 
     ctx.action = action
+    decision.set(ctx, {
+        kind = action == "block" and "security"
+            or (action == "challenge" and "challenge" or "policy"),
+        source = "scoring_engine",
+        rule = ctx.action_reason or (action == "block" and "score_block"
+            or (action == "challenge" and "score_challenge"
+            or (action == "monitor" and "score_monitor" or "score_allow"))),
+        mode = "enforce", scope = "identity",
+        subject = ctx.identity or ctx.fp_light,
+    })
+    if action == "block" or action == "challenge" then
+        ctx.decision_upstream_reached = false
+    end
 
     if kill_reason then
         ngx.log(ngx.WARN,

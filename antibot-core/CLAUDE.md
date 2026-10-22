@@ -13,7 +13,7 @@ Pipeline root. `init.lua` is the single entry point invoked from per-domain ngin
 | [`detection/`](detection/CLAUDE.md) | Bot verify (4-path), anomaly, behavior, session, cluster, graph, browser beacon | After l7. Skipped for resource class except bot/lite_verify |
 | [`intelligence/`](intelligence/CLAUDE.md) | Score aggregation from all signals → ctx.score + top_signals | After detection |
 | [`enforcement/`](enforcement/CLAUDE.md) | Decision engine, PoW challenge, ban write | Last in pipeline |
-| [`async/`](async/CLAUDE.md) | risk_update, adaptive_weight, logger, memory_guard | log_by_lua phase (off-request) |
+| [`async/`](async/CLAUDE.md) | risk_update, intel_reporter, batched logger, WAF logger, memory_guard | log_by_lua phase and deferred timers |
 | [`admin/`](admin/CLAUDE.md) | Web UI + JSON API | Mounted only in hostname.conf |
 
 ## Pipeline at a glance (`init.lua`)
@@ -37,7 +37,7 @@ access_by_lua_block { antibot.run() }
 6. enforcement.engine sets ctx.action; challenge.serve or ban_store_write may fire
 log_by_lua_block { antibot.log() }
   ↓
-async/risk_update + adaptive_weight (skip resource), logger
+async/risk_update + intel_reporter, canonical decision logger + WAF logger
 ```
 
 ## Cross-cutting rules
@@ -48,6 +48,7 @@ async/risk_update + adaptive_weight (skip resource), logger
 | New signal: register in `DEFAULT_WEIGHTS` AND `get_signal()` | Otherwise silent zero contribution | intelligence/scoring/compute.lua |
 | New layer: check `ctx.skip_layers` via `should_run` | Allow per-class skip | detection/init.lua pattern |
 | Set `ctx.action` + `ctx.action_reason` BEFORE every `ngx.exit(...)` | log_by_lua produces `reason=-` otherwise | l7/ban/*, enforcement/* |
+| Record terminal outcomes through `core/decision.lua` | Every local block/throttle/challenge has one comparable owner, scope, TTL and upstream flag | WAF, L7, enforcement |
 | New `lua_shared_dict` → declare in `nginx/nginx.conf:49-53` only | Single source for memory budgeting | nginx.conf |
 | **Mọi phép chạm Redis trong `log_by_lua` PHẢI qua `ngx.timer.at(0, fn)`** | **Cosocket bị CẤM ở log phase** — không phải chậm, mà là không dùng được. `resty.redis` là cosocket, nên `pool.safe_*` gọi thẳng ở đó **luôn** thất bại, và vì là `safe_*` nên **thất bại trong im lặng**. `io.open` thì ngược lại: chạy thẳng được (xem `waf/init.lua:target_exists`). Đừng gộp hai thứ này làm một — chính việc gộp chúng đã giết `wp_paths.mark()` suốt 4 tháng, xem `waf/CLAUDE.md` | async/*, waf/ |
 | `init_worker_by_lua_block` cosocket DISABLED — defer Redis via `ngx.timer.at(0, fn)` | OpenResty constraint | core/goodbot_seed invocation |
@@ -199,3 +200,13 @@ Each subdirectory CLAUDE.md is the orientation map for that module. Read it BEFO
 The files document data flow (ctx fields read/written), Redis keys, position in pipeline, related modules — enough to plan changes without re-reading code line by line.
 
 Update the relevant CLAUDE.md whenever you commit a meaningful change to that module. Append to the "Update log" section at the bottom with commit hash + date + 1-line summary.
+
+## P0 control-plane contracts (2026-10-21)
+
+- `core/secrets.lua` loads `/etc/antibot/secrets.json` once per worker. Admin
+  fails closed when it is unavailable; PoW challenge issuance degrades to
+  monitor/allow so a deployment mistake cannot block public traffic.
+- `core/decision.lua` is the canonical terminal-decision ledger. The stable
+  schema is versioned by `core/policy_meta.lua` and exported in every bot log
+  line. This adds observability only; detector thresholds and traffic verdicts
+  are not changed by the ledger.

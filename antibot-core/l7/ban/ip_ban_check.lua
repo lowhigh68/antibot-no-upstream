@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+local decision = require "antibot.core.decision"
 
 local CRAWLER_PREFIX = "crawler:"
 
@@ -31,6 +32,11 @@ function _M.run(ctx)
         ctx.banned        = true
         ctx.action        = "block"
         ctx.action_reason = "banned_ip"
+        decision.set(ctx, {
+            kind = "security", source = "ip_ban", rule = "banned_ip",
+            mode = "enforce", scope = "ip", subject = ip,
+            upstream = false,
+        })
         pool.safe_set("ban:hit:" .. ip, tostring(ngx.time()), 300)
         ngx.log(ngx.INFO, "[ip_ban] blocked ip=", ip)
         ngx.status = 403

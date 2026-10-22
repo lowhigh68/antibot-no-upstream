@@ -19,6 +19,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -703,6 +704,18 @@ local function reject(ctx, c, cause, status)
     ctx.dynamic_guard_rejected = true
     ctx.action = "throttled"
     ctx.action_reason = "dynamic_guard:" .. tostring(cause)
+    local security = cause == "uri_integrity" or cause == "path_spray"
+    local scope = cause == "server_pressure" and "server"
+        or (cause == "server_client" and "server_ip"
+        or (cause == "tenant_client" and "docroot_ip" or "docroot"))
+    decision.set(ctx, {
+        kind = security and "security" or "capacity",
+        source = "dynamic_guard", rule = cause,
+        mode = "enforce", scope = scope,
+        subject = ctx.dynamic_server_pressure_cohort_id
+            or ctx.endpoint_scope or ctx.ip,
+        upstream = false,
+    })
     if status == 429 or status == 503 then
         ngx.header["Retry-After"] = tostring(c.retry_after or 3)
     end

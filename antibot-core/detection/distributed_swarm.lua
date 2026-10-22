@@ -24,8 +24,10 @@ local pool = require "antibot.core.redis_pool"
 --   interaction / inapp_browser: trung gian.
 --   unknown: giữ legacy default conservative.
 --
--- Weight (compute.lua DEFAULT_WEIGHTS.swarm_attack = 120) GIỮ NGUYÊN —
--- chỉ thay đổi sensitivity per class, không thay đổi scoring math.
+-- Historical thresholds below are retained for telemetry continuity only.
+-- `swarm_attack` is no longer registered as a scoring signal and this module
+-- must not issue a verdict: same-UA fan-out is a volume correlation, not proof
+-- of abuse. Consumers may use it only to rank an already-established incident.
 --
 -- Thresholds đặt in-code (git tracked) thay vì Redis để dễ audit + revert.
 

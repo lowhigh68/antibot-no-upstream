@@ -1390,7 +1390,8 @@ _M.session_shared = {
 
 _M.pow = {
     difficulty       = "000",
-    challenge_secret = "c516565b589841e4a540c309ed301f83",
+    -- Secret is loaded once per worker from /etc/antibot/secrets.json by
+    -- core/secrets.lua.  Never put it back in source-controlled config.
 }
 
 _M.fp_quality_threshold = 0.55

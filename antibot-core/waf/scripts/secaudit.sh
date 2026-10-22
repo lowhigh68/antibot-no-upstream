@@ -108,6 +108,7 @@ APACHE_HTTPS_PORT="${SEC_APACHE_HTTPS:-8081}"
 REDIS_PORT="${SEC_REDIS_PORT:-6379}"
 HOME_BASE="${SEC_HOME:-/home}"
 DA_USERS="${SEC_DA_USERS:-/usr/local/directadmin/data/users}"
+SECRET_FILE="${SEC_SECRETS:-/etc/antibot/secrets.json}"
 
 # ── CHON TENANT: phai la KHACH, khong phai tai khoan quan tri ────────
 #
@@ -155,6 +156,13 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
     LIVE_DA=0
     r=$(tcp_probe 127.0.0.1 2222);                 [ "$r" = OPEN ] && LIVE_DA=1
     printf '  directadmin  127.0.0.1:2222 = %s\n' "$r"
+    SECRET_EXISTS=0; SECRET_MODE="-"
+    if [ -f "$SECRET_FILE" ]; then
+        SECRET_EXISTS=1
+        SECRET_MODE=$(stat -c '%a %U:%G' "$SECRET_FILE" 2>/dev/null || printf '?')
+    fi
+    printf '  protected secret %s = %s (%s)\n' "$SECRET_FILE" \
+        "$([ "$SECRET_EXISTS" = 1 ] && printf PRESENT || printf MISSING)" "$SECRET_MODE"
     echo
 
     TEN=$(pick_tenant) || TEN=""
@@ -214,6 +222,8 @@ if [ "${SEC_AS_TENANT:-0}" != "1" ]; then
         SEC_LIVE_DA=$LIVE_DA \
         SEC_APACHE_HTTP='$APACHE_HTTP_PORT' SEC_APACHE_HTTPS='$APACHE_HTTPS_PORT' \
         SEC_REDIS_PORT='$REDIS_PORT' SEC_HOME='$HOME_BASE' SEC_DA_USERS='$DA_USERS' \
+        SEC_SECRETS='$SECRET_FILE' SEC_SECRET_EXISTS='$SECRET_EXISTS' \
+        SEC_SECRET_MODE='$SECRET_MODE' \
         SEC_OTHERS='$OTHERS' SEC_OTHER_DOMAIN='$OTHER_DOMAIN' \
         bash '$(readlink -f "$0")'"
 fi
@@ -407,20 +417,32 @@ fi
 echo
 
 echo "--- 5. Secret cua WAF/OpenResty (Review 4, 4.3 muc cuoi) ---"
-# `config.lua` chua `pow.challenge_secret`, `admin/init.lua` chua AUTH_USER/AUTH_PASS.
-# Tenant doc duoc mot trong hai la doc duoc bi mat ky challenge -> tu sinh cookie
-# `verified:*` hop le va di qua toan bo lop cham diem.
+# P0 dua PoW/admin secret ra ngoai source. Tenant doc duoc Lua khong con la lo;
+# tenant doc duoc `/etc/antibot/secrets.json` moi la vi pham ranh gioi.
 A="${SEC_ANTIBOT:-/usr/local/openresty/nginx/conf/antibot}"
-# In them CHE DO BAT PHAN: `-r` chi tra loi "tenant nay doc duoc khong", con cai
-# sua duoc la "tep co world-readable khong". Do 04-10: ca hai tep la `644
-# root:root`, tuc MOI user tren may doc duoc — khong rieng gi tenant nao. Thieu cot
-# nay thi nguoi doc khong biet phai `chmod` cai gi.
-for f in "$A/core/config.lua" "$A/admin/init.lua"; do
-    if [ ! -e "$f" ]; then skip "$f" "khong ton tai"
-    elif [ -r "$f" ]; then
-        bad "$f -- tenant DOC duoc (che do $(stat -c '%a %U:%G' "$f" 2>/dev/null))"
-    else ok "$f -- tenant khong doc duoc"; fi
-done
+# Source Lua co the world-readable vi khong con chua secret. Bat bien moi la:
+# khong co inline fallback va tep ngoai source phai ton tai, tenant khong doc duoc.
+if [ ! -r "$A/core/config.lua" ]; then
+    skip "$A/core/config.lua" "khong doc duoc source de kiem inline fallback"
+elif grep -Eq 'challenge_secret[[:space:]]*=' "$A/core/config.lua" 2>/dev/null; then
+    bad "$A/core/config.lua -- challenge secret da quay lai source"
+else
+    ok "core/config.lua -- khong co challenge secret inline"
+fi
+if [ ! -r "$A/admin/init.lua" ]; then
+    skip "$A/admin/init.lua" "khong doc duoc source de kiem inline fallback"
+elif grep -Eq 'AUTH_(USER|PASS)[[:space:]]*=' "$A/admin/init.lua" 2>/dev/null; then
+    bad "$A/admin/init.lua -- admin credential da quay lai source"
+else
+    ok "admin/init.lua -- khong co credential inline"
+fi
+if [ "${SEC_SECRET_EXISTS:-0}" != "1" ]; then
+    bad "$SECRET_FILE -- khong ton tai (admin fail-closed, challenge degrade)"
+elif [ -r "$SECRET_FILE" ]; then
+    bad "$SECRET_FILE -- tenant DOC duoc (che do ${SEC_SECRET_MODE:-?})"
+else
+    ok "$SECRET_FILE -- co that va tenant khong doc duoc (che do ${SEC_SECRET_MODE:-?})"
+fi
 # `waf.log` chi sinh ra khi co luot WAF ghi, nen "khong ton tai" o day la BO QUA
 # dung nghia. `antibot.log` thi phai co: thu muc la `750 nginx:nginx` nen tenant
 # khong stat duoc -> `-e` false -> BO QUA "khong ton tai". Do la KET LUAN SAI ve

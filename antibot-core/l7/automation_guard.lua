@@ -14,6 +14,7 @@ local _M = {}
 
 local cfg = require "antibot.core.config"
 local operator_network = require "antibot.core.operator_network"
+local decision = require "antibot.core.decision"
 
 local function conf()
     return cfg.automation or {}
@@ -87,6 +88,14 @@ local function throttle(ctx, c, axis)
     ctx.action = "throttled"
     ctx.action_reason = "automation_guard:" .. tostring(ctx.automation_tier
         or "unknown") .. ":" .. tostring(axis or "-")
+    local scope = tostring(axis or ""):find("^fleet") and "server_principal"
+        or (tostring(axis or ""):find("^server") and "server"
+        or (tostring(axis or ""):find("^ip") and "ip_host" or "principal_host"))
+    decision.set(ctx, {
+        kind = "capacity", source = "automation_guard", rule = axis or "rate",
+        mode = "enforce", scope = scope,
+        subject = ctx.automation_principal, upstream = false,
+    })
 
     ngx.header["Retry-After"]      = tostring(retry)
     ngx.header["Cache-Control"]    = "no-store"
@@ -123,6 +132,11 @@ local function suspend_operator(ctx, c, principal)
 
     ctx.action = "block"
     ctx.action_reason = "automation_guard:operator:suspend:" .. principal
+    decision.set(ctx, {
+        kind = "policy", source = "automation_guard", rule = "suspend",
+        mode = "enforce", scope = "server_principal",
+        subject = principal, upstream = false,
+    })
 
     ngx.header["Cache-Control"] = "no-store"
     ngx.header["Content-Type"] = "text/plain"

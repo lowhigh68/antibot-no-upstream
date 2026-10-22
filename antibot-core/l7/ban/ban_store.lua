@@ -3,6 +3,7 @@ local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 local quarantine = require "antibot.core.network_quarantine"
+local decision = require "antibot.core.decision"
 
 -- A session established by this host may pass a coarse network-UA seal. This
 -- is not a whitelist: the request continues through the live pipeline.
@@ -117,6 +118,12 @@ function _M.run(ctx)
         ctx.action_reason = keys.scope == "host"
             and "network_quarantine_challenge"
             or "banned_id_shared_challenge"
+        decision.set(ctx, {
+            kind = "challenge", source = "quarantine",
+            rule = ctx.action_reason, mode = "enforce",
+            scope = keys.scope == "host" and "network_ua_host" or "network_ua",
+            subject = id, upstream = false,
+        })
         ctx.banned = false
         ngx.log(ngx.INFO,
             "[ban_store] recovery_challenge id=", id:sub(1, 8),
@@ -140,6 +147,13 @@ function _M.run(ctx)
     else
         ctx.action_reason = "banned_id"
     end
+    decision.set(ctx, {
+        kind = "security", source = "quarantine", rule = ctx.action_reason,
+        mode = "enforce",
+        scope = keys.scope == "host" and "network_ua_host"
+            or (keys.scope == "global" and "network_ua_global" or "identity"),
+        subject = id, upstream = false,
+    })
 
     ngx.log(ngx.INFO,
         "[ban_store] blocked id=", id:sub(1, 8),

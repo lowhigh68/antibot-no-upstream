@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 -- adaptive_limit — per-IP rate decisions in two tiers (hybrid model).
 --
@@ -99,6 +100,12 @@ function _M.run(ctx)
             ctx.banned        = true
             ctx.action        = "block"
             ctx.action_reason = "ip_surge_extreme"
+            decision.set(ctx, {
+                kind = "security", source = "adaptive_limit",
+                rule = "ip_surge_extreme", mode = "enforce",
+                scope = "ip", subject = ctx.ip, ttl = ttl,
+                upstream = false,
+            })
             ngx.status = 403
             ngx.header["Content-Type"] = "text/plain"
             ngx.say("Access denied.")

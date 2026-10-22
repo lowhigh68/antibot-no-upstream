@@ -9,6 +9,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -139,6 +140,11 @@ local function reject(ctx, c, axis)
     ctx.principal_churn_rejected = true
     ctx.action = "throttled"
     ctx.action_reason = "principal_churn:" .. tostring(axis)
+    decision.set(ctx, {
+        kind = "security", source = "principal_churn", rule = axis,
+        mode = "enforce", scope = axis == "ja3" and "ip_ja3" or "ip",
+        subject = ctx.ip, upstream = false,
+    })
     ngx.header["Retry-After"] = tostring(c.retry_after or 30)
     ngx.header["Cache-Control"] = "no-store"
     ngx.status = status

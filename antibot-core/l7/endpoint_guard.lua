@@ -8,6 +8,7 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
@@ -459,6 +460,15 @@ local function reject(ctx, c, spec, enforced_causes)
     ctx.action = "throttled"
     ctx.action_reason = "endpoint_guard:" .. tostring(ctx.endpoint_id)
         .. ":" .. joined
+    local shape_reject = joined:find("shape_", 1, true) ~= nil
+    decision.set(ctx, {
+        kind = shape_reject and "security" or "capacity",
+        source = "endpoint_guard", rule = joined,
+        mode = "enforce", scope = "docroot_endpoint",
+        subject = tostring(ctx.endpoint_scope or "-") .. ":"
+            .. tostring(ctx.endpoint_id or "-"),
+        upstream = false,
+    })
     -- Retry-After belongs to capacity responses.  A deterministic malformed
     -- path returned as 400/404 will not become valid by retrying later.
     if status == 429 or status == 503 then

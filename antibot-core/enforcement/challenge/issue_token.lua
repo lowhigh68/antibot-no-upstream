@@ -1,6 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
-local cfg  = require "antibot.core.config"
+local secrets = require "antibot.core.secrets"
 
 local ffi = require "ffi"
 local C   = ffi.C
@@ -16,6 +16,7 @@ pcall(function()
 end)
 
 local HMAC_LEN = 32
+local secret_error_logged = false
 
 local function hmac_sha256(key, data)
     local md     = ffi.new("unsigned char[?]", HMAC_LEN)
@@ -36,7 +37,15 @@ function _M.run(ctx)
     local id     = ctx.identity or ctx.fp_light or "unknown"
     local ts     = tostring(ngx.time())
     local nonce  = string.format("%06d", math.random(100000, 999999))
-    local secret = cfg.pow.challenge_secret
+    local secret, secret_err = secrets.pow_secret()
+    if not secret then
+        if not secret_error_logged then
+            secret_error_logged = true
+            ngx.log(ngx.ERR, "[challenge] PoW secret unavailable: ",
+                    tostring(secret_err))
+        end
+        return nil, "challenge_secret_unavailable"
+    end
     local data   = id .. "|" .. ts .. "|" .. nonce
 
     local token = hmac_sha256(secret, data)
@@ -49,7 +58,7 @@ function _M.run(ctx)
     ctx.token_ts = ts
 
     ngx.log(ngx.DEBUG, "[challenge] token issued id=", id, " ts=", ts)
-    return nonce
+    return nonce, nil
 end
 
 return _M

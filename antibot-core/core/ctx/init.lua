@@ -1,4 +1,5 @@
 local _M = {}
+local decision = require "antibot.core.decision"
 
 local ip_scope = require "antibot.core.ip_scope"
 local goodbot_registry = require "antibot.core.goodbot_registry"
@@ -175,6 +176,7 @@ function _M.init(ctx)
     ctx.monitor_flag     = false
     ctx.intelligence_degraded = false
     ctx.intelligence_degraded_layers = {}
+    decision.initialize(ctx)
 
     ctx.corr_rules     = {}
     ctx.mismatch       = 0.0

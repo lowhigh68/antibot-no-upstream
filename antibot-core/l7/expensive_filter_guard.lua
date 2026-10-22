@@ -2,6 +2,7 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
 local ua_claim = require "antibot.detection.bot.ua_claim"
+local decision = require "antibot.core.decision"
 
 local CRAWLER_PREFIX = "crawler:"
 
@@ -227,6 +228,11 @@ function _M.run(ctx)
     if gc.mode == "enforce" and ip_bannable then
         ctx.action        = "block"
         ctx.action_reason = "expensive_filter_ban"
+        decision.set(ctx, {
+            kind = "security", source = "expensive_filter",
+            rule = "per_ip_combinations", mode = "enforce", scope = "ip",
+            subject = ip, ttl = gc.ban_ttl or 86400, upstream = false,
+        })
         write_ip_ban(ctx, ip, host, base, ip_combos, hits, gc.ban_ttl or 86400)
         -- ngx.ERR chứ KHÔNG phải ngx.WARN: chạy ở access phase, mà per-domain
         -- conf ghi đè `error_log .../<fqdn>.error.log` không kèm level → mặc
@@ -249,6 +255,11 @@ function _M.run(ctx)
     if gc.mode == "enforce" and over and not human_exempt then
         ctx.action        = "throttled"
         ctx.action_reason = "expensive_filter"
+        decision.set(ctx, {
+            kind = "capacity", source = "expensive_filter",
+            rule = "resource_budget", mode = "enforce", scope = "resource",
+            subject = host .. ":" .. base, upstream = false,
+        })
         ngx.log(ngx.WARN,
             "[xf] THROTTLE host=", host, " base=", base,
             " combos=", combos, " hits=", hits, " card=", card,

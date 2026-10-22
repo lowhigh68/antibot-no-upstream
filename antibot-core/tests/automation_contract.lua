@@ -13,6 +13,9 @@ end
 
 local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
 if src:sub(-1) ~= "/" then src = src .. "/" end
+package.loaded["antibot.core.decision"] = {
+    set = function() return true end,
+}
 
 -- The production resolver is exercised elsewhere. Here we pin the policy that
 -- consumes its evidence, without DNS/network dependencies.

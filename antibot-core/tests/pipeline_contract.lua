@@ -43,6 +43,19 @@ end
 
 -- Root dependencies. Loading init.lua below binds only these spies, never
 -- Redis/DNS/filesystem.
+package.loaded["antibot.core.decision"] = {
+    initialize = function(ctx) event("decision.initialize") end,
+    finalize_upstream = function(ctx)
+        event("decision.finalize")
+        if ctx.decision_upstream_reached == nil then
+            ctx.decision_upstream_reached = false
+        end
+    end,
+    set = function() return true end,
+}
+package.loaded["antibot.core.secrets"] = {
+    load = function() return { schema_version = 1 } end,
+}
 package.loaded["antibot.core.ctx"] = layer("ctx.init", "init", function(ctx)
     ctx.ip = "203.0.113.10"
     ctx.ua = ngx.var.http_user_agent or ""

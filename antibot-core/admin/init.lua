@@ -1,24 +1,7 @@
 local _M = {}
 local pool = require "antibot.core.redis_pool"
 local cjson = require "cjson"
-
-local AUTH_USER = "admin-antibot"
-local AUTH_PASS = "Vungoimora@6868@2025"
-
-local function auth()
-    local h = ngx.req.get_headers()["authorization"]
-    if not h then
-        ngx.header["WWW-Authenticate"] = 'Basic realm="AntiBot v4.3.6"'
-        ngx.exit(401); return false
-    end
-    local encoded = h:match("Basic%s+(.+)")
-    local decoded = ngx.decode_base64(encoded or "")
-    if decoded ~= AUTH_USER .. ":" .. AUTH_PASS then
-        ngx.header["WWW-Authenticate"] = 'Basic realm="AntiBot v4.3.6"'
-        ngx.exit(401); return false
-    end
-    return true
-end
+local admin_security = require "antibot.admin.security"
 
 -- `limit` chỉ chặn số KẾT QUẢ, KHÔNG chặn số vòng quét — đó là lỗ hổng chi phí.
 -- Một mẫu ít khoá (`fl:dyn:*` 1 khoá / trần 500, `nonce:*`, `ban_ctx:*`) không
@@ -155,25 +138,68 @@ local function time_ago(ts)
     else return math.floor(diff/3600).."h ago" end
 end
 
-local function handle_whitelist_api()
+local function mutation_target(req)
+    return req.ip or req.id or req.prefix or req.pattern or req.name
+        or req.hash or "-"
+end
+
+local function mutation_before(red, req)
+    local action = req.action
+    if (action == "wl_ip_add" or action == "wl_ip_del") and req.ip then
+        return red:get("wl:" .. req.ip)
+    elseif action == "unban_ip" and req.ip then
+        return red:get("ban:" .. req.ip)
+    elseif (action == "wl_url_add" or action == "wl_url_del") and req.prefix then
+        return red:sismember("wl:url_set", req.prefix)
+    elseif (action == "ua_add" or action == "ua_del") and req.pattern then
+        return red:sismember("badbot:ua_custom_set", req.pattern)
+    elseif (action == "goodbot_dns_add" or action == "goodbot_dns_del") and req.name then
+        return red:get("goodbot:dns:" .. req.name:lower())
+    elseif req.hash and action == "ja3_allow" then
+        return red:get("ja3:allow:" .. req.hash)
+    elseif req.hash and (action == "ja3_block" or action == "ja3_remove") then
+        return red:get("ja3:block:" .. req.hash)
+    elseif action == "unban_id" or action == "wl_id" then
+        return "multi_key_state"
+    end
+    return "-"
+end
+
+local function handle_whitelist_api(principal)
+    ngx.header["Content-Type"] = "application/json; charset=utf-8"
     ngx.req.read_body()
     local body = ngx.req.get_body_data() or ""
     local ok, req = pcall(cjson.decode, body)
     if not ok or not req then
         ngx.status = 400
+        admin_security.audit(principal, "invalid_json", "-", "denied", "-", "-")
         ngx.say(cjson.encode({error="Invalid JSON"}))
+        return
+    end
+
+    local valid, validation_err = admin_security.validate_payload(req, #body)
+    if not valid then
+        ngx.status = validation_err == "mutation body too large" and 413 or 400
+        admin_security.audit(principal,
+                             type(req) == "table" and req.action or "-",
+                             type(req) == "table" and mutation_target(req) or "-",
+                             "denied", "-", validation_err)
+        ngx.say(cjson.encode({ok=false, error=validation_err}))
         return
     end
 
     local red, err = pool.get()
     if not red then
         ngx.status = 500
+        admin_security.audit(principal, req.action or "-", mutation_target(req),
+                             "redis_error", "-", "-")
         ngx.say(cjson.encode({error="Redis: "..tostring(err)}))
         return
     end
 
     local action = req.action
     local result = {}
+    local before = mutation_before(red, req)
 
     if action == "wl_ip_add" and req.ip then
         red:set("wl:" .. req.ip, "1")
@@ -297,10 +323,13 @@ local function handle_whitelist_api()
 
     else
         result = {ok=false, msg="Unknown action: "..(action or "nil")}
+        ngx.status = 400
     end
 
     pool.put(red)
-    ngx.header["Content-Type"] = "application/json"
+    admin_security.audit(principal, action or "-", mutation_target(req),
+                         result.ok and "ok" or "rejected", before,
+                         result.msg or result.error or "-")
     ngx.say(cjson.encode(result))
 end
 
@@ -1008,8 +1037,20 @@ local function render_data()
     }))
 end
 
-local function render_dashboard()
+local function render_dashboard(principal)
     ngx.header["Content-Type"] = "text/html; charset=utf-8"
+    ngx.header["Cache-Control"] = "no-store"
+    ngx.header["X-Antibot-Admin-Role"] = principal.role
+    local csrf, csrf_err = admin_security.issue_csrf(principal)
+    if csrf then
+        local cookie = "ab_admin_csrf=" .. csrf
+            .. "; Path=/antibot-admin; Max-Age=900; SameSite=Strict"
+        if (ngx.var.scheme or "http") == "https" then cookie = cookie .. "; Secure" end
+        ngx.header["Set-Cookie"] = cookie
+    else
+        ngx.log(ngx.ERR, "[admin] cannot issue CSRF token: ", tostring(csrf_err))
+        ngx.header["X-Antibot-CSRF-Status"] = "unavailable"
+    end
     ngx.say([[<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -1631,6 +1672,13 @@ function showTab(name){
 }
 
 // ── Whitelist API ──────────────────────────────────────────────
+function adminCsrf(){
+  var m=document.cookie.match(/(?:^|; )ab_admin_csrf=([^;]+)/)
+  return m?m[1]:''
+}
+function adminHeaders(){
+  return {'Content-Type':'application/json','X-Antibot-CSRF':adminCsrf()}
+}
 function wlAction(action,field,inputId){
   var val=document.getElementById(inputId).value.trim()
   if(!val){alert('Vui lòng nhập giá trị');return}
@@ -1640,7 +1688,7 @@ function wlAction(action,field,inputId){
   fetch('/antibot-admin/wl',{
     method:'POST',
     credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers:adminHeaders(),
     body:JSON.stringify(body)
   })
   .then(r=>r.json())
@@ -1655,31 +1703,31 @@ function wlAction(action,field,inputId){
 }
 function removeWlIp(ip){
   if(!confirm('Remove whitelist: '+ip+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'wl_ip_del',ip:ip})
   }).then(()=>load())
 }
 function removeWlUrl(prefix){
   if(!confirm('Remove whitelist URL: '+prefix+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'wl_url_del',prefix:prefix})
   }).then(()=>load())
 }
 function unbanIp(ip){
   if(!confirm('Unban IP: '+ip+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'unban_ip',ip:ip})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
 function unbanId(id){
   if(!confirm('Unban Identity: '+id.substring(0,16)+'...?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'unban_id',id:id})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
 function whitelistId(id){
   if(!confirm('Whitelist Identity: '+id.substring(0,16)+'...?\n(persistent allow + clear ban/risk/viol)'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'wl_id',id:id})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
@@ -2341,7 +2389,7 @@ function uaAction(action){
   var pat=document.getElementById('inp-ua-pat').value.trim()
   if(!pat){alert('Nhập pattern UA');return}
   fetch('/antibot-admin/wl',{method:'POST',credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers:adminHeaders(),
     body:JSON.stringify({action:action,pattern:pat})
   }).then(r=>r.json()).then(d=>{
     var el=document.getElementById('msg-ua')
@@ -2355,14 +2403,14 @@ function uaAction(action){
 function uaSync(){
   if(!confirm('Sync UA patterns từ github.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker?'))return
   fetch('/antibot-admin/wl',{method:'POST',credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers:adminHeaders(),
     body:JSON.stringify({action:'ua_sync'})
   }).then(r=>r.json()).then(d=>alert(d.msg))
 }
 function removeUaCustom(pat){
   if(!confirm('Remove UA pattern: '+pat+'?'))return
   fetch('/antibot-admin/wl',{method:'POST',credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers:adminHeaders(),
     body:JSON.stringify({action:'ua_del',pattern:pat})
   }).then(()=>load())
 }
@@ -2370,32 +2418,32 @@ function goodbotDnsAdd(){
   var name=document.getElementById('inp-gb-name').value.trim()
   var sfx=document.getElementById('inp-gb-sfx').value.trim()
   if(!name||!sfx){alert('Nhập bot name và DNS suffixes');return}
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'goodbot_dns_add',name:name,suffixes:sfx})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
 function goodbotDnsDel(name){
   if(!confirm('Remove good bot: '+name+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'goodbot_dns_del',name:name})
   }).then(r=>r.json()).then(d=>{load()})
 }
 function ja3Action(action){
   var hash=document.getElementById('inp-ja3').value.trim()
   if(!hash||hash.length!==32){alert('Nhập JA3 hash (32 hex chars)');return}
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:action,hash:hash})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
 function ja3Remove(hash){
   if(!confirm('Remove JA3: '+hash.substring(0,8)+'...?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'ja3_remove',hash:hash})
   }).then(r=>r.json()).then(d=>{load()})
 }
 function wlFromBan(ip){
   if(!confirm('Whitelist & unban IP: '+ip+'?'))return
-  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+  fetch('/antibot-admin/wl',{method:'POST',credentials:'include',headers:adminHeaders(),
     body:JSON.stringify({action:'wl_ip_add',ip:ip})
   }).then(r=>r.json()).then(d=>{alert(d.msg);load()})
 }
@@ -3264,19 +3312,29 @@ local function render_waf_v2()
 end
 
 function _M.router()
-    if not auth() then return end
+    local principal = admin_security.authenticate()
+    if not principal then return end
 
     local uri = (ngx.var.uri or ""):gsub("//+","/"):gsub("/+$","")
     local method = ngx.var.request_method or "GET"
 
     if uri == "/antibot-admin" or uri == "/antibot-admin/index" then
-        return render_dashboard()
+        return render_dashboard(principal)
     end
     if uri == "/antibot-admin/data" then
         return render_data()
     end
     if uri == "/antibot-admin/wl" and method == "POST" then
-        return handle_whitelist_api()
+        local allowed, status, message = admin_security.authorize_mutation(principal)
+        if not allowed then
+            admin_security.audit(principal, "mutation_gate", uri, "denied",
+                                 "-", message)
+            return admin_security.deny_mutation(status, message)
+        end
+        return handle_whitelist_api(principal)
+    elseif uri == "/antibot-admin/wl" then
+        ngx.header["Allow"] = "POST"
+        return admin_security.deny_mutation(405, "POST required")
     end
     if uri == "/antibot-admin/fim" then
         return render_fim()

@@ -1,5 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local decision = require "antibot.core.decision"
 
 -- GIỮ ĐỒNG BỘ với CRAWLER24_PREFIX trong detection/bot/init.lua.
 local CRAWLER24_PREFIX = "crawler24:"
@@ -135,6 +136,11 @@ function _M.run(ctx)
     ctx.action_reason   = "fleet_dyn_block_" .. scope .. ":" .. matched
     ctx.fleet_blocked   = matched
     ctx.fleet_block_info = info
+    decision.set(ctx, {
+        kind = "security", source = "fleet", rule = "dynamic_block_" .. scope,
+        mode = "enforce", scope = "network", subject = matched,
+        upstream = false,
+    })
 
     ngx.log(ngx.WARN,
         "[fleet.check_block] blocked ip=", ip,

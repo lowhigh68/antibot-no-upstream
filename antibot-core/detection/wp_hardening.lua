@@ -1,5 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local decision = require "antibot.core.decision"
 
 -- WP attack surface — POST tới wp-login.php, xmlrpc.php, wp-comments-post.php.
 -- Thay vì rate limit hoặc challenge (lockout tools/CI/app), contribute
@@ -283,6 +284,11 @@ function _M.run(ctx)
            not ua_lower:find("wordpress", 1, true) then
             ctx.action        = "block"
             ctx.action_reason = "xmlrpc_ua_reject"
+            decision.set(ctx, {
+                kind = "security", source = "wp_hardening",
+                rule = "xmlrpc_ua_reject", mode = "enforce",
+                scope = "request", subject = ctx.ip, upstream = false,
+            })
             escalate_xmlrpc(ctx)
             ngx.exit(444)
         end
@@ -321,6 +327,11 @@ function _M.run(ctx)
                 if (cnt or 0) >= 2 then
                     ctx.action        = "block"
                     ctx.action_reason = "wp_login_notc_repeat"
+                    decision.set(ctx, {
+                        kind = "security", source = "wp_hardening",
+                        rule = "wp_login_notc_repeat", mode = "enforce",
+                        scope = "ip", subject = ctx.ip, upstream = false,
+                    })
                     -- 403 CO THAN, khong phai 444.
                     --
                     -- 444 dong ket noi ma khong tra gi, nen trinh duyet hien

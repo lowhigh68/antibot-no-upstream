@@ -11,10 +11,13 @@ Operator visibility: ban list, ip_risk top, signal weights, recent decisions, ma
 |---|---|
 | `init.lua` | Single-file router. HTML/JS embedded as Lua long-string (`[[ ... ]]`). Routes: `/` (dashboard), `/api/stats`, `/api/bans`, `/api/unban`, `/api/goodbot`, `/api/weights`, `/api/recent` |
 
-## Auth
-Hardcoded in `init.lua`:
-- `AUTH_USER`, `AUTH_PASS` — Basic-auth
-- IP allowlist enforced in nginx server block before `content_by_lua_block`:
+## Authentication and mutation boundary
+
+- Basic-auth accounts are loaded once per worker from
+  `/etc/antibot/secrets.json` by `core/secrets.lua`. Source files contain no
+  password. Roles are `operator` and optional read-only `viewer`.
+- The existing IP allowlist is still enforced by the nginx server block before
+  `content_by_lua_block`:
 ```nginx
 location ^~ /antibot-admin {
     access_by_lua_block {
@@ -41,13 +44,27 @@ content_by_lua → admin.router()
 respond JSON or HTML
 ```
 
+All `POST /antibot-admin/wl` mutations additionally require operator role,
+`Content-Type: application/json`, a same-origin request and a double-submit
+CSRF token backed by `ngx.shared.antibot_cache`. Mutations are rate-limited and
+written to `/var/log/antibot/admin_audit.log` without storing secret values.
+
 ## Important rules
-- AUTH_USER/AUTH_PASS hardcoded — DON'T log or rotate casually
+- Never put credentials or the PoW HMAC secret back into Lua, nginx templates,
+  command lines or logs. Rotate them through the protected JSON file.
+- A missing/invalid secret file fails admin authentication closed. It does not
+  silently fall back to a source-code password.
+- `viewer` may read the dashboard/API but may not mutate Redis state.
 - IP allowlist hardcoded in nginx conf — update when admin IP changes
 - Endpoint NOT mounted on per-domain confs — only hostname.conf (so attacker can't probe via random vhost)
 - Modifications via API mirror Redis writes — same TTL/key conventions as core code
 
 ## Update log
+
+- 2026-10-21 — P0 admin boundary: external protected credentials, operator vs
+  viewer roles, CSRF/origin/content-type checks, mutation rate limit and audit
+  log. Traffic pipeline and nginx routing are unchanged.
+
 - 2026-08-31 — **`SCAN_COUNT` 1000→10000, bỏ tab Intelligence, gỡ ASN Type Overrides, sửa ô ASN luôn=0** (`init.lua`).
   - **Ba máy CÙNG DỮ LIỆU hiện ba kết quả KHÁC NHAU.** Bảng "Good Bot DNS Registry" ra 18 / 17 / 15 mục trong khi Redis có đủ **41 trên cả ba** (`EXISTS goodbot:dns:<tên>` = 1 với mọi tên). Các tập con còn chồng chéo lộn xộn: máy A có `googlebot-video` mà không có `googlebot`, máy B ngược lại. Gốc: `scan_keys` `break` ở `iter >= SCAN_MAX_ITER` ⇒ trần phủ `1000 × 100 = 100.000` khoá, trong khi `DBSIZE` đo được **250.647 / 259.071 / 317.756**. Bảo đảm "mọi khoá đều được trả về ít nhất một lần" của Redis SCAN **chỉ có hiệu lực khi chạy hết tới `cursor == 0`** — cắt sớm là tự bước ra ngoài cam kết; ngoài cam kết thì `bucket = hash(tên) & (cỡ_bảng − 1)` mà bảng băm co giãn theo tổng số khoá (2^18 với 250k, 2^19 với 318k) nên cùng một tên rơi vào bucket khác trên mỗi máy. **Nâng `COUNT` chứ không nâng `MAX_ITER`**: cùng khối lượng duyệt keyspace nhưng ~32 round-trip thay vì ~318, trần phủ 100.000 → 1.000.000. KHÔNG ảnh hưởng xử lý request — đường xác minh đọc đích danh (`detection/bot/ua_check.lua:100`), không quét.
   - **Cờ `truncated` giờ có người đọc.** Trước đó chỉ 2/13 nơi gọi `scan_keys` đọc nó (`ban_keys`, `verified_keys`), phần còn lại cắt xong im lặng — đó là lý do lỗi sống được lâu. Thêm `wl_capped` / `goodbot_capped` / `ja3_capped` + hàm JS `caprow()` chèn dòng ⚠ vào đầu bảng. `wl:*` là cái nguy hiểm nhất trong nhóm: `wl:` là miễn trừ toàn phần mà bảng soát chỉ hiện ~40% sự thật.

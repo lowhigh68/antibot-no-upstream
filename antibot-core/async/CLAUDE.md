@@ -10,9 +10,10 @@ Persist learning state, write logs, manage memory pressure — all OFF the reque
 | File | Role | Trigger |
 |---|---|---|
 | `risk_update.lua` | Update `ip_risk:<ip>` based on `ctx.action` outcome (block/challenge → increment, allow → decay). Skip for `req_class=resource` to avoid per-asset noise | `log_by_lua` |
-| `adaptive_weight.lua` | Tune `DEFAULT_WEIGHTS` based on observed FP/FN ratio (slow learning) | `log_by_lua` |
-| `logger.lua` | Format ctx → write `/var/log/antibot/antibot.log` line via `ngx.log(ngx.WARN, ...)` (default error log filtered by INFO so use WARN level for visibility) | `log_by_lua` |
-| `memory_guard.lua` | Periodic shared dict eviction when memory pressure high. Started from `init_worker_by_lua_block` | timer loop |
+| `intel_reporter.lua` | Publish confirmed block evidence to the intelligence store | deferred from `log_by_lua` |
+| `logger.lua` | Format ctx, queue a bounded per-worker batch, append `/var/log/antibot/antibot.log`, and defer Redis statistics | `log_by_lua` + timers |
+| `waf_logger.lua` | Write WAF request/body telemetry independently of the bot log | `log_by_lua` |
+| `memory_guard.lua` | Incrementally scan and expire stale Redis statistics without a full keyspace walk in one timer callback | timer loop |
 
 ## ctx fields read
 `action`, `action_reason`, `score`, `effective_score`, `ip`, `identity`, `req_class`, `top_signals`, `mismatch`, `kill_reason` plus all signal flags
@@ -22,17 +23,18 @@ None (read-only consumer of ctx state)
 
 ## Redis keys written
 - `ip_risk:<ip>` (risk_update — TTL via cfg.ttl)
-- `weights:<signal>` (adaptive_weight — slow Bayesian update)
+- statistics and intelligence keys documented by their owning modules
 
 ## Flow
 ```
 [response sent to client]
             ↓
 log_by_lua_block { antibot.log() }
-   if class ≠ resource AND ctx.identity:
-       ngx.timer.at(0, risk_update.run)
-       ngx.timer.at(0, adaptive_weight.run)
-   logger.run(ctx)         → write antibot.log line (synchronous to log phase)
+   risk_update.run(ctx)     → schedules its own Redis timer
+   on confirmed block:
+       ngx.timer.at(0, intel_reporter.report)
+   logger.run(ctx)         → bounded batch, normally flushed after 50 ms
+   waf_logger.run(ctx)     → WAF telemetry
 ```
 
 `init_worker_by_lua_block`:
@@ -46,12 +48,22 @@ log_by_lua_block { antibot.log() }
 
 ## Important rules
 - NEVER block in log phase — `ngx.timer.at(0, fn)` defers off-request
-- `risk_update` + `adaptive_weight` skip `req_class=resource` (noise reduction for asset fetches)
+- Keep Redis/cosocket work outside log phase; each owner must defer it.
+- The logger queue is bounded. A worker reload can lose the small unflushed
+  tail; this is an accepted availability/performance trade-off, not a decision
+  path dependency.
 - Use `ngx.WARN` (not INFO) so logs appear in default OpenResty error log when antibot.log path missing
 - Cosocket (Redis) is DISABLED in `init_worker_by_lua` — defer Redis work via `ngx.timer.at(0, fn)`. See `core/goodbot_seed.lua` invocation pattern in init.lua
 - New async task → register in `init.lua:_M.log()`, gate by class to avoid resource noise
 
 ## Update log
+
+- 2026-10-21 — Documentation reconciled with the live hot path: removed the
+  deleted adaptive-weight writer, documented batching, intel reporter,
+  WAF logger and incremental Redis memory guard. Logger now exports the
+  canonical P0 decision fields (`pver`, `dschema`, `dkind`, `dsrc`, `drule`,
+  `dmode`, `dscope`, `dsubject`, `dttl`, `dup`).
+
 - 2026-09-14 — **`logger.lua`: them cot `ckn=`** (`ctx.session_cookie_known`). `session_richness.lua:156` tinh no o BUOC 5, tuc TRUOC `ip_ban_check` o buoc 6, nen no co gia tri that ngay ca tren dong `banned_ip`. BA trang thai: `true` (mang ten cookie co trong so cua host) / `false` (host da hoc du >=3 ten, request khong mang ten nao) / `-` (host chua hoc du — CHUA BIET, khong phai "khong co"). Ep `nil` thanh `false` se tai tao dung cai loi ma `cookie_registry` sinh ra de tranh, chi la o tang doc log. **Vi sao can:** do 14-09, tieu chi `rown>=0.5 + block` cho 28 dong tren cloud171-96 va phai doc TUNG DONG moi phan loai duoc; ba mau lay ra deu la bot (mot UA Chrome POST vao xmlrpc voi `score=0.0 eff=-` tuc engine chua tung cham; va hai IP khac nhau phat lai CUNG mot bo cookie trong CUNG mot giay, `id=-` `dev=gate_exit`). `rown=0.80` chi chung minh mang du cookie, khong chung minh co nguoi. Tieu chi moi cho `ban_enabled`: **`ckn=true` + `rown>=0.5` + `action=block|challenge`** — dung to hop ma `ban_store_write` DA coi la bang chung cua mot phien that.
 - 2026-09-13 — **`logger.lua`: them cot `rip=`** — dia chi TCP that (`ctx.ip_tcp`) khi no KHAC `ip=`, tuc khi `real_ip_header` da ghi de `$remote_addr`; `-` khi khong co ghi de nao. Truoc dong nay khong co cach nao nhin ra `ip=` la dia chi that hay mot header do client gui — cung lop loi vua va o `207cde7`. Mot dong co `rip=` khac `ip=` nghia la MOI khoa theo IP cua request do (`ban:`, `ip_risk:`, rate counter) dang gan vao gia tri client cung cap. Doc kem `core/CLAUDE.md` 2026-09-13.
 - 2026-09-13 — **`logger.lua`: them cot `rown=`** (`ctx.session_richness_own`). `auth_session_cap` doi dau vao quyet dinh sang `session_richness_own` o `c8f5f8b`, nhung log van chi ghi `richness=` — tuc `ctx.session_richness`, gia tri DA THUA KE tu `richness:max:<id>`. Hau qua do duoc ngay 12-09: 3.604 luot `action=block` co `richness>=0.5` tren cloud186-126 va 445 tren cloud168-101, trong khi `auth_session_cap` chi kich hoat 18 lan / 0 lan. Hai cach giai thich trai nguoc — cap chay dung (richness rieng < 0.5) hay cap da chet (richness rieng >= 0.5) — va log KHONG tach duoc. Cot moi la ba trang thai: `-` khi lop session chua chay, de "chua do" khong sap thanh "do duoc, bang 0". Doc: `rown>=0.5` + `action=block` la FP that; `richness>=0.5` di mot minh thi khong ket luan duoc gi.

@@ -43,6 +43,9 @@ package.preload["antibot.core.redis_pool"] = function()
         safe_mget = function() return nil end,
     }
 end
+package.preload["antibot.core.decision"] = function()
+    return { set = function() return true end }
+end
 
 -- `require` chu khong `dofile`: `init.lua` cung require nhung module nay, va hai
 -- ban sao rieng thi `config.DEFAULT` cua test khong phai ban `init.lua` dung —
