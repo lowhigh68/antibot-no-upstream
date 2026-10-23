@@ -1,5 +1,6 @@
 local _M = {}
 local decision = require "antibot.core.decision"
+local policy = require "antibot.core.policy"
 
 local ip_scope = require "antibot.core.ip_scope"
 local goodbot_registry = require "antibot.core.goodbot_registry"
@@ -169,6 +170,11 @@ function _M.init(ctx)
     ctx.browser_ua_pattern  = false
     ctx.analyzer_marker     = nil
     ctx.bot_identity_tier   = nil
+    -- Resolve after the generic automation parser has produced the canonical
+    -- principal, but before any admission/security decision reads config.
+    -- The resolver is local-table only; no Redis/DNS/network dependency is
+    -- introduced into the first request phase.
+    policy.resolve(ctx)
     ctx.score            = 0.0
     ctx.action           = "allow"
     ctx.action_reason    = nil

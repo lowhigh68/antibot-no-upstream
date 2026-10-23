@@ -13,11 +13,12 @@
 local _M = {}
 
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local operator_network = require "antibot.core.operator_network"
 local decision = require "antibot.core.decision"
 
-local function conf()
-    return cfg.automation or {}
+local function conf(ctx)
+    return policy.section(ctx, "automation", cfg.automation or {})
 end
 
 local function digest(value)
@@ -149,7 +150,7 @@ end
 
 function _M.evaluate(ctx)
     if not ctx.automation_observed then return true, false end
-    local c = conf()
+    local c = conf(ctx)
     local limits = c.provisional_limits or {}
     local tiers = limits.tiers or {}
     local tier = ctx.automation_tier or "unknown"
@@ -213,7 +214,7 @@ function _M.late_enforce(ctx)
 end
 
 function _M.run(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if c.enabled == false or c.mode == "off" then return true, false end
     if not ctx.automation_meter_claimed and not ctx.automation_claimed then
         return true, false

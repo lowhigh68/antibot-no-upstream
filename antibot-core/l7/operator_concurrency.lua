@@ -20,12 +20,14 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.automation_concurrency or {}
+local function conf(ctx)
+    return policy.section(ctx, "automation_concurrency",
+                          cfg.automation_concurrency or {})
 end
 
 local function now()
@@ -239,7 +241,7 @@ end
 -- deliberately no early `before()` gate: local WAF/ban/challenge exits must not
 -- look like backend occupancy, and the post-increment count closes worker races.
 function _M.admit(ctx)
-    local c = conf()
+    local c = conf(ctx)
     local evidence = eligible(ctx, c)
     if not evidence then return true, false end
     if ctx.automation_concurrency_admitted
@@ -364,7 +366,7 @@ function _M.after(ctx)
        or ctx.automation_concurrency_released then return end
     ctx.automation_concurrency_released = true
 
-    local c = conf()
+    local c = conf(ctx)
     local dict = dictionary()
     if not dict then
         ctx.automation_concurrency_degraded = true

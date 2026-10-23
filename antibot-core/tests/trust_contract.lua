@@ -17,6 +17,9 @@ if src:sub(-1) ~= "/" then src = src .. "/" end
 package.loaded["antibot.core.decision"] = {
     set = function() return true end,
 }
+package.loaded["antibot.core.policy"] = {
+    section = function(_, _, fallback) return fallback end,
+}
 local resty_md5 = ngx.md5
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()

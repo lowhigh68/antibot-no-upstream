@@ -16,6 +16,9 @@ if src:sub(-1) ~= "/" then src = src .. "/" end
 package.loaded["antibot.core.decision"] = {
     set = function() return true end,
 }
+package.loaded["antibot.core.policy"] = {
+    section = function(_, _, fallback) return fallback end,
+}
 
 -- The production resolver is exercised elsewhere. Here we pin the policy that
 -- consumes its evidence, without DNS/network dependencies.

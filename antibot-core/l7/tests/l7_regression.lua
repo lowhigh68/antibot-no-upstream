@@ -78,6 +78,8 @@ end
 local syntax_rel = {
     "init.lua",
     "core/config.lua",
+    "core/policy.lua",
+    "core/policy_runtime.lua",
     "core/network_quarantine.lua",
     "core/operator_network.lua",
     "core/req_classifier.lua",
@@ -510,6 +512,36 @@ with_fake_disk("/real.jpg", function()
     eq(c.admission_group, "dynamic", "class dynamic van la dynamic")
     eq(probe_opens, 0, "class khong phai resource thi khong stat dia")
 end)
+
+-- P1.0 end-to-end: the compiled server scope must alter the real consumer,
+-- not merely produce a resolved table in policy_contract.lua.  Disable this
+-- module for one node, then restore an empty overlay before later suites.
+do
+    local request_policy = require "antibot.core.policy"
+    local applied = request_policy.configure({
+        schema = "1", version = "l7-consumer-test",
+        global = { settings = {} },
+        servers = {
+            ["node-policy"] = {
+                settings = { l7_admission = { enabled = false } },
+            },
+        },
+        tenants = {}, principals = {},
+    })
+    eq(applied, true, "P1.0 policy server scope nap duoc")
+    fake_ngx.var.hostname = "node-policy"
+    local pctx = { ip = "198.51.100.6", req_class = "navigation", req = {} }
+    local _, pexit = admission.run(pctx)
+    eq(pexit, false, "P1.0 override off khong chan")
+    eq(pctx.admission_group, nil,
+       "P1.0 override duoc consumer doc truoc khi dem admission")
+    assert(request_policy.configure({
+        schema = "1", version = "l7-empty",
+        global = { settings = {} },
+        servers = {}, tenants = {}, principals = {},
+    }))
+    fake_ngx.var.hostname = nil
+end
 
 fake_ngx.var.document_root = nil
 cfg.l7_admission = old_admission

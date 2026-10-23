@@ -19,11 +19,12 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.l7_surge_guard or {}
+local function conf(ctx)
+    return policy.section(ctx, "l7_surge_guard", cfg.l7_surge_guard or {})
 end
 
 local function now()
@@ -310,7 +311,7 @@ end
 -- false` ngay (nhanh `c.mode ~= "enforce"`), nen GO than ham khong doi hanh vi
 -- mot request nao. Giu lai ham de `init.lua` khong phai doi diem goi.
 function _M.before(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then
         return true, false
     end
@@ -331,7 +332,7 @@ end
 -- ban (chi ban khi co slot ro), tuc bo han muc dich "tu choi truoc WAF/Redis",
 -- va bo kiem `full host bi shed som` se bat ngay.
 function _M.admit(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then
         return true, false
     end
@@ -396,7 +397,7 @@ end
 -- Log phase: release exactly one admitted slot and elect one telemetry sample
 -- per host/second.  No Redis/cosocket call is made here.
 function _M.after(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" or not ctx
        or not ctx.surge_admitted or ctx.surge_released then return end
 

@@ -39,6 +39,7 @@ local waf_logger         = require "antibot.async.waf_logger"
 local verified_human     = require "antibot.core.access.verified_human"
 local decision_ledger    = require "antibot.core.decision"
 local secrets            = require "antibot.core.secrets"
+local policy             = require "antibot.core.policy"
 
 -- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
 -- Broad budgets chi dung local shared dict + IP ban; khong chay detection/Redis
@@ -444,6 +445,32 @@ function _M.init_worker()
     -- Chay tren moi worker nhan chi phi va delete race len N lan ma khong tang
     -- do bao phu.  Worker 0 da la owner cua cac periodic fleet job ben duoi.
     if worker0 then mem_guard.start() end
+
+    -- P1.0 policy candidate.  Validate and swap the complete in-worker table
+    -- before serving traffic.  Invalid syntax/schema keeps the built-in empty
+    -- overlay, which is behaviour-identical to core/config.lua.  Persistent
+    -- last-known-good and staged activation are intentionally left to P1.1.
+    do
+        local ok_load, runtime = pcall(require, "antibot.core.policy_runtime")
+        if not ok_load then
+            ngx.log(ngx.ERR, "[policy] cannot load core/policy_runtime.lua; ",
+                    "keeping built-in policy: ", tostring(runtime))
+        else
+            local ok_apply, result = policy.configure(runtime)
+            if not ok_apply then
+                local list = type(result) == "table" and result
+                    or { tostring(result) }
+                for i = 1, #list do
+                    ngx.log(ngx.ERR, "[policy] invalid candidate: ",
+                            tostring(list[i]))
+                end
+                ngx.log(ngx.ERR, "[policy] candidate rejected as a whole; ",
+                        "keeping built-in policy")
+            else
+                ngx.log(ngx.NOTICE, "[policy] active version=", tostring(result))
+            end
+        end
+    end
 
     -- Nap cau hinh runtime cua WAF V2.
     --

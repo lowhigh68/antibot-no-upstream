@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local ip_scope = require "antibot.core.ip_scope"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 
@@ -63,7 +64,7 @@ local tier2_strict_started_at
 -- populations are updated, still one RTT. Fail-open on Redis error.
 
 function _M.run(ctx)
-    local c = cfg.ip_tour
+    local c = policy.section(ctx, "ip_tour", cfg.ip_tour)
     if not c or c.enabled == false then return true, false end
 
     -- Whitelisted (LAN/admin/loopback) already resolved by access_layer, which

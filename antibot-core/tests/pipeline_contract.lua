@@ -56,6 +56,13 @@ package.loaded["antibot.core.decision"] = {
 package.loaded["antibot.core.secrets"] = {
     load = function() return { schema_version = 1 } end,
 }
+package.loaded["antibot.core.policy"] = {
+    configure = function(runtime)
+        event("policy.configure")
+        counts.policy_configured = (counts.policy_configured or 0) + 1
+        return true, runtime.version or "test-policy"
+    end,
+}
 package.loaded["antibot.core.ctx"] = layer("ctx.init", "init", function(ctx)
     ctx.ip = "203.0.113.10"
     ctx.ua = ngx.var.http_user_agent or ""
@@ -280,6 +287,10 @@ package.loaded["antibot.async.memory_guard"] = {
 }
 package.loaded["antibot.core.goodbot_seed"] = { run = function() end }
 package.loaded["antibot.waf.runtime_config"] = {}
+package.loaded["antibot.core.policy_runtime"] = {
+    schema = "1", version = "pipeline-test",
+    global = { settings = {} }, servers = {}, tenants = {}, principals = {},
+}
 package.loaded["antibot.waf"] = {
     run_pre = function() event("waf.pre"); return scenario.waf_block == true end,
     run_log = function() event("waf.log") end,
@@ -562,11 +573,15 @@ reset()
 worker_id = 1
 root.init_worker()
 eq(counts.memory_starts, 0, "worker khac 0 khong chay memory guard")
+eq(counts.policy_configured, 1,
+   "moi worker nap policy local truoc khi phuc vu request")
 reset()
 worker_id = 0
 root.init_worker()
 eq(counts.memory_starts, 1, "worker 0 chay memory guard dung mot lan")
 eq(counts.fleet_timer, 1, "worker 0 van khoi dong fleet timer")
+eq(counts.policy_configured, 1,
+   "worker 0 cung nap policy dung mot lan")
 
 -- ── Gia tri SHIP THAT trong config.lua ──────────────────────────────
 --

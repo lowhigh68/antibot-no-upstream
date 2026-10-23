@@ -6,12 +6,13 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.l7_admission or {}
+local function conf(ctx)
+    return policy.section(ctx, "l7_admission", cfg.l7_admission or {})
 end
 
 local function now()
@@ -182,7 +183,7 @@ local function static_target_exists(ctx, dict, uri)
     -- `stat` tren trang cache cua kernel — re hon han viec day khoa counter cua
     -- `admission`/`circuit_breaker` ra khoi dict bang LRU.
     if dict and exists then
-        local ttl = tonumber((conf().static_probe_ttl)) or 30
+        local ttl = tonumber((conf(ctx).static_probe_ttl)) or 30
         dict:set(ckey, 1, ttl)
     end
     return exists
@@ -192,7 +193,7 @@ end
 -- di vao ngan sach `dynamic` vi do dung la noi tai cua no den.
 local function class_group(class, ctx, dict, uri)
     if class ~= "resource" then return "dynamic" end
-    local c = conf()
+    local c = conf(ctx)
     if c.static_probe == false then return "resource" end
     local exists = static_target_exists(ctx, dict, uri)
     if exists == false then
@@ -346,7 +347,7 @@ local function apply_check(ctx, dict, prefix, spec, reason, c, t)
 end
 
 function _M.run(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" then return true, false end
 
     -- Tai su dung shared dict da co de giu thay doi thuần Lua. Prefix `adm:`
@@ -402,7 +403,9 @@ end
 -- /antibot/verify va /antibot/beacon override server access_by_lua. Content
 -- handler Lua cua tung endpoint goi ham nay truc tiep, khong sua Nginx config.
 function _M.run_endpoint(name)
-    local c = conf()
+    local ctx  = (ngx.ctx and ngx.ctx.antibot) or {}
+    if ngx.ctx then ngx.ctx.antibot = ctx end
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" then return true, false end
 
     local core = dictionary()
@@ -412,8 +415,6 @@ function _M.run_endpoint(name)
     local ep = c.limits and c.limits.endpoints and c.limits.endpoints[name]
     if not ep then return true, false end
 
-    local ctx  = (ngx.ctx and ngx.ctx.antibot) or {}
-    if ngx.ctx then ngx.ctx.antibot = ctx end
     ctx.backend_class = "antibot_endpoint:" .. tostring(name)
     local host = server_host(ctx)
     local ip   = client_ip(ctx)

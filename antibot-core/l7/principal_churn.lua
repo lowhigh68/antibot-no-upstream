@@ -9,12 +9,13 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.principal_churn or {}
+local function conf(ctx)
+    return policy.section(ctx, "principal_churn", cfg.principal_churn or {})
 end
 
 local function now()
@@ -154,7 +155,7 @@ local function reject(ctx, c, axis)
 end
 
 local function observe(ctx, include_ja3)
-    local c = conf()
+    local c = conf(ctx)
     local mode = tostring(c.mode or "off")
     if not c.enabled or mode == "off" or ngx.is_subrequest then
         return true, false

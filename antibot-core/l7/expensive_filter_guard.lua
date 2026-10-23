@@ -1,6 +1,7 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 local decision = require "antibot.core.decision"
 
@@ -88,7 +89,7 @@ end
 
 -- Self-declared good bot (same def as core/access/whitelist + l7/ban/ban_store).
 function _M.run(ctx)
-    local gc = cfg.expensive_filter
+    local gc = policy.section(ctx, "expensive_filter", cfg.expensive_filter)
     if not gc or gc.mode == "off" then return true, false end
 
     -- Bỏ qua infra whitelist (LAN/admin/internal) — không phải traffic cần đo.

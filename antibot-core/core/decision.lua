@@ -16,7 +16,14 @@ local MODES = {
 
 function _M.initialize(ctx)
     if not ctx then return end
-    ctx.policy_version  = ctx.policy_version or meta.policy_version
+    if not ctx.policy_version then
+        -- Most requests receive the version from core.policy.resolve() in the
+        -- ctx layer.  Direct Lua endpoints can initialize a small ctx of their
+        -- own, so query the active local policy here as a safe fallback.
+        local ok, policy = pcall(require, "antibot.core.policy")
+        ctx.policy_version = ok and policy and policy.current_version
+            and policy.current_version() or meta.policy_version
+    end
     ctx.decision_schema = ctx.decision_schema or meta.decision_schema
 end
 

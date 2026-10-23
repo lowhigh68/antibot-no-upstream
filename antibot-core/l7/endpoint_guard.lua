@@ -8,12 +8,13 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.endpoint_guard or {}
+local function conf(ctx)
+    return policy.section(ctx, "endpoint_guard", cfg.endpoint_guard or {})
 end
 
 local function now()
@@ -80,7 +81,7 @@ local function decrement(dict, key, ttl)
 end
 
 local function endpoint_spec(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or not ctx or not ctx.endpoint_id then return nil, c end
     local specs = type(c.endpoints) == "table" and c.endpoints or {}
     local spec = specs[ctx.endpoint_id]

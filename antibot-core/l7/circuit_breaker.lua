@@ -35,12 +35,14 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.l7_circuit_breaker or {}
+local function conf(ctx)
+    return policy.section(ctx, "l7_circuit_breaker",
+                          cfg.l7_circuit_breaker or {})
 end
 
 local function now()
@@ -170,7 +172,7 @@ end
 -- work.  Once the cooldown expires, one request/host/second receives a probe
 -- lease; every other dynamic request remains rejected until recovery is proven.
 function _M.before(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then
         return true, false
     end
@@ -465,7 +467,7 @@ end
 -- that would have been rejected in shadow mode are ignored so shadow simulates
 -- the same recovery traffic that enforce mode would actually observe.
 function _M.after(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or c.mode == "off" or not dynamic_request(ctx) then return end
 
     -- Capture the counterfactual outcome before deliberately excluding a

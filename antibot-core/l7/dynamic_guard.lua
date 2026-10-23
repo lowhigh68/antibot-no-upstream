@@ -19,12 +19,13 @@
 
 local _M  = {}
 local cfg = require "antibot.core.config"
+local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
 
 local last_dict_error = 0
 
-local function conf()
-    return cfg.dynamic_guard or {}
+local function conf(ctx)
+    return policy.section(ctx, "dynamic_guard", cfg.dynamic_guard or {})
 end
 
 local function now()
@@ -729,7 +730,7 @@ local function reject(ctx, c, cause, status)
 end
 
 function _M.before(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or tostring(c.mode or "off") == "off"
        or not dynamic_request(ctx) then return true, false end
 
@@ -749,7 +750,7 @@ function _M.before(ctx)
 end
 
 function _M.admit(ctx)
-    local c = conf()
+    local c = conf(ctx)
     if not c.enabled or tostring(c.mode or "off") == "off"
        or not dynamic_request(ctx) then return true, false end
     if ctx.dynamic_guard_admitted and not ctx.dynamic_guard_released then
@@ -1298,7 +1299,7 @@ end
 
 function _M.after(ctx)
     if not ctx or not ctx.dynamic_guard_scope then return end
-    local c = conf()
+    local c = conf(ctx)
     local dict = dictionary()
     if not dict then
         ctx.dynamic_guard_degraded = true
