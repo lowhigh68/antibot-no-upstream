@@ -184,6 +184,12 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/decision_contract.lua" || rc=1
 echo "-- compiled policy schema/precedence contract ------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/policy_contract.lua" || rc=1
 
+echo "-- persistent policy active/LKG contract -----------------"
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/policy_store_contract.lua" || rc=1
+
+echo "-- atomic policy publisher/rollback contract -------------"
+sh_suite policy_store_test "$HERE/policy_store_test.sh" || rc=1
+
 echo "-- goodbot DNS/cache contract ---------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
 

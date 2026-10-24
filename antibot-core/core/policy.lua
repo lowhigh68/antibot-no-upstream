@@ -1,12 +1,12 @@
 -- Compiled request policy for the bot-manager/capacity layers.
 --
--- P1.0 deliberately does only three things:
+-- The compiler deliberately does only three things:
 --   * validate a closed, typed policy surface;
 --   * resolve global -> server -> tenant/docroot -> principal;
 --   * expose one deterministic policy version to the decision ledger.
 --
--- Loading, last-known-good persistence, staged rollout and rollback belong to
--- P1.1.  This module never reads Redis or the network on the request path.
+-- P1.1 loading/last-known-good persistence lives in core/policy_store.lua.
+-- This module never reads a file, Redis or the network on the request path.
 
 local defaults = require "antibot.core.config"
 local _M = {}
@@ -282,7 +282,7 @@ function _M.compile(raw)
         -- The artifact alone is insufficient: changing a shipped default in
         -- core/config.lua also changes effective policy.  Include a digest of
         -- every registered default so pver cannot stay equal across those two
-        -- behaviours merely because policy_runtime.lua was untouched.
+        -- behaviours merely because the policy artifact was untouched.
         defaults_digest = digest(effective_defaults),
         global = { settings = copy((raw.global or {}).settings or {}) },
         servers = compile_map(raw.servers, normalize_server),
@@ -295,7 +295,7 @@ end
 
 local builtin = assert(_M.compile({
     schema = SCHEMA_VERSION,
-    version = "builtin-p1.0",
+    version = "builtin-p1.1",
     global = { settings = {} },
     servers = {}, tenants = {}, principals = {},
 }))
@@ -308,6 +308,13 @@ function _M.configure(raw)
     -- the new complete policy, never a partially merged table.
     active = candidate
     return true, candidate.policy_version
+end
+
+-- Used only by the init-worker loader when neither the active artifact nor its
+-- persistent LKG can be trusted.  Request code never calls this function.
+function _M.use_builtin()
+    active = builtin
+    return builtin.policy_version
 end
 
 function _M.current_version()

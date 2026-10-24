@@ -40,6 +40,7 @@ local verified_human     = require "antibot.core.access.verified_human"
 local decision_ledger    = require "antibot.core.decision"
 local secrets            = require "antibot.core.secrets"
 local policy             = require "antibot.core.policy"
+local policy_store       = require "antibot.core.policy_store"
 
 -- Admission bat buoc cho MOI request, truoc verified/whitelist/resource exit.
 -- Broad budgets chi dung local shared dict + IP ban; khong chay detection/Redis
@@ -446,29 +447,28 @@ function _M.init_worker()
     -- do bao phu.  Worker 0 da la owner cua cac periodic fleet job ben duoi.
     if worker0 then mem_guard.start() end
 
-    -- P1.0 policy candidate.  Validate and swap the complete in-worker table
-    -- before serving traffic.  Invalid syntax/schema keeps the built-in empty
-    -- overlay, which is behaviour-identical to core/config.lua.  Persistent
-    -- last-known-good and staged activation are intentionally left to P1.1.
+    -- P1.1 persistent policy.  This is the ONLY filesystem read in the policy
+    -- lifecycle of a worker; request handlers use the compiled RAM object.
+    -- Redis/cosockets are deliberately absent because init_worker forbids
+    -- them and a remote dependency would violate the hot-path contract.
     do
-        local ok_load, runtime = pcall(require, "antibot.core.policy_runtime")
-        if not ok_load then
-            ngx.log(ngx.ERR, "[policy] cannot load core/policy_runtime.lua; ",
-                    "keeping built-in policy: ", tostring(runtime))
+        local ok_load, state = pcall(policy_store.load)
+        if not ok_load or type(state) ~= "table" then
+            local version = policy.use_builtin()
+            ngx.log(ngx.ERR, "[policy] CRITICAL loader failed; ",
+                    "using built-in policy version=", tostring(version),
+                    " error=", tostring(state))
         else
-            local ok_apply, result = policy.configure(runtime)
-            if not ok_apply then
-                local list = type(result) == "table" and result
-                    or { tostring(result) }
-                for i = 1, #list do
-                    ngx.log(ngx.ERR, "[policy] invalid candidate: ",
-                            tostring(list[i]))
-                end
-                ngx.log(ngx.ERR, "[policy] candidate rejected as a whole; ",
-                        "keeping built-in policy")
-            else
-                ngx.log(ngx.NOTICE, "[policy] active version=", tostring(result))
+            for i = 1, #(state.failures or {}) do
+                local failure = state.failures[i]
+                ngx.log(ngx.ERR, "[policy] candidate rejected source=",
+                        tostring(failure.source), " path=", tostring(failure.path),
+                        " error=", tostring(failure.error))
             end
+            local level = state.critical and ngx.ERR or ngx.NOTICE
+            ngx.log(level, "[policy] active version=", tostring(state.version),
+                    " source=", tostring(state.source),
+                    " degraded=", state.degraded and "true" or "false")
         end
     end
 

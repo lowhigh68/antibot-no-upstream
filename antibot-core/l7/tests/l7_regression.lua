@@ -79,6 +79,8 @@ local syntax_rel = {
     "init.lua",
     "core/config.lua",
     "core/policy.lua",
+    "core/policy_store.lua",
+    "core/policy_tool.lua",
     "core/policy_runtime.lua",
     "core/network_quarantine.lua",
     "core/operator_network.lua",
