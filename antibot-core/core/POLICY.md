@@ -86,6 +86,20 @@ temporary file in `/etc/antibot/policy`, fsyncs it and switches each file with
 `os.rename`. It never overwrites `active.json` in place. The previous valid
 active artifact becomes `last-good.json`.
 
+When `policyctl.sh` is invoked from the rsynced live tree, it runs `run.sh`
+from `/home/xadmin/antibot/antibot-no-upstream/antibot-core`. Tests such as
+`postdeploy_test` and `fim_test` require that source-tree context. Before the
+test, policyctl byte-compares the policy compiler/config/tooling in source and
+live trees; drift aborts promotion. Use `ANTIBOT_POLICY_SOURCE_DIR` only when
+the canonical checkout is stored elsewhere.
+
+The publisher sets `RUN_BASE=HEAD`. The code delta was already tested by
+`deploy.sh`; policy publication still runs all unconditional policy, pipeline,
+WAF and L7 contracts, while expensive conditional FIM/postdeploy suites run
+only when their own files are currently dirty. `POLICY_RUN_BASE` can override
+this for an intentional historical comparison. Git `safe.directory` is passed
+only to the test process and never written to global configuration.
+
 Observe the canary for 5-15 minutes:
 
 ```bash
@@ -107,3 +121,26 @@ sudo /usr/local/openresty/nginx/sbin/nginx -s reload
 The state directory is root-controlled (`0750`, normally `root:nginx`) and the
 two artifacts are `0640`. A different group or state directory may be supplied
 with `ANTIBOT_POLICY_GROUP` and `ANTIBOT_POLICY_DIR` when necessary.
+
+## P1.2 unified node health
+
+The read-only health view consumes the same structured request evidence used
+for policy decisions. It reads current and rotated logs by `ts=`, so a midnight
+rotation cannot silently reset the observation window:
+
+```bash
+bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/healthstat.sh
+# or compare nodes over one exact interval:
+bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/healthstat.sh 1792800000
+```
+
+It reports active/LKG artifacts, observed `pver`/`dschema`, mixed-version
+workers, local-versus-upstream decisions, degraded modules, challenge repeats,
+top automation principals/endpoints/cohorts by measured upstream work, and
+first-party/verified rejection guards. Redis and both threat/operator feed
+ages are shown from exact health keys. No Redis key or policy is changed.
+
+`logger_error_rows` covers explicit open/timer failures. A graceful reload may
+still lose at most the in-memory tail (64 lines per worker); that bound cannot
+be reconstructed after worker exit and is therefore printed as an explicit
+unobservable limitation rather than reported as zero loss.
