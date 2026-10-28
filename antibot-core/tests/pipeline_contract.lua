@@ -627,6 +627,10 @@ do
        "docroot+IP concurrency duoc promote sau production evidence")
     eq((dg.tenant_client or {}).limit, 10,
        "docroot+IP concurrency giu khoang dem browser hop le")
+    eq((dg.tenant_client or {}).first_party_limit, 16,
+       "first-party dynamic fan-out co reserve huu han")
+    eq((dg.tenant_client or {}).first_party_richness, 0.5,
+       "cookie reserve doi bang chung richness cua chinh host")
     eq((dg.server_client or {}).mode, "enforce",
        "server+IP concurrency chan source trai qua nhieu tenant")
     eq((dg.server_client or {}).limit, 16,

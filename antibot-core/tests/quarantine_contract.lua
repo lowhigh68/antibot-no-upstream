@@ -299,10 +299,18 @@ do
     writer.run(host_repeat)
     eq(host_repeat.ban_violation, 4,
        "production fixture reaches fourth host incident")
-    eq(ttl_map["ban:" .. ip], 300,
-       "host violation history cannot stretch IP ban beyond current risk tier")
+    eq(ttl_map["ban:" .. ip], nil,
+       "host network-UA incident never creates collective IP sentence")
     eq(ttl_map[host_keys.ban], 86400,
        "host network-UA quarantine still escalates independently")
+
+    local browser_keys = quarantine.keys({
+        ip = ip,
+        ua = "Mozilla/5.0 Chrome/124.0",
+        req = { host = "one.test" },
+    }, "host")
+    eq(store[browser_keys.ban], nil,
+       "different browser identity on same dynamic IP remains unquarantined")
 
     store, writes, ttl_map = {}, {}, {}
     local global_repeat = {

@@ -943,6 +943,14 @@ _M.dynamic_guard = {
         -- leaves room for legitimate browser/AJAX fan-out while bounding one
         -- source to one hosted tenant before it occupies the backend pool.
         limit = 10,
+
+        -- A first-party management/browser session may legitimately fan out
+        -- above ten dynamic requests.  Give only sessions already verified by
+        -- the pipeline, or carrying a cookie this host issued plus sufficient
+        -- first-party richness, a bounded reserve.  This is capacity priority,
+        -- not a bypass: the whole-server source ceiling remains 16.
+        first_party_limit = 16,
+        first_party_richness = 0.5,
     },
     server_client = {
         mode  = "enforce",

@@ -229,12 +229,16 @@ function _M.run(ctx)
     -- tự thông khi đám đông tan, tránh khóa cứng 180s. Bot swarm richness=0.
     local swarm_ban = swarm_active and (ctx.session_richness or 0) == 0
 
-    local should_ban_ip = ip and (
+    -- An IP sentence is deliberately a GLOBAL consequence.  A host-scoped
+    -- score block proves only that one network-UA identity misbehaved on one
+    -- tenant; promoting ip_risk/swarm from that incident into `ban:<ip>` would
+    -- also block unrelated browsers behind the same dynamic IP/CGNAT.  The
+    -- host path remains contained by qban:<host>:<network-UA>.  Only a decision
+    -- already classified as global may write the collective IP key.
+    local should_ban_ip = scope == "global" and ip and (
         ip_risk_val >= 0.7
         or swarm_ban
-        -- Coarse host quarantine must not promote itself into a collective IP
-        -- ban. Only global/direct evidence may use repeat violations here.
-        or (scope == "global" and viol_count >= 3)
+        or viol_count >= 3
     )
 
     -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
@@ -395,8 +399,9 @@ function _M.run(ctx)
     -- trước khi identity/cookie kịp chạy. `ban:hit` không gia hạn án, nhưng TTL
     -- gốc đã quá dài.
     --
-    -- Host scope vẫn được IP ban NGẮN theo bằng chứng IP hiện tại ở các nhánh
-    -- ip_risk/swarm bên dưới; offender dài hạn tiếp tục bị qban theo network-UA.
+    -- Host scope không còn tạo án IP, kể cả khi ip_risk/swarm cao: offender
+    -- tiếp tục bị cô lập chính xác bằng qban theo host + network-UA. Các nhánh
+    -- TTL dưới đây chỉ có hiệu lực sau cổng GLOBAL ở `should_ban_ip`.
     if scope == "global" and viol_count >= 4 then
         ip_ban_ttl = persist_ttl -- bậc cuối: confirmed global repeat bot
     elseif scope == "global" and viol_count >= 3 then

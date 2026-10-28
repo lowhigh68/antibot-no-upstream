@@ -1943,7 +1943,10 @@ local old_dynamic_guard = cfg.dynamic_guard
 cfg.dynamic_guard = {
     enabled = true, mode = "shadow", status = 429, retry_after = 2,
     slot_bucket_seconds = 10, slot_retention_seconds = 60,
-    tenant_client = { mode = "shadow", limit = 2 },
+    tenant_client = {
+        mode = "shadow", limit = 2,
+        first_party_limit = 4, first_party_richness = 0.5,
+    },
     server_client = { mode = "shadow", limit = 4 },
     path_spray = {
         mode = "shadow", window = 10, shards = 16,
@@ -2536,6 +2539,75 @@ eq(de3.action_reason, "dynamic_guard:tenant_concurrency",
 eq(fake_ngx.shared.antibot_cache:get(de1.dynamic_guard_slots[1].key), 2,
    "rejected generic slot is rolled back atomically")
 dynamic_guard.after(de1); dynamic_guard.after(de2)
+
+-- A recognized first-party session receives a bounded tenant reserve.  It is
+-- still subject to the same server axis, so this is priority rather than an
+-- exemption.  The tcare.vn production regression was an authenticated browser
+-- rejected at 11/10 while unrelated hostile work occupied the same tenant.
+fake_ngx.shared.antibot_cache = Dict.new()
+local fp = {}
+for i = 1, 5 do
+    fp[i] = dgctx("198.51.100.121")
+    fp[i].session_cookie_known = true
+    fp[i].session_richness_own = 0.8
+end
+for i = 1, 4 do
+    local _, exited = dynamic_guard.admit(fp[i])
+    eq(exited, false,
+       "recognized first-party request " .. i .. " uses bounded reserve")
+end
+eq(fp[3].dynamic_tenant_limit, 4,
+   "recognized first-party session receives configured tenant reserve")
+local _, fp5_exit = dynamic_guard.admit(fp[5])
+eq(fp5_exit, true, "first-party reserve still rejects limit+1")
+eq(fp[5].action_reason, "dynamic_guard:tenant_concurrency",
+   "first-party reserve remains a tenant capacity boundary")
+for i = 1, 4 do dynamic_guard.after(fp[i]) end
+
+-- A client-supplied Cookie header or inherited richness is not first-party
+-- proof.  Without a positive registry result the ordinary limit remains.
+fake_ngx.shared.antibot_cache = Dict.new()
+local spoof1, spoof2, spoof3 = dgctx("198.51.100.124"),
+    dgctx("198.51.100.124"), dgctx("198.51.100.124")
+for _, candidate in ipairs({ spoof1, spoof2, spoof3 }) do
+    candidate.session_cookie_known = false
+    candidate.session_richness_own = 1.0
+end
+dynamic_guard.admit(spoof1); dynamic_guard.admit(spoof2)
+local _, spoof3_exit = dynamic_guard.admit(spoof3)
+eq(spoof3.dynamic_tenant_limit, 2,
+   "unrecognized cookie cannot obtain first-party reserve")
+eq(spoof3_exit, true,
+   "unrecognized cookie remains on ordinary tenant limit")
+dynamic_guard.after(spoof1); dynamic_guard.after(spoof2)
+
+fake_ngx.shared.antibot_cache = Dict.new()
+local weak1, weak2, weak3 = dgctx("198.51.100.126"),
+    dgctx("198.51.100.126"), dgctx("198.51.100.126")
+for _, candidate in ipairs({ weak1, weak2, weak3 }) do
+    candidate.session_cookie_known = true
+    candidate.session_richness_own = 0.4
+end
+dynamic_guard.admit(weak1); dynamic_guard.admit(weak2)
+local _, weak3_exit = dynamic_guard.admit(weak3)
+eq(weak3.dynamic_tenant_limit, 2,
+   "known cookie below richness threshold gets no reserve")
+eq(weak3_exit, true,
+   "weak first-party evidence remains on ordinary tenant limit")
+dynamic_guard.after(weak1); dynamic_guard.after(weak2)
+
+-- Pipeline verification is independent positive evidence and receives the
+-- same finite reserve even when no cookie-registry state is present.
+fake_ngx.shared.antibot_cache = Dict.new()
+local ver1, ver2, ver3 = dgctx("198.51.100.125"),
+    dgctx("198.51.100.125"), dgctx("198.51.100.125")
+ver1.verified, ver2.verified, ver3.verified = true, true, true
+dynamic_guard.admit(ver1); dynamic_guard.admit(ver2)
+local _, ver3_exit = dynamic_guard.admit(ver3)
+eq(ver3.dynamic_tenant_limit, 4,
+   "verified client receives configured tenant reserve")
+eq(ver3_exit, false, "verified request above ordinary limit remains admitted")
+dynamic_guard.after(ver1); dynamic_guard.after(ver2); dynamic_guard.after(ver3)
 
 -- Whole-server source concurrency is independently enforceable across
 -- docroots.  The rejected request must roll back its slot on this axis too.

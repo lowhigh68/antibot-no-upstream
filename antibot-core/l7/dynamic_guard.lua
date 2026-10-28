@@ -172,6 +172,25 @@ local function axis_config(c, name, default_limit)
     return spec, mode, limit
 end
 
+-- Return the effective per-tenant capacity.  Cookie presence alone is not
+-- evidence: the registry must recognize the cookie and the session must have
+-- accumulated first-party richness.  Verified clients receive the same
+-- bounded reserve.  The server_client axis is still acquired independently,
+-- so this never turns into unlimited backend access.
+local function tenant_capacity(ctx, spec, base_limit)
+    local richness_min = tonumber(spec.first_party_richness) or 0.5
+    local first_party = ctx.verified == true
+        or (ctx.session_cookie_known == true
+            and (tonumber(ctx.session_richness_own) or 0) >= richness_min)
+    if not first_party then
+        return base_limit
+    end
+
+    local reserve = math.max(math.floor(
+        tonumber(spec.first_party_limit) or base_limit), 0)
+    return math.max(base_limit, reserve)
+end
+
 local function path_shard(uri, shards)
     local hex = digest(uri)
     local n = tonumber(hex:sub(1, 8), 16)
@@ -768,10 +787,11 @@ function _M.admit(ctx)
     local t = now()
     local scope = ctx.dynamic_guard_scope or scope_id()
     ctx.dynamic_guard_scope = scope
-    local _, tenant_mode, tenant_limit =
+    local tenant_spec, tenant_mode, tenant_limit =
         axis_config(c, "tenant_client", 8)
     local _, server_mode, server_limit =
         axis_config(c, "server_client", 16)
+    tenant_limit = tenant_capacity(ctx, tenant_spec, tenant_limit)
     ctx.dynamic_guard_mode = tostring(c.mode or "shadow")
     ctx.dynamic_tenant_mode = tenant_mode
     ctx.dynamic_server_mode = server_mode
