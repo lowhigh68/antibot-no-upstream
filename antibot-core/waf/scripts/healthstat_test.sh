@@ -82,5 +82,35 @@ else
 fi
 want "schema gate explains failure" 'logger schema thieu' "$T/gate"
 
+# Hai danh sach ten feed phai KHOP: `SOURCES` trong monitor_ip_sync.sh (noi
+# dong bo) va `OPERATOR_SOURCES` trong healthstat.sh (noi bao suc khoe). Lech
+# nhau thi sinh canh bao TU GAY RA: mot ten co o healthstat ma khong con o
+# SOURCES se khong bao gio co `mon:srcsync:<ten>` -> bao dong vinh vien ve mot
+# feed khong ai dong bo; nguoc lai, mot feed that bai se khong ai bao.
+#
+# Do duoc 2026-10-29: go `openai-chatgpt-user` khoi SOURCES ma quen healthstat
+# thi `readable=7/8` keu mai mai. Ghim bang phep SO, khong bang chu thich.
+MIS="$HERE/../../../nginx/scripts/monitor_ip_sync.sh"
+if [ -f "$MIS" ]; then
+    src_names=$(sed -n '/^SOURCES=(/,/^)/p' "$MIS" \
+        | grep -o '"[^|"]*|' | tr -d '"|' | sort | tr '\n' ' ')
+    hs_names=$(grep -o 'HEALTH_OPERATOR_SOURCES:-"[^"]*"' "$HERE/healthstat.sh" \
+        | sed 's/.*:-"//; s/"$//' | tr ' ' '\n' | sort | tr '\n' ' ')
+    if [ -z "$src_names" ] || [ -z "$hs_names" ]; then
+        fail=$((fail+1))
+        echo "FAIL healthstat: khong trich duoc danh sach feed (src='$src_names' hs='$hs_names')" >&2
+    elif [ "$src_names" = "$hs_names" ]; then
+        pass=$((pass+1))
+    else
+        fail=$((fail+1))
+        echo "FAIL healthstat: danh sach feed LECH nhau" >&2
+        echo "  monitor_ip_sync SOURCES : $src_names" >&2
+        echo "  healthstat OPERATOR     : $hs_names" >&2
+    fi
+else
+    fail=$((fail+1))
+    echo "FAIL healthstat: khong thay $MIS (phep so lech feed khong chay)" >&2
+fi
+
 echo "healthstat_test: $pass qua, $fail hong"
 [ "$fail" -eq 0 ]

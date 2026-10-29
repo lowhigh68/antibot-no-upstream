@@ -262,10 +262,17 @@ else
     done
     stats=$(rcli --raw GET threat:stats 2>/dev/null || :)
     echo "threat:stats=${stats:--}"
-    # Do not SCAN a 300k-key Redis database to discover eight bounded feed
+    # Do not SCAN a 300k-key Redis database to discover seven bounded feed
     # names.  This list is the source-health contract; override it when a node
     # intentionally runs a different source set.
-    OPERATOR_SOURCES=${HEALTH_OPERATOR_SOURCES:-"uptrends openai-gptbot openai-searchbot openai-chatgpt-user openai-adsbot anthropic perplexitybot perplexity-user"}
+    #
+    # PHAI KHOP voi `SOURCES` trong nginx/scripts/monitor_ip_sync.sh. Mot ten
+    # da go khoi SOURCES ma con o day thi khong bao gio co `mon:srcsync:<ten>`
+    # nua -> `readable=7/8` bao dong vinh vien ve mot feed KHONG AI DONG BO.
+    # Day la canh bao tu gay ra, va no lam mon di cot duy nhat con dung nghia.
+    # `openai-chatgpt-user` go 2026-10-29 (feed no 69.264 dia chi > tran
+    # 65.536); ly do day du nam canh dong da go trong monitor_ip_sync.sh.
+    OPERATOR_SOURCES=${HEALTH_OPERATOR_SOURCES:-"uptrends openai-gptbot openai-searchbot openai-adsbot anthropic perplexitybot perplexity-user"}
     nsrc=0; healthy_src=0
     for name in $OPERATOR_SOURCES; do
         nsrc=$((nsrc + 1))

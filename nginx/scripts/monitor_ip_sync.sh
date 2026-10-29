@@ -36,7 +36,24 @@ SOURCES=(
     "uptrends|uptrends.com|ipcap|plain_ipv4|10|2000|https://app.uptrends.com/Download/DownloadCheckpointServerIpv4"
     "openai-gptbot|openai.com|claim|json_prefixes|1|8192|https://openai.com/gptbot.json"
     "openai-searchbot|openai.com|claim|json_prefixes|1|8192|https://openai.com/searchbot.json"
-    "openai-chatgpt-user|openai.com|claim|json_prefixes|1|65536|https://openai.com/chatgpt-user.json"
+    # openai-chatgpt-user GO BO 2026-10-29 -- feed vuot tran, KHONG phai loi cap.
+    #
+    # Do duoc tren cloud168-105 (health FAIL tu 20-10): feed doi luc
+    # creationTime 2026-10-20T17:07:39 va tu do chua sync lai lan nao. 234
+    # prefix, tat ca canonical, phan bo `1 x /16 + 233 x /28` -> no ra 69.264
+    # dia chi, tran la 65.536. Rieng mot `/16` da bang ca tran. `expand_token`
+    # tra 2, `parse_source` bo het, khong ghi gi -- dung nhu thiet ke.
+    #
+    # VI SAO GO SOURCE chu khong nang tran: `ChatGPT-User` la fetch do NGUOI
+    # dung bam trong ChatGPT, khong phai crawler theo lich. Mat dong nay thi
+    # cac request do bi tinh diem nhu mot client thuong -- khong ai bi chan
+    # oan, chi mat cai `claim` cap verdict. Nang tran thi vua nhan ngan sach
+    # khoa Redis +69.264 (dang co 42.795), vua lam cam bien im sau khi no vua
+    # bao dung; va neu feed no them lan nua thi lap lai y nguyen.
+    #
+    # Muon bat lai thi dieu kien la CHINH SACH DAI IP, khong phai con so:
+    # chuyen `mon:<ip>` sang so khop DAI (CIDR) o phia Lua. Chi khi do mot
+    # `/16` moi thanh 1 ban ghi thay vi 65.536 khoa.
     "openai-adsbot|openai.com|claim|json_prefixes|1|8192|https://openai.com/adsbot.json"
     "anthropic|anthropic.com|claim|json_prefixes|1|8192|https://claude.com/crawling/bots.json"
     "perplexitybot|perplexity.ai|claim|json_prefixes|1|8192|https://www.perplexity.com/perplexitybot.json"
@@ -50,6 +67,28 @@ alert() {
     warn "$*"
     if [ "${MONITOR_HEALTH_SYSLOG:-1}" = "1" ] && command -v logger >/dev/null 2>&1; then
         command logger -p daemon.err -t antibot-monitor-ip -- "$*" || true
+    fi
+}
+
+# That bai cua MOT source trong lan sync THAT. Phai len syslog cung tag voi
+# `health`, vi neu khong thi journalctl chi co TRIEU CHUNG ma khong bao gio co
+# NGUYEN NHAN: `mon:srcsync:<name>` chi duoc ghi khi thanh cong tron ven (sau
+# ba cong `continue` ben duoi), nen moi duong that bai deu giu khoa cu toi het
+# TTL 48h roi mot/hai ngay sau mo ra duoi dang `health FAIL [...]: stale`.
+#
+# Do duoc 2026-10-29 (cloud168-105): bon dong `health FAIL [openai-chatgpt-user]
+# stale age=128227s` trong journalctl, trong khi ly do thuc -- feed no 69.264
+# dia chi vuot tran 65.536 -- chi nam trong /var/log/antibot_monitor_sync.log
+# vi no di qua `warn()`. Chan doan mat mot vong do chi vi sai DUONG RA.
+#
+# IM khi `--validate-sources`: do la lenh chay TAY de kiem feed, va no di qua
+# dung ba nhanh nay. Mot lan kiem tay khong duoc sinh `daemon.err` -- neu
+# khong thi canh bao that bi lan trong tieng on do chinh operator tao ra.
+sfail() {
+    if [ "${VALIDATE_ONLY:-0}" -eq 1 ]; then
+        warn "$*"
+    else
+        alert "$*"
     fi
 }
 
@@ -410,17 +449,17 @@ for entry in "${SOURCES[@]}"; do
 
     if ! curl -fsSL --proto '=https' --tlsv1.2 --max-redirs 3 \
         --connect-timeout 10 --max-time 30 -o "$cache" "$url" 2>/dev/null; then
-        warn "[$name] download failed; old keys remain until TTL"
+        sfail "[$name] download failed; old keys remain until TTL"
         continue
     fi
     if ! parse_source "$cache" "$format" "$parsed" "$max_ips"; then
-        warn "[$name] invalid schema/CIDR or expansion exceeds $max_ips; no write"
+        sfail "[$name] invalid schema/CIDR or expansion exceeds $max_ips; no write"
         continue
     fi
 
     n="$(wc -l < "$parsed")"
     if [ "$n" -lt "$min_ips" ] || [ "$n" -gt "$max_ips" ]; then
-        warn "[$name] $n IP outside safety range $min_ips..$max_ips; no write"
+        sfail "[$name] $n IP outside safety range $min_ips..$max_ips; no write"
         continue
     fi
 
@@ -439,7 +478,7 @@ for entry in "${SOURCES[@]}"; do
         printf 'SET mon:srcsync:%s %s EX %s\n' "$name" "$(date +%s)" "$TTL_MON"
     } | RPIPE 2>&1)"
     if [ $? -ne 0 ] || echo "$pipe_out" | grep -qE 'errors: [1-9]|NOAUTH|ERR '; then
-        warn "[$name] Redis write failed; old keys remain until TTL"
+        sfail "[$name] Redis write failed; old keys remain until TTL"
         continue
     fi
 
