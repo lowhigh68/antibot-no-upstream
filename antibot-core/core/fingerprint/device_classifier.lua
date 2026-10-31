@@ -1,4 +1,5 @@
 local _M = {}
+local ua_shape = require "antibot.core.ua_shape"
 
 -- ============================================================
 -- Device classifier — phân loại thiết bị từ UA + HTTP signals
@@ -72,70 +73,9 @@ local function is_custom_tab(ua)
     return false
 end
 
--- Known inapp app tokens (từ req_classifier.lua, sync ở đây)
-local INAPP_TOKENS = {
-    "Zalo", "FBAN", "FBAV", "FBIOS", "Instagram",
-    "Line/", "Twitter", "TikTok", "Snapchat", "Pinterest",
-    "LinkedIn", "MicroMessenger", "Viber",
-    "Shopee", "Lazada", "TikiApp",
-}
-
-local function is_inapp(ua)
-    if not ua or ua == "" then return false end
-    local is_mobile = ua:find("Mobile/", 1, true)
-                   or ua:find("Android", 1, true)
-    if not is_mobile then return false end
-    for _, token in ipairs(INAPP_TOKENS) do
-        if ua:find(token, 1, true) then return true end
-    end
-    return false
-end
-
 -- Self-declared crawler — bot/spider/crawler token or RFC contact URL.
 -- Structural (no brand list). Uses bot-SUFFIX patterns (bot/ ; ) space) so
 -- device brands like "CUBOT" (cubot_x) are not mislabelled as crawlers.
-local function is_crawler(ua)
-    local ul = ua:lower()
-    return ul:find("spider", 1, true) ~= nil
-        or ul:find("crawler", 1, true) ~= nil
-        or ul:find("bot/", 1, true) ~= nil
-        or ul:find("bot;", 1, true) ~= nil
-        or ul:find("bot)", 1, true) ~= nil
-        or ul:find("bot ", 1, true) ~= nil
-        -- URL liên hệ kiểu RFC. Mẫu cũ `%(%+https?://` đòi dấu `+` phải NGAY
-        -- SAU dấu mở ngoặc — chỉ đúng với dạng `meta-externalagent/1.1
-        -- (+https://…)` mà nó được viết ra để bắt. Dạng phổ biến hơn nhiều là
-        -- `(compatible; Tên/1.0; +http://…)`, ở đó `+http` đứng sau `; `.
-        -- Hai ca bắt được từ bảng UA Samples ngày 2026-08-17, cả hai đều
-        -- KHÔNG có token bot/spider/crawler nào để các nhánh trên tóm:
-        --   Mozilla/5.0 (compatible; YandexImages/3.0; +http://yandex.com/bots)
-        --   Mozilla/5.0 (compatible; coccocbot-image/1.0; +http://help.coccoc.com/…)
-        -- ("bots)" ≠ "bot)", và "coccocbot-image/" ≠ "bot/".)
-        --
-        -- 2026-08-20 — ĐÃ NỚI TIẾP, và lý do đáng ghi lại: hôm 17/8 tôi viết
-        -- "KHÔNG nới thành `%+https?://` trần vì như vậy là bỏ hẳn ngữ cảnh",
-        -- chọn `[%(;]%s*%+https?://`. Số liệu bác bỏ ngay chính ràng buộc đó —
-        -- đọc 282.619 dòng antibot.log, ô `unknown` chứa:
-        --   104x  Mozilla/5.0 (compatible; heritrix/3.14.2-…T06:21:22Z +https://www.image-meta.com)
-        --   124x  Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; Claude-User/1.0; +mailto:support@anthropic.com
-        -- heritrix trượt vì `+https` đứng sau **`Z `** chứ không sau `(`/`;`;
-        -- Claude-User trượt vì URL liên hệ là **`mailto:`**, không phải http.
-        --
-        -- Bản thân dấu `+` ĐÃ LÀ ngữ cảnh: nó là quy ước khai báo liên hệ của
-        -- bot, không trình duyệt nào sinh ra `+http://` hay `+mailto:`. Ràng
-        -- buộc thêm về ký tự đứng trước chỉ tạo ra chỗ lọt, không thêm an toàn.
-        --
-        -- Vẫn KHÔNG thêm "bot-" vào danh sách token phía trên: hãng điện thoại
-        -- CUBOT có model đặt tên `CUBOT-…`, sẽ thành crawler oan — mà nhãn này
-        -- đã ảnh hưởng tới ý định (crawler ⇒ không bao giờ là `human`) nên FP ở
-        -- đó không còn vô hại. Rủi ro của `+scheme:` thì khác hẳn: bằng 0.
-        --
-        -- Còn lọt có chủ đích: `MistralAI-User/1.0` (63 lượt) không token, không
-        -- URL liên hệ — không có gì để bắt. KHÔNG thêm danh sách tên riêng.
-        or ua:find("%+https?://") ~= nil
-        or ua:find("%+mailto:")  ~= nil
-end
-
 -- Non-browser HTTP client — real browsers always send "Mozilla/" AND an engine
 -- token; libraries (curl, python-requests, Go-http, Java, okhttp, wget) send
 -- neither. Structural signal, zero maintenance.
@@ -202,7 +142,7 @@ local function is_http_tool(ua)
     return true
 end
 
-function _M.classify(ua, proto)
+function _M.classify(ua, proto, classified_inapp)
     if not ua or ua == "" then
         return {
             device_type                   = "unknown",
@@ -215,11 +155,26 @@ function _M.classify(ua, proto)
 
     local is_h2 = proto and proto:find("HTTP/2", 1, true) ~= nil
 
-    -- ── Non-browser agents (drain the old catch-all "unknown") ─
+    -- ── inapp browser: canonical result from req_classifier ────────────────
+    -- req_classifier is the single source of truth.  Check its result before
+    -- local display categories: an embedded client may use a minimal UA that
+    -- would otherwise be labelled `http_client`, recreating a class/device
+    -- disagreement through branch order.
+    if classified_inapp == true then
+        return {
+            device_type                   = "inapp",
+            device_sec_fetch_expected     = false,
+            device_ch_ua_mobile_expected  = false,
+            device_is_mobile              = true,
+            device_ios_version            = parse_ios_version(ua),
+        }
+    end
+
+    -- ── Non-browser agents (drain the old catch-all "unknown") ─────────────
     -- crawler: self-declared bot. http_client: HTTP library (no Mozilla+engine).
     -- Enforcement-neutral (device_type isn't scored) — makes the admin Client
     -- panel meaningful instead of dumping every bot/tool into "unknown".
-    if is_crawler(ua) then
+    if ua_shape.self_declared_crawler(ua) then
         return {
             device_type                   = "crawler",
             device_sec_fetch_expected     = false,
@@ -235,17 +190,6 @@ function _M.classify(ua, proto)
             device_ch_ua_mobile_expected  = false,
             device_is_mobile              = false,
             device_ios_version            = nil,
-        }
-    end
-
-    -- ── inapp browser ─────────────────────────────────────────
-    if is_inapp(ua) then
-        return {
-            device_type                   = "inapp",
-            device_sec_fetch_expected     = false,
-            device_ch_ua_mobile_expected  = false,
-            device_is_mobile              = true,
-            device_ios_version            = parse_ios_version(ua),
         }
     end
 
@@ -400,7 +344,7 @@ function _M.run(ctx)
     local ua    = ctx.ua or ""
     local proto = ctx.req and ctx.req.proto or ngx.var.server_protocol or ""
 
-    local info = _M.classify(ua, proto)
+    local info = _M.classify(ua, proto, ctx.req_class == "inapp_browser")
 
     ctx.device_type                  = info.device_type
     ctx.device_sec_fetch_expected    = info.device_sec_fetch_expected

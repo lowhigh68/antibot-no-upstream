@@ -1,4 +1,5 @@
 local _M = {}
+local ua_shape = require "antibot.core.ua_shape"
 
 _M.CLASS_CONFIG = {
     resource = {
@@ -344,16 +345,13 @@ local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
     -- Bot self-identification: crawlers intentionally append tokens after
     -- Safari/X.Y (RFC 9309 contact URL / compatible comment) → Signal 2 FP.
     -- In-app browsers never self-identify as bots.
-    -- Two structural patterns:
-    --   (a) name token: "bot"/"spider"/"crawler" — Googlebot, Bingbot, ...
-    --   (b) RFC 9309 compatible comment at UA tail: "(compatible; GoogleOther)"
-    --       or "(compatible; Googlebot/2.1; +http://...)". No in-app browser
-    --       uses this format.
+    -- Structural declaration uses bounded bot suffixes, spider/crawler, an
+    -- RFC-style +http/+https/+mailto contact, or an explicit `compatible`
+    -- agent comment.  It deliberately does not use a raw `find("bot")`: phone
+    -- models such as CUBOT contain those letters.
     local ua_l = ua:lower()
-    if ua_l:find("bot",    1, true) or
-       ua_l:find("spider", 1, true) or
-       ua_l:find("crawler",1, true) or
-       ua_l:match("%(compatible;[^%)]+%)%s*$") then
+    if ua_shape.self_declared_crawler(ua)
+       or ua_l:match("%(compatible;[^%)]+%)%s*$") then
         return 0.0
     end
 
@@ -382,6 +380,22 @@ local function compute_inapp_likeness(ua, xrw, sec_ch_ua)
     -- Safari hẳn (iOS WKWebView Facebook: "... Mobile/15E148 [FBAN/...]")
     if not ua:match("Safari/[%d%.]+%s*$") then
         score = score + 0.3
+    end
+
+    -- Supporting iOS WebView signal (0.15).  Standalone browsers on iOS
+    -- normally retain a canonical `Mobile/... Safari/...` tail.  WKWebView
+    -- requests embedded in an app either omit Safari or append an app product
+    -- after it.  Signal 2 alone stays below the 0.4 boundary because legitimate
+    -- Android browsers can also end without Safari; the iOS WebKit+Mobile
+    -- structure makes the combined 0.45 specific without naming any app.
+    local ios_webkit_mobile =
+        (ua:find("iPhone", 1, true) or
+         ua:find("iPod",   1, true) or
+         ua:find("iPad",   1, true))
+        and ua:find("AppleWebKit/", 1, true)
+        and ua:find("Mobile/", 1, true)
+    if ios_webkit_mobile and not ua:match("Safari/[%d%.]+%s*$") then
+        score = score + 0.15
     end
 
     -- SIGNAL 3 (weak, 0.15): Chrome 90+ UA thiếu Sec-Ch-Ua client hints.

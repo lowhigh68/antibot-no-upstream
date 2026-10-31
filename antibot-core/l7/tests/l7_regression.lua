@@ -2714,6 +2714,92 @@ local c3 = classify({
 })
 eq(c3.req_class, "resource", "GET static extension uses lightweight lane")
 
+-- One structural source of truth for embedded browsers.  The iOS WebView
+-- shape combines a non-canonical tail (0.30) with iOS WebKit+Mobile (0.15).
+-- The global threshold remains 0.4, so a legitimate Android browser whose UA
+-- merely ends without Safari is not relabelled.
+local ios_webview = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html",
+    http_user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        .. "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 App/1.0",
+})
+eq(ios_webview.req_class, "inapp_browser",
+   "generic iOS WKWebView structure enters in-app class")
+ok((ios_webview.inapp_likeness or 0) >= 0.4,
+   "iOS WKWebView evidence crosses class threshold")
+
+local firefox_android = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html",
+    http_user_agent = "Mozilla/5.0 (Android 14; Mobile; rv:121.0) "
+        .. "Gecko/121.0 Firefox/121.0",
+})
+eq(firefox_android.req_class, "navigation",
+   "non-Safari tail alone does not relabel Firefox Android")
+eq(firefox_android.inapp_likeness, 0.3,
+   "weak mobile tail signal remains below in-app threshold")
+
+local cubot_webview = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html", http_x_requested_with = "com.example.reader",
+    http_user_agent = "Mozilla/5.0 (Linux; Android 14; CUBOT-X70) "
+        .. "AppleWebKit/537.36 Chrome/121.0 Mobile App/1.0",
+})
+eq(cubot_webview.req_class, "inapp_browser",
+   "CUBOT device name is not mistaken for crawler declaration")
+
+local declared_crawler = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html", http_x_requested_with = "com.example.reader",
+    http_user_agent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+        .. "Chrome/121.0 Mobile Safari/537.36 ExampleBot/1.0",
+})
+eq(declared_crawler.inapp_likeness, 0.0,
+   "bounded crawler declaration cannot enter in-app lane")
+
+local safari_ios = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html",
+    http_user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        .. "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 "
+        .. "Mobile/15E148 Safari/604.1",
+})
+eq(safari_ios.req_class, "navigation",
+   "canonical iOS Safari remains normal navigation")
+
+package.loaded["antibot.core.fingerprint.device_classifier"] = nil
+local device_classifier = require "antibot.core.fingerprint.device_classifier"
+fake_ngx.var = { server_protocol = "HTTP/2.0" }
+local dev_inapp = {
+    ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        .. "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 App/1.0",
+    req = { proto = "HTTP/2.0" }, req_class = ios_webview.req_class,
+}
+device_classifier.run(dev_inapp)
+eq(dev_inapp.device_type, "inapp",
+   "device classifier follows canonical request class")
+
+local minimal_webview = classify({
+    uri = "/article", args = "", request_method = "GET",
+    http_accept = "text/html", http_user_agent = "Android Embedded",
+    http_x_requested_with = "com.example.reader",
+})
+local dev_minimal = {
+    ua = "Android Embedded", req = { proto = "HTTP/1.1" },
+    req_class = minimal_webview.req_class,
+}
+device_classifier.run(dev_minimal)
+eq(dev_minimal.device_type, "inapp",
+   "canonical in-app result wins before local http-client label")
+
+local dev_brand_only = {
+    ua = "Zalo/1.0", req = { proto = "HTTP/1.1" }, req_class = "unknown",
+}
+device_classifier.run(dev_brand_only)
+ok(dev_brand_only.device_type ~= "inapp",
+   "brand token alone cannot grant in-app treatment")
+
 -- Per-host backend circuit breaker.  Tat ca ca nay dung shared dict local;
 -- khong Redis, khong nginx directive, va state cua host A khong duoc ro sang B.
 local old_circuit = cfg.l7_circuit_breaker

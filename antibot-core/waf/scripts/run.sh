@@ -196,6 +196,9 @@ sh_suite healthstat_test "$HERE/healthstat_test.sh" || rc=1
 echo "-- labelled incident/shadow replay contract ---------------"
 sh_suite feedbackctl_test "$HERE/feedbackctl_test.sh" || rc=1
 
+echo "-- non-interactive preview challenge audit -----------------"
+sh_suite previewstat_test "$HERE/previewstat_test.sh" || rc=1
+
 echo "-- goodbot DNS/cache contract ---------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
 
