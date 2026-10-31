@@ -193,6 +193,9 @@ sh_suite policy_store_test "$HERE/policy_store_test.sh" || rc=1
 echo "-- unified node-health view contract ----------------------"
 sh_suite healthstat_test "$HERE/healthstat_test.sh" || rc=1
 
+echo "-- labelled incident/shadow replay contract ---------------"
+sh_suite feedbackctl_test "$HERE/feedbackctl_test.sh" || rc=1
+
 echo "-- goodbot DNS/cache contract ---------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/goodbot_contract.lua" || rc=1
 

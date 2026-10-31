@@ -25,6 +25,8 @@ LOGBASE=$(basename "$LOG")
 LIVE=${LIVE:-/usr/local/openresty/nginx/conf/antibot}
 POLICY_DIR=${POLICY_DIR:-/etc/antibot/policy}
 POLICYCTL=${POLICYCTL:-$LIVE/waf/scripts/policyctl.sh}
+FEEDBACK_DIR=${FEEDBACK_DIR:-/etc/antibot/feedback}
+FEEDBACKCTL=${FEEDBACKCTL:-$LIVE/waf/scripts/feedbackctl.sh}
 ERROR_LOG=${ERROR_LOG:-/usr/local/openresty/nginx/logs/error.log}
 
 case "$SINCE:$NOW" in
@@ -125,6 +127,16 @@ else
             echo "$f missing_or_unreadable"
         fi
     done
+fi
+
+echo "=== LABELLED FEEDBACK ==="
+if [ -r "$FEEDBACKCTL" ]; then
+    if ! NOW="$NOW" ANTIBOT_FEEDBACK_DIR="$FEEDBACK_DIR" \
+      bash "$FEEDBACKCTL" status 2>&1; then
+        echo "feedback=degraded reason=status_failed"
+    fi
+else
+    echo "feedback=unavailable reason=tool_missing"
 fi
 
 echo "=== REQUEST HEALTH ==="

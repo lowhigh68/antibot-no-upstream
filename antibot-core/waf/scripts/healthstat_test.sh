@@ -24,6 +24,12 @@ echo 'last-good.json present version=test-v0 bytes=100'
 EOF
 chmod +x "$T/live/waf/scripts/policyctl.sh"
 
+cat > "$T/live/waf/scripts/feedbackctl.sh" <<'EOF'
+#!/bin/bash
+echo 'feedback active=3 expired=1 true_bot=1 legit_automation=0 human_fp=1 capacity_only=1'
+EOF
+chmod +x "$T/live/waf/scripts/feedbackctl.sh"
+
 cat > "$T/bin/redis-cli" <<'EOF'
 #!/bin/bash
 args=" $* "
@@ -61,6 +67,7 @@ rc=$?
 want "exit green" '^$' <( [ "$rc" -eq 0 ] && echo || echo x )
 want "window rows" 'rows=4 ' "$OUT"
 want "policy stable" 'version_state=ok policy_versions=1 schemas=1' "$OUT"
+want "feedback coverage" 'feedback active=3 expired=1 true_bot=1 legit_automation=0 human_fp=1 capacity_only=1' "$OUT"
 want "decision split" 'decision rows=4 upstream=2 local=2 unknown=0 degraded_rows=1' "$OUT"
 want "challenge loop" 'challenge issued=2 repeated_subjects=1 recovered_subjects=1' "$OUT"
 want "known-cookie FP guard" 'fp_guard known_cookie=2/3 verified_human=0/1 verified_bot=0/1' "$OUT"

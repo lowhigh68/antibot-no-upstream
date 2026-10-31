@@ -1,4 +1,4 @@
-# Compiled policy P1.1
+# Compiled policy control plane (P1.0–P1.3)
 
 The policy lifecycle has two deliberately separate halves:
 
@@ -144,3 +144,57 @@ ages are shown from exact health keys. No Redis key or policy is changed.
 still lose at most the in-memory tail (64 lines per worker); that bound cannot
 be reconstructed after worker exit and is therefore printed as an explicit
 unobservable limitation rather than reported as zero loss.
+
+## P1.3 labelled incidents and shadow replay
+
+Feedback is an offline operator artifact, never a request-path input.  Four
+labels have fixed meanings:
+
+- `true_bot`: confirmed unwanted automation;
+- `legit_automation`: automation is genuine/allowed, though capacity pacing may
+  still be appropriate;
+- `human_fp`: a real user was incorrectly rejected or selected by a candidate;
+- `capacity_only`: the incident is resource pressure, not a security verdict.
+
+Capture an exact time interval and at least one exact `key=value` filter.  All
+filters are ANDed and rows must contain `pver` and `dschema`:
+
+```bash
+sudo bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/feedbackctl.sh \
+  capture human_fp FROM_EPOCH TO_EPOCH 30 operator1 \
+  'Zalo preview received interactive PoW' \
+  domain=no1computer.vn ip=183.81.9.113
+```
+
+Each incident is a root-only directory under `/etc/antibot/feedback`, with a
+`0600` evidence log and JSON manifest.  The manifest records the exact window,
+filters, actor, note, policy/schema versions, TTL and SHA-256 of the evidence.
+Capture is bounded to 50,000 rows/64 MiB and published with a same-filesystem
+directory rename.  Tampering causes replay to fail; it is never silently
+treated as an empty/green corpus.
+
+```bash
+sudo bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/feedbackctl.sh list
+sudo bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/feedbackctl.sh replay
+sudo bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/feedbackctl.sh prune-expired
+```
+
+Replay evaluates only explicit shadow facts actually emitted by production:
+`autwould`, `autcwould`, `pcwould`, `epwould`, `dgwould`, `dgpswould`,
+`dgsvwould`, `sgwould` and `cbwould`.  Any candidate hit on a `human_fp`
+bundle emits `REPLAY_BLOCK`.  If no `human_fp` evidence exists, the tool prints
+`REPLAY_COVERAGE ... no_false_positive_claim`; absence of a label is never
+reported as proof of safety.
+
+This is intentionally not a simulator for arbitrary new thresholds.  A flat
+request log cannot reconstruct Redis windows, slot ownership or circuit state.
+The safe lifecycle is therefore:
+
+1. deploy a threshold/mode in `shadow`;
+2. capture and label known incidents;
+3. replay the exact `would` telemetry;
+4. only then consider a policy-only `shadow -> enforce` promotion.
+
+The node health view includes active/expired label counts.  Expired labels are
+ignored by replay but retained until the explicit `prune-expired` command, so
+evidence deletion is never hidden inside request handling or policy publish.
