@@ -972,28 +972,23 @@ if [ -e "$_pw" ]; then
         done
     else
         echo "    redis.pass: $(stat -c '%a %U:%G' "$_pw" 2>/dev/null) — $NGX_USER doc duoc, ok"
-        # TU NGHIEM THU, khong in huong dan chay tay. Output nguoi dung 04-10 cho
-        # thay ba dong goi y nay roi KHONG AI chay — va neu co chay thi chung lai
-        # dung dung phep do da bi Review 7 muc 2 bac: `redis-cli -a` tu gui AUTH
-        # nen `cmdstat_auth` tu tang.
+        # DA GO phep dem `res_ip:*` / `burst:*` o day.
         #
-        # Day dung bai hoc "canh bao dung ma khong ai mo". Phep do dung la dem khoa
-        # do WORKER ghi — `res_ip:<ip>` / `burst:<id>` (`l7/rate/res_ip_counter.lua`,
-        # `l7/burst/burst_counter.lua`) — vi chung chi ton tai khi worker AUTH duoc
-        # VA ghi duoc.
-        _wk=$(REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --scan --pattern 'res_ip:*' 2>/dev/null | grep -c . )
-        _wb=$(REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --scan --pattern 'burst:*'  2>/dev/null | grep -c . )
-        if [ "${_wk:-0}" -gt 0 ] || [ "${_wb:-0}" -gt 0 ]; then
-            echo "    worker DANG ghi Redis (res_ip=$_wk burst=$_wb) -- AUTH that su hoat dong"
-        else
-            # TTL ngan (`burst` 1s, `res_ip` theo `ttl.rate`) nen 0 co the chi la
-            # may dang khong co luu luong. Khong ket luan "hong", nhung cung KHONG
-            # bao "ok" -- do la mot cau hoi chua co cau tra loi.
-            echo "    CHUA THAY khoa nao do worker ghi (res_ip=0 burst=0)."
-            echo "      Co the may dang khong co request (TTL cac khoa nay rat ngan),"
-            echo "      cung co the worker dang fail-open. Do lai khi co luu luong:"
-            echo "      REDISCLI_AUTH=\$(cat $_pw) redis-cli --scan --pattern 'res_ip:*' | head"
-        fi
+        # `redis-cli --scan` quet TOAN BO keyspace roi loc pattern o phia client,
+        # nen chi phi theo `dbsize` chu khong theo so khoa khop. Do duoc 01-11
+        # tren cloud28-248: `dbsize=322745` -> hai lenh `--scan` tuan tu, khong
+        # timeout, lam deploy DUNG hang o day trong khi cac may DB nho hon da
+        # bao DEPLOYED DONE. Mot buoc BAO CAO khong duoc phep treo deploy.
+        #
+        # Va no da du thua: buoc [4g] kiem dung cap tep/requirepass TRUOC reload
+        # va `exit 1` neu lech, nen den day hai ben chac chan da khop. Hoi lai
+        # cung mot cau sau reload chi doi lai rui ro treo.
+        #
+        # Khi can tra loi "worker co that su ghi duoc Redis khong", chay TAY voi
+        # `--count` lon va dung som o khoa dau tien (cau hoi la CO/KHONG, khong
+        # phai BAO NHIEU):
+        #   REDISCLI_AUTH=$(cat /etc/antibot/redis.pass) \\
+        #     redis-cli --scan --pattern 'res_ip:*' --count 10000 | head -1
     fi
 else
     # ── BON TRANG THAI, theo bang cua Review 7 muc 2 ──────────────────
