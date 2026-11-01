@@ -589,12 +589,37 @@ if [ "${DO_REDIS_AUTH:-0}" != "1" ]; then
         echo "HUY: LECH -- co $_pw ma Redis KHONG doi mat khau."
         echo "    Worker se gui AUTH vao mot Redis chua cau hinh -> MOI phep Redis loi,"
         echo "    toan bo lop trang thai fail-open. KHONG reload."
-        echo "    Sua bang MOT trong hai cach roi chay lai deploy:"
-        echo "      bat auth : printf '%s' \"\$(head -1 $_pw | tr -d '\\r\\n')\" \\"
-        echo "                   | redis-cli -p 6379 -x CONFIG SET requirepass"
-        echo "                 (KHONG dung \`< $_pw\`: newline cuoi tep se vao mat khau)"
-        echo "                 redis-cli -a \"\$(cat $_pw)\" --no-auth-warning config rewrite"
-        echo "      bo auth  : mv $_pw $_pw.disabled"
+
+        # ACL `nopass` GHI DE `requirepass` (Redis 6+). Phai noi ro, vi neu
+        # khong thi operator chay `CONFIG SET requirepass`, nhan `OK`, roi
+        # deploy lai VAN huy -- vong lap da that su xay ra 01-11 tren
+        # cloud28-248 va ton nam luot chan doan.
+        #
+        # Do duoc luc do: `CONFIG GET requirepass` tra 33 byte (mat khau CO
+        # trong config), `redis-cli PING` khong auth van `PONG`, va
+        # `AUTH <pass>` tra `WRONGPASS`. Ba dau hieu nay cung luc = ACL thang.
+        # Nguon la mot dong khai INLINE trong `redis.conf`:
+        #     user default on nopass sanitize-payload ~* &* +@all
+        _acl=$(redis-cli -p 6379 ACL LIST 2>/dev/null | grep '^user default' || :)
+        case "$_acl" in
+            *nopass*)
+                echo "    *** NGUYEN NHAN: ACL user default dang \`nopass\` ***"
+                echo "    ACL GHI DE requirepass, nen \`CONFIG SET requirepass\` se tra OK"
+                echo "    ma KHONG co hieu luc. Phai dat mat khau cho ACL:"
+                echo "      V=\$(head -1 $_pw | tr -d '\\r\\n')"
+                echo "      redis-cli -p 6379 ACL SETUSER default on \">\$V\" '~*' '&*' +@all"
+                echo "      redis-cli -p 6379 --no-auth-warning -a \"\$V\" CONFIG REWRITE"
+                echo "    (co hieu luc NGAY, khong can restart, khong mat du lieu)"
+                ;;
+            *)
+                echo "    Sua bang MOT trong hai cach roi chay lai deploy:"
+                echo "      bat auth : V=\$(head -1 $_pw | tr -d '\\r\\n')"
+                echo "                 printf '%s' \"\$V\" | redis-cli -p 6379 -x CONFIG SET requirepass"
+                echo "                 (KHONG dung \`< $_pw\`: newline cuoi tep se vao mat khau)"
+                echo "                 redis-cli -p 6379 --no-auth-warning -a \"\$V\" CONFIG REWRITE"
+                echo "      bo auth  : mv $_pw $_pw.disabled"
+                ;;
+        esac
         exit 1
     elif [ ! -e "$_pw" ] && [ "$_g_auth" = "1" ]; then
         echo "HUY: Redis DOI mat khau ma $_pw KHONG CO."
@@ -1096,8 +1121,10 @@ else
         echo "    *** LECH: co $_pw ma Redis KHONG doi mat khau ***"
         echo "    Worker gui AUTH vao mot Redis chua cau hinh -> moi phep Redis loi."
         echo "    Bat lai bang (KHONG dung \`< $_pw\` -- newline se vao mat khau):"
-        echo "      printf '%s' \"\$(head -1 $_pw | tr -d '\\r\\n')\" \\"
-        echo "        | redis-cli -p 6379 -x CONFIG SET requirepass"
+        echo "      V=\$(head -1 $_pw | tr -d '\\r\\n')"
+        echo "      redis-cli -p 6379 ACL LIST | grep '^user default'   # neu co nopass:"
+        echo "      redis-cli -p 6379 ACL SETUSER default on \">\$V\" '~*' '&*' +@all"
+        echo "      printf '%s' \"\$V\" | redis-cli -p 6379 -x CONFIG SET requirepass"
         echo "    Hoac xoa tep neu co y khong dung auth."
     elif [ -e "$_pw" ] && [ "$_rauth" = "1" ]; then
         # Khong chi kiem "nginx doc duoc tep" -- phai kiem mat khau TRONG tep mo
@@ -1157,6 +1184,23 @@ else
         # `printf '%s'` khong them newline. Doc bang `head -1 | tr -d` cho khop
         # TUNG BYTE voi cach `$(cat ...)` o cac nhanh con lai.
         _pv=$(head -1 "$_pw" | tr -d '\r\n')
+
+        # ACL TRUOC requirepass. Mot `user default ... nopass` lam
+        # `requirepass` vo hieu (Redis 6+), nen nhanh nay tung "thanh cong"
+        # roi de lai dung trang thai lech ma [4g] chan o lan deploy sau.
+        # `ACL SETUSER` co hieu luc NGAY va khong can restart.
+        _acl0=$(redis-cli -p 6379 ACL LIST 2>/dev/null | grep '^user default' || :)
+        case "$_acl0" in
+            *nopass*)
+                echo "    ACL user default dang \`nopass\` -- dat mat khau cho ACL truoc"
+                if ! redis-cli -p 6379 ACL SETUSER default on ">$_pv" '~*' '&*' +@all \
+                     >/dev/null 2>&1; then
+                    echo "    *** ACL SETUSER that bai -- Redis giu nguyen ***"
+                    _ok=0
+                fi
+                ;;
+        esac
+
         if ! printf '%s' "$_pv" | redis-cli -p 6379 -x CONFIG SET requirepass >/dev/null 2>&1; then
             echo "    *** CONFIG SET requirepass that bai -- Redis giu nguyen ***"
             exit 1
