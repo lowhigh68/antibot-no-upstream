@@ -866,10 +866,78 @@ if [ -n "$tfs_all" ]; then
         esac
     done <<< "$tfs_all"
 fi
+# TU SUA, khong chi in canh bao. Cung ly le da viet o buoc [4b]: in goi y
+# nghia la cac may con lai bi bo sot cho den khi co nguoi doc log deploy.
+#
+# Su co 01-11 tren cloud168-114: hai dong cron cung tro vao duong CU
+# `conf/scripts/threat_feed_sync.sh` (ban khong co `ASN_MAX`/`asn_valid`), va
+# ban cu do VAN TON TAI nen van chay moi gio. Do duoc: 54.507 khoa `rep:asn:`
+# trong do 53.655 (98,4%) NGOAI dai [1, 401308] -- dang la nhieu truong bi noi
+# lien (`401207719226`, `4012016411631`), tuc nguon doi dinh dang va ban cu doc
+# sai cot. TTL 64906 chung minh chung vua duoc ghi ~6 gio truoc, KHONG phai rac
+# cu dang het han. Moi khoa rac la +15,75 diem tho oan cho mot ASN.
+#
+# Hai dong cron cung `0 * * * *` con nghia la chay HAI LAN moi gio vao cung
+# thoi diem. Giu mot nguon duy nhat: `/etc/cron.d/antibot-threat-sync` (noi
+# deploy quan ly), va go moi dong `threat_feed_sync` trong `crontab -l` cua
+# root.
+#
+# Chi sua khi THUC SU lech: `tfs_stale -gt 0`. Khong ghi de mot cau hinh dang
+# dung, va sao luu truoc moi lan ghi.
 if [ "$tfs_stale" -gt 0 ]; then
     echo "    *** $tfs_stale dong cron KHONG tro vao duong dung ***"
     echo "    Duong dung: $TFS"
     echo "    Cron tro vao cho khac = script khong bao gio chay = asn_rep (35 diem) dung 0."
+
+    _cd=/etc/cron.d/antibot-threat-sync
+    _ts=$(date +%s)
+    if [ -e "$_cd" ]; then
+        cp -a "$_cd" "/root/antibot-threat-sync.bak.$_ts" 2>/dev/null || :
+    fi
+    if printf '0 * * * * root bash %s >> /var/log/threat_feed_sync.log 2>&1\n' \
+         "$TFS" > "$_cd" 2>/dev/null; then
+        chmod 0644 "$_cd" 2>/dev/null || :
+        chown root:root "$_cd" 2>/dev/null || :
+        echo "    da ghi lai $_cd -> $TFS"
+    else
+        echo "    *** KHONG ghi duoc $_cd — sua tay ***"
+    fi
+
+    # `crontab -l` cua root: go dong trung. Chi chay khi THAT SU co dong do,
+    # va chi khi `crontab -l` doc duoc -- khong duoc bien mot crontab rong
+    # thanh mot lan ghi de.
+    if command -v crontab >/dev/null 2>&1; then
+        _cl=$(crontab -l 2>/dev/null) || _cl=""
+        if printf '%s\n' "$_cl" | grep -q 'threat_feed_sync'; then
+            printf '%s\n' "$_cl" > "/root/crontab-root.bak.$_ts" 2>/dev/null || :
+            if printf '%s\n' "$_cl" | grep -v 'threat_feed_sync' | crontab - 2>/dev/null; then
+                echo "    da go dong threat_feed_sync khoi crontab cua root"
+                echo "      (sao luu: /root/crontab-root.bak.$_ts)"
+            else
+                echo "    *** KHONG go duoc dong trong crontab root — sua tay ***"
+            fi
+        fi
+    fi
+
+    # Nghiem thu LAI bang chinh phep do o tren, khong tin lenh ghi da chay.
+    _after=$( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } \
+              | grep 'threat_feed_sync' | grep -v '^[[:space:]]*#' || : )
+    _still=0
+    if [ -n "$_after" ]; then
+        while IFS= read -r _l; do
+            [ -n "$_l" ] || continue
+            case "$_l" in
+                *"$TFS"*) ;;
+                *) _still=$((_still + 1)) ;;
+            esac
+        done <<< "$_after"
+    fi
+    if [ "$_still" -eq 0 ]; then
+        echo "    nghiem thu: moi dong cron da tro dung duong"
+    else
+        echo "    *** nghiem thu: VAN con $_still dong tro sai ***"
+        printf '%s\n' "$_after" | sed 's/^/      | /'
+    fi
 fi
 # ── DEM KHOA: loai dong LOI ra khoi phep dem ─────────────────────────
 #
