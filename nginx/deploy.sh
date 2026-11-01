@@ -483,6 +483,26 @@ fi
 #     nguyen trong module cache; sua quyen SAU do khong lam worker doc lai
 #
 # Nen quyen phai dung TRUOC khi co worker nao nap config.
+# BASH KHONG HOIST HAM. Khoi nay tung nam o buoc [9] (dong ~945) trong khi lan
+# goi dau tien o buoc [4b] (dong ~504), nen moi lan deploy in hai dong
+# `world_readable: command not found` roi -- vi mot ham khong ton tai tra ve
+# FALSE -- nhanh `if` bi bo qua va phep kiem world-readable KHONG he chay.
+# Quyen van duoc sua dung nho dieu kien thu hai (`!= root:$NGX_USER`), nen loi
+# nay khong lam hong gi va vi vay song sot lau: no chi lam CHET mot phep kiem
+# an ninh trong im lang. Cung lop loi da ghi tai `postdeploy_touched` o
+# `waf/scripts/run.sh` ("ban cu goi ham truoc khi dinh nghia").
+#
+# `case "$m" in *[2367])` KHONG dung: `case` khop CHUOI nen `*[2367]` chi xet KY
+# TU CUOI, va `644` ket thuc bang `4` -> KHONG khop -> bo sot dung ca pho bien
+# nhat. Do duoc 04-10: 644/604/664 deu ra "ok" trong khi ca ba la world-readable.
+# Dung phep toan BIT tren chu so "other".
+world_readable() {
+    local m="$1" o
+    o=${m#"${m%?}"}
+    [ -n "$o" ] || return 1
+    [ $(( o & 4 )) -ne 0 ]
+}
+
 echo "[4b] Bi mat: quyen doc..."
 NGX_USER=$(sed -n 's/^[[:space:]]*user[[:space:]]\+\([^;[:space:]]*\).*/\1/p' \
            "$(dirname "$TARGET_DIR")/nginx.conf" 2>/dev/null | head -1)
@@ -938,16 +958,7 @@ fi
 # chuoi RONG, khong gui AUTH, va moi phep Redis that bai IM LANG (fail-open).
 # Vi vay dung muc tieu la `640 root:nginx`, KHONG phai `600 root:root`.
 # ---------------------------------------------------------------------------
-# `case "$m" in *[2367])` KHONG dung: `case` khop CHUOI nen `*[2367]` chi xet KY TU
-# CUOI, va `644` ket thuc bang `4` -> KHONG khop -> bo sot dung ca pho bien nhat.
-# Do duoc 04-10: 644/604/664 deu ra "ok" trong khi ca ba la world-readable.
-# Dung phep toan BIT tren chu so "other".
-world_readable() {
-    local m="$1" o
-    o=${m#"${m%?}"}
-    [ -n "$o" ] || return 1
-    [ $(( o & 4 )) -ne 0 ]
-}
+# `world_readable()` da duoc dinh nghia TRUOC buoc [4b] (lan goi dau tien).
 
 # ---------------------------------------------------------------------------
 # [9] REDIS AUTH: trang thai thuc te sau khi worker da nap config.
