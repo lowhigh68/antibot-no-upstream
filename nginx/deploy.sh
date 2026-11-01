@@ -590,7 +590,9 @@ if [ "${DO_REDIS_AUTH:-0}" != "1" ]; then
         echo "    Worker se gui AUTH vao mot Redis chua cau hinh -> MOI phep Redis loi,"
         echo "    toan bo lop trang thai fail-open. KHONG reload."
         echo "    Sua bang MOT trong hai cach roi chay lai deploy:"
-        echo "      bat auth : redis-cli -p 6379 -x CONFIG SET requirepass < $_pw"
+        echo "      bat auth : printf '%s' \"\$(head -1 $_pw | tr -d '\\r\\n')\" \\"
+        echo "                   | redis-cli -p 6379 -x CONFIG SET requirepass"
+        echo "                 (KHONG dung \`< $_pw\`: newline cuoi tep se vao mat khau)"
         echo "                 redis-cli -a \"\$(cat $_pw)\" --no-auth-warning config rewrite"
         echo "      bo auth  : mv $_pw $_pw.disabled"
         exit 1
@@ -1093,7 +1095,9 @@ else
     elif [ -e "$_pw" ] && [ "$_rauth" = "0" ]; then
         echo "    *** LECH: co $_pw ma Redis KHONG doi mat khau ***"
         echo "    Worker gui AUTH vao mot Redis chua cau hinh -> moi phep Redis loi."
-        echo "    Bat lai bang: redis-cli -p 6379 -x CONFIG SET requirepass < $_pw"
+        echo "    Bat lai bang (KHONG dung \`< $_pw\` -- newline se vao mat khau):"
+        echo "      printf '%s' \"\$(head -1 $_pw | tr -d '\\r\\n')\" \\"
+        echo "        | redis-cli -p 6379 -x CONFIG SET requirepass"
         echo "    Hoac xoa tep neu co y khong dung auth."
     elif [ -e "$_pw" ] && [ "$_rauth" = "1" ]; then
         # Khong chi kiem "nginx doc duoc tep" -- phai kiem mat khau TRONG tep mo
@@ -1140,7 +1144,20 @@ else
         fi
         # Mat khau qua STDIN, khong qua argv: /proc/<pid>/cmdline doc duoc boi tenant
         # neu /proc khong hidepid (Review 7 muc 4).
-        if ! redis-cli -p 6379 -x CONFIG SET requirepass < "$_pw" >/dev/null 2>&1; then
+        # `-x ... < "$_pw"` KHONG dung: `-x` lay TOAN BO stdin lam doi so cuoi,
+        # ke ca `\n` o cuoi tep -- nen Redis nhan mat khau `"...abc\n"`. Con moi
+        # cho DUNG mat khau o duoi lai doc bang `$(cat ...)`, va `$(...)` CAT
+        # newline, nen gui `"...abc"`. Hai ben lech nhau mot ky tu vo hinh.
+        #
+        # Su co 01-11 tren cloud28-248: `CONFIG SET` tra `OK` roi ngay phep thu
+        # ke tiep tra `WRONGPASS`, va chinh `_rollback` cung khong AUTH vao
+        # duoc de tat requirepass. Trieu chung trong nhu "mat khau sai" chu
+        # khong nhu "mot ky tu newline".
+        #
+        # `printf '%s'` khong them newline. Doc bang `head -1 | tr -d` cho khop
+        # TUNG BYTE voi cach `$(cat ...)` o cac nhanh con lai.
+        _pv=$(head -1 "$_pw" | tr -d '\r\n')
+        if ! printf '%s' "$_pv" | redis-cli -p 6379 -x CONFIG SET requirepass >/dev/null 2>&1; then
             echo "    *** CONFIG SET requirepass that bai -- Redis giu nguyen ***"
             exit 1
         fi
