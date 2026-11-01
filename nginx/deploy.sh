@@ -539,6 +539,30 @@ if [ -e "$_pw" ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# [4f] POLICY BOOTSTRAP â€” khong de worker fail-open vinh vien.
+#
+# `policyctl publish` van la thao tac TAY cho MOI THAY DOI policy.  Buoc nay chi:
+#   * giu nguyen active khi active + LKG dang hop le;
+#   * khoi phuc active tu LKG neu pointer bi mat/hong;
+#   * publish candidate da test o LAN CAI DAU khi ca hai chua ton tai/hop le.
+#
+# Nhu vay deploy thong thuong KHONG tu promote policy moi, nhung mot node moi
+# cung khong reload voi `builtin ... degraded=true` chi vi nguoi van hanh quen
+# mot lenh publish rieng. Chay sau rsync de policyctl/compiler live khop source,
+# va truoc nginx -t/reload de worker moi chac chan doc duoc artifact.
+POLICYCTL="$TARGET_DIR/waf/scripts/policyctl.sh"
+echo "[4f] Policy active/LKG..."
+if [ ! -f "$POLICYCTL" ]; then
+    echo "HUY: thieu policy controller: $POLICYCTL"
+    exit 1
+fi
+if ! ANTIBOT_POLICY_GROUP="$NGX_USER" bash "$POLICYCTL" bootstrap \
+  "$SOURCE_DIR/core/policy_runtime.lua"; then
+    echo "HUY: policy bootstrap/repair that bai. KHONG reload worker moi."
+    exit 1
+fi
+
 echo "[5] nginx -t..."
 "$NGINX" -t
 

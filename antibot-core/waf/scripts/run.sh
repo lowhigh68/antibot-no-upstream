@@ -190,6 +190,12 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/policy_store_contract.lua" || rc=1
 echo "-- atomic policy publisher/rollback contract -------------"
 sh_suite policy_store_test "$HERE/policy_store_test.sh" || rc=1
 
+echo "-- signed fleet release/replay contract -------------------"
+sh_suite fleet_policyctl_test "$HERE/fleet_policyctl_test.sh" || rc=1
+
+echo "-- read-only fleet health collection contract -------------"
+sh_suite fleet_health_collect_test "$HERE/fleet_health_collect_test.sh" || rc=1
+
 echo "-- unified node-health view contract ----------------------"
 sh_suite healthstat_test "$HERE/healthstat_test.sh" || rc=1
 

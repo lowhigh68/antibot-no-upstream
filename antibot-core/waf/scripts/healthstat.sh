@@ -25,6 +25,7 @@ LOGBASE=$(basename "$LOG")
 LIVE=${LIVE:-/usr/local/openresty/nginx/conf/antibot}
 POLICY_DIR=${POLICY_DIR:-/etc/antibot/policy}
 POLICYCTL=${POLICYCTL:-$LIVE/waf/scripts/policyctl.sh}
+FLEET_POLICYCTL=${FLEET_POLICYCTL:-$LIVE/waf/scripts/fleet_policyctl.sh}
 FEEDBACK_DIR=${FEEDBACK_DIR:-/etc/antibot/feedback}
 FEEDBACKCTL=${FEEDBACKCTL:-$LIVE/waf/scripts/feedbackctl.sh}
 ERROR_LOG=${ERROR_LOG:-/usr/local/openresty/nginx/logs/error.log}
@@ -127,6 +128,14 @@ else
             echo "$f missing_or_unreadable"
         fi
     done
+fi
+
+echo "=== SIGNED FLEET RELEASE ==="
+if [ -r "$FLEET_POLICYCTL" ]; then
+    ANTIBOT_POLICY_DIR="$POLICY_DIR" bash "$FLEET_POLICYCTL" status 2>&1 \
+      || echo "fleet_release_status=degraded"
+else
+    echo "fleet_release_status=unavailable reason=tool_missing"
 fi
 
 echo "=== LABELLED FEEDBACK ==="

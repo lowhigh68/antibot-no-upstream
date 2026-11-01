@@ -1,7 +1,8 @@
 #!/bin/bash
-# Explicit P1.1 policy publisher.  Nothing calls this automatically.
-# A canary remains an operator action: publish/reload one node, inspect pver
-# and policy errors for 5-15 minutes, then repeat on the remaining nodes.
+# P1.1 policy publisher and idempotent first-deploy bootstrap.
+# `bootstrap` may be called automatically by deploy.sh, but it never promotes a
+# newer candidate over a valid active artifact. Normal policy changes remain an
+# operator action: publish/reload one node, inspect pver and errors, then fleet.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -36,6 +37,7 @@ export ANTIBOT_SRC="$ROOT/"
 
 usage() {
     echo "Dung: $0 publish [candidate.lua|candidate.json]"
+    echo "      $0 bootstrap [candidate.lua|candidate.json]"
     echo "      $0 rollback"
     echo "      $0 status"
 }
@@ -65,6 +67,27 @@ prepare_dir() {
     fi
 }
 
+secure_artifacts() {
+    if [ "${POLICYCTL_TEST_MODE:-0}" = "1" ]; then return 0; fi
+    local files=() f
+    for f in "$STATE_DIR/active.json" "$STATE_DIR/last-good.json"; do
+        [ -e "$f" ] && files+=("$f")
+    done
+    [ "${#files[@]}" -eq 0 ] && return 0
+    chown "root:$POLICY_GROUP" "${files[@]}" || return 1
+    chmod 0640 "${files[@]}" || return 1
+}
+
+# Validate an artifact with the exact production compiler. `resty` exit status
+# alone is not trusted; marker_run also requires POLICY_VALID. The normalized
+# output can then be atomically promoted without reinterpreting the input.
+validate_to() {
+    local input="$1" output="$2"
+    [ -f "$input" ] || return 1
+    marker_run POLICY_VALID "$RESTY" "$TOOL" validate "$input" "$output" \
+      >/dev/null 2>&1
+}
+
 verify_test_source() {
     # Unit tests inject a tiny test command and do not need repository layout.
     if [ -n "${POLICY_TEST_CMD:-}" ]; then return 0; fi
@@ -86,7 +109,8 @@ verify_test_source() {
         for rel in \
           core/config.lua core/policy.lua core/policy_store.lua \
           core/policy_tool.lua core/policy_runtime.lua \
-          waf/scripts/run.sh waf/scripts/policyctl.sh; do
+          waf/scripts/run.sh waf/scripts/policyctl.sh \
+          waf/scripts/fleet_policyctl.sh; do
             if [ ! -f "$SOURCE_ROOT/$rel" ] || [ ! -f "$ROOT/$rel" ] \
                || ! cmp -s "$SOURCE_ROOT/$rel" "$ROOT/$rel"; then
                 echo "POLICY_ERROR source/live khong dong bo: $rel"
@@ -100,6 +124,62 @@ verify_test_source() {
 
 command=${1:-}
 case "$command" in
+    bootstrap)
+        candidate=${2:-$SOURCE_ROOT/core/policy_runtime.lua}
+        [ -x "$RESTY" ] || { echo "POLICY_ERROR khong tim thay resty: $RESTY"; exit 2; }
+        [ -f "$candidate" ] || { echo "POLICY_ERROR khong tim thay candidate: $candidate"; exit 2; }
+        prepare_dir || exit 2
+        work=$(mktemp -d) || exit 2
+        trap 'rm -rf "$work"' EXIT INT TERM
+
+        active="$STATE_DIR/active.json"
+        lkg="$STATE_DIR/last-good.json"
+
+        if validate_to "$active" "$work/active.json"; then
+            if validate_to "$lkg" "$work/lkg.json"; then
+                secure_artifacts || {
+                    echo "POLICY_ERROR khong chuan hoa duoc quyen active/LKG"
+                    exit 1
+                }
+                echo "POLICY_BOOTSTRAP_READY source=active action=keep"
+                exit 0
+            fi
+
+            # Active is already the running policy. Repairing a missing/corrupt
+            # LKG from that exact validated artifact changes no runtime verdict.
+            if ! marker_run POLICY_PROMOTED "$RESTY" "$TOOL" promote \
+              "$work/active.json" "$STATE_DIR"; then
+                echo "POLICY_ABORT active hop le nhung khong tao duoc LKG"
+                exit 1
+            fi
+            secure_artifacts || exit 1
+            echo "POLICY_BOOTSTRAP_READY source=active action=repair_lkg"
+            exit 0
+        fi
+
+        if validate_to "$lkg" "$work/lkg.json"; then
+            # A missing/corrupt pointer must recover from the already validated
+            # last-known-good, never jump straight to a newer repo candidate.
+            if ! marker_run POLICY_ROLLED_BACK "$RESTY" "$TOOL" rollback "$STATE_DIR"; then
+                echo "POLICY_ABORT khong khoi phuc duoc active tu LKG"
+                exit 1
+            fi
+            secure_artifacts || exit 1
+            echo "POLICY_BOOTSTRAP_READY source=last-good action=restore_active"
+            exit 0
+        fi
+
+        # First installation (or both artifacts unusable): use the normal
+        # publisher, including source/live parity and the complete test gate.
+        rm -rf "$work"
+        trap - EXIT INT TERM
+        echo "POLICY_BOOTSTRAP first-install: validate + full test + atomic publish"
+        if ! bash "$0" publish "$candidate"; then
+            echo "POLICY_ABORT bootstrap publish that bai"
+            exit 1
+        fi
+        echo "POLICY_BOOTSTRAP_READY source=candidate action=first_publish"
+        ;;
     publish)
         candidate=${2:-$SOURCE_ROOT/core/policy_runtime.lua}
         [ -x "$RESTY" ] || { echo "POLICY_ERROR khong tim thay resty: $RESTY"; exit 2; }
@@ -137,10 +217,7 @@ case "$command" in
             echo "POLICY_ABORT promotion that bai"
             exit 1
         fi
-        if [ "${POLICYCTL_TEST_MODE:-0}" != "1" ]; then
-            chown "root:$POLICY_GROUP" "$STATE_DIR/active.json" "$STATE_DIR/last-good.json"
-            chmod 0640 "$STATE_DIR/active.json" "$STATE_DIR/last-good.json"
-        fi
+        secure_artifacts || { echo "POLICY_ERROR khong chuan hoa duoc quyen active/LKG"; exit 1; }
         echo "POLICY_READY chay nginx -t && nginx -s reload, sau do canary 5-15 phut"
         ;;
     rollback)
@@ -150,10 +227,7 @@ case "$command" in
             echo "POLICY_ABORT rollback that bai; active khong bi ghi do"
             exit 1
         fi
-        if [ "${POLICYCTL_TEST_MODE:-0}" != "1" ]; then
-            chown "root:$POLICY_GROUP" "$STATE_DIR/active.json"
-            chmod 0640 "$STATE_DIR/active.json"
-        fi
+        secure_artifacts || { echo "POLICY_ERROR khong chuan hoa duoc quyen active/LKG"; exit 1; }
         echo "POLICY_READY chay nginx -t && nginx -s reload"
         ;;
     status)

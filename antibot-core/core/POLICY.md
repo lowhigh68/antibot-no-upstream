@@ -70,10 +70,21 @@ The logged `pver` is `<declared-version>+<deterministic-digest>`. The digest
 includes the artifact and all registered defaults in `core/config.lua`, so a
 changed artifact/default cannot silently keep the same runtime identity.
 
-## Publish and rollback
+## Bootstrap, publish and rollback
 
-Nothing publishes automatically, including `deploy.sh --fleet`. On one canary
-node, after the code has been deployed:
+`deploy.sh` automatically calls `policyctl.sh bootstrap` before nginx reload.
+This is deliberately narrower than automatic publication:
+
+- a valid `active.json` is kept byte-for-byte, even when the repository
+  candidate is newer;
+- a missing/corrupt active pointer is restored from a valid LKG;
+- only a first installation, where neither artifact is valid, validates the
+  repository candidate, runs the full regression gate and atomically seeds
+  both active and LKG.
+
+Therefore a new node cannot remain indefinitely on `builtin ... degraded=true`,
+while normal policy changes—including `deploy.sh --fleet`—are still never
+promoted automatically. On one canary node, after the code has been deployed:
 
 ```bash
 sudo bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/policyctl.sh publish

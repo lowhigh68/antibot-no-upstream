@@ -35,6 +35,12 @@ publish() {
       POLICY_TEST_CMD="$tests" RESTY="$RESTY" \
       bash "$HERE/policyctl.sh" publish "$candidate" >/dev/null 2>&1
 }
+bootstrap() {
+    local state="$1" candidate="$2" tests="$3"
+    POLICYCTL_TEST_MODE=1 ANTIBOT_POLICY_DIR="$state" \
+      POLICY_TEST_CMD="$tests" RESTY="$RESTY" \
+      bash "$HERE/policyctl.sh" bootstrap "$candidate" >/dev/null 2>&1
+}
 
 make_candidate() {
     local path="$1" version="$2" status="$3"
@@ -52,6 +58,42 @@ printf '%s\n' \
 make_candidate "$T/v1.lua" "v1" 430
 make_candidate "$T/v2.lua" "v2" 431
 make_candidate "$T/v3.lua" "v3" 432
+
+# Deploy bootstrap is idempotent: first install seeds both artifacts, while a
+# later repository candidate must never auto-promote over a valid active.
+BOOT="$T/bootstrap"
+mkdir -p "$BOOT"
+want "bootstrap first install succeeds" bootstrap "$BOOT" "$T/v1.lua" "$PASS"
+want "bootstrap seeds active" has_version "$BOOT/active.json" v1
+want "bootstrap seeds LKG" has_version "$BOOT/last-good.json" v1
+boot_active=$(sha256sum "$BOOT/active.json" | awk '{print $1}')
+boot_lkg=$(sha256sum "$BOOT/last-good.json" | awk '{print $1}')
+want "bootstrap with newer candidate is no-op" bootstrap "$BOOT" "$T/v2.lua" "$PASS"
+want "bootstrap never auto-promotes newer candidate" test "$boot_active" = \
+  "$(sha256sum "$BOOT/active.json" | awk '{print $1}')"
+want "bootstrap preserves valid LKG" test "$boot_lkg" = \
+  "$(sha256sum "$BOOT/last-good.json" | awk '{print $1}')"
+
+# Missing active recovers from the exact LKG, not from the newer repo policy.
+rm -f "$BOOT/active.json"
+want "bootstrap restores missing active from LKG" bootstrap "$BOOT" "$T/v2.lua" "$PASS"
+want "restored active keeps LKG version" has_version "$BOOT/active.json" v1
+
+# A valid active can safely reconstruct a lost/corrupt rollback artifact.
+printf '{corrupt' > "$BOOT/last-good.json"
+want "bootstrap repairs corrupt LKG from active" bootstrap "$BOOT" "$T/v2.lua" "$PASS"
+want "repaired LKG equals active version" has_version "$BOOT/last-good.json" v1
+
+# First install must still honor the full regression gate.
+BOOTFAIL="$T/bootstrap-fail"
+mkdir -p "$BOOTFAIL"
+if bootstrap "$BOOTFAIL" "$T/v1.lua" "$FAIL"; then
+    fail=$((fail + 1)); echo "FAIL policy_store_test: bootstrap bypassed failed tests" >&2
+else
+    pass=$((pass + 1))
+fi
+want "failed bootstrap leaves active absent" test ! -e "$BOOTFAIL/active.json"
+want "failed bootstrap leaves LKG absent" test ! -e "$BOOTFAIL/last-good.json"
 
 want "first publish succeeds" publish "$T/v1.lua" "$PASS"
 want "first active is v1" has_version "$STATE/active.json" v1

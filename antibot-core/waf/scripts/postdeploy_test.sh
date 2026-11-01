@@ -604,6 +604,33 @@ fi
 rm -rf "$MA"
 
 
+# ── POLICY BOOTSTRAP: sau rsync, truoc reload ─────────────────────────────
+# Node moi tung reload thang vao built-in degraded vi deploy.sh khong tao
+# active/LKG. Cong nay ghim ca SU TON TAI lan THU TU: policyctl live chi co sau
+# rsync, con artifact phai san sang truoc nginx -t/reload tao worker moi.
+printf '\n── policy bootstrap trong deploy ──\n'
+DEPLOY="$HERE/../../../nginx/deploy.sh"
+_sync_line=$(grep -n 'rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"' "$DEPLOY" \
+             | head -1 | cut -d: -f1)
+_boot_line=$(grep -n 'bash "$POLICYCTL" bootstrap' "$DEPLOY" \
+             | head -1 | cut -d: -f1)
+_test_line=$(grep -n '^echo "\[5\] nginx -t' "$DEPLOY" \
+             | head -1 | cut -d: -f1)
+if [ -n "$_sync_line" ] && [ -n "$_boot_line" ] && [ -n "$_test_line" ] \
+   && [ "$_sync_line" -lt "$_boot_line" ] && [ "$_boot_line" -lt "$_test_line" ]; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' \
+      "policy bootstrap phai nam sau rsync va truoc nginx -t (sync=$_sync_line boot=$_boot_line test=$_test_line)"
+fi
+if grep -q 'KHONG reload worker moi' "$DEPLOY"; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' \
+      "bootstrap hong phai abort deploy truoc reload"
+fi
+
+
 printf '\n── muc 23: conf moi hon master -> canh bao ──\n'
 # Lop loi: mot thay doi `lua_shared_dict` nam tren dia MA KHONG CO HIEU LUC, va
 # khong mot dong log nao bao. Do 06-10 tren hai may (64m tren dia, master tu
