@@ -477,8 +477,27 @@ for entry in "${SOURCES[@]}"; do
         printf 'SET mon:src:%s %s EX %s\n' "$name" "$n" "$TTL_MON"
         printf 'SET mon:srcsync:%s %s EX %s\n' "$name" "$(date +%s)" "$TTL_MON"
     } | RPIPE 2>&1)"
-    if [ $? -ne 0 ] || echo "$pipe_out" | grep -qE 'errors: [1-9]|NOAUTH|ERR '; then
-        sfail "[$name] Redis write failed; old keys remain until TTL"
+    # Phai lay NGAY dong sau phep gan. Ban cu kiem `$?` SAU khi da chay
+    # them lenh khac, nen no la ma cua lenh do chu khong phai cua `RPIPE`
+    # -> nhanh rc khong bao gio bat duoc gi, chi `grep` con tac dung.
+    #
+    # Do duoc truoc khi sua, dung hai dang:
+    #   out="$({ echo a; } | false)"   -> $? = 1            (dung)
+    #   ... PIPESTATUS[1]              -> RONG -> 0        (sai)
+    # Trong command substitution, PIPESTATUS chi co MOT phan tu, nen
+    # `PIPESTATUS[1]` rong va `pipe_rc` thanh 0 -- tai lap dung lo hong
+    # dang sua. `$?` cua phep gan CHINH LA ma lenh cuoi trong ong = RPIPE.
+    pipe_rc=$?
+    # Ly do THAT phai vao log. Su co 01-11 tren cloud28-248: `requirepass`
+    # rong ma `redis.pass` con lai -> moi lenh tra `ERR AUTH <password>
+    # called without any password configured`, nhung thong diep cu NUOT
+    # `pipe_out` nen khong phan biet duoc AUTH lech / Redis chet / `--pipe`
+    # loi. Mot canh bao khong mang ly do thi phai chan doan lai tu dau.
+    if [ "$pipe_rc" -ne 0 ] \
+       || printf '%s' "$pipe_out" \
+          | grep -qE 'errors: [1-9]|NOAUTH|WRONGPASS|ERR '; then
+        _why=$(printf '%s' "$pipe_out" | tr '\n' ' ' | cut -c1-200)
+        sfail "[$name] Redis write failed (rc=$pipe_rc): ${_why:-no output}; old keys remain until TTL"
         continue
     fi
 

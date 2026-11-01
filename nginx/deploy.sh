@@ -540,6 +540,63 @@ if [ -e "$_pw" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# [4g] REDIS AUTH: cong FAIL-CLOSED truoc reload.
+#
+# Buoc [9] o duoi do DUNG bon trang thai nay va in dung ca lenh sua, nhung no
+# chi `echo` roi deploy di tiep -- va no chay SAU `[6] Reload` (dong 571), nen
+# canh bao hien ra khi worker moi DA nap `password` lech va MOI phep Redis da
+# that bai. Su co 01-11 tren cloud28-248: `redis.pass` con lai tu mot lan
+# `--enable-redis-auth` that bai truoc do, `requirepass` van rong, 3.412 luot
+# `AUTH failed` trong 20 phut; ban, whitelist, verified:*, rate limit, risk va
+# FIM deu fail-open ma khong ai thay. Mot canh bao cuon mat tren man hinh deploy
+# khong phai mot cong.
+#
+# Chi hai trang thai LECH bi chan o day. Trang thai "chua bat auth" van di tiep
+# (no la P0 rieng, bat bang `--enable-redis-auth`), va `--enable-redis-auth` thi
+# bo qua cong nay vi chinh no se dat `requirepass` o buoc [9].
+if [ "${DO_REDIS_AUTH:-0}" != "1" ]; then
+    echo "[4g] Redis auth: cong truoc reload..."
+    _g_ping=$(redis-cli -p 6379 PING 2>&1 | head -1)
+    case "$_g_ping" in
+        *NOAUTH*|*"Authentication required"*) _g_auth=1 ;;
+        PONG)                                 _g_auth=0 ;;
+        *)                                    _g_auth=-1 ;;
+    esac
+
+    if [ "$_g_auth" = "-1" ]; then
+        echo "    khong ket noi duoc Redis ($_g_ping) -- khong do duoc, di tiep"
+    elif [ -e "$_pw" ] && [ "$_g_auth" = "0" ]; then
+        echo "HUY: LECH -- co $_pw ma Redis KHONG doi mat khau."
+        echo "    Worker se gui AUTH vao mot Redis chua cau hinh -> MOI phep Redis loi,"
+        echo "    toan bo lop trang thai fail-open. KHONG reload."
+        echo "    Sua bang MOT trong hai cach roi chay lai deploy:"
+        echo "      bat auth : redis-cli -p 6379 -x CONFIG SET requirepass < $_pw"
+        echo "                 redis-cli -a \"\$(cat $_pw)\" --no-auth-warning config rewrite"
+        echo "      bo auth  : mv $_pw $_pw.disabled"
+        exit 1
+    elif [ ! -e "$_pw" ] && [ "$_g_auth" = "1" ]; then
+        echo "HUY: Redis DOI mat khau ma $_pw KHONG CO."
+        echo "    Worker se nap password rong -> MOI phep Redis loi. KHONG reload."
+        echo "    Ghi lai mat khau dung vao $_pw (chown root:$NGX_USER, chmod 640)"
+        echo "    hoac tat requirepass, roi chay lai deploy."
+        exit 1
+    elif [ -e "$_pw" ] && [ "$_g_auth" = "1" ]; then
+        # Tep CO + Redis CO auth: phai chung minh mat khau TRONG tep mo duoc
+        # Redis. Neu lan truoc `CONFIG SET` that bai thi tep van con lai va
+        # mot phep kiem chi xem "co tep hay khong" se bao OK.
+        if REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 PING 2>/dev/null            | grep -q PONG; then
+            echo "    tep khop requirepass -- ok"
+        else
+            echo "HUY: mat khau trong $_pw KHONG mo duoc Redis."
+            echo "    Hai ben lech nhau. KHONG reload de worker khong fail-open."
+            exit 1
+        fi
+    else
+        echo "    chua bat auth (P0 rieng: deploy.sh --enable-redis-auth)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # [4f] POLICY BOOTSTRAP â€” khong de worker fail-open vinh vien.
 #
 # `policyctl publish` van la thao tac TAY cho MOI THAY DOI policy.  Buoc nay chi:
