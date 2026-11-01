@@ -1,5 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local state_scope = require "antibot.core.state_scope"
 
 -- IP reputation — kết hợp ip_rep (threat feed) và ip_risk (runtime).
 -- ip_rep: từ threat feed (IPsum, Spamhaus), cập nhật mỗi ngày.
@@ -18,7 +19,7 @@ function _M.run(ctx)
     ctx.ip_rep = tonumber(rep_val) or 0.0
 
     -- Runtime IP risk (Attack 1: UA switching detection)
-    local risk_val = pool.safe_get("ip_risk:" .. ip)
+    local risk_val = pool.safe_get(state_scope.ip_risk_key(ctx, ip))
     ctx.ip_risk = tonumber(risk_val) or 0.0
 
     if ctx.ip_risk > 0.3 then

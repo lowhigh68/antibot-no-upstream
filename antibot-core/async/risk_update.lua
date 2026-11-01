@@ -2,6 +2,7 @@ local _M = {}
 
 local pool = require "antibot.core.redis_pool"
 local cfg  = require "antibot.core.config"
+local state_scope = require "antibot.core.state_scope"
 
 local DECAY_FACTOR         = 0.95
 local RISE_FACTOR_NAVIGATE = 0.30
@@ -86,6 +87,8 @@ function _M.run(ctx)
     local action   = ctx.action or "allow"
     local ip       = ctx.ip or ""
     local verified = ctx.verified or false
+    local risk_key = state_scope.risk_key(ctx, id)
+    local ip_risk_key = ip ~= "" and state_scope.ip_risk_key(ctx, ip) or nil
 
     local rise_factor = class == "interaction"
         and RISE_FACTOR_INTERACT
@@ -96,7 +99,7 @@ function _M.run(ctx)
         if not red then return end
 
         -- ── Identity risk ──────────────────────────────────────
-        local current = tonumber(red:get("risk:" .. id)) or 0.0
+        local current = tonumber(red:get(risk_key)) or 0.0
         local new_risk
 
         -- "throttled" = verified good bot bị rate-limit hợp pháp trên expensive
@@ -114,17 +117,17 @@ function _M.run(ctx)
         new_risk = math.max(0.0, math.min(1.0, new_risk))
 
         if new_risk > MIN_RISK_STORE then
-            red:setex("risk:" .. id, cfg.ttl.risk,
+            red:setex(risk_key, cfg.ttl.risk,
                       string.format("%.4f", new_risk))
         else
-            red:del("risk:" .. id)
+            red:del(risk_key)
         end
 
         -- ── IP-level risk (Attack 1 + network resilience) ──────
         -- Only update for valid, non-local IPs.
         if ip ~= "" and ip ~= "127.0.0.1" and ip ~= "::1" then
 
-            local ip_cur = tonumber(red:get("ip_risk:" .. ip)) or 0.0
+            local ip_cur = tonumber(red:get(ip_risk_key)) or 0.0
             local ip_new
 
             if action == "allow" or action == "monitor" or action == "throttled" then
@@ -154,10 +157,10 @@ function _M.run(ctx)
             ip_new = math.max(0.0, math.min(1.0, ip_new))
 
             if ip_new > MIN_IP_RISK_STORE then
-                red:setex("ip_risk:" .. ip, IP_RISK_TTL,
+                red:setex(ip_risk_key, IP_RISK_TTL,
                           string.format("%.4f", ip_new))
             else
-                red:del("ip_risk:" .. ip)
+                red:del(ip_risk_key)
             end
 
             if math.abs(ip_new - ip_cur) > 0.01 then

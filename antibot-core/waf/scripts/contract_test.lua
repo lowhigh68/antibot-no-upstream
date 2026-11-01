@@ -1090,6 +1090,9 @@ do
     package.preload["antibot.core.fingerprint.identity"] = function()
         return { build = function() end }
     end
+    package.preload["antibot.core.state_scope"] = function()
+        return { fingerprint_seed = function(_, base) return base end }
+    end
     local bl_chunk = loadfile(SRC .. "core/fingerprint/build_light.lua")
     if not bl_chunk then
         bad("  SAI  khong nap duoc core/fingerprint/build_light.lua\n")

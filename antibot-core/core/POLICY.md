@@ -1,4 +1,4 @@
-# Compiled policy control plane (P1.0–P1.3)
+# Compiled policy control plane (P1.0–P1.4)
 
 The policy lifecycle has two deliberately separate halves:
 
@@ -198,3 +198,85 @@ The safe lifecycle is therefore:
 The node health view includes active/expired label counts.  Expired labels are
 ignored by replay but retained until the explicit `prune-expired` command, so
 evidence deletion is never hidden inside request handling or policy publish.
+
+## P1.4 signed fleet releases and manual rollout
+
+P1.4 adds authenticity, version ordering and fleet observation outside nginx.
+It does **not** add file, network or Redis I/O to the request path. It also does
+not create a second publisher: a node that accepts a signed bundle still
+delegates to P1.1 `policyctl.sh`, including validator, full `run.sh`, atomic
+active/LKG promotion and the explicit reload/canary step.
+
+Generate the controller key once. The private key never leaves the controller;
+only the public key is installed on nodes:
+
+```bash
+sudo install -d -m 0700 /etc/antibot/controller
+sudo openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+  -out /etc/antibot/controller/fleet-policy-rsa.key
+sudo chmod 0600 /etc/antibot/controller/fleet-policy-rsa.key
+sudo openssl pkey -in /etc/antibot/controller/fleet-policy-rsa.key \
+  -pubout -out /tmp/fleet-policy-rsa.pub
+
+# Repeat on every node after copying the public key there:
+sudo install -d -m 0750 -o root -g nginx /etc/antibot/policy
+sudo install -m 0644 -o root -g root /tmp/fleet-policy-rsa.pub \
+  /etc/antibot/policy/fleet-policy-rsa.pub
+```
+
+Build one immutable release directory. `sequence` is a monotonically increasing
+fleet number; it is independent from the human-readable policy version:
+
+```bash
+cd /home/xadmin/antibot/antibot-no-upstream
+sudo bash antibot-core/waf/scripts/fleet_policyctl.sh build \
+  1 antibot-core/core/policy_runtime.lua /tmp/antibot-release-1 \
+  /etc/antibot/controller/fleet-policy-rsa.key 86400
+```
+
+The bundle contains exactly `policy.json`, `manifest.txt` and `manifest.sig`.
+The signature covers schema, sequence, compiled policy version, policy SHA-256,
+creation time and expiry. A node rejects tampering, an expired/future release,
+an excessive TTL, a lower sequence, or reuse of a sequence with different
+content. The durable sequence state is written only after P1.1 succeeds.
+
+Copy the directory to one canary node, then verify and apply it explicitly:
+
+```bash
+scp -r /tmp/antibot-release-1 root@CANARY:/root/
+ssh root@CANARY \
+  'bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/fleet_policyctl.sh verify /root/antibot-release-1'
+ssh root@CANARY \
+  'bash /usr/local/openresty/nginx/conf/antibot/waf/scripts/fleet_policyctl.sh apply /root/antibot-release-1'
+ssh root@CANARY \
+  '/usr/local/openresty/nginx/sbin/nginx -t && /usr/local/openresty/nginx/sbin/nginx -s reload'
+```
+
+`apply` never reloads nginx and never contacts another node. Observe the
+canary for 5–15 minutes with `healthstat.sh`, verify one `pver`, no policy error,
+and the expected signed sequence, then repeat the same three explicit commands
+on each remaining node. There is deliberately no `--fleet` auto-promote.
+
+An emergency `policyctl.sh rollback` does not decrease signed sequence state.
+This prevents a previously consumed bundle from silently undoing the rollback.
+To re-apply that policy, build it again with a **new higher sequence**.
+
+Central collection is read-only. Use one hostname per line; comments start
+with `#`:
+
+```bash
+cat >/tmp/antibot-hosts.txt <<'EOF'
+cloud168-123
+cloud168-101
+cloud28-246
+EOF
+
+bash antibot-core/waf/scripts/fleet_health_collect.sh \
+  /tmp/antibot-hosts.txt /tmp/fleet-health-$(date +%s) \
+  "$(date -d '1 hour ago' +%s)"
+```
+
+The collector runs only fixed remote `healthstat.sh` and signed-release
+`status` commands. It preserves each node's output plus a summary and returns
+non-zero if any node is unreachable or unhealthy; it never applies policy or
+reloads nginx.

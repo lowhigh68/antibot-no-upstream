@@ -83,6 +83,8 @@ local syntax_rel = {
     "core/policy_tool.lua",
     "core/policy_runtime.lua",
     "core/network_quarantine.lua",
+    "core/site_scope.lua",
+    "core/state_scope.lua",
     "core/operator_network.lua",
     "core/req_classifier.lua",
     "detection/bot/lite_verify.lua",

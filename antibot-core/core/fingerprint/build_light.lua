@@ -1,6 +1,7 @@
 local _M = {}
 
 local identity_mod = require "antibot.core.fingerprint.identity"
+local state_scope  = require "antibot.core.state_scope"
 
 local SENTINEL = {
     ja3    = "NO_JA3",
@@ -105,7 +106,9 @@ function _M.run(ctx)
     ctx.fp_quality  = real / #components
     ctx.fp_degraded = (ctx.fp_quality < FP_QUALITY_THRESHOLD)
     -- Băm CHỈ từ 4 thành phần đầu: ip | ua | asn | ja3.
-    ctx.fp_light    = ngx.md5(table.concat(components, "|", 1, HASH_PARTS))
+    -- Self traffic keeps all normal scoring, but its session/graph identity is
+    -- isolated by canonical target site. External fingerprints are unchanged.
+    ctx.fp_light    = ngx.md5(state_scope.fingerprint_seed(ctx, table.concat(components, "|", 1, HASH_PARTS)))
 
     if ctx.fp_degraded then
         ngx.log(ngx.WARN,

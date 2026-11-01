@@ -34,6 +34,8 @@ ngx = {
 
 local identity = assert(loadfile(src .. "core/fingerprint/identity.lua"))()
 package.loaded["antibot.core.fingerprint.identity"] = identity
+package.loaded["antibot.core.site_scope"] = assert(loadfile(
+    src .. "core/site_scope.lua"))()
 local quarantine = assert(loadfile(src .. "core/network_quarantine.lua"))()
 package.loaded["antibot.core.network_quarantine"] = quarantine
 

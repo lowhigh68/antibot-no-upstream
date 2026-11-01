@@ -8,25 +8,7 @@
 local _M = {}
 
 local identity = require "antibot.core.fingerprint.identity"
-
-local function safe_host(ctx)
-    -- Intentional SITE/VHOST scope, not the literal Host header.  In nginx,
-    -- `$server_name` is the first name declared by the matched server block;
-    -- aliases that share one vhost/docroot therefore share one quarantine
-    -- bucket.  That avoids escaping a quarantine by switching www/apex/alias,
-    -- at the accepted cost that one alias can affect its sibling aliases.
-    local host = ngx.var.server_name
-    if not host or host == "" then
-        host = (ctx and ctx.req and ctx.req.host) or ngx.var.host or "unknown"
-    end
-    host = tostring(host):lower():gsub("%.$", "")
-    host = host:gsub("[^%w%.%-_]", "_")
-    if host == "" then host = "unknown" end
-    if #host > 96 then
-        host = ngx.md5 and ngx.md5(host):sub(1, 32) or host:sub(1, 96)
-    end
-    return host
-end
+local site_scope = require "antibot.core.site_scope"
 
 function _M.network_id(ctx)
     if ctx and ctx.network_id and ctx.network_id ~= "" then
@@ -41,7 +23,7 @@ function _M.network_id(ctx)
 end
 
 function _M.host(ctx)
-    return safe_host(ctx)
+    return site_scope.host(ctx)
 end
 
 function _M.keys(ctx, scope)
@@ -51,7 +33,7 @@ function _M.keys(ctx, scope)
     if scope == "global" then
         return {
             id      = id,
-            host    = safe_host(ctx),
+            host    = site_scope.host(ctx),
             scope   = "global",
             ban     = "gban:"  .. id,
             hit     = "ghit:"  .. id,
@@ -60,7 +42,7 @@ function _M.keys(ctx, scope)
         }
     end
 
-    local host = safe_host(ctx)
+    local host = site_scope.host(ctx)
     local suffix = host .. ":" .. id
     return {
         id      = id,
@@ -78,7 +60,7 @@ function _M.legacy_keys(ctx)
     if not id or id == "" then return nil end
     return {
         id      = id,
-        host    = safe_host(ctx),
+        host    = site_scope.host(ctx),
         scope   = "legacy",
         ban     = "ban:" .. id,
         hit     = "ban:hit:" .. id,
