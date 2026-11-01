@@ -1,11 +1,47 @@
 #!/bin/bash
-# P1.4 signing/replay tests.  All keys, bundles and policy state stay in /tmp.
+# P1.4 signing/replay tests.  Keys, bundles and policy state stay in one
+# disposable directory chosen by `mktemp_exec` (see below).
 set -uo pipefail
 export LC_ALL=C
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 RESTY=${RESTY:-/usr/local/openresty/bin/resty}
-T=$(mktemp -d /tmp/fleet-policy-test.XXXXXX) || exit 2
+# THU MUC TAM PHAI CHAY DUOC SCRIPT.
+#
+# Bo nay ghi script gia (`policyctl-fake.sh`, stub `redis-cli`, collector) roi
+# CHAY chung. Tren may that `/tmp` thuong mount `noexec` -- do duoc 01-11 tren
+# cloud28-248: `ext4 (rw,nosuid,noexec)`, nen `chmod +x` xong `[ -x ]` VAN tra
+# false va `bash <file>` bao `Permission denied`. 19 ca trong ba bo do dong
+# loat, va moi ca do deu la ca phai THUC THI mot tep trong `$T`; ca chi so
+# chuoi thi pass -- nen trieu chung trong nhu "logic hong".
+#
+# Khong tai hien duoc tren WSL vi `/mnt/c` la NTFS, moi tep bao executable.
+#
+# `mktemp_exec` thu TUNG goc va nghiem thu bang cach CHAY THAT mot script, chu
+# khong doc mode bit: `noexec`, ACL, SELinux va mount option deu co the lam
+# mode bit noi sai.
+mktemp_exec() {
+    local prefix="$1" d root probe
+    for root in "${TMPDIR:-}" "$HOME/.cache" "$HOME" /var/tmp /tmp; do
+        [ -n "$root" ] || continue
+        [ -d "$root" ] && [ -w "$root" ] || continue
+        d=$(mktemp -d "$root/$prefix.XXXXXX" 2>/dev/null) || continue
+        probe="$d/.probe.sh"
+        printf '#!/bin/sh\nexit 7\n' > "$probe" 2>/dev/null || { rm -rf "$d"; continue; }
+        chmod +x "$probe" 2>/dev/null || { rm -rf "$d"; continue; }
+        "$probe" >/dev/null 2>&1
+        if [ "$?" -eq 7 ]; then
+            rm -f "$probe"
+            printf '%s' "$d"
+            return 0
+        fi
+        rm -rf "$d"
+    done
+    echo "khong tim duoc thu muc tam CHAY DUOC script (da thu TMPDIR, \$HOME/.cache, \$HOME, /var/tmp, /tmp)." >&2
+    echo "Dat TMPDIR tro toi mot thu muc khong co noexec roi chay lai." >&2
+    return 1
+}
+T=$(mktemp_exec fleet-policy-test) || exit 2
 trap 'rm -rf "$T"' EXIT INT TERM
 STATE="$T/state"
 BUNDLES="$T/bundles"
