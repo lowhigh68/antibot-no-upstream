@@ -979,9 +979,30 @@ fi
 # `dem_khoa <mau>` -> so khoa THAT, hoac `LOI` neu khong do duoc. Ben goi phai
 # phan biet "0 khoa" voi "khong do duoc" — gop hai cai la lop loi da bat nhieu lan
 # trong tep nay.
+#
+# `--count 10000` + `head -$TRAN`: DUNG SOM. `redis-cli --scan` quet TOAN BO
+# keyspace roi loc pattern o PHIA CLIENT, nen chi phi theo `dbsize` chu khong
+# theo so khoa khop. Do duoc 01-11 tren cloud28-248: `dbsize=322745` lam mot
+# lenh `--scan` dung hang, va buoc [8] nay chay MOI LAN deploy (khong co co).
+#
+# Ba nhanh ben goi (`LOI` / `-eq 0` / `-gt 20000`) chi can biet THUOC DAI NAO,
+# khong can so chinh xac. Nen dem den `TRAN=20001` roi dung: du de phan biet ca
+# ba, va tren may dang ghi rac (do 54.507 khoa tren cloud168-114) no dung o
+# 20001 thay vi di het.
+#
+# `head` dong ong -> `redis-cli` nhan SIGPIPE (rc=141) va thoat. Do la CO Y:
+# khong co `SCAN` cursor nao bi bo do o phia Redis, chi la client ngung doc.
+#
+# Nhung KHONG duoc doc rc cua pipeline de ket luan "LOI". Hai ly do:
+#   - khong `pipefail`: rc la cua `head` (luon 0), nen phep thu rc vo nghia
+#   - CO `pipefail` (neu ai them vao script sau nay): rc la 141 cua SIGPIPE,
+#     nen MOI may nhieu khoa se bi bao `LOI` oan
+# Fixture 02-11 bat dung cai thu hai. Nen phan loai bang NOI DUNG (`case` ben
+# duoi) chu khong bang rc: mot phep do khong duoc phu thuoc vao co shell.
 dem_khoa() {
-    local out
-    out=$("${RCLI_P[@]}" --scan --pattern "$1" 2>&1) || { printf 'LOI'; return 0; }
+    local out tran=20001
+    out=$("${RCLI_P[@]}" --scan --pattern "$1" --count 10000 2>&1 \
+          | head -"$tran")
     case "$out" in
         ERROR:*|NOAUTH*|*"Authentication required"*|*"Connection refused"*)
             printf 'LOI'; return 0 ;;
@@ -1004,8 +1025,13 @@ if command -v redis-cli >/dev/null 2>&1; then
     if [ "$n_rep" -eq 0 ]; then
         echo "    *** 0 khoa — asn_rep dung 0: mot tin hieu 35 diem DANG CHET ***"
     elif [ "$n_rep" -gt 20000 ]; then
-        echo "    *** $n_rep khoa la QUA NHIEU — nguon dang ghi rac (ban da va ~800) ***"
+        # `dem_khoa` dung o tran 20001, nen day la "IT NHAT 20001", khong phai
+        # con so that. Noi dung de khong ai doc 20001 thanh tong so.
+        echo "    *** it nhat $n_rep khoa — QUA NHIEU, nguon dang ghi rac (ban da va ~800) ***"
         echo "    Chay tay mot lan de thay the: $TFS"
+        echo "    Dem that + don rac (chay TAY, co the lau tren DB lon):"
+        echo "      REDISCLI_AUTH=\$(cat /etc/antibot/redis.pass) redis-cli -p 6379 \\"
+        echo "        --scan --pattern 'rep:asn:*' --count 10000 | wc -l"
     fi
     fi
 fi
@@ -1237,23 +1263,56 @@ else
         #
         # Bang chung THAT: `res_ip:<ip>` va `burst:<id>` do WORKER `safe_incr` khi co
         # request (`l7/rate/res_ip_counter.lua:30`, `l7/burst/burst_counter.lua:23`).
-        _cnt_keys() { REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --scan --pattern "$1" 2>/dev/null | grep -c . ; }
-        _k0=$(_cnt_keys 'res_ip:*'); _b0=$(_cnt_keys 'burst:*')
+        #
+        # KHONG dem khoa. Hai ly do, do duoc:
+        #
+        # 1. `redis-cli --scan` quet TOAN BO keyspace roi loc pattern o phia
+        #    client, nen chi phi theo `dbsize`. `dbsize=322745` tren cloud28-248
+        #    (01-11) lam deploy DUNG HANG -- va ban truoc goi `_cnt_keys` BON lan
+        #    (k0/b0/k1/b1), tuc bon lan quet. Da go dung thu nay o buoc [9]
+        #    (`f5ce2f8`) roi de nguyen o day.
+        #
+        # 2. `res_ip:<ip>` co TTL, nen khoa cu VAN CON. "So khoa khong tang" co
+        #    the chi la "khoa cua IP nay da ton tai" -- dung cai bay
+        #    "khoa ton tai != dang hoat dong". Phep do dung la GIA TRI cua MOT
+        #    khoa xac dinh: `safe_incr` tang no, nen gia tri doi = worker VUA ghi,
+        #    khong phu thuoc so khoa va khong can quet.
+        #
+        # `res_ip:127.0.0.1` la khoa curl ben duoi se cham (request tu loopback).
+        # `GET` mot khoa la O(1), khong quet gi.
+        _rget() { REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 --no-auth-warning GET "$1" 2>/dev/null; }
+        _ck="res_ip:127.0.0.1"
+        _v0=$(_rget "$_ck")
         _host=$(ls -1 /home/*/domains 2>/dev/null | grep -m1 '[.]')
         if [ -n "$_host" ]; then
             curl -s -o /dev/null -k --max-time 5 "https://127.0.0.1/" -H "Host: $_host" 2>/dev/null || :
             curl -s -o /dev/null    --max-time 5 "http://127.0.0.1/"  -H "Host: $_host" 2>/dev/null || :
         fi
         sleep 2
-        _k1=$(_cnt_keys 'res_ip:*'); _b1=$(_cnt_keys 'burst:*')
-        if [ "${_k1:-0}" -gt "${_k0:-0}" ] || [ "${_b1:-0}" -gt "${_b0:-0}" ]; then
-            echo "    canary: WORKER ghi duoc Redis (res_ip $_k0->$_k1, burst $_b0->$_b1) -- ok"
-        elif [ "${_k1:-0}" -gt 0 ] || [ "${_b1:-0}" -gt 0 ]; then
-            echo "    canary: co khoa do worker ghi (res_ip=$_k1 burst=$_b1) -- ok"
+        _v1=$(_rget "$_ck")
+        if [ -n "$_v1" ] && [ "$_v1" != "$_v0" ]; then
+            echo "    canary: WORKER ghi duoc Redis ($_ck ${_v0:-nil}->$_v1) -- ok"
+        elif [ -n "$_v1" ]; then
+            # Gia tri khong doi nhung khoa CO: worker da ghi o mot luc nao do.
+            # Yeu hon nhanh tren (co the la khoa cu con TTL) nhung van la bang
+            # chung worker tung AUTH duoc. Chi dung khi curl khong cham duoc.
+            echo "    canary: $_ck=$_v1 (gia tri khong doi -- curl co the khong cham duoc backend)"
+            echo "      worker da tung ghi duoc Redis -- ok"
         else
-            echo "    *** canary: KHONG co khoa nao do worker ghi (host=$_host) ***"
-            echo "    Worker co the dang fail-open. KHONG ghi vao redis.conf."
-            _rollback; exit 1
+            # Khoa khong ton tai. Truoc khi ket luan fail-open, loai bo kha nang
+            # "curl khong den duoc worker": mot phep thu DUNG SOM, khong quet.
+            _rpw=$(cat "$_pw")
+            _any=$(REDISCLI_AUTH="$_rpw" redis-cli -p 6379 --no-auth-warning \
+                   --scan --pattern 'res_ip:*' --count 10000 2>/dev/null \
+                   | head -1)
+            if [ -n "$_any" ]; then
+                echo "    canary: $_ck trong, nhung co khoa khac do worker ghi ($_any) -- ok"
+                echo "      (curl loopback khong cham duoc backend, khong phai loi auth)"
+            else
+                echo "    *** canary: KHONG co khoa res_ip: nao do worker ghi (host=$_host) ***"
+                echo "    Worker co the dang fail-open. KHONG ghi vao redis.conf."
+                _rollback; exit 1
+            fi
         fi
         # CHI den day moi persist.
         if REDISCLI_AUTH=$(cat "$_pw") redis-cli -p 6379 CONFIG REWRITE >/dev/null 2>&1; then
