@@ -472,6 +472,50 @@ with_fake_disk("/real.jpg", function()
     eq(probe_opens, 2, "qua TTL: probe chay lai (tep bi xoa duoc nhan ra)")
 end)
 
+-- Ca 2c: `io.open` that bai voi errno KHAC ENOENT -> PHAI fail-open ve
+-- `resource`. Chu thich FAIL-OPEN cua `static_target_exists` hua dieu nay tu
+-- dau nhung ban truoc rot thang xuong `exists = false`.
+--
+-- EMFILE(24) la ca nguy nhat: khi worker het file descriptor thi MOI `io.open`
+-- that bai cung luc, nen MOI asset thanh dynamic, `dgtn` vuot tran, va mot su
+-- co tai bien thanh 429 hang loat cho khach that.
+--
+-- Dot bien de bat: doi dieu kien thanh `oerrno ~= 2` hay bo han nhanh errno
+-- thi ca nay tut xuong `dynamic`.
+clock = 250
+exits = {}
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.uri = "/perm.jpg"
+for _, errno in ipairs({ 13, 24, 23, 36, 40 }) do
+    local saved = io.open
+    io.open = function() return nil, "stub", errno end
+    local c = { ip = "198.51.100.2c", req_class = "resource", req = {} }
+    local _, e = admission.run(c)
+    io.open = saved
+    eq(c.admission_group, "resource",
+        "errno=" .. errno .. ": phep do that bai -> fail-open ve resource")
+    eq(c.resource_actual, nil,
+        "errno=" .. errno .. ": resource_actual khong duoc dat (khong biet)")
+    eq(c.static_probe_errno, errno,
+        "errno=" .. errno .. ": ghi lai errno de do duoc")
+    eq(e, false, "errno=" .. errno .. ": khong chan khach")
+end
+
+-- Ca 2d: ENOENT(2) va ENOTDIR(20) VAN phai la `dynamic`. Neu khong, bo errno
+-- se mo lai lo 3.200->100 req/s ma 85f7448 da dong.
+for _, errno in ipairs({ 2, 20 }) do
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local saved = io.open
+    io.open = function() return nil, "stub", errno end
+    local c = { ip = "198.51.100.2d", req_class = "resource", req = {} }
+    admission.run(c)
+    io.open = saved
+    eq(c.admission_group, "dynamic",
+        "errno=" .. errno .. ": tep that su khong co -> dynamic")
+    eq(c.resource_actual, false,
+        "errno=" .. errno .. ": resource_actual=false")
+end
+
 -- Ca 3: KHONG do duoc (document_root rong) -> PHAI fail-open ve `resource`.
 -- Dot bien `exists ~= true` thay cho `exists == false` lam ca nay tut xuong
 -- ngan sach dynamic, tuc mot phep do THAT BAI bien thanh 429 cho khach that.
@@ -2678,6 +2722,113 @@ eq(de_full_exit, false, "generic guard fail-open when shared dict is full")
 eq(de_full.dynamic_guard_degraded, true,
    "generic guard exposes degraded measurement")
 fake_ngx.shared.antibot_cache.full = nil
+
+-- ── Static MISS khong duoc bien thanh 429 concurrency ───────────────────
+--
+-- Do 02-11 tren cloud28-248: 693/733 luot `tenant_concurrency` tren mhs.vn,
+-- 183/217 annasieuthisach.com, 146/158 thbvn.com, 18/27 tcare.vn deu la
+-- `class=resource` + `adm_grp=dynamic`, va khach co `ckn=true`. Mot trang
+-- thieu asset sinh hang chuc static-miss SONG SONG tu mot khach that.
+--
+-- Hai bat bien phai cung dung, va chung keo nguoc chieu nhau:
+--   1. static-miss KHONG bi chan boi concurrency (FP)
+--   2. dynamic THAT van bi chan (khong duoc mo lo 85f7448)
+-- Mot test chi kiem (1) se duoc thoa man boi `return` vo dieu kien.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.document_root = "/home/miss/public_html"
+fake_ngx.var.server_name = "miss.test"
+cfg.dynamic_guard = {
+    enabled = true, mode = "enforce", status = 429, retry_after = 2,
+    slot_bucket_seconds = 10, slot_retention_seconds = 60,
+    static_miss_concurrency = "shadow",
+    tenant_client = { mode = "enforce", limit = 2,
+        first_party_limit = 2, first_party_richness = 0.5 },
+    server_client = { mode = "enforce", limit = 4 },
+    path_spray = { mode = "off" },
+    uri_integrity = { mode = "off" },
+    pressure = { mode = "off" },
+    aborted_pressure = { enabled = false },
+    server_pressure = { mode = "off" },
+}
+package.loaded["antibot.l7.dynamic_guard"] = nil
+local dg_m = require "antibot.l7.dynamic_guard"
+
+local function missctx(ip, actual)
+    return {
+        ip = ip, req_class = "resource", admission_group = "dynamic",
+        resource_actual = actual, req = { uri = "/missing.css" },
+    }
+end
+
+-- Ca A: static MISS, vuot tran gap doi -> KHONG chan, nhung VAN ghi cause.
+clock = 9000
+local miss_last, miss_ctx
+for i = 1, 5 do
+    local c = missctx("198.51.100.200", false)
+    dg_m.before(c); local _, e = dg_m.admit(c)
+    miss_last, miss_ctx = e, c
+end
+eq(miss_last, false, "static MISS vuot tran 5/2 KHONG bi chan")
+eq(miss_ctx.dynamic_guard_static_miss_shadow, true,
+   "co ghi co de do duoc (dgmiss=)")
+eq(miss_ctx.dynamic_guard_would_reject, true,
+   "van ghi would -> telemetry khong mat")
+ok(tostring(miss_ctx.dynamic_guard_cause):find(
+    "tenant_concurrency", 1, true) ~= nil,
+   "cause van ghi tenant_concurrency")
+eq(miss_ctx.dynamic_guard_rejected, nil, "khong danh dau rejected")
+ok(tonumber(miss_ctx.dynamic_tenant_inflight) ~= nil,
+   "slot VAN cap -> dgtn= con do duoc")
+
+-- Ca B: dynamic THAT (ractual=nil, khong phai static-miss) van bi chan.
+-- Day la rao chan chong `return` vo dieu kien.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 9100
+exits = {}
+local dyn_last, dyn_ctx
+for i = 1, 5 do
+    local c = missctx("198.51.100.201", nil)
+    c.req_class = "unknown"
+    dg_m.before(c); local _, e = dg_m.admit(c)
+    dyn_last, dyn_ctx = e, c
+end
+eq(dyn_last, true, "dynamic THAT van bi chan boi concurrency")
+eq(dyn_ctx.dynamic_guard_static_miss_shadow, nil,
+   "dynamic that khong bi danh dau static-miss")
+eq(exits[#exits], 429, "dynamic that tra 429")
+
+-- Ca C: `resource_actual = true` (static HIT lot vao dynamic group) cung
+-- KHONG duoc mien — chi `false` moi la static-miss.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 9200
+exits = {}
+local hit_last
+for i = 1, 5 do
+    local c = missctx("198.51.100.202", true)
+    dg_m.before(c); local _, e = dg_m.admit(c)
+    hit_last = e
+end
+eq(hit_last, true, "resource_actual=true khong duoc mien tru")
+
+-- Ca D: operator bat lai `enforce` cho mot may -> static-miss bi chan nhu cu.
+-- Khong co ca nay thi khoa config la ma chet.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.static_miss_concurrency = "enforce"
+package.loaded["antibot.l7.dynamic_guard"] = nil
+local dg_e = require "antibot.l7.dynamic_guard"
+clock = 9300
+exits = {}
+local en_last, en_ctx
+for i = 1, 5 do
+    local c = missctx("198.51.100.203", false)
+    dg_e.before(c); local _, e = dg_e.admit(c)
+    en_last, en_ctx = e, c
+end
+eq(en_last, true, "static_miss_concurrency=enforce tra lai hanh vi cu")
+eq(en_ctx.dynamic_guard_static_miss_shadow, nil,
+   "khi enforce thi khong danh dau shadow")
+eq(exits[#exits], 429, "enforce tra 429")
+
 cfg.dynamic_guard = old_dynamic_guard
 package.loaded["antibot.l7.principal_churn"] = nil
 package.loaded["antibot.l7.dynamic_guard"] = nil

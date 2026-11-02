@@ -937,6 +937,12 @@ _M.dynamic_guard = {
     slot_bucket_seconds    = 30,
     slot_retention_seconds = 180,
 
+    -- Static MISS (`ractual=false`) di vao NGAN SACH dynamic nhung khong
+    -- vao CONCURRENCY enforce — xem `static_miss` trong
+    -- `l7/dynamic_guard.lua`. Dat "enforce" de tra lai hanh vi truoc 02-11
+    -- cho mot host hay mot may cu the.
+    static_miss_concurrency = "shadow",
+
     tenant_client = {
         mode  = "enforce",
         -- Observed attacks reached 20-57 live requests from one source.  Ten

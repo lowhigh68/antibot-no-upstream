@@ -730,7 +730,8 @@ function _M.run(ctx)
             " dgsvwork=%s dgsvn=%s dgsvslow=%s dgsvcand=%s dgsvtrans=%s" ..
             " dgsvsel=%s dgsvkind=%s dgsvid=%s dgsvcwork=%s dgsvcn=%s" ..
             " dgsvcshare=%s dgsvmatch=%s dgsvattr=%s dgsvdeg=%s" ..
-            " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s",
+            " dgdur=%s dgup=%s dgactual=%s dgleft=%s/%s dgdeg=%s dgexp=%s" ..
+            " dgmiss=%s",
             tostring(ctx.dynamic_guard_mode or "-"),
             tostring(ctx.dynamic_guard_scope or "-"),
             tostring(ctx.dynamic_tenant_inflight or "-"),
@@ -825,7 +826,11 @@ function _M.run(ctx)
             tostring(ctx.dynamic_tenant_remaining or "-"),
             tostring(ctx.dynamic_server_remaining or "-"),
             tostring(ctx.dynamic_guard_degraded or false),
-            tostring(ctx.dynamic_guard_slot_expired or false))
+            tostring(ctx.dynamic_guard_slot_expired or false),
+            -- `dgmiss=true` = static MISS nen hai truc concurrency bi ha ve
+            -- shadow. Ghep voi `dgwould=`/`ractual=`/`ckn=` de do dieu kien
+            -- giu lai cua han 09-11 (xem `static_miss` trong dynamic_guard).
+            tostring(ctx.dynamic_guard_static_miss_shadow or false))
     end
 
     -- Published-network provenance is independent from good-bot verification.

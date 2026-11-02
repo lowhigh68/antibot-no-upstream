@@ -164,6 +164,33 @@ local function acquire(dict, base, axis, limit, c, t)
     }, err
 end
 
+-- Static MISS: `req_class == "resource"` nhung tep KHONG co tren dia, nen
+-- `admission` xep no vao ngan sach `dynamic` (85f7448, dong lo 3.200->100
+-- req/s). Dung cho NGAN SACH — no that su den Apache/PHP. SAI cho
+-- CONCURRENCY, vi mot trang thieu asset sinh hang chuc static-miss SONG SONG
+-- tu mot khach that, va tran 10 bien ca trang thanh 429.
+--
+-- Do 02-11 tren cloud28-248 (24h): 693/733 luot `tenant_concurrency` tren
+-- mhs.vn, 183/217 annasieuthisach.com, 146/158 thbvn.com, 18/27 tcare.vn deu
+-- la `class=resource` + `adm_grp=dynamic`. Ba trong bon domain KHONG phai
+-- Laravel, nen day la co che generic chu khong phai dac thu mot khung.
+-- Doi chung: baoduongaudi.com 0/261 — nhung luot do la navigation that.
+--
+-- Cach sua: VAN cap slot (de `dgtn=` con do duoc) va VAN ghi `dgcause`, chi
+-- ha hai truc concurrency ve `shadow` cho rieng static-miss. Ngan sach
+-- `admission` theo host/route/IP khong bi cham, nen flood static-miss van bi
+-- chan o day.
+--
+-- HAN 09-11-2026. Dieu kien giu lai, viet TRUOC khi deploy:
+--   * `dgwould=true` + `ractual=false` + `ckn=true` >= 100 luot/24h tren it
+--     nhat 2 domain  -> co che co doi tuong that, giu.
+--   * va so luot `l7_admission` chan `adm_grp=dynamic` KHONG giam qua 20% so
+--     voi truoc deploy -> ngan sach van gac duoc flood.
+-- Khong dat ca hai -> go TINH TOAN nay, giu cot telemetry.
+local function static_miss(ctx)
+    return ctx ~= nil and ctx.resource_actual == false
+end
+
 local function axis_config(c, name, default_limit)
     local spec = type(c[name]) == "table" and c[name] or {}
     local mode = tostring(spec.mode or c.mode or "shadow")
@@ -843,11 +870,16 @@ function _M.admit(ctx)
         causes[#causes + 1] = name
         if mode == "enforce" then enforced[#enforced + 1] = name end
     end
+    -- Xem chu thich `static_miss` tren: slot van cap, `dgcause` van ghi, chi
+    -- khong enforce. `c.static_miss_concurrency` cho operator bat lai mot cho.
+    local miss_shadow = static_miss(ctx)
+        and c.static_miss_concurrency ~= "enforce"
+    if miss_shadow then ctx.dynamic_guard_static_miss_shadow = true end
     if tenant_slot and tenant_slot.count > tenant_limit then
-        add("tenant_concurrency", tenant_mode)
+        add("tenant_concurrency", miss_shadow and "shadow" or tenant_mode)
     end
     if server_slot and server_slot.count > server_limit then
-        add("server_concurrency", server_mode)
+        add("server_concurrency", miss_shadow and "shadow" or server_mode)
     end
 
     local spray = observe_paths(dict, ctx, c, scope, source, t)

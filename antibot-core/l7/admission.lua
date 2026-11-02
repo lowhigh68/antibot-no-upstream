@@ -164,9 +164,33 @@ local function static_target_exists(ctx, dict, uri)
         if dict:get(ckey) == 1 then return true end
     end
 
-    local fh = io.open(root .. uri, "r")
-    local exists = false
-    if fh then fh:close(); exists = true end
+    -- `io.open` tra (nil, msg, errno). Chi ENOENT(2)/ENOTDIR(20) la bang chung
+    -- "tep that su khong co"; moi errno khac la phep do THAT BAI, khong phai
+    -- ket qua am. Chu thich FAIL-OPEN duoi day da hua dieu nay tu dau nhung
+    -- ban truoc rot thang xuong `exists = false`, tuc bien mot loi he thong
+    -- thanh 429 cho khach that:
+    --   * EACCES(13) — tep CO tren dia, worker khong doc duoc
+    --   * EMFILE(24)/ENFILE(23) — het file descriptor. Ca nay nguy nhat: MOI
+    --     `io.open` that bai cung luc -> moi asset thanh dynamic -> dgtn vuot
+    --     tran -> 429 hang loat. Mot su co tai bien thanh su co chan khach.
+    --   * ENAMETOOLONG(36), ELOOP(40) — hinh dang duong dan, khong phai vang mat
+    local fh, _, oerrno = io.open(root .. uri, "r")
+    local exists
+    if fh then
+        fh:close()
+        exists = true
+    else
+        oerrno = tonumber(oerrno)
+        if oerrno == nil or oerrno == 2 or oerrno == 20 then
+            -- ENOENT/ENOTDIR, hoac nen tang khong cung cap errno (fallback:
+            -- giu hanh vi cu de khong lam yeu ngan sach).
+            exists = false
+        else
+            if ctx then ctx.static_probe_errno = oerrno end
+            log_dict_error("static_probe_errno_" .. tostring(oerrno), "probeerr")
+            return nil
+        end
+    end
 
     -- CHI cache chieu TRUE, va day la cho sai ro nhat cua ban 85f7448: no cache
     -- CA HAI ket qua, ma chi chieu `true` co tap HUU HAN.
