@@ -176,17 +176,11 @@ end
 -- Laravel, nen day la co che generic chu khong phai dac thu mot khung.
 -- Doi chung: baoduongaudi.com 0/261 — nhung luot do la navigation that.
 --
--- Cach sua: VAN cap slot (de `dgtn=` con do duoc) va VAN ghi `dgcause`, chi
--- ha hai truc concurrency ve `shadow` cho rieng static-miss. Ngan sach
--- `admission` theo host/route/IP khong bi cham, nen flood static-miss van bi
--- chan o day.
---
--- HAN 09-11-2026. Dieu kien giu lai, viet TRUOC khi deploy:
---   * `dgwould=true` + `ractual=false` + `ckn=true` >= 100 luot/24h tren it
---     nhat 2 domain  -> co che co doi tuong that, giu.
---   * va so luot `l7_admission` chan `adm_grp=dynamic` KHONG giam qua 20% so
---     voi truoc deploy -> ngan sach van gac duoc flood.
--- Khong dat ca hai -> go TINH TOAN nay, giu cot telemetry.
+-- Cach sua: static-miss KHONG duoc cham hai live pool concurrency HOAC state
+-- path-spray. Chi ha mode cua chinh request xuong shadow la chua du: no van
+-- day state chung len, roi mot navigation that den sau se bi enforce oan.
+-- Ngan sach `admission` theo host/route/IP van tinh static-miss la dynamic;
+-- pressure van hoc upstream-seconds that cua no.
 local function static_miss(ctx)
     return ctx ~= nil and ctx.resource_actual == false
 end
@@ -825,10 +819,19 @@ function _M.admit(ctx)
     ctx.dynamic_tenant_limit = tenant_limit
     ctx.dynamic_server_limit = server_limit
 
+    -- Khong acquire vao pool co quyen enforce neu request sap internal-redirect
+    -- qua `@static_backend`. Ngoai nguy co mat `ngx.ctx`/duong release, ngay ca
+    -- khi release van dung thi mot fan-out asset loi hop le cung khong duoc phep
+    -- lam navigation ke tiep ke thua count. `enforce` la cong tac rollback co
+    -- chu dich; moi gia tri khac deu giu hotfix an toan.
+    local miss_bypass = static_miss(ctx)
+        and c.static_miss_concurrency ~= "enforce"
+    if miss_bypass then ctx.dynamic_guard_static_miss_bypass = true end
+
     local slots = {}
     local degraded = false
     local tenant_slot, server_slot, err
-    if tenant_mode ~= "off" and tenant_limit > 0 then
+    if not miss_bypass and tenant_mode ~= "off" and tenant_limit > 0 then
         tenant_slot, err = acquire(dict,
             "dg:tenant:" .. scope .. ":" .. source,
             "tenant", tenant_limit, c, t)
@@ -841,7 +844,7 @@ function _M.admit(ctx)
         if err then degraded = true; log_dict_error("tenant_ttl", err) end
     end
 
-    if server_mode ~= "off" and server_limit > 0 then
+    if not miss_bypass and server_mode ~= "off" and server_limit > 0 then
         server_slot, err = acquire(dict,
             "dg:server:" .. source, "server", server_limit, c, t)
         if not server_slot then
@@ -870,19 +873,22 @@ function _M.admit(ctx)
         causes[#causes + 1] = name
         if mode == "enforce" then enforced[#enforced + 1] = name end
     end
-    -- Xem chu thich `static_miss` tren: slot van cap, `dgcause` van ghi, chi
-    -- khong enforce. `c.static_miss_concurrency` cho operator bat lai mot cho.
-    local miss_shadow = static_miss(ctx)
-        and c.static_miss_concurrency ~= "enforce"
-    if miss_shadow then ctx.dynamic_guard_static_miss_shadow = true end
     if tenant_slot and tenant_slot.count > tenant_limit then
-        add("tenant_concurrency", miss_shadow and "shadow" or tenant_mode)
+        add("tenant_concurrency", tenant_mode)
     end
     if server_slot and server_slot.count > server_limit then
-        add("server_concurrency", miss_shadow and "shadow" or server_mode)
+        add("server_concurrency", server_mode)
     end
 
-    local spray = observe_paths(dict, ctx, c, scope, source, t)
+    -- Path-spray la state lien request dung chung source/docroot. Mot trang co
+    -- nhieu asset thieu, moi asset bootstrap CMS roi 404 cham, co the tu tao
+    -- du hits/distinct/costly va chan navigation ke tiep. Vi vay static-miss
+    -- phai bo qua CA observe va CA log-phase cost; chi ha verdict van lam ban
+    -- state giong loi concurrency vua sua.
+    local spray = false
+    if not miss_bypass then
+        spray = observe_paths(dict, ctx, c, scope, source, t)
+    end
     local spray_spec = type(c.path_spray) == "table" and c.path_spray or {}
     local spray_mode = tostring(spray_spec.mode or "off")
     if spray then add("path_spray", spray_mode) end
@@ -960,6 +966,10 @@ local function max_upstream_time(raw)
 end
 
 local function record_path_cost(dict, ctx, c, up, t)
+    -- Static-miss khong tham gia path-spray state. Dat gate tai day, khong dat
+    -- quanh toan bo log-phase block: upstream-seconds cua no van la chi phi
+    -- that va van phai day `pressure`/`server_pressure`.
+    if ctx.dynamic_guard_static_miss_bypass then return end
     if not ctx.dynamic_guard_source or not ctx.dynamic_guard_scope then return end
     local spec = type(c.path_spray) == "table" and c.path_spray or {}
     if tostring(spec.mode or "off") == "off" then return end

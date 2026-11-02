@@ -827,10 +827,9 @@ function _M.run(ctx)
             tostring(ctx.dynamic_server_remaining or "-"),
             tostring(ctx.dynamic_guard_degraded or false),
             tostring(ctx.dynamic_guard_slot_expired or false),
-            -- `dgmiss=true` = static MISS nen hai truc concurrency bi ha ve
-            -- shadow. Ghep voi `dgwould=`/`ractual=`/`ckn=` de do dieu kien
-            -- giu lai cua han 09-11 (xem `static_miss` trong dynamic_guard).
-            tostring(ctx.dynamic_guard_static_miss_shadow or false))
+            -- `dgmiss=true` = static MISS khong acquire hai live concurrency
+            -- pool. Admission dynamic budget van ap dung doc lap.
+            tostring(ctx.dynamic_guard_static_miss_bypass or false))
     end
 
     -- Published-network provenance is independent from good-bot verification.

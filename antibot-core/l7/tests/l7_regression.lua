@@ -2740,7 +2740,7 @@ fake_ngx.var.server_name = "miss.test"
 cfg.dynamic_guard = {
     enabled = true, mode = "enforce", status = 429, retry_after = 2,
     slot_bucket_seconds = 10, slot_retention_seconds = 60,
-    static_miss_concurrency = "shadow",
+    static_miss_concurrency = "off",
     tenant_client = { mode = "enforce", limit = 2,
         first_party_limit = 2, first_party_richness = 0.5 },
     server_client = { mode = "enforce", limit = 4 },
@@ -2760,7 +2760,9 @@ local function missctx(ip, actual)
     }
 end
 
--- Ca A: static MISS, vuot tran gap doi -> KHONG chan, nhung VAN ghi cause.
+-- Ca A: static MISS khong duoc cham live pool. Neu chi ha verdict cua chinh
+-- no xuong shadow nhung van acquire, navigation ke tiep se ke thua count va
+-- bi 429 -- dung chuoi production cua tcare.vn.
 clock = 9000
 local miss_last, miss_ctx
 for i = 1, 5 do
@@ -2769,16 +2771,128 @@ for i = 1, 5 do
     miss_last, miss_ctx = e, c
 end
 eq(miss_last, false, "static MISS vuot tran 5/2 KHONG bi chan")
-eq(miss_ctx.dynamic_guard_static_miss_shadow, true,
+eq(miss_ctx.dynamic_guard_static_miss_bypass, true,
    "co ghi co de do duoc (dgmiss=)")
-eq(miss_ctx.dynamic_guard_would_reject, true,
-   "van ghi would -> telemetry khong mat")
-ok(tostring(miss_ctx.dynamic_guard_cause):find(
-    "tenant_concurrency", 1, true) ~= nil,
-   "cause van ghi tenant_concurrency")
+eq(miss_ctx.dynamic_guard_would_reject, nil,
+   "static MISS khong lam day live pool nen khong tao would gia")
+eq(miss_ctx.dynamic_guard_cause, nil,
+   "static MISS khong tao concurrency cause gia")
 eq(miss_ctx.dynamic_guard_rejected, nil, "khong danh dau rejected")
-ok(tonumber(miss_ctx.dynamic_tenant_inflight) ~= nil,
-   "slot VAN cap -> dgtn= con do duoc")
+eq(miss_ctx.dynamic_tenant_inflight, nil,
+   "static MISS khong acquire tenant slot")
+eq(miss_ctx.dynamic_server_inflight, nil,
+   "static MISS khong acquire server slot")
+
+-- Ca A2: chuoi bat buoc ma patch cu bo sot. Nam static-miss cung source/docroot
+-- o tren khong duoc lam navigation that ke tiep vuot limit=2.
+local nav_after_miss = missctx("198.51.100.200", nil)
+nav_after_miss.req_class = "navigation"
+dg_m.before(nav_after_miss)
+local _, nav_after_miss_exit = dg_m.admit(nav_after_miss)
+eq(nav_after_miss_exit, false,
+   "navigation sau static MISS khong ke thua slot")
+eq(nav_after_miss.dynamic_tenant_inflight, 1,
+   "tenant pool cua navigation bat dau tu 1")
+eq(nav_after_miss.dynamic_server_inflight, 1,
+   "server pool cua navigation bat dau tu 1")
+dg_m.after(nav_after_miss)
+
+-- Ca A3: server-client key khong co host. Static-miss domain A khong duoc lam
+-- navigation cung IP tai domain B ke thua slot tren truc toan may.
+local saved_root = fake_ngx.var.document_root
+local saved_server = fake_ngx.var.server_name
+fake_ngx.var.document_root = "/home/other/public_html"
+fake_ngx.var.server_name = "other.test"
+local cross_after_miss = missctx("198.51.100.200", nil)
+cross_after_miss.req_class = "navigation"
+dg_m.before(cross_after_miss)
+local _, cross_after_miss_exit = dg_m.admit(cross_after_miss)
+eq(cross_after_miss_exit, false,
+   "navigation domain khac khong ke thua static MISS server slot")
+eq(cross_after_miss.dynamic_server_inflight, 1,
+   "server pool domain khac bat dau tu 1")
+dg_m.after(cross_after_miss)
+fake_ngx.var.document_root = saved_root
+fake_ngx.var.server_name = saved_server
+
+-- Ca A4: Laravel/Botble co the bootstrap day du roi moi 404 static-miss.
+-- Bon URI 3 giay/luot voi nguong thu 3/3/1 tung lam navigation ke tiep doc
+-- hits=5, distinct=5, costly=4 va bi path_spray. Static-miss phai khong ghi
+-- ca arrival state lan completed-cost state.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.path_spray = {
+    mode = "enforce", window = 10, shards = 32,
+    min_hits = 3, min_paths = 3, min_costly = 1,
+    costly_seconds = 2.0, status = 429,
+}
+clock = 9050
+exits = {}
+for i = 1, 4 do
+    fake_ngx.var.uri = "/asset-miss-" .. tostring(i) .. ".css"
+    fake_ngx.var.upstream_response_time = "3.0"
+    fake_ngx.var.upstream_status = "404"
+    fake_ngx.status = 404
+    local c = missctx("198.51.100.204", false)
+    c.req.uri = fake_ngx.var.uri
+    dg_m.before(c)
+    local _, e = dg_m.admit(c)
+    eq(e, false, "static MISS cham khong bi path_spray")
+    dg_m.after(c)
+end
+fake_ngx.var.uri = "/manager"
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.upstream_status = nil
+fake_ngx.status = 200
+local nav_after_slow_miss = missctx("198.51.100.204", nil)
+nav_after_slow_miss.req_class = "navigation"
+nav_after_slow_miss.req.uri = fake_ngx.var.uri
+dg_m.before(nav_after_slow_miss)
+local _, nav_after_slow_miss_exit = dg_m.admit(nav_after_slow_miss)
+eq(nav_after_slow_miss_exit, false,
+   "navigation sau static MISS cham khong bi path_spray")
+eq(nav_after_slow_miss.dynamic_path_hits, 1,
+   "path_spray chi dem navigation that")
+eq(nav_after_slow_miss.dynamic_path_distinct, 1,
+   "static MISS khong ghi distinct shard")
+eq(nav_after_slow_miss.dynamic_path_costly, 0,
+   "static MISS cham khong ghi costly_recent")
+dg_m.after(nav_after_slow_miss)
+
+-- Ca A5: gate log phase chi ap dung cho path cost. Static-miss cham van phai
+-- day pressure vi no da tieu upstream-seconds that.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.path_spray = { mode = "enforce", costly_seconds = 2.0 }
+cfg.dynamic_guard.pressure = {
+    mode = "shadow", policy = "cohort", window = 10,
+    min_samples = 1, work_seconds = 1.0, slow_seconds = 2.0,
+    cohort_min_samples = 1, cohort_work_seconds = 1.0,
+    cohort_min_share = 0.1, hold_seconds = 5, probe_timeout = 5,
+    recovery_seconds = 1, eval_interval = 1, first_party_reserve = 1,
+}
+clock = 9070
+fake_ngx.var.uri = "/slow-missing.css"
+fake_ngx.var.upstream_response_time = "3.0"
+fake_ngx.var.upstream_status = "404"
+fake_ngx.status = 404
+local pressure_miss = missctx("198.51.100.205", false)
+pressure_miss.req.uri = fake_ngx.var.uri
+dg_m.before(pressure_miss)
+local _, pressure_miss_exit = dg_m.admit(pressure_miss)
+eq(pressure_miss_exit, false, "static MISS pressure shadow khong chan")
+dg_m.after(pressure_miss)
+eq(pressure_miss.dynamic_path_costly, nil,
+   "static MISS khong day path costly telemetry")
+eq(pressure_miss.dynamic_pressure_candidate, true,
+   "static MISS cham van day pressure candidate")
+eq(pressure_miss.dynamic_pressure_work, 3,
+   "pressure van ghi du upstream-seconds cua static MISS")
+
+fake_ngx.var.uri = nil
+fake_ngx.var.upstream_response_time = nil
+fake_ngx.var.upstream_status = nil
+fake_ngx.status = 200
+cfg.dynamic_guard.path_spray = { mode = "off" }
+cfg.dynamic_guard.pressure = { mode = "off" }
 
 -- Ca B: dynamic THAT (ractual=nil, khong phai static-miss) van bi chan.
 -- Day la rao chan chong `return` vo dieu kien.
@@ -2793,7 +2907,7 @@ for i = 1, 5 do
     dyn_last, dyn_ctx = e, c
 end
 eq(dyn_last, true, "dynamic THAT van bi chan boi concurrency")
-eq(dyn_ctx.dynamic_guard_static_miss_shadow, nil,
+eq(dyn_ctx.dynamic_guard_static_miss_bypass, nil,
    "dynamic that khong bi danh dau static-miss")
 eq(exits[#exits], 429, "dynamic that tra 429")
 
@@ -2825,8 +2939,8 @@ for i = 1, 5 do
     en_last, en_ctx = e, c
 end
 eq(en_last, true, "static_miss_concurrency=enforce tra lai hanh vi cu")
-eq(en_ctx.dynamic_guard_static_miss_shadow, nil,
-   "khi enforce thi khong danh dau shadow")
+eq(en_ctx.dynamic_guard_static_miss_bypass, nil,
+   "khi enforce thi khong danh dau bypass")
 eq(exits[#exits], 429, "enforce tra 429")
 
 cfg.dynamic_guard = old_dynamic_guard

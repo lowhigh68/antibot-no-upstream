@@ -937,11 +937,11 @@ _M.dynamic_guard = {
     slot_bucket_seconds    = 30,
     slot_retention_seconds = 180,
 
-    -- Static MISS (`ractual=false`) di vao NGAN SACH dynamic nhung khong
-    -- vao CONCURRENCY enforce — xem `static_miss` trong
-    -- `l7/dynamic_guard.lua`. Dat "enforce" de tra lai hanh vi truoc 02-11
-    -- cho mot host hay mot may cu the.
-    static_miss_concurrency = "shadow",
+    -- Static MISS (`ractual=false`) van di vao NGAN SACH dynamic, nhung khong
+    -- duoc acquire live CONCURRENCY slot chung voi navigation. Dung chung pool
+    -- roi chi ha verdict xuong shadow van gay FP gian tiep cho request den sau.
+    -- Dat "enforce" de tra lai hanh vi truoc 02-11 cho rollback co chu dich.
+    static_miss_concurrency = "off",
 
     tenant_client = {
         mode  = "enforce",

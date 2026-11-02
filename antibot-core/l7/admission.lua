@@ -53,6 +53,10 @@ local function log_dict_error(name, kind)
                 "[l7_admission] lua_shared_dict antibot_cache DAY (het memory): ",
                 name, " -- admission FAIL-OPEN, request khong duoc dem. ",
                 "Tang dung luong trong nginx.conf, dict KHONG thieu khai bao.")
+        elseif kind == "probeerr" then
+            ngx.log(ngx.ERR,
+                "[l7_admission] static target probe that bai: ", name,
+                " -- fail-open ve resource; khong phai loi shared dict")
         else
             ngx.log(ngx.ERR,
                 "[l7_admission] lua_shared_dict missing/unavailable: ", name,
