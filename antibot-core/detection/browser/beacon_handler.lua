@@ -2,6 +2,7 @@ local _M   = {}
 local pool = require "antibot.core.redis_pool"
 local admission = require "antibot.l7.admission"
 local decision = require "antibot.core.decision"
+local config = require "antibot.core.config"
 
 -- Accept beacons within ±60s of server time.
 -- Wider than typical replay windows to accommodate client clock drift.
@@ -26,6 +27,14 @@ function _M.handle()
 
     if ngx.var.request_method ~= "POST" then
         finish(ctx, 405, "policy", "beacon_method"); return
+    end
+
+    -- A tab opened before worker reload may still fire the old timer.  Treat
+    -- that POST as a successful no-op: it must not become a false security
+    -- block and there is no reason to parse/store a payload while injection is
+    -- disabled.  Admission remains in front of this branch.
+    if ((config.beacon or {}).injection_enabled ~= true) then
+        finish(ctx, 204, "policy", "beacon_disabled"); return
     end
 
     ngx.req.read_body()

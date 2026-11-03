@@ -289,5 +289,89 @@ do
     ok(not uab, "fleet pipeline has no dead uab write")
 end
 
+-- 4. Disabled browser beacon is transparent on every request/response edge.
+--
+-- Production evidence behind this contract: with injection enabled, a mobile
+-- HTML response became exactly the 2,361-byte injected script; seeding only
+-- `beacon:<fp>` (which makes trigger skip injection) restored 616,768 bytes of
+-- HTML.  A source-only assertion on config would miss a stale ctx reaching the
+-- body filter, so exercise trigger, filter and endpoint independently.
+do
+    local redis_reads = 0
+    package.loaded["antibot.core.config"] = {
+        beacon = { injection_enabled = false, endpoint = "/antibot/beacon" },
+    }
+    package.loaded["antibot.core.redis_pool"] = {
+        safe_get = function()
+            redis_reads = redis_reads + 1
+            return nil
+        end,
+    }
+
+    ngx = {
+        DEBUG = 0,
+        log = function() end,
+        var = { http_accept = "text/html" },
+    }
+    local trigger = assert(loadfile(src .. "detection/browser/trigger.lua"))()
+    local tctx = {
+        fp_light = "0123456789abcdef0123456789abcdef",
+        req = { accept = "text/html", uri = "/page" },
+    }
+    trigger.run(tctx)
+    eq(tctx.inject_candidate, false,
+       "disabled beacon never creates an injection candidate")
+    eq(redis_reads, 0,
+       "disabled beacon trigger performs no Redis lookup")
+
+    local original = "<html><body>tenant HTML</body></html>"
+    ngx = {
+        ctx = { antibot = {
+            browser_needed = true,
+            fp_light = "0123456789abcdef0123456789abcdef",
+        } },
+        arg = { original, true },
+        DEBUG = 0,
+        log = function() end,
+    }
+    local inject = assert(loadfile(src .. "detection/browser/inject.lua"))()
+    inject.filter()
+    eq(ngx.arg[1], original,
+       "disabled body filter is byte-for-byte transparent")
+
+    local endpoint_reads, exit_status, decision_reason = 0, nil, nil
+    package.loaded["antibot.l7.admission"] = {
+        run_endpoint = function(name)
+            eq(name, "beacon", "disabled endpoint still passes admission")
+            return true, false
+        end,
+    }
+    package.loaded["antibot.core.decision"] = {
+        set = function(_, rec) decision_reason = rec and rec.rule end,
+    }
+    package.loaded["antibot.core.redis_pool"] = {
+        safe_get = function() endpoint_reads = endpoint_reads + 1 end,
+        safe_set = function() endpoint_reads = endpoint_reads + 1 end,
+    }
+    ngx = {
+        ctx = {},
+        var = { request_method = "POST" },
+        req = {
+            read_body = function() endpoint_reads = endpoint_reads + 1 end,
+            get_body_data = function() return "{}" end,
+        },
+        exit = function(status) exit_status = status end,
+        status = nil,
+    }
+    local handler = assert(loadfile(src .. "detection/browser/beacon_handler.lua"))()
+    handler.handle()
+    eq(exit_status, 204,
+       "old in-flight beacon receives a successful no-op")
+    eq(decision_reason, "beacon_disabled",
+       "disabled endpoint records an explicit reason")
+    eq(endpoint_reads, 0,
+       "disabled endpoint neither parses body nor touches Redis")
+end
+
 io.write(string.format("hot_path_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end

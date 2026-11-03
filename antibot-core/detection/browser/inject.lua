@@ -1,4 +1,5 @@
 local _M = {}
+local config = require "antibot.core.config"
 
 -- Two %s placeholders: (1) endpoint path, (2) fingerprint token.
 -- Field names are obfuscated to raise the bar for scraper adaptation:
@@ -79,6 +80,13 @@ local BEACON_JS = [[
 --   b) inject_candidate was set but header_filter saw a non-HTML Content-Type response.
 -- In both cases: correct behaviour — do not inject.
 function _M.filter()
+    -- Defence in depth for requests whose ctx was created by old code just
+    -- before a worker reload, or by a future caller that sets browser_needed
+    -- directly.  Disabled means this filter must be byte-for-byte transparent.
+    if ((config.beacon or {}).injection_enabled ~= true) then
+        return
+    end
+
     local ctx = ngx.ctx.antibot
     if not ctx or not ctx.browser_needed then return end
 
@@ -105,6 +113,9 @@ end
 -- Only purpose: emit a debug log entry so the access-phase decision is visible
 -- in nginx error.log when antibot_debug="1".
 function _M.run(ctx)
+    if ((config.beacon or {}).injection_enabled ~= true) then
+        return
+    end
     if ctx.inject_candidate then
         ngx.log(ngx.DEBUG, "[browser] inject_candidate=true, awaiting response ct confirm fp=", ctx.fp_light)
     end

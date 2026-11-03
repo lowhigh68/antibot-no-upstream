@@ -1435,10 +1435,20 @@ _M.intel = {
 }
 
 -- Beacon JS injection endpoint.
--- Must match the nginx location{} that routes to beacon_handler.handle().
--- Change here + change nginx location name to obfuscate from scrapers.
+--
+-- `injection_enabled=false` is intentional.  Production A/B on tcare.vn
+-- (2026-11-02) kept URL, UA and network path unchanged and suppressed only the
+-- beacon through `beacon:<fp>`: the mobile response changed from a 2,361-byte
+-- script-only page to 616,768 bytes of complete HTML.  The receiver also
+-- rejects new samples at `fp:<fp>` because the current tree has no writer for
+-- that namespace.  Re-enable only after both the response-stream contract and
+-- the registration handshake have integration tests.
+--
+-- `endpoint` must still match the nginx location{}: pages already open during
+-- a reload can POST the old script, and the disabled handler returns 204.
 _M.beacon = {
-    endpoint = "/antibot/beacon",
+    injection_enabled = false,
+    endpoint          = "/antibot/beacon",
 }
 
 -- So ten cookie ma TUNG HOST thuc su cap phat (core/cookie_registry.lua).

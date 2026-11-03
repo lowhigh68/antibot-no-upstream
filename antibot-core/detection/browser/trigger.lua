@@ -1,5 +1,6 @@
 local _M   = {}
 local pool = require "antibot.core.redis_pool"
+local config = require "antibot.core.config"
 
 -- trigger.lua: REQUEST-phase decision only.
 -- Sets ctx.inject_candidate = true when the client signals it expects HTML.
@@ -12,6 +13,14 @@ local pool = require "antibot.core.redis_pool"
 --   header_filter → browser_needed    (server actually returned HTML?)
 
 function _M.run(ctx)
+    -- Kill-switch first: do not spend a Redis round trip for a feature that is
+    -- disabled, and—more importantly—never let header_filter clear
+    -- Content-Length for this response.
+    if ((config.beacon or {}).injection_enabled ~= true) then
+        ctx.inject_candidate = false
+        return
+    end
+
     local accept = (ctx.req and ctx.req.accept) or ngx.var.http_accept or ""
     if not accept:find("text/html", 1, true) then
         ctx.inject_candidate = false
