@@ -212,7 +212,7 @@ local config = {
     },
     network_quarantine = {
         enabled = true, steps = {300, 3600, 86400},
-        violation_ttl = 172800, legacy_read = true,
+        violation_ttl = 172800, legacy_read = false,
         global_reasons = { fake_good_bot = true },
     },
     cookie_registry = { ip_ban_exempt = true, richness_min = 0.5 },
@@ -483,15 +483,23 @@ local known_handled = reader.run(known)
 eq(known_handled, false, "known first-party session bypasses coarse seal")
 eq(known.banned, false, "known session continues to live scoring")
 
--- Migration is intentionally one-way: old keys are read, but their sentence
--- and violation state are never refreshed by the new reader.
+-- The migration window is closed by default: old global identity seals must
+-- no longer affect requests.  The compatibility switch remains testable for
+-- an explicit emergency rollback, and even then the old state is read-only.
 store, writes, ttl_map = {}, {}, {}
 local legacy_ctx = request("one.test", "application/json")
 local legacy = quarantine.legacy_keys(legacy_ctx)
 store[legacy.ban], store[legacy.viol] = "1", 9
-reader.run(legacy_ctx)
-eq(legacy_ctx.ban_scope, "legacy", "old identity seal remains readable")
-eq(legacy_ctx.action_reason, "banned_id", "legacy log reason remains compatible")
+local legacy_handled = reader.run(legacy_ctx)
+eq(legacy_handled, false, "production default ignores old identity seal")
+eq(legacy_ctx.ban_scope, nil, "ignored legacy seal has no scope")
+eq(ngx._exit, nil, "ignored legacy seal cannot return 403")
+
+config.network_quarantine.legacy_read = true
+local rollback_ctx = request("one.test", "application/json")
+reader.run(rollback_ctx)
+eq(rollback_ctx.ban_scope, "legacy", "rollback switch can still read old seal")
+eq(rollback_ctx.action_reason, "banned_id", "legacy rollback reason remains compatible")
 eq(store[legacy.viol], 9, "legacy violation state is read-only")
 local rewrote_legacy = false
 for _, w in ipairs(writes) do
@@ -499,6 +507,7 @@ for _, w in ipairs(writes) do
        and w.op ~= "get" then rewrote_legacy = true end
 end
 eq(rewrote_legacy, false, "legacy sentence is never refreshed")
+config.network_quarantine.legacy_read = false
 
 io.write(string.format("quarantine_contract: %d pass, %d fail\n", pass, fail))
 if fail > 0 then os.exit(1) end

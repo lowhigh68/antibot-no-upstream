@@ -197,7 +197,11 @@ _M.network_quarantine = {
     enabled       = true,
     steps         = {300, 3600, 86400}, -- 5m -> 1h -> 24h, never 30d
     violation_ttl = 172800,              -- only fresh block decisions increment
-    legacy_read   = true,                -- old ban:<id> drains naturally; never refreshed
+    -- Migration closed after the seven-node FP audit (2026-11-08).  The
+    -- current writer never creates or refreshes `ban:<id>`; continuing to read
+    -- that global namespace only lets an old cross-tenant identity collision
+    -- keep blocking traffic.  Host/global quarantine namespaces remain active.
+    legacy_read   = false,
     global_reasons = {
         fake_good_bot = true,            -- registered identity contradicted by proof
     },

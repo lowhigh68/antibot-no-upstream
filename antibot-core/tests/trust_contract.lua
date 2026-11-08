@@ -311,6 +311,9 @@ do
     package.loaded["antibot.l7.automation_guard"] = {
         evaluate = function() return true, false end,
     }
+    package.loaded["antibot.core.state_scope"] = {
+        is_self = function(ctx) return ctx.self_request == true end,
+    }
     ngx = {
         INFO = 1, WARN = 2, log = function() end,
         time = function() return 1700000000 end,
@@ -338,6 +341,30 @@ do
     }
     eq(engine.run(control), "block",
        "shared ASN without infrastructure-failure proof receives no cap")
+
+    local self_scored = {
+        score = 100, score_multiplier = 1, req_class = "api_callback",
+        fp_quality = 1, sess_len = 0, ua = "WordPress/7.1.4; https://a.test",
+        ip = "203.0.113.10", self_request = true,
+        req = { method = "POST", uri = "/wp-cron.php", host = "a.test" },
+    }
+    eq(engine.run(self_scored), "monitor",
+       "self traffic is not user-blocked by accumulated score")
+    eq(self_scored.action_reason, "self_traffic_score_cap",
+       "self score cap has an auditable reason")
+
+    local self_direct = {
+        score = 100, score_multiplier = 1, req_class = "unknown",
+        fp_quality = 1, sess_len = 0, ua = "Googlebot/2.1",
+        ip = "203.0.113.10", self_request = true,
+        req = { method = "GET", uri = "/.env", host = "a.test" },
+        good_bot_claimed = true, good_bot_verified = false,
+        bot_ua = "fake_good_bot",
+    }
+    eq(engine.run(self_direct), "block",
+       "self traffic keeps direct request-evidence verdicts")
+    eq(self_direct.action_reason, "fake_good_bot",
+       "self direct verdict retains its original reason")
 
     monitor_values["mon:203.0.113.20"] = "claim@openai.com"
     local claim_only_ip = {

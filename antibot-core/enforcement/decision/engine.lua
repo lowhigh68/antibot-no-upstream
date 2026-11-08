@@ -5,6 +5,7 @@ local goodbot_registry = require "antibot.core.goodbot_registry"
 local automation_guard = require "antibot.l7.automation_guard"
 local operator_network = require "antibot.core.operator_network"
 local decision = require "antibot.core.decision"
+local state_scope = require "antibot.core.state_scope"
 
 -- ============================================================
 -- Good-bot expensive-request throttle (Hybrid scoring)
@@ -589,6 +590,11 @@ function _M.run(ctx)
         action = "allow"
     end
 
+    -- `true` means the verdict comes from evidence intrinsic to this request,
+    -- not merely from accumulated identity/IP state.  Self traffic is allowed
+    -- to retain these verdicts below; it is not globally whitelisted.
+    local direct_request_verdict = kill_reason ~= nil
+
     -- UA tu khai mot crawler da dang ky nhung ca DNS/ASN deu phan doi la bang
     -- chung truc tiep ve CHINH request. Truoc day bot_score=0.85 chi tao 38.25
     -- raw point; o resource class con bi nhan 0.2 nen fake Googlebot duoc allow.
@@ -598,6 +604,7 @@ function _M.run(ctx)
        and ctx.bot_ua == "fake_good_bot" then
         action            = "block"
         ctx.action_reason = "fake_good_bot"
+        direct_request_verdict = true
     end
 
     -- IP-tour: single source touring many distinct tenant domains on shared
@@ -608,9 +615,12 @@ function _M.run(ctx)
     -- multipliers. Trust cap below can still downgrade for a genuinely trusted
     -- session; ip_tour.lua's strike counter escalates repeat offenders to a
     -- direct ban that seals at the door on the next request.
-    if ctx.ip_tour and action ~= "block" and action ~= "challenge" then
-        action            = "challenge"
-        ctx.action_reason = "ip_tour"
+    if ctx.ip_tour then
+        direct_request_verdict = true
+        if action ~= "block" and action ~= "challenge" then
+            action            = "challenge"
+            ctx.action_reason = "ip_tour"
+        end
     end
 
     -- Phase 2 — mobile-farm signature (detection/ip_tour.lua): a shared IP with
@@ -620,10 +630,12 @@ function _M.run(ctx)
     -- returning users and never IP-bans. Farm devices are filtered one by one.
     if ctx.ip_farm_suspect
        and (ctx.session_richness or 0) == 0
-       and not ctx.verified
-       and action ~= "block" and action ~= "challenge" then
-        action            = "challenge"
-        ctx.action_reason = "ip_farm_suspect"
+       and not ctx.verified then
+        direct_request_verdict = true
+        if action ~= "block" and action ~= "challenge" then
+            action            = "challenge"
+            ctx.action_reason = "ip_farm_suspect"
+        end
     end
 
     -- Trust cap
@@ -728,6 +740,28 @@ function _M.run(ctx)
         action = "monitor"
         ctx.action_reason = "monitor_ip_cap"
         ctx.monitor_flag  = true
+    end
+
+    -- Requests whose TCP peer is this server still pass WAF, L7 admission,
+    -- concurrency/pressure controls and the direct-evidence verdicts above.
+    -- Only a block/challenge produced by accumulated score is capped.  This
+    -- prevents one tenant's cron/REST history from denying another tenant on
+    -- the same shared-hosting node without opening a horizontal bypass.
+    --
+    -- Keep `is_self()` last in the condition: on the normal allow/monitor path
+    -- this avoids even the cheap local-address lookup.
+    if (action == "block" or action == "challenge")
+       and not direct_request_verdict
+       and state_scope.is_self(ctx) then
+        ngx.log(ngx.INFO,
+            "[engine] self-traffic score cap action=", action, "->monitor",
+            " eff=", math.floor(ctx.effective_score or 0),
+            " ip=", ctx.ip or "?",
+            " host=", (ctx.req and ctx.req.host) or "?")
+        action = "monitor"
+        ctx.action_reason = "self_traffic_score_cap"
+        ctx.monitor_flag = true
+        ctx.self_traffic_score_cap = true
     end
 
     -- Authenticated-session cap (session_verified tier). A request whose

@@ -540,6 +540,48 @@ local function eq(what, got, want)
     end
 end
 
+-- `.tmb` is not a name-only allowlist.  The request and the first bytes of an
+-- existing file must jointly prove a passive raster thumbnail.
+local function thumb_opts(method, data, expected)
+    return {
+        method = method,
+        document_root = "/srv/www",
+        read_prefix = function(path)
+            if expected and path ~= expected then return nil end
+            return data
+        end,
+    }
+end
+
+io.write("ngoai le .tmb co bang chung - 9 case\n")
+local png = "\137PNG\r\n\26\n" .. "xxxx"
+local jpg = "\255\216\255" .. "xxxxxxxxx"
+eq("GET .tmb PNG that duoc phuc vu",
+   ex.check("/.tmb/thumb.png",
+            thumb_opts("GET", png, "/srv/www/.tmb/thumb.png")), nil)
+eq("HEAD .tmb JPEG that duoc phuc vu",
+   ex.check("/uploads/.tmb/thumb.jpg",
+            thumb_opts("HEAD", jpg, "/srv/www/uploads/.tmb/thumb.jpg")), nil)
+eq("POST khong duoc huong ngoai le",
+   ex.check("/.tmb/thumb.png", thumb_opts("POST", png)), "dotfile_exposed")
+eq("file khong ton tai van bi chan",
+   ex.check("/.tmb/missing.png", thumb_opts("GET", nil)), "dotfile_exposed")
+eq("duoi PNG nhung sai magic van bi chan",
+   ex.check("/.tmb/fake.png", thumb_opts("GET", "<?php echo 1;")), "dotfile_exposed")
+eq("dotfile khac ben duoi .tmb van bi chan",
+   ex.check("/.tmb/.env.png", thumb_opts("GET", png)), "dotfile_exposed")
+eq("SVG khong phai raster thu dong nen van bi chan",
+   ex.check("/.tmb/thumb.svg", thumb_opts("GET", "<svg")), "dotfile_exposed")
+-- Phai co reader tra anh THAT: khong co reader thi `io.open` that bai va ca
+-- nay qua vi ly do khac, nen go guard `document_root` van xanh.
+eq("thieu document_root thi fail closed",
+   ex.check("/.tmb/thumb.png",
+            { method = "GET", read_prefix = function() return png end }),
+   "dotfile_exposed")
+eq("traversal khong duoc dung file anh that lam bang chung",
+   ex.check("/.tmb/../../outside.png", thumb_opts("GET", png)),
+   "dotfile_exposed")
+
 local DR_WP    = "/home/u1/domains/wp.test/public_html"
 local DR_PLAIN = "/home/u9/domains/plain.test/public_html"
 local DR_SUB   = "/home/u2/domains/wpsub.test/public_html"

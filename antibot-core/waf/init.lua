@@ -156,8 +156,11 @@ local function record_arg(state, rule_id, target, matched, factor)
     max_field(state.ctx, field, bridged)
 end
 
-local function find_uri_rule(uri, host, resolved, docroot)
-    local id = exposed.check(uri)
+local function find_uri_rule(uri, host, resolved, docroot, method)
+    local id = exposed.check(uri, {
+        method = method,
+        document_root = docroot,
+    })
     if id then return id, exposed.RULES end
     if (resolved.profiles or {}).wordpress ~= false then
         id = wp_paths.check(uri, host, docroot)
@@ -1097,7 +1100,8 @@ local function run_pre(ctx, rt)
         policy.emit(state, route_bad, { target = "URI", matched = route_name })
     end
 
-    local uri_rule, detector_rules = find_uri_rule(request.uri, request.host, resolved, request.dr)
+    local uri_rule, detector_rules = find_uri_rule(
+        request.uri, request.host, resolved, request.dr, request.method)
     local detector_rule = uri_rule and detector_rules[uri_rule] or nil
     if uri_rule and detector_rule then
         local uri_hit = policy.emit(state, uri_rule,

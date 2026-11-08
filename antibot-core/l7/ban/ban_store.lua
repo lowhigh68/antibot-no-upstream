@@ -49,7 +49,8 @@ function _M.run(ctx)
     end
 
     -- One round trip. New host/global namespaces are authoritative. The old
-    -- ban:<id> namespace is read-only during migration and expires naturally.
+    -- ban:<id> namespace can still be enabled for an explicit rollback, but
+    -- production closes that read path after the migration window.
     red:init_pipeline()
     red:get("wl:id:" .. id)
     red:get(global_keys.ban)

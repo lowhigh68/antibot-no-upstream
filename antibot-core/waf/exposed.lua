@@ -27,6 +27,71 @@ local _M = {}
 local RX_DOTFILE = "(?:^|/)\\.[^/.]"
 local WELL_KNOWN = "/.well-known/"
 
+-- DirectAdmin/file-manager thumbnail caches use a `.tmb` directory.  It is
+-- the only operational dot-directory observed as legitimate in the seven-node
+-- audit.  The exception is deliberately proven from the request AND disk:
+-- read-only method, raster extension, real file and matching image signature.
+-- A missing file, SVG/active content, misleading extension or another dotfile
+-- segment remains blocked.
+local THUMB_EXT = {
+    png = true, jpg = true, jpeg = true, gif = true, webp = true,
+}
+
+local function read_prefix(path, n)
+    local fh = io.open(path, "rb")
+    if not fh then return nil end
+    local data = fh:read(n)
+    fh:close()
+    return data
+end
+
+local function raster_signature(data, ext)
+    if type(data) ~= "string" then return false end
+    if ext == "png" then
+        return data:sub(1, 8) == "\137PNG\r\n\26\n"
+    end
+    if ext == "jpg" or ext == "jpeg" then
+        return data:sub(1, 3) == "\255\216\255"
+    end
+    if ext == "gif" then
+        local sig = data:sub(1, 6)
+        return sig == "GIF87a" or sig == "GIF89a"
+    end
+    if ext == "webp" then
+        return data:sub(1, 4) == "RIFF" and data:sub(9, 12) == "WEBP"
+    end
+    return false
+end
+
+local function safe_thumbnail(uri, low, opts)
+    if type(opts) ~= "table" then return false end
+    local method = tostring(opts.method or ""):upper()
+    if method ~= "GET" and method ~= "HEAD" then return false end
+    if not low:find("/.tmb/", 1, true) then return false end
+    if uri:find("\0", 1, true) or not uri:find("^/", 1) then return false end
+    if low == "/.." or low:find("/../", 1, true)
+       or low:sub(-3) == "/.." then return false end
+
+    local ext = low:match("%.([a-z0-9]+)$")
+    if not THUMB_EXT[ext] then return false end
+
+    -- Remove only the allowed segment, then reject any remaining dot segment.
+    local rest = low:gsub("/%.tmb/", "/")
+    if ngx.re.find(rest, RX_DOTFILE, "jo") then return false end
+
+    local root = opts.document_root
+    if type(root) ~= "string" or root == "" or root:find("\0", 1, true) then
+        return false
+    end
+    if root:sub(-1) == "/" then root = root:sub(1, -2) end
+
+    -- This synchronous read is intentionally limited to the tiny `.tmb` image
+    -- candidate set.  Extension-only exemption would turn the dotfile rule into
+    -- a bypass; twelve bytes are enough to prove every admitted raster format.
+    local reader = opts.read_prefix or read_prefix
+    return raster_signature(reader(root .. uri, 12), ext)
+end
+
 -- Đuôi thực thi PHP. BẢN SAO CÓ Ý của `RX_PHP_EXEC` trong `wordpress/paths.lua`:
 -- `exposed.lua` cố tình không phụ thuộc module WordPress (nó chạy TRƯỚC, không có
 -- cổng host, và phải dùng được trên máy không có CMS nào — 183-139 là code tay).
@@ -97,7 +162,7 @@ _M.RULES = RULES
 --
 -- Thứ tự: dump trước dotfile. Một `/.env.bak` khớp cả hai, và `dump_exposed` là
 -- nhãn đúng hơn cho việc đọc log về sau.
-function _M.check(uri)
+function _M.check(uri, opts)
     if not uri or uri == "" then return nil end
     local low = uri:lower()
 
@@ -179,6 +244,7 @@ function _M.check(uri)
         if ngx.re.find(rest, RX_DOTFILE, "jo") then return "dotfile_exposed" end
         return nil
     end
+    if safe_thumbnail(uri, low, opts) then return nil end
     if ngx.re.find(low, RX_DOTFILE, "jo") then return "dotfile_exposed" end
 
     return nil
