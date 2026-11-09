@@ -30,6 +30,9 @@ package.loaded["antibot.detection.bot.ua_check"] = {
             ctx.good_bot_suffixes = {}
             ctx.good_bot_registered = ctx.fixture_registered == true
             ctx.bot_score = ctx.good_bot_registered and 0 or 0.4
+            if ctx.fixture_wrapped then
+                ctx.browser_wrapped_claim = true
+            end
             if ctx.fixture_cloud or ctx.fixture_strong then
                 ctx.bot_ua_compliant = true
                 ctx.bot_contact_host = "x.ai"
@@ -104,6 +107,21 @@ eq(contradicted.bot_ua, "fake_good_bot",
 eq(contradicted.good_bot_verified, false,
    "registered contradiction is explicit negative evidence")
 
+local wrapped = {
+    good_bot_registered = true,
+    browser_wrapped_claim = true,
+    dns_rev_valid = false,
+    bot_score = 0.85,
+}
+eq(bot.resolve_unverified(wrapped), "unknown",
+   "browser-wrapped registered mismatch is not direct impersonation")
+eq(wrapped.bot_ua, "browser_wrapped_automation",
+   "browser-wrapped claim remains explicitly observable")
+eq(wrapped.bot_score, 0.4,
+   "browser-wrapped claim keeps neutral automation score")
+ok(wrapped.good_bot_verified ~= true,
+   "browser-wrapped claim earns no crawler trust")
+
 local integrated_unknown = {
     fixture_claim = true, fixture_registered = false,
     ip = "203.0.113.20",
@@ -123,6 +141,16 @@ eq(integrated_known.automation_tier, "contradicted",
    "full bot lane keeps registered NXDOMAIN contradicted")
 eq(integrated_known.bot_ua, "fake_good_bot",
    "registered mismatch still reaches hard fake verdict")
+
+local integrated_wrapped = {
+    fixture_claim = true, fixture_registered = true,
+    fixture_wrapped = true, ip = "203.0.113.24",
+}
+bot.run(integrated_wrapped)
+eq(integrated_wrapped.automation_tier, "unknown",
+   "full bot lane keeps browser-wrapped mismatch out of contradicted tier")
+eq(integrated_wrapped.automation_proof, "browser_wrapped_claim",
+   "full bot lane records the hybrid evidence shape")
 
 -- Generic cloud PTR is machine provenance only. It must not preserve the old
 -- S2.5 zero-score/skip/cap trust, because the contact domain is copyable.
@@ -165,7 +193,7 @@ package.loaded["antibot.core.redis_pool"] = {
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()
 package.loaded["antibot.detection.bot.cloud_suffixes"] = {
-    BROWSER_STANDARD_TOKENS = {},
+    BROWSER_STANDARD_TOKENS = { Safari = true, Mobile = true },
 }
 package.loaded["antibot.detection.bot.asn_policy"] = {
     matches = function() return false end,
@@ -188,6 +216,47 @@ eq(contact_ctx.automation_contact_only, true,
    "contact-only product is distinct from legacy crawler hold")
 eq(contact_ctx.good_bot_registered, false,
    "contact-only product earns no registry status")
+
+local wrapped_ctx = {
+    ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) " ..
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 " ..
+        "Mobile/15E148 Safari/604.1 facebookexternalhit/1.1 " ..
+        "(+http://www.facebook.com/externalhit_uatext.php)",
+    ip = "14.191.166.183",
+}
+ua_check.run(wrapped_ctx)
+eq(wrapped_ctx.good_bot_registered, true,
+   "production hybrid still resolves the registered automation product")
+eq(wrapped_ctx.browser_wrapped_claim, true,
+   "production Safari-preview UA is recognized structurally as wrapped")
+
+-- Rao chan nguoc: ngoai le phai HEP. Hai guard duoi day deu chiu tai that —
+-- go bat ky cai nao thi mot trong ba ca sau dat duoc verdict nhe hon.
+local canon_padded = {
+    ua = "Mozilla/5.0 (iPhone) AppleWebKit/605 Mobile/15E Safari/604.1 " ..
+        "(compatible; facebookexternalhit/1.1; +http://www.facebook.com/x)",
+    ip = "14.191.166.184",
+}
+ua_check.run(canon_padded)
+ok(canon_padded.browser_wrapped_claim ~= true,
+   "canonical crawler padded with browser tokens is not wrapped")
+
+local fake_prefix = {
+    ua = "curl/8.4.0 Safari/604.1 facebookexternalhit/1.1",
+    ip = "14.191.166.185",
+}
+ua_check.run(fake_prefix)
+ok(fake_prefix.browser_wrapped_claim ~= true,
+   "non-browser prefix cannot buy the wrapped verdict with one token")
+
+local bare_token = {
+    ua = "Safari/604.1 facebookexternalhit/1.1",
+    ip = "14.191.166.186",
+}
+ua_check.run(bare_token)
+ok(bare_token.browser_wrapped_claim ~= true,
+   "browser token without a real browser UA is not wrapped")
+
 eq(contact_ctx.bot_score, 0.4,
    "contact-only claim starts at neutral automation baseline")
 eq(contact_ctx.bot_contact_host, "openai.com",

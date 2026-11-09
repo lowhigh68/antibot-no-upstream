@@ -56,8 +56,8 @@ ok(identity.build_from(ip, ua_win) ~= identity.build_from("198.51.100.45", ua_wi
 -- Su co 21-10-2026 (no1computer.vn): mot link-preview scraper ghep token vao
 -- DUOI UA browser that. UA do khong co `(compatible; ...)` nen nhanh bot cu
 -- khong thay, va no roi vao `Version/(%d+)...Mobile` -> `MobileSafari/26`,
--- TRUNG voi Safari iOS 26 that. `fake_good_bot` chan dung request do (PTR cua
--- IP khach khong khop `facebook.com`), roi `network_quarantine` ghi
+-- TRUNG voi Safari iOS 26 that. Ban cu gan `fake_good_bot` (PTR cua IP khach
+-- khong khop `facebook.com`), roi `network_quarantine` ghi
 -- `gban:<md5(ip|MobileSafari/26)>` 300 giay -> ban LUON moi khach Safari iOS
 -- cung IP. Do duoc: 79 luot `banned_ip` tren mot phien `ckn=true
 -- richness=0.58`, va khach vao lai duoc dung sau khi bac TTL 300s het.
@@ -313,6 +313,21 @@ do
     }, "host")
     eq(store[browser_keys.ban], nil,
        "different browser identity on same dynamic IP remains unquarantined")
+
+    store, writes, ttl_map = {}, {}, {}
+    local first_fake = {
+        ip = ip, ua = "facebookexternalhit/1.1",
+        req = { host = "one.test" }, req_class = "unknown",
+        action = "block", action_reason = "fake_good_bot",
+        ban_scope = "global", score = 129, effective_score = 84,
+        ip_risk = 1.0, swarm = false, session_richness = 0,
+    }
+    writer.run(first_fake)
+    local first_fake_keys = quarantine.keys(first_fake, "global")
+    eq(store[first_fake_keys.ban], "1",
+       "first fake-goodbot incident still seals its global identity")
+    eq(ttl_map["ban:" .. ip], nil,
+       "first fake-goodbot incident cannot sentence the collective IP")
 
     store, writes, ttl_map = {}, {}, {}
     local global_repeat = {

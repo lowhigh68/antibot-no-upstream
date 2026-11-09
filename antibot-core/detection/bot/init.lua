@@ -355,6 +355,19 @@ function _M.resolve_unverified(ctx)
         return "unknown"
     end
 
+    -- A registered automation token appended after a complete browser UA is a
+    -- hybrid browser/app claim, not sufficient proof of crawler impersonation.
+    -- Keep it in the automation/scoring pipeline with no trust, while avoiding
+    -- the direct fake-goodbot block that would also quarantine the human IP.
+    if ctx.browser_wrapped_claim == true then
+        ctx.automation_tier  = "unknown"
+        ctx.automation_proof = "browser_wrapped_claim"
+        ctx.bot_ua            = "browser_wrapped_automation"
+        ctx.bot_score         = 0.4
+        ctx.good_bot_verified = nil
+        return "unknown"
+    end
+
     ctx.automation_tier  = "contradicted"
     ctx.automation_proof = "registered_evidence_mismatch"
     ctx.bot_ua            = "fake_good_bot"

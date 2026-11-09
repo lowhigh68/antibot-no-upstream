@@ -95,6 +95,38 @@ local function is_browser_pattern(ua)
         or ua:find("Gecko/", 1, true) ~= nil
 end
 
+-- A browser/app may append a preview-fetcher product after an already complete
+-- browser UA, for example Safari/... facebookexternalhit/....  That shape is
+-- not the canonical crawler form and production has proved it can originate
+-- from the human device's own ISP address.  It remains an automation claim,
+-- but a failed infrastructure check must not become direct impersonation.
+--
+-- This is structural, not a vendor allowlist:
+--   * the claim must be a registered operator product;
+--   * a complete browser product must occur before it;
+--   * canonical `(compatible; Bot/...)` crawler UAs are excluded.
+-- A real operator IP can still verify normally; an attacker gains no trust and
+-- could already avoid the fake-bot verdict by sending an ordinary browser UA.
+local function is_browser_wrapped_claim(ua, claim)
+    if type(ua) ~= "string" or type(claim) ~= "table"
+       or claim.metadata == nil or not claim.canonical_name then
+        return false
+    end
+
+    local lower = ua:lower()
+    if lower:find("compatible;", 1, true) then return false end
+
+    local claim_pos = lower:find(claim.canonical_name:lower(), 1, true)
+    if not claim_pos or claim_pos <= 1 then return false end
+    local prefix = ua:sub(1, claim_pos - 1)
+    if not is_browser_pattern(prefix) then return false end
+
+    for product in prefix:gmatch("([%a][%w%-]*)/[%w%.%-]+") do
+        if BROWSER_TOKEN_BLACKLIST[product] then return true end
+    end
+    return false
+end
+
 -- Strict marker extraction (Q23=a).
 -- Tail token must be EITHER:
 --   - "PascalCase-PascalCase" with hyphen (e.g. "Chrome-Lighthouse"), OR
@@ -266,6 +298,9 @@ function _M.run(ctx)
     -- Bot self-identification and canonical-name extraction share the same
     -- pure registry used by every early claim gate.
     local claim = ctx.automation_inspect or registry.inspect(ua)
+    if is_browser_wrapped_claim(ua, claim) then
+        ctx.browser_wrapped_claim = true
+    end
     if claim.verification_claimed then
         local bot_name = claim.canonical_name
         if bot_name then bot_name = bot_name:lower() end

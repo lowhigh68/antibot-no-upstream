@@ -241,6 +241,18 @@ function _M.run(ctx)
         or viol_count >= 3
     )
 
+    -- A single registered-crawler mismatch proves only that network-UA
+    -- identity.  Production 09-11-2026: Safari on a customer device carried a
+    -- trailing preview-fetcher token; the identity was correctly isolated, but
+    -- its first global sentence promoted to `ban:<ip>` and blocked every normal
+    -- page/resource from the customer's dynamic address.  Require three fresh
+    -- global incidents before adding the collective IP consequence.  The
+    -- request and `gban:<id>` remain blocked from incident one.
+    local current_viol = tonumber(ctx.ban_violation) or (viol_count + 1)
+    if ctx.action_reason == "fake_good_bot" and current_viol < 3 then
+        should_ban_ip = false
+    end
+
     -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
     -- (mobile CGNAT / mobile farm / office WAN with real cookied users). One bad
     -- device must not nuke thousands of real users behind the same IP — it is

@@ -13,10 +13,12 @@ local VERSION = "v1"
 -- HOAN TOAN voi Safari iOS 26 that. Do duoc:
 --   FB tren iPhone   -> MobileSafari/26  id=bb5c23932d437a1a1777abb8a4786a0a
 --   Safari iOS thuan -> MobileSafari/26  id=bb5c23932d437a1a1777abb8a4786a0a
--- PTR cua IP khach (FPT, AS18403) khong khop `facebook.com`/`fbsv.net` nen
--- `fake_good_bot` chan dung request do, roi `network_quarantine` ghi
+-- PTR cua IP khach (FPT, AS18403) khong khop `facebook.com`/`fbsv.net` nen ban
+-- cu gan `fake_good_bot`, chan request do, roi `network_quarantine` ghi
 -- `gban:bb5c2393...` 300 giay — ban LUON moi khach Safari iOS 26 cung IP.
 -- Ket qua: 79 luot `banned_ip` tren mot phien co `ckn=true richness=0.58`.
+-- Identity tach ro van la bat bien can thiet; verdict duoc sua rieng trong
+-- `ua_check`/`bot.init`: browser-wrapped claim khong con la fake truc tiep.
 --
 -- Day KHONG rieng Facebook: moi link-preview scraper deu ghep kieu nay
 -- (Twitterbot, WhatsApp, TelegramBot, Slackbot, Discordbot, LinkedInBot,
