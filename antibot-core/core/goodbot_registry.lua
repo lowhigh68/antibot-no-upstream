@@ -24,6 +24,51 @@ local OPERATOR_EXACT = {
     ["google"] = true,
 }
 
+-- These words are meaningful only inside an automation PRODUCT.  Matching
+-- them as raw substrings mistakes device/model names such as CUBOT-X70 for a
+-- crawler and removes a real browser from the verified-human lane.
+local STRUCTURAL_CRAWLER_TOKENS = {
+    bot = true, spider = true, crawler = true, scraper = true,
+}
+
+local CRAWLER_MARKERS = { "bot", "spider", "crawler", "scraper" }
+
+local function crawler_marker(product)
+    if not product or product == "" then return nil end
+    for i = 1, #CRAWLER_MARKERS do
+        local marker = CRAWLER_MARKERS[i]
+        if product:find(marker, 1, true) then return marker end
+    end
+    return nil
+end
+
+-- A crawler word is meaningful only inside a PRODUCT declaration.  Do not
+-- scan arbitrary browser/platform comments: `CUBOT-X70` is a phone model, not
+-- a bot.  This module deliberately remains dependency-free because policy
+-- tests load it directly from the source tree before deployment.
+local function crawler_product(ua)
+    if type(ua) ~= "string" or ua == "" then return nil, nil end
+    local lower = ua:lower()
+
+    for product in lower:gmatch("([%a][%w%._%-]*)/[%w%._%-]+") do
+        local marker = crawler_marker(product)
+        if marker then return product, marker end
+    end
+
+    local compatible = lower:match("compatible;%s*([%a][%w%._%-]*)")
+    local marker = crawler_marker(compatible)
+    if marker then return compatible, marker end
+
+    local exact = lower:match("^%s*([%a][%w%._%-]*)%s*$")
+    marker = crawler_marker(exact)
+    if marker then return exact, marker end
+
+    local tail = lower:match("([%a][%w%._%-]*)%s*$")
+    marker = crawler_marker(tail)
+    if marker then return tail, marker end
+    return nil, nil
+end
+
 -- RFC-style automation clients often identify themselves with a product token
 -- plus an operator contact instead of putting "bot" in the product name, for
 -- example `Product-User/1.0; +https://...` or `+mailto:...`.  The contact is a
@@ -154,17 +199,27 @@ local function operator_claimed(ua)
     -- contact-only product into the legacy crawler hold gate.
     local p = contact_position(lower)
     local claim_text = p and lower:sub(1, p - 1) or lower
+    local product, marker = crawler_product(claim_text)
+    if product and marker ~= "scraper" then return true end
     for i = 1, #OPERATOR_SUBSTRINGS do
-        if claim_text:find(OPERATOR_SUBSTRINGS[i], 1, true) then return true end
+        local token = OPERATOR_SUBSTRINGS[i]
+        if not STRUCTURAL_CRAWLER_TOKENS[token]
+           and claim_text:find(token, 1, true) then
+            return true
+        end
     end
     return false
 end
 
-local function verification_claimed(lower)
+local function verification_claimed(ua, lower)
     if contact_claimed(lower) then return true end
+    if crawler_product(ua) then return true end
     for i = 1, #VERIFY_TOKENS do
         local token = VERIFY_TOKENS[i]
-        if lower:find(token, 1, token:find("%%") == nil) then return true end
+        if not STRUCTURAL_CRAWLER_TOKENS[token]
+           and lower:find(token, 1, token:find("%%") == nil) then
+            return true
+        end
     end
     return false
 end
@@ -195,9 +250,7 @@ local function extract_name(ua, lower)
     local p = contact_position(lower)
     local product_ua = p and ua:sub(1, p - 1) or ua
     local product_lower = product_ua:lower()
-    return product_ua:match("([%w%-]+[Bb]ot[%w%-]*)")
-        or product_ua:match("([%w%-]+[Ss]pider)")
-        or product_ua:match("([%w%-]+[Cc]rawler)")
+    return crawler_product(product_ua)
         or product_lower:match("(facebookexternalhit)")
         or product_lower:match("(facebot)")
         or product_lower:match("(meta%-external%w+)")
@@ -222,7 +275,7 @@ end
 function _M.inspect(ua)
     ua = ua or ""
     local lower = ua:lower()
-    local verify = ua ~= "" and verification_claimed(lower) or false
+    local verify = ua ~= "" and verification_claimed(ua, lower) or false
     -- Extract independently from lane admission. This makes a registered name
     -- observable/testable even when compatibility policy still holds it out of
     -- DNS verification; changing that gate is an explicit verdict change.

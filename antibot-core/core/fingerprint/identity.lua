@@ -24,29 +24,76 @@ local VERSION = "v1"
 -- (Twitterbot, WhatsApp, TelegramBot, Slackbot, Discordbot, LinkedInBot,
 -- SkypeUriPreview). Tren CGNAT/4G Viet Nam, mot rổ browser la NHIEU khach.
 --
--- Giu `identity.lua` KHONG `require` gi (module nay pure va nam duoi
--- `goodbot_registry`), nen danh sach dat tai cho. `contract_test` ghim no la
--- TAP CON cua `OPERATOR_SUBSTRINGS` de hai ben khong the lech nhau.
+-- `identity.lua` co y KHONG `require` gi (module nay duoc load truc tiep trong
+-- pre-deploy test). Danh sach duoi van duoc `contract_test` ghim la TAP CON cua
+-- `OPERATOR_SUBSTRINGS` de hai ben khong the lech nhau.
 local BOT_TOKENS = {
     "bot", "spider", "crawler", "facebookexternal", "mediapartners",
     "bingpreview", "meta-external", "feedfetcher",
 }
+
+local function crawler_marker(product)
+    if not product or product == "" then return nil end
+    for _, marker in ipairs({ "bot", "spider", "crawler" }) do
+        if product:find(marker, 1, true) then return marker end
+    end
+    return nil
+end
+
+-- Same structural boundary as goodbot_registry: only a product/version,
+-- compatible agent, standalone product or final token can identify a crawler.
+-- Keeping this helper local preserves identity.lua's dependency-free loader;
+-- behavioral contracts pin the two copies with both CUBOT and GPTBOT cases.
+local function crawler_product(ua)
+    local lower = ua:lower()
+    for product in lower:gmatch("([%a][%w%._%-]*)/[%w%._%-]+") do
+        local marker = crawler_marker(product)
+        if marker then return product, marker end
+    end
+    local compatible = lower:match("compatible;%s*([%a][%w%._%-]*)")
+    local marker = crawler_marker(compatible)
+    if marker then return compatible, marker end
+    local exact = lower:match("^%s*([%a][%w%._%-]*)%s*$")
+    marker = crawler_marker(exact)
+    if marker then return exact, marker end
+    local tail = lower:match("([%a][%w%._%-]*)%s*$")
+    marker = crawler_marker(tail)
+    if marker then return tail, marker end
+    return nil, nil
+end
 
 -- Tra token XUAT HIEN SOM NHAT, khong phai token dau tien trong bang: mot UA
 -- ghep nhieu scraper (`facebookexternalhit/1.1 Facebot Twitterbot/1.0`) phai
 -- lay ten o dau chuoi, neu khong thi `bot` trong `facebot` thang
 -- `facebookexternal` va cot log tro nen kho doc. Khong anh huong tinh dung —
 -- moi nhanh nay deu nam ngoai ro browser — chi anh huong kha nang doc log.
-local function bot_token_in_ua(lower)
-    local best_pos, best_token
+local function bot_token_in_ua(ua)
+    local lower = ua:lower()
+    local best_pos, best_token, best_product
     for i = 1, #BOT_TOKENS do
-        local p = lower:find(BOT_TOKENS[i], 1, true)
+        local token = BOT_TOKENS[i]
+        local p
+        -- Generic crawler words must occur in a product declaration.  A raw
+        -- substring check would turn CUBOT-X70 and similar device models into
+        -- a shared `bot:` identity.
+        if token ~= "bot" and token ~= "spider" and token ~= "crawler" then
+            p = lower:find(token, 1, true)
+        end
         if p and (not best_pos or p < best_pos
-                  or (p == best_pos and #BOT_TOKENS[i] > #best_token)) then
-            best_pos, best_token = p, BOT_TOKENS[i]
+                  or (p == best_pos and #token > #best_token)) then
+            best_pos, best_token, best_product = p, token, nil
         end
     end
-    return best_token
+
+    local product, marker = crawler_product(ua)
+    if marker == "bot" or marker == "spider" or marker == "crawler" then
+        local p = lower:find(product, 1, true)
+        if p and (not best_pos or p < best_pos
+                  or (p == best_pos and #marker > #best_token)) then
+            best_pos, best_token, best_product = p, marker, product
+        end
+    end
+    return best_token, best_product
 end
 
 local function normalize_ua(ua)
@@ -71,12 +118,13 @@ local function normalize_ua(ua)
     -- Chi doi hoi token; KHONG doi `+http`/`+mailto` vi `facebookexternalhit`
     -- co dang `/1.1 (+http://...)` con `Facebot`/`Twitterbot/1.0` thi khong.
     local lower = s:lower()
-    local bot_token = bot_token_in_ua(lower)
+    local bot_token, crawler_product = bot_token_in_ua(s)
     if bot_token then
         -- Giu ten san pham khi doc duoc de log con phan biet duoc tung
         -- scraper; neu khong thi gop theo token. Ca hai deu nam ngoai ro
         -- browser, va do la tinh chat duy nhat can thiet.
-        local product = lower:match("([%a][%w%-_.]*" .. bot_token .. "[%w%-_.]*)")
+        local product = crawler_product
+            or lower:match("([%a][%w%-_.]*" .. bot_token .. "[%w%-_.]*)")
         return "bot:" .. (product and product:sub(1, 32) or bot_token)
     end
 

@@ -77,6 +77,22 @@ do
     eq(registry.inspect("Mozilla/5.0 Chrome/150.0 Safari/537.36").automation_meter_claimed,
        false, "ordinary browser does not enter machine metering")
 
+    local cubot = registry.inspect(
+        "Mozilla/5.0 (Linux; Android 14; CUBOT-X70) " ..
+        "AppleWebKit/537.36 Chrome/121.0 Mobile Safari/537.36")
+    eq(cubot.automation_claimed, false,
+       "device model containing BOT is not an automation claim")
+    eq(cubot.verification_claimed, false,
+       "device model containing BOT does not enter DNS verification")
+    eq(cubot.canonical_name, nil,
+       "device model containing BOT is not a crawler principal")
+
+    local upper_bot = registry.inspect("GPTBOT/1.0")
+    eq(upper_bot.automation_claimed, true,
+       "uppercase crawler product remains an automation claim")
+    eq(upper_bot.canonical_name, "gptbot",
+       "uppercase crawler product still has a stable principal")
+
     local google = registry.inspect("Googlebot-Image/1.0")
     eq(google.operator_claimed, true, "Googlebot is held")
     eq(google.verification_claimed, true, "Googlebot enters verification")

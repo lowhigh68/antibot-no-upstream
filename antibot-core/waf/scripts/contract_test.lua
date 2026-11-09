@@ -2320,12 +2320,14 @@ do
     -- Nhanh bot phai dat TRUOC moi nhanh browser. Cac nhanh browser `return`
     -- ngay khi khop, nen mot nhanh bot dat SAU chung se khong bao gio chay voi
     -- UA ghep token o duoi — dung hinh dang da gay su co.
-    -- Neo vao CHO GOI thuc su (`local bot_token = bot_token_in_ua(`) va vao
+    -- Neo vao CHO GOI thuc su
+    -- (`local bot_token, crawler_product = bot_token_in_ua(`) va vao
     -- `v = s:match("Edg/` — KHONG neo vao manh pattern nhu `%s+Mobile`: ban
     -- dau tien lam vay va `find(..., true)` da khop chinh chuoi do trong KHOI
     -- CHU THICH o dau tep, cho ra mot canh bao gia.
     local idsrc2 = slurp(SRC .. "core/fingerprint/identity.lua") or ""
-    local bot_pos = idsrc2:find("local bot_token = bot_token_in_ua(", 1, true)
+    local bot_pos = idsrc2:find(
+        "local bot_token, crawler_product = bot_token_in_ua(", 1, true)
     local edg_pos = idsrc2:find('local v = s:match("Edg/', 1, true)
     local mob_pos = idsrc2:find('v = s:match("Version/', 1, true)
     if not bot_pos or not edg_pos then

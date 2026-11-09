@@ -188,12 +188,19 @@ eq(integrated_strong.skip_layers.cluster, true,
    "strong contact proof still skips cluster")
 
 package.loaded["antibot.core.redis_pool"] = {
-    safe_get = function() return nil end,
+    safe_get = function(key)
+        if key == "goodbot:dns:runtimepreviewbot" then
+            return "example.test"
+        end
+        return nil
+    end,
 }
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()
 package.loaded["antibot.detection.bot.cloud_suffixes"] = {
-    BROWSER_STANDARD_TOKENS = { Safari = true, Mobile = true },
+    BROWSER_STANDARD_TOKENS = {
+        Safari = true, Mobile = true, Chrome = true, Edg = true,
+    },
 }
 package.loaded["antibot.detection.bot.asn_policy"] = {
     matches = function() return false end,
@@ -229,6 +236,26 @@ eq(wrapped_ctx.good_bot_registered, true,
    "production hybrid still resolves the registered automation product")
 eq(wrapped_ctx.browser_wrapped_claim, true,
    "production Safari-preview UA is recognized structurally as wrapped")
+
+local runtime_wrapped = {
+    ua = "Mozilla/5.0 AppleWebKit/537.36 Chrome/156.0 " ..
+        "RuntimePreviewBot/1.0",
+    ip = "198.51.100.201",
+}
+ua_check.run(runtime_wrapped)
+eq(runtime_wrapped.good_bot_registered, true,
+   "runtime Redis bot registry is honored")
+eq(runtime_wrapped.browser_wrapped_claim, true,
+   "runtime-registered wrapped claim receives the same FP guard")
+
+local minimal_chrome = {
+    ua = "Mozilla/5.0 AppleWebKit/537.36 Chrome/156.0 " ..
+        "facebookexternalhit/1.1",
+    ip = "198.51.100.202",
+}
+ua_check.run(minimal_chrome)
+eq(minimal_chrome.browser_wrapped_claim, true,
+   "minimal embedded Chromium UA is recognized without Safari tail")
 
 -- Rao chan nguoc: ngoai le phai HEP. Hai guard duoi day deu chiu tai that —
 -- go bat ky cai nao thi mot trong ba ca sau dat duoc verdict nhe hon.

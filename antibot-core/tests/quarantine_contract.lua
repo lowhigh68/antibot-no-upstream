@@ -94,6 +94,13 @@ do
     eq(identity._normalize_ua(
         "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
         :sub(1, 4), "bot:", "Googlebot van la bot:")
+
+    eq(identity._normalize_ua(
+        "Mozilla/5.0 (Linux; Android 14; CUBOT-X70) AppleWebKit/537.36 " ..
+        "Chrome/121.0 Mobile Safari/537.36"), "Chrome/121",
+       "CUBOT device model stays in the browser identity bucket")
+    eq(identity._normalize_ua("GPTBOT/1.0"):sub(1, 4), "bot:",
+       "uppercase bot product remains isolated from browser identities")
 end
 
 local key_ctx = { ip = ip, ua = ua_win, req = { host = "one.test" } }

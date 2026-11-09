@@ -84,7 +84,9 @@ _M.BROWSER_STANDARD_TOKENS = {
     -- Chromium-based
     ["Mobile"]          = true,
     ["Safari"]          = true,
+    ["Chrome"]          = true,
     ["Edge"]            = true,
+    ["Edg"]             = true,
     ["EdgA"]            = true,
     ["EdgiOS"]          = true,
     ["CriOS"]           = true,

@@ -102,14 +102,15 @@ end
 -- but a failed infrastructure check must not become direct impersonation.
 --
 -- This is structural, not a vendor allowlist:
---   * the claim must be a registered operator product;
+--   * the claim must expose a canonical automation product; registration is
+--     checked later by resolve_unverified (runtime Redis entries included);
 --   * a complete browser product must occur before it;
 --   * canonical `(compatible; Bot/...)` crawler UAs are excluded.
 -- A real operator IP can still verify normally; an attacker gains no trust and
 -- could already avoid the fake-bot verdict by sending an ordinary browser UA.
 local function is_browser_wrapped_claim(ua, claim)
     if type(ua) ~= "string" or type(claim) ~= "table"
-       or claim.metadata == nil or not claim.canonical_name then
+       or not claim.canonical_name then
         return false
     end
 
