@@ -220,16 +220,59 @@ local function path_shard(uri, shards)
     return n % shards
 end
 
+-- A diverse set of page-shaped targets is useful spray evidence.  The same
+-- observation is normal for browser applications: editors and dashboards fan
+-- out over REST/AJAX routes during one screen load.  These populations must
+-- not share state; merely lowering the verdict for the current API request
+-- would still let it prime a later navigation reject from the same IP.
+--
+-- Accept both a map (`navigation=true`) and an array (`{"navigation"}`) so a
+-- compiled JSON policy can express the same bounded class set as the builtin
+-- policy.  With no explicit set, preserve the safe builtin default.
+local function path_spray_lane(ctx, spec)
+    local class = tostring((ctx and ctx.req_class) or "unknown")
+    local classes = spec.enforce_classes
+    local enforce_class
+
+    if type(classes) == "table" then
+        enforce_class = classes[class] == true
+        if not enforce_class then
+            for i = 1, #classes do
+                if tostring(classes[i]) == class then
+                    enforce_class = true
+                    break
+                end
+            end
+        end
+    else
+        enforce_class = class == "navigation" or class == "unknown"
+    end
+
+    local base_mode = tostring(spec.mode or "off")
+    local mode = base_mode
+    if not enforce_class and base_mode == "enforce" then
+        mode = tostring(spec.other_classes_mode or "shadow")
+    end
+    if mode ~= "enforce" and mode ~= "shadow" and mode ~= "off" then
+        mode = "shadow"
+    end
+
+    -- Navigation and unknown deliberately share one lane: changing Accept or
+    -- Sec-Fetch headers must not multiply an attacker's page-spray budget.
+    return enforce_class and "page" or "application", mode
+end
+
 local function observe_paths(dict, ctx, c, scope, source, t)
     local spec = type(c.path_spray) == "table" and c.path_spray or {}
-    local mode = tostring(spec.mode or "off")
+    local lane, mode = path_spray_lane(ctx, spec)
+    ctx.dynamic_path_lane = lane
     ctx.dynamic_path_mode = mode
     if mode == "off" then return false end
 
     local window = math.max(math.floor(tonumber(spec.window) or 10), 1)
     local bucket = math.floor(t / window)
     local ttl = window * 2 + 2
-    local base = "dg:path:" .. scope .. ":" .. source .. ":"
+    local base = "dg:path:" .. scope .. ":" .. source .. ":" .. lane .. ":"
         .. tostring(bucket)
     local hits, hit_err = increment(dict, base .. ":hits", 1, ttl)
     if not hits then
@@ -265,7 +308,7 @@ local function observe_paths(dict, ctx, c, scope, source, t)
     -- request-start bucket.  A request that takes longer than `window` seconds
     -- must still reinforce the next path; binding cost to its completion
     -- bucket would separate the two halves precisely for the expensive cases.
-    local costly_key = "dg:path:" .. scope .. ":" .. source
+    local costly_key = "dg:path:" .. scope .. ":" .. source .. ":" .. lane
         .. ":costly_recent"
     local costly = tonumber(dict:get(costly_key)) or 0
     local min_hits = math.max(math.floor(tonumber(spec.min_hits) or 12), 2)
@@ -890,7 +933,11 @@ function _M.admit(ctx)
         spray = observe_paths(dict, ctx, c, scope, source, t)
     end
     local spray_spec = type(c.path_spray) == "table" and c.path_spray or {}
-    local spray_mode = tostring(spray_spec.mode or "off")
+    -- `observe_paths` resolves the effective mode for this semantic lane.
+    -- Reading `spec.mode` here would silently turn application shadow back
+    -- into enforce after it had already accumulated a legitimate candidate.
+    local spray_mode = tostring(ctx.dynamic_path_mode
+        or spray_spec.mode or "off")
     if spray then add("path_spray", spray_mode) end
 
     local uri_invalid, uri_mode = observe_uri_integrity(ctx, c)
@@ -972,13 +1019,19 @@ local function record_path_cost(dict, ctx, c, up, t)
     if ctx.dynamic_guard_static_miss_bypass then return end
     if not ctx.dynamic_guard_source or not ctx.dynamic_guard_scope then return end
     local spec = type(c.path_spray) == "table" and c.path_spray or {}
-    if tostring(spec.mode or "off") == "off" then return end
+    -- Use the effective lane mode, not the global mode.  Otherwise an
+    -- application lane configured `off` would skip arrival state but still
+    -- create an unscoped costly key during log phase.
+    if tostring(ctx.dynamic_path_mode or spec.mode or "off") == "off" then
+        return
+    end
     local costly_seconds = tonumber(spec.costly_seconds) or 2.0
     if not up or up < costly_seconds then return end
     local window = math.max(math.floor(tonumber(spec.window) or 10), 1)
     local ttl = window + 2
     local key = ctx.dynamic_path_cost_key or ("dg:path:"
         .. ctx.dynamic_guard_scope .. ":" .. ctx.dynamic_guard_source
+        .. ":" .. tostring(ctx.dynamic_path_lane or "page")
         .. ":costly_recent")
     local _, err = increment(dict, key, 1, ttl)
     if err then

@@ -637,6 +637,14 @@ do
        "server+IP concurrency giu tran production da do")
     eq((dg.path_spray or {}).mode, "enforce",
        "generic path spray duoc promote doc lap")
+    eq(((dg.path_spray or {}).enforce_classes or {}).navigation, true,
+       "path spray chi enforce lane navigation")
+    eq(((dg.path_spray or {}).enforce_classes or {}).unknown, true,
+       "unknown page shape khong duoc bypass bang Accept")
+    eq(((dg.path_spray or {}).enforce_classes or {}).interaction, nil,
+       "REST/AJAX fan-out khong nam trong lane enforce")
+    eq((dg.path_spray or {}).other_classes_mode, "shadow",
+       "class ung dung van do nhung khong chan")
     eq((dg.path_spray or {}).min_hits, 12,
        "path spray can du hit truoc khi shed")
     eq((dg.path_spray or {}).min_paths, 8,

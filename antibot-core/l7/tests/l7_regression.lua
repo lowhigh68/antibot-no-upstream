@@ -2714,6 +2714,91 @@ eq(dpe3.dynamic_path_costly, 1,
    "path enforce requires observed backend cost")
 dynamic_guard.after(dpe2)
 
+-- Browser applications legitimately fan out over many REST/AJAX routes.  The
+-- production kjob.vn incident mixed interaction/auth/navigation under one
+-- (docroot, IP) key: slow Elementor calls primed path_spray, then the editor
+-- shell itself received a local 429.  Application traffic remains observable
+-- in shadow, but its hits/distinct/cost state must not poison the page lane.
+fake_ngx.shared.antibot_cache = Dict.new()
+cfg.dynamic_guard.tenant_client.mode = "off"
+cfg.dynamic_guard.server_client.mode = "off"
+cfg.dynamic_guard.path_spray = {
+    mode = "enforce", other_classes_mode = "shadow",
+    enforce_classes = { navigation = true, unknown = true },
+    window = 10, shards = 16,
+    min_hits = 3, min_paths = 3, min_costly = 1,
+    costly_seconds = 2.0, status = 429,
+}
+clock = 3360
+exits = {}
+
+local app_paths = { "/rest/one", "/ajax/two", "/rest/three" }
+local app_items = {}
+for i, path in ipairs(app_paths) do
+    fake_ngx.var.uri = path
+    fake_ngx.var.request_uri = path
+    local item = dgctx("198.51.100.124", path)
+    item.req_class = (i == 2) and "auth_endpoint" or "interaction"
+    app_items[i] = item
+    local _, app_exit = dynamic_guard.admit(item)
+    eq(app_exit, false, "application path fan-out remains shadow")
+    if i == 1 then
+        fake_ngx.var.upstream_status = "200"
+        fake_ngx.var.upstream_response_time = "3.000"
+        dynamic_guard.after(item)
+        fake_ngx.var.upstream_status = nil
+        fake_ngx.var.upstream_response_time = nil
+    end
+end
+eq(app_items[3].dynamic_path_lane, "application",
+   "REST and admin requests use isolated application lane")
+eq(app_items[3].dynamic_path_mode, "shadow",
+   "application lane cannot inherit enforce mode")
+eq(app_items[3].dynamic_path_candidate, true,
+   "application fan-out remains measurable in shadow")
+eq(app_items[3].dynamic_guard_rejected, nil,
+   "application candidate is not rejected")
+dynamic_guard.after(app_items[2]); dynamic_guard.after(app_items[3])
+
+-- The first navigation after that burst must start from a clean page lane.
+fake_ngx.var.uri = "/page-one"
+fake_ngx.var.request_uri = "/page-one"
+local page1 = dgctx("198.51.100.124", "/page-one")
+page1.req_class = "navigation"
+local _, page1_exit = dynamic_guard.admit(page1)
+eq(page1_exit, false, "application lane cannot reject later navigation")
+eq(page1.dynamic_path_lane, "page", "navigation uses page lane")
+eq(page1.dynamic_path_mode, "enforce", "page lane remains enforced")
+eq(page1.dynamic_path_hits, 1, "page lane starts with one clean hit")
+eq(page1.dynamic_path_distinct, 1,
+   "application paths do not leak into page diversity")
+eq(page1.dynamic_path_costly, 0,
+   "application slow calls do not leak into page cost")
+fake_ngx.var.upstream_status = "404"
+fake_ngx.var.upstream_response_time = "3.000"
+dynamic_guard.after(page1)
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+
+fake_ngx.var.uri = "/page-two"
+fake_ngx.var.request_uri = "/page-two"
+local page2 = dgctx("198.51.100.124", "/page-two")
+page2.req_class = "unknown"
+local _, page2_exit = dynamic_guard.admit(page2)
+eq(page2_exit, false,
+   "navigation and unknown share page budget below threshold")
+
+fake_ngx.var.uri = "/page-three"
+fake_ngx.var.request_uri = "/page-three"
+local page3 = dgctx("198.51.100.124", "/page-three")
+page3.req_class = "navigation"
+local _, page3_exit = dynamic_guard.admit(page3)
+eq(page3_exit, true, "real page spray is still enforced")
+eq(page3.action_reason, "dynamic_guard:path_spray",
+   "page spray keeps stable enforcement reason")
+eq(exits[#exits], 429, "page lane still returns configured 429")
+dynamic_guard.after(page2)
+
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_cache.full = true
 local de_full = dgctx("198.51.100.121")

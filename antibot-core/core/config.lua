@@ -968,6 +968,17 @@ _M.dynamic_guard = {
     },
     path_spray = {
         mode           = "enforce",
+        -- Path diversity has different meanings by request semantics.  A page
+        -- crawler fans out over navigation-shaped targets; an authenticated
+        -- editor/SPA legitimately fans out over many REST/AJAX routes.  Keep
+        -- both populations measurable, but only the page lane may enforce.
+        -- The implementation stores the lanes under different shared-dict
+        -- keys, so API/admin traffic cannot prime a later navigation reject.
+        enforce_classes = {
+            navigation = true,
+            unknown    = true,
+        },
+        other_classes_mode = "shadow",
         window         = 10,
         shards         = 32, -- fixed cardinality; never retain raw paths
         min_hits       = 12,
