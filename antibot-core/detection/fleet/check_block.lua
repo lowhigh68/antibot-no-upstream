@@ -71,6 +71,12 @@ local function ip_to_cidr_16(ip)
 end
 
 function _M.run(ctx)
+    -- Missing/invalid client provenance leaves ctx.ip at the proxy edge.
+    -- Never apply a historical fl:dyn subnet sentence to that collective
+    -- address: one Cloudflare /24 can carry unrelated tenants and users.
+    -- Restored clients have ip_is_aggregate=false and follow the normal path.
+    if not ctx or ctx.ip_is_aggregate == true then return true, false end
+
     local ip = ctx.ip
     if not ip or ip == "" then return true, false end
     if ip == "127.0.0.1" then return true, false end

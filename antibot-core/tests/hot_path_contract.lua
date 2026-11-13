@@ -287,6 +287,48 @@ do
         if keys[i]:find(":uab:", 1, true) then uab = true; break end
     end
     ok(not uab, "fleet pipeline has no dead uab write")
+
+    keys = {}
+    agg.write({
+        ip = "172.69.1.5", ip_is_aggregate = true,
+        ua = "proxy edge", req = { uri = "/", host = "example.test" },
+    })
+    eq(#keys, 0,
+       "unresolved proxy edge never feeds fl:24/fl:16 aggregate state")
+
+    -- The read side needs its own gate: old fl:dyn keys can outlive a deploy,
+    -- and an aggregate edge must not receive a collective TCP RST from them.
+    local redis_gets, exits = 0, {}
+    local null = {}
+    local block_red = {
+        init_pipeline = function() end,
+        get = function() end,
+        commit_pipeline = function()
+            return { "dyn", null, null }, nil
+        end,
+    }
+    package.loaded["antibot.core.redis_pool"] = {
+        get = function() redis_gets = redis_gets + 1; return block_red end,
+        put = function() end,
+    }
+    package.loaded["antibot.core.decision"] = { set = function() end }
+    ngx.null = null
+    ngx.exit = function(code) exits[#exits + 1] = code end
+    local check_block = assert(loadfile(src .. "detection/fleet/check_block.lua"))()
+
+    local _, aggregate_exit = check_block.run({
+        ip = "172.69.1.5", ip_is_aggregate = true,
+    })
+    eq(aggregate_exit, false,
+       "unresolved proxy edge ignores historical fl:dyn sentence")
+    eq(redis_gets, 0,
+       "aggregate edge does not even read fl:dyn keys")
+
+    local real = { ip = "203.0.113.10", ip_is_aggregate = false }
+    local _, real_exit = check_block.run(real)
+    eq(real_exit, true, "restored/direct client still honours fl:dyn")
+    eq(redis_gets, 1, "real client still reads fleet sentence")
+    eq(exits[#exits], 444, "real client fleet sentence still returns 444")
 end
 
 -- 4. Disabled browser beacon is transparent on every request/response edge.

@@ -70,11 +70,27 @@ local function build_rules()
 
     local cf = c.cloudflare or {}
     if cf.enabled ~= false then
+        local cf_hosts = {}
+        for i = 1, #(cf.hosts or {}) do
+            local h = normalize_host(cf.hosts[i])
+            if h == "*" then
+                -- Cloudflare is a shared multi-tenant network.  A global Host
+                -- grant would let an unrelated Worker reach an origin and
+                -- supply client-IP headers.  Keep edge topology recognition,
+                -- but deliberately discard this unsafe header grant.
+                if ngx and ngx.log then
+                    ngx.log(ngx.ERR,
+                        "[proxy_origin] rejected cloudflare hosts=*; list verified hostnames")
+                end
+            elseif h ~= "" then
+                cf_hosts[#cf_hosts + 1] = h
+            end
+        end
         local rule = compile_rule({
             name   = "cloudflare",
             header = cf.header or "cf-connecting-ip",
             fallback_header = "cf-connecting-ipv6",
-            hosts  = cf.hosts or { "*" },
+            hosts  = cf_hosts,
             cidrs  = cf_cidrs,
         }, "cloudflare")
         if rule then out[#out + 1] = rule end
@@ -123,6 +139,16 @@ end
 local function matching_rule(rules, peer)
     for i = 1, #rules do
         if ip_cidr.contains_any(rules[i].ranges, peer) then return rules[i] end
+    end
+    return nil
+end
+
+local function matching_named_rule(rules, peer, name)
+    for i = 1, #rules do
+        if rules[i].name == name
+           and ip_cidr.contains_any(rules[i].ranges, peer) then
+            return rules[i]
+        end
     end
     return nil
 end
@@ -237,6 +263,29 @@ function _M.run(ctx)
     ctx.transport_scope          = "client"
 
     if not rule then
+        -- Cloudflare CIDRs prove edge topology globally, but they do NOT grant
+        -- header trust globally.  For an unlisted Host, retain the edge as an
+        -- aggregate address and ignore every client-IP claim.  This avoids
+        -- both attacks through arbitrary Workers and collective edge bans
+        -- while the operator is still building the explicit host inventory.
+        local edge_rule = matching_named_rule(RULES, peer, "cloudflare")
+        if edge_rule then
+            ctx.ip                       = peer
+            ctx.proxy_verified           = true
+            ctx.behind_proxy             = true
+            ctx.proxy_vendor             = edge_rule.name
+            ctx.proxy_rule               = edge_rule.name
+            ctx.proxy_edge_ip            = peer
+            ctx.proxy_client_ip_verified = false
+            ctx.proxy_header             = edge_rule.header
+            ctx.proxy_header_error       = "host_untrusted"
+            ctx.proxy_degraded           = true
+            ctx.ip_is_aggregate          = true
+            ctx.client_ip_source         = "proxy_edge"
+            ctx.transport_scope          = "proxy_edge"
+            return true, false
+        end
+
         -- If nginx RealIP was enabled independently but Lua has no matching
         -- trust rule, never retain a public address copied from that header.
         if peer ~= "" and current_normalized ~= peer then

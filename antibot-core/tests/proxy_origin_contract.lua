@@ -40,6 +40,23 @@ _G.ngx = {
 }
 
 local cfg = require "antibot.core.config"
+eq(#(cfg.proxy_origin.cloudflare.hosts or {}), 0,
+   "Cloudflare production default has no global Host grant")
+
+-- A future config edit must not be able to reopen fleet-wide header trust by
+-- replacing the empty list with "*".  The edge rule remains for topology,
+-- but its header-grant host set must stay empty.
+cfg.proxy_origin.cloudflare.hosts = { "*" }
+package.loaded["antibot.core.proxy_origin"] = nil
+local star_proxy = require "antibot.core.proxy_origin"
+local star_cf
+for _, r in ipairs(star_proxy.rules_for_test()) do
+    if r.name == "cloudflare" then star_cf = r; break end
+end
+eq(star_cf and #(star_cf.hosts or {}) or -1, 0,
+   "Cloudflare hosts=* is rejected, not compiled as a header grant")
+
+cfg.proxy_origin.cloudflare.hosts = { "example.test", "*.cf.example" }
 cfg.proxy_origin.generic.rules = {
     {
         name = "company_proxy",
@@ -107,6 +124,22 @@ do
 end
 
 do
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+    }, "not-listed.example")
+    eq(c.ip, "173.245.48.10", "unlisted Host cannot consume Cloudflare header")
+    eq(c.proxy_verified, true, "unlisted Host still recognizes Cloudflare topology")
+    eq(c.proxy_client_ip_verified, false,
+       "unlisted Host has no client-IP provenance")
+    eq(c.proxy_header_error, "host_untrusted",
+       "unlisted Host emits explicit degraded reason")
+    eq(c.ip_is_aggregate, true,
+       "unlisted Cloudflare edge cannot receive collective IP verdict")
+    eq(c.proxy_spoof, false,
+       "known Cloudflare topology is degraded, not a direct-header spoof")
+end
+
+do
     local c = request("173.245.48.10", {})
     eq(c.ip, "173.245.48.10", "missing header retains edge")
     eq(c.proxy_degraded, true, "missing header is degraded")
@@ -124,7 +157,7 @@ end
 do
     local c = request("2606:4700::1234", {
         ["cf-connecting-ip"] = "2001:4860:4860::8888",
-    })
+    }, "api.cf.example")
     eq(c.proxy_verified, true, "Cloudflare IPv6 edge recognized")
     eq(c.ip, "2001:4860:4860:0:0:0:0:8888", "IPv6 client normalized")
 end

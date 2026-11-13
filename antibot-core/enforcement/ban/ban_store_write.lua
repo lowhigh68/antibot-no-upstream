@@ -79,6 +79,18 @@ local function claim_identity(red, keys, steps, violation_ttl, now_ts,
 end
 
 function _M.run(ctx)
+    -- The current request may still be blocked, but a proxy edge without a
+    -- verified client IP cannot receive an identity/IP sentence.  Its
+    -- network_id is md5(shared-edge + normalized-UA), hence collective.
+    if not ctx or ctx.ip_is_aggregate == true then
+        if ctx then
+            ctx.ban_created   = false
+            ctx.ban_persisted = false
+            ctx.ban_violation = nil
+        end
+        return
+    end
+
     local scope = ctx.ban_scope or "host"
     local keys  = quarantine.keys(ctx, scope)
     local id    = ctx.ban_id or (keys and keys.id)

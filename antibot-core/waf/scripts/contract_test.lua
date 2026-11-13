@@ -2221,6 +2221,10 @@ do
            or not po:find("ip_is_aggregate") then
             bad("  SAI  proxy contract thieu provenance/aggregate state.\n")
         else pass = pass + 1 end
+        if not po:find('proxy_header_error%s*=%s*"host_untrusted"')
+           or not po:find('matching_named_rule%(RULES, peer, "cloudflare"%)') then
+            bad("  SAI  Cloudflare peer tren Host chua tin khong fail-closed aggregate.\n")
+        else pass = pass + 1 end
 
         -- (c) proxy_origin phai la buoc DAU sau ctx init, truoc moi counter.
         local p_po = ini:find("layer%s*=%s*proxy_origin")
@@ -2297,13 +2301,35 @@ do
         bad("  SAI  ip_ban_check van doc ban tap the cua unresolved edge.\n")
     else pass = pass + 1 end
 
-    -- Khong duoc mien `ban:<id>` theo aggregate: identity la thu DUY NHAT
-    -- con dung nghia khi `ctx.ip` vo nghia. Mien ca hai la tha bot hoan toan.
-    local bs = slurp(SRC .. "l7/ban/ban_store.lua") or ""
-    if bs:find("ip_is_aggregate", 1, true) then
-        bad("  SAI  l7/ban/ban_store.lua doc `ip_is_aggregate`. Ban theo IDENTITY\n" ..
-            "       KHONG duoc mien theo co nay — khi `ctx.ip` vo nghia thi\n" ..
-            "       identity la thu duy nhat con phan biet duoc thiet bi.\n")
+    -- Fleet has both a writer and an early read/enforcement path.  Guarding
+    -- only ordinary ban writers is insufficient: fl:dyn itself is a subnet
+    -- sentence and check_block returns a hard TCP RST.
+    local fagg = slurp(SRC .. "detection/fleet/aggregator.lua") or ""
+    local fchk = slurp(SRC .. "detection/fleet/check_block.lua") or ""
+    local fa_guard = fagg:find("ctx%.ip_is_aggregate%s*==%s*true")
+    local fa_ip    = fagg:find("local%s+ip%s*=%s*ctx%.ip")
+    if not fa_guard or not fa_ip or fa_guard > fa_ip then
+        bad("  SAI  fleet aggregator ghi subnet state truoc cong aggregate edge.\n")
+    else pass = pass + 1 end
+    local fc_guard = fchk:find("ctx%.ip_is_aggregate%s*==%s*true")
+    local fc_read  = fchk:find("pool%.get%(%)")
+    if not fc_guard or not fc_read or fc_guard > fc_read then
+        bad("  SAI  fleet check_block doc fl:dyn truoc cong aggregate edge.\n")
+    else pass = pass + 1 end
+
+    -- network_id = md5(IP + ua_norm). Khi IP la aggregate proxy edge, no cung
+    -- la identity TAP THE; reader va writer deu phai fail-open cho an dai han.
+    local nq = slurp(SRC .. "core/network_quarantine.lua") or ""
+    local bw = slurp(SRC .. "enforcement/ban/ban_store_write.lua") or ""
+    local nq_guard = nq:find("ctx%.ip_is_aggregate%s*==%s*true")
+    local nq_build = nq:find("local%s+id%s*=%s*identity%.build_from")
+    if not nq_guard or not nq_build or nq_guard > nq_build then
+        bad("  SAI  network quarantine bam aggregate edge thanh identity tap the.\n")
+    else pass = pass + 1 end
+    local bw_guard = bw:find("ctx%.ip_is_aggregate%s*==%s*true")
+    local bw_keys  = bw:find("quarantine%.keys")
+    if not bw_guard or not bw_keys or bw_guard > bw_keys then
+        bad("  SAI  ban writer ghi an truoc cong aggregate edge.\n")
     else pass = pass + 1 end
 end
 

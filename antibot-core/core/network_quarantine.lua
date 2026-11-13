@@ -11,6 +11,10 @@ local identity = require "antibot.core.fingerprint.identity"
 local site_scope = require "antibot.core.site_scope"
 
 function _M.network_id(ctx)
+    -- With no verified end-client address, identity.build_from(edge, ua)
+    -- represents every user sharing one proxy edge and browser family.  It is
+    -- not a device/network identity and must never address a persistent seal.
+    if ctx and ctx.ip_is_aggregate == true then return nil end
     if ctx and ctx.network_id and ctx.network_id ~= "" then
         return ctx.network_id
     end

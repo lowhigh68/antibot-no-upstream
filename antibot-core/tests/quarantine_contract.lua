@@ -118,6 +118,15 @@ eq(quarantine.keys(key_ctx, "global").ban, "gban:" .. same_a,
    "global strong-evidence namespace is host independent")
 ngx.var.server_name, ngx.var.host = "one.test", "one.test"
 
+local aggregate_key_ctx = {
+    ip = "172.69.1.5", ua = ua_win, ip_is_aggregate = true,
+    req = { host = "one.test" },
+}
+eq(quarantine.network_id(aggregate_key_ctx), nil,
+   "aggregate proxy edge has no persistent network-UA identity")
+eq(quarantine.keys(aggregate_key_ctx, "host"), nil,
+   "aggregate proxy edge cannot address a quarantine seal")
+
 -- In-memory Redis supporting the production pipeline shape.
 local store, writes, ttl_map = {}, {}, {}
 local red = { queued = nil }
@@ -296,6 +305,23 @@ eq(qviol_ttl_ok, true, "host violation history has bounded two-day TTL")
 eq(store["ban:" .. same_a], nil, "writer never creates legacy identity seal")
 eq(store["ban:" .. ip], nil,
    "host quarantine repeats do not promote to collective IP ban")
+
+do
+    local before = #writes
+    local aggregate_write = {
+        ip = "172.69.1.5", ua = ua_win, ip_is_aggregate = true,
+        req = { host = "one.test" }, req_class = "navigation",
+        action = "block", action_reason = "score_threshold",
+        ban_scope = "host", score = 100, effective_score = 100,
+    }
+    writer.run(aggregate_write)
+    eq(#writes, before,
+       "aggregate proxy edge performs no quarantine Redis write")
+    eq(aggregate_write.ban_persisted, false,
+       "aggregate proxy edge reports no persistent sentence")
+    eq(aggregate_write.ban_violation, nil,
+       "aggregate proxy edge does not fabricate violation history")
+end
 
 -- Production regression 21-22/10/2026, cloud168-123. A fourth host-scoped
 -- Python-urllib incident had enough current IP risk to justify a short IP
@@ -591,6 +617,24 @@ do
     eq(real_exit, true, "a real client IP still honours its own ban")
     eq(reads[1], "ban:203.0.113.77", "real client reads its own ban key")
 
+end
+
+
+-- Reader quarantine cung phai fail-open khi end-client chua duoc khoi phuc.
+-- Neu khong, md5(edge + ua_norm) la mot an identity tap the khac ten.
+do
+    ngx._exit = nil
+    local aggregate_reader = {
+        ip = "172.69.1.5", ua = ua_win, ip_is_aggregate = true,
+        req = { host = "one.test", accept = "application/json" },
+    }
+    local handled = reader.run(aggregate_reader)
+    eq(handled, false,
+       "aggregate proxy edge never consumes network-UA quarantine")
+    eq(aggregate_reader.banned, false,
+       "aggregate proxy edge is not marked banned by a shared identity")
+    eq(ngx._exit, nil,
+       "aggregate proxy edge quarantine reader never returns 403")
 end
 io.write(string.format("quarantine_contract: %d pass, %d fail\n", pass, fail))
 if fail > 0 then os.exit(1) end

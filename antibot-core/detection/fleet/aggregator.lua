@@ -98,6 +98,13 @@ local function path_hash(uri)
 end
 
 function _M.write(ctx)
+    -- An unresolved reverse-proxy edge is a shared transport endpoint, not a
+    -- client subnet.  Feeding it into fl:24/fl:16 would let many unrelated
+    -- visitors create one synthetic fleet and could keep fl:dyn:<edge-CIDR>
+    -- alive indefinitely.  This gate must precede every Redis read/write.
+    -- A restored client has ip_is_aggregate=false and remains fully observed.
+    if not ctx or ctx.ip_is_aggregate == true then return end
+
     -- Trusted ASN bypass (performance — see trusted.lua)
     if trusted.is_trusted(ctx) then return end
 

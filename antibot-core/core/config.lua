@@ -62,7 +62,13 @@ _M.proxy_origin = {
     enabled = true,
     cloudflare = {
         enabled = true,
-        hosts   = { "*" },
+        -- Fail-closed: chi hostname DA XAC NHAN dang orange-cloud moi duoc
+        -- phep dung CF-Connecting-IP.  KHONG dung { "*" }: Cloudflare la
+        -- mang multi-tenant va Worker cua nguoi khac cung co TCP peer thuoc
+        -- cac CIDR nay. Host chua khai van duoc nhan la aggregate CF edge de
+        -- tranh ban tap the, nhung header cua no khong bao gio duoc tin.
+        -- Vi du: { "example.com", "*.example.com" }
+        hosts   = {},
         header  = "cf-connecting-ip",
     },
     generic = {
