@@ -15,7 +15,7 @@ function _M.is_self(ctx)
         return ctx.self_request == true
     end
 
-    local value = ip_scope.is_self() == true
+    local value = ip_scope.is_self(ctx) == true
     if ctx then ctx.self_request = value end
     return value
 end

@@ -171,6 +171,9 @@ echo
 echo "-- root pipeline contract --------------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
 
+echo "-- trusted proxy / Cloudflare provenance contract --------"
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/proxy_origin_contract.lua" || rc=1
+
 echo "-- protected secret contract -----------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/secrets_contract.lua" || rc=1
 

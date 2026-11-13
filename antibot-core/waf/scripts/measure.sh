@@ -130,8 +130,8 @@ cf)
     echo
     echo "--- [6] proxy_spoof — header khai proxy ma IP ngoai moi dai da xac minh."
     echo "        Chi LAM TANG diem, khong bao gio mien tru (xem proxy_origin.lua)."
-    echo "        Cao bat thuong => co proxy noi bo cua khach chua khai:"
-    echo "        redis-cli SADD waf:proxyhosts <host>"
+    echo "        Cao bat thuong => proxy chua co rule CIDR+host trong core/config.lua."
+    echo "        KHONG khai chi moi host: phai xac minh TCP peer + header cung luc."
     printf '  tong: %s\n' "$(since | grep -c 'proxy_spoof' || true)"
     since | grep 'proxy_spoof' \
       | perl -ne '($i)=/ ip=(\S+)/; ($d)=/domain=(\S+)/;

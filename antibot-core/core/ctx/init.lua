@@ -97,13 +97,25 @@ function _M.init(ctx)
     ctx.ip_real_users  = 0           -- legacy cookie-bearing identities (farm ratio)
     ctx.ip_known_users = 0           -- first-party-cookie identities (Tier-2 immunity)
     ctx.ip_farm_suspect = false      -- Phase 2: shared IP with mobile-farm signature (many UAs, very low cookie-ratio)
-    -- Dat boi core/proxy_origin.lua trong STEPS_ADMISSION, truoc local
-    -- admission va ip_ban_check.
-    -- `behind_proxy` CHI bat tu dai IP da xac minh hoac khai bao operator, KHONG
-    -- BAO GIO tu header. `proxy_spoof` = header khai proxy ma ip ngoai dai ⇒ xau.
-    ctx.behind_proxy   = false       -- request den qua reverse proxy cong cong (ctx.ip la dia chi EDGE)
-    ctx.proxy_vendor   = nil         -- "cloudflare" | "declared"
-    ctx.proxy_spoof    = false       -- header khai proxy nhung dia chi khong thuoc dai nao da xac minh
+    -- Dat boi core/proxy_origin.lua ngay sau init, truoc moi bo dem theo IP.
+    -- `behind_proxy` chi mo ta topology; `ip_is_aggregate` moi quyet dinh co
+    -- duoc ket toi theo IP hay khong. Khi header da duoc xac minh, ctx.ip la
+    -- client va van chay day du rate/ban/WAF nhu direct traffic.
+    ctx.behind_proxy             = false
+    ctx.proxy_verified           = false
+    ctx.proxy_vendor             = nil
+    ctx.proxy_rule               = nil
+    ctx.proxy_edge_ip            = nil
+    ctx.proxy_client_ip_verified = false
+    ctx.proxy_header             = nil
+    ctx.proxy_header_error       = nil
+    ctx.proxy_hops               = nil
+    ctx.proxy_degraded           = false
+    ctx.proxy_spoof              = false
+    ctx.proxy_spoof_header       = nil
+    ctx.ip_is_aggregate          = false
+    ctx.client_ip_source         = "tcp"
+    ctx.transport_scope          = "client"
 
     ctx.ip_rep         = 0.0
     ctx.asn_rep        = 0.0
@@ -140,6 +152,7 @@ function _M.init(ctx)
     local automation = goodbot_registry.inspect(ctx.ua)
     ctx.automation_inspect   = automation
     ctx.automation_claimed   = automation.automation_claimed == true
+    ctx.browser_wrapped_claim = automation.browser_wrapped == true
     -- Meter-only includes opaque machine clients (`product` or
     -- `product/version`).  Keep it separate from `automation_claimed`: a
     -- generic curl/app UA must not lose verified-human access merely because

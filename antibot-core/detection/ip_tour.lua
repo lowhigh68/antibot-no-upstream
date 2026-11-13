@@ -206,7 +206,7 @@ function _M.run(ctx)
     -- doi — chung chay o buoc 0, truoc ca cookie fast-path. Mot site bi chiem
     -- roi dung de tan cong hang xom cung may van bi soi day du. Day KHONG phai
     -- whitelist: khong short-circuit, khong mien tru gi khac.
-    local is_self = ip_scope.is_self()
+    local is_self = ip_scope.is_self(ctx)
 
     local cookie_ratio = (uas > 0) and (real_users / uas) or 1.0
     ctx.ip_farm_suspect = not is_self
@@ -262,11 +262,11 @@ function _M.run(ctx)
     if not ua_claim.claims_good_bot(ua) then
         local strikes = pool.safe_incr("iptour:strike:" .. ip, window) or 0
         ctx.ip_tour_strikes = strikes
-        -- `ctx.behind_proxy`: dia chi edge cua reverse proxy KHONG dinh danh ai,
+        -- `ctx.ip_is_aggregate`: dia chi edge cua reverse proxy KHONG dinh danh ai,
         -- nen `ban:<ip>` o day la ban tap the. Xem khoi chu thich o
         -- `enforcement/ban/ban_store_write.lua` (72 khoa edge CF do 19-09).
         -- `ip_tour` la buoc 10, `proxy_origin` buoc 6 ⇒ co da duoc ghi.
-        if strikes >= (c.strike_ban or 12) and not ctx.behind_proxy then
+        if strikes >= (c.strike_ban or 12) and not ctx.ip_is_aggregate then
             local age_key = "iptour:age:" .. ip
             local first   = pool.safe_get(age_key)
             local ttl

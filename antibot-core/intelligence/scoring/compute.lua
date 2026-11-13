@@ -23,7 +23,7 @@ local DEFAULT_WEIGHTS = {
     -- `True-Client-IP`, `X-Forwarded-For`, `X-Real-IP`) nhung dia chi KHONG thuoc
     -- dai proxy nao da xac minh. Mot client thuong khong co ly do gui header nay.
     -- Trong so 30 = MONITOR-level mot minh, khong tu gay BLOCK: mot so proxy noi
-    -- bo cua khach (chua khai `waf:proxyhost:<host>`) cung sinh header nay, va o
+    -- bo cua khach (chua khai rule CIDR+host trong `cfg.proxy_origin`) cung sinh header nay, va o
     -- do FP la operator quen khai bao chu khong phai tan cong. Ghep voi tin hieu
     -- khac thi len BLOCK tu nhien.
     --
@@ -306,13 +306,14 @@ end
 -- (bot_score/headless/behaviour/anomaly still fire per identity). Not zeroed —
 -- an all-bad shared IP keeps a residual signal.
 --
--- 2026-09-19 — `ctx.behind_proxy` kich hoat CUNG duong nay. Voi domain sau
+-- 2026-09-19 — `ctx.ip_is_aggregate` kich hoat CUNG duong nay khi proxy khong
+-- cung cap duoc client IP hop le. Voi domain sau
 -- Cloudflare, `ctx.ip` la dia chi EDGE: do tren `in3mien.com` thay 431 IP edge
 -- phuc vu 456 identity (218 luot co cookie that) ⇒ tin hieu theo IP o do la toi
 -- tap the dung nghia. Giam, KHONG xoa: mot edge chi toan bot van con tin hieu du.
 local SHARED_REP_FACTOR = 0.25
 local function per_ip_rep(ctx, v)
-    if ctx.ip_shared or ctx.behind_proxy then return v * SHARED_REP_FACTOR end
+    if ctx.ip_shared or ctx.ip_is_aggregate then return v * SHARED_REP_FACTOR end
     return v
 end
 

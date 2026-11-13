@@ -601,6 +601,7 @@ function _M.run(ctx)
     -- Khong de class multiplier hay session trust ha verdict nay.
     if ctx.good_bot_claimed == true
        and ctx.good_bot_verified == false
+       and ctx.browser_wrapped_claim ~= true
        and ctx.bot_ua == "fake_good_bot" then
         action            = "block"
         ctx.action_reason = "fake_good_bot"

@@ -21,6 +21,8 @@ package.loaded["antibot.core.policy"] = {
     section = function(_, _, fallback) return fallback end,
 }
 local resty_md5 = ngx.md5
+package.loaded["antibot.core.ua_shape"] =
+    assert(loadfile(src .. "core/ua_shape.lua"))()
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()
 
@@ -78,6 +80,22 @@ do
        "RFC contact automation cannot use the verified-human lane")
     eq(contact.verified_human_rejected_bot_claim, true,
        "contact automation rejection keeps provenance")
+
+    -- A browser wrapper can remove its appended token and present the same
+    -- Safari UA, so rejecting a valid human ticket on that token adds no
+    -- security. It only creates FP for app/browser hybrid traffic.
+    local wrapped_human = {
+        ip = "203.0.113.10",
+        ua = "Mozilla/5.0 AppleWebKit/605.1 Safari/604.1 " ..
+            "facebookexternalhit/1.1",
+        automation_claimed = true,
+        browser_wrapped_claim = true,
+    }
+    local wrapped_hit, wrapped_id = resolver.check_cookie(wrapped_human)
+    eq(wrapped_hit, true, "browser-wrapped UA may use a valid human cookie")
+    eq(wrapped_id, "human-cookie", "wrapped human keeps the verified identity")
+    ok(wrapped_human.verified_human_rejected_bot_claim ~= true,
+       "browser wrapper is not logged as a rejected human")
 
     -- Bat bien con lai sau khi them phep doc: khong co cookie thi KHONG cham
     -- Redis. Hot path cua crawler thong thuong (Googlebot khong cookie) van
@@ -365,6 +383,21 @@ do
        "self traffic keeps direct request-evidence verdicts")
     eq(self_direct.action_reason, "fake_good_bot",
        "self direct verdict retains its original reason")
+
+    local wrapped_direct = {
+        score = 0, score_multiplier = 1, req_class = "unknown",
+        fp_quality = 1, sess_len = 0,
+        ua = "Mozilla/5.0 AppleWebKit/605 Safari/604.1 " ..
+            "facebookexternalhit/1.1",
+        ip = "203.0.113.11",
+        req = { method = "GET", uri = "/", host = "a.test" },
+        good_bot_claimed = true, good_bot_verified = false,
+        browser_wrapped_claim = true, bot_ua = "fake_good_bot",
+    }
+    eq(engine.run(wrapped_direct), "allow",
+       "engine defence rejects direct fake verdict for browser wrapper")
+    ok(wrapped_direct.action_reason ~= "fake_good_bot",
+       "wrapped UA cannot retain the hard fake-goodbot reason")
 
     monitor_values["mon:203.0.113.20"] = "claim@openai.com"
     local claim_only_ip = {

@@ -1234,7 +1234,7 @@ vì `grep` mã nguồn. Đó là lần thứ năm cùng một họ lỗi trong d
 | T — test | **một phần** | `scripts/*.lua` 3.684 dòng test / 2.355 dòng mã. Cổng `deploy.sh [3b]` |
 | P2/F2 — luật payload | **một phần, phần còn lại GÁC LẠI** | **3 luật** tham số trong `body_core.lua:143-150` (kể cả mã hoá hai lớp). Không có SQLi/XSS/RCE — `grep -niE 'union\|select.*from\|<script\|eval\('` trên `waf/*.lua` trả về **0** dòng mã. Gác vì dân số: body+args = 283 / 18 879 URI = **1,5%**, đo trên cả 5 máy 20-09 |
 | P1 — chặn upload webshell | **một phần** | `upload.lua` — **7 nhãn**, trọng số 0. Đuôi đã xác minh trên fleet (`.php .php5 .phtml .inc`), đuôi kép, tầng legacy đếm riêng, ba nhãn config tách theo sức mạnh thật. Chặn theo *nội dung* file (chữ ký webshell mã hoá, entropy, polyglot) **chưa** làm |
-| F3 — chính sách theo domain | **gác lại, không có bài toán** | đo 20-09: phân bố "tập trung" hoá ra do **1 IP**. `proxy_origin.lua` mới có một khoá tập toàn cục `waf:proxyhosts` |
+| F3 — chính sách theo domain | **gác lại, không có bài toán** | Trust proxy nay nằm ở `cfg.proxy_origin`: rule buộc CIDR + host + header, không còn khoá host-only `waf:proxyhosts` |
 | A — admin UI cho WAF | **một phần** | route `/antibot-admin/fim` + card FIM ở tab Overview (`21a81cb`). Chỉ đọc `fim_critical.log`; chưa có trang nào cho `waf.log` hay luật |
 | FIM — giám sát ngoài request | **xong (mu-plugins)** | `fim.sh`: bậc `MUPLUG`, `audit`, ngưỡng tồn đọng. Xem mục 20-09 ở trên |
 

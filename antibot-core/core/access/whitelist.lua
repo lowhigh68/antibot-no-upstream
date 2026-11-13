@@ -6,6 +6,11 @@ local ip_scope = require "antibot.core.ip_scope"
 local ua_claim = require "antibot.detection.bot.ua_claim"
 
 local function is_automation(ctx, ua)
+    if ctx and ctx.browser_wrapped_claim == true then return false end
+    if (not ctx or ctx.browser_wrapped_claim == nil)
+       and ua_claim.is_browser_wrapped(ua) then
+        return false
+    end
     if ctx and ctx.automation_claimed ~= nil then
         return ctx.automation_claimed == true
     end
@@ -134,7 +139,17 @@ function _M.check(ctx)
     -- `ctx.ip_tcp`, KHONG phai `ctx.ip`: day la dac quyen manh nhat trong he
     -- thong (mien toan bo pipeline, thang ca tin hieu WAF), nen no phai gac
     -- tren dia chi TCP that, thu khong header nao dat duoc.
-    if ip_scope.is_private(ctx.ip_tcp or ip) then return true, "lan_internal" end
+    --
+    -- Ngoai le bat buoc: TCP peer co the la MOT trusted reverse proxy noi bo.
+    -- Khi ay dia chi RFC1918 chi chung minh vi tri cua proxy, khong chung minh
+    -- client nam trong LAN.  Cho peer do vao `lan_internal` se whitelist moi
+    -- Internet client di qua HAProxy/Traefik/Nginx noi bo.  Proxy traffic phai
+    -- tiep tuc bang client IP da restore; neu header hong thi fail-open ve
+    -- capacity/security thuong, KHONG fail-open thanh dac quyen LAN.
+    if ctx.proxy_verified ~= true
+       and ip_scope.is_private(ctx.ip_tcp or ip) then
+        return true, "lan_internal"
+    end
 
     -- 3. IP whitelist
     local val = pool.safe_get("wl:" .. ip)

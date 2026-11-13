@@ -15,6 +15,8 @@ if src:sub(-1) ~= "/" then src = src .. "/" end
 -- verification lane and rate-family matching. These are compatibility tests:
 -- they pin existing verdict boundaries instead of silently widening trust.
 do
+    package.loaded["antibot.core.ua_shape"] =
+        assert(loadfile(src .. "core/ua_shape.lua"))()
     local registry = assert(loadfile(src .. "core/goodbot_registry.lua"))()
     package.loaded["antibot.core.goodbot_registry"] = registry
 
@@ -105,6 +107,28 @@ do
     eq(registry.is_ptr_only(meta.canonical_name), true,
        "Meta ptr-only policy comes from unified registry")
 
+    local wrapped_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) " ..
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 " ..
+        "Mobile/15E148 Safari/604.1 facebookexternalhit/1.1 " ..
+        "(+http://www.facebook.com/externalhit_uatext.php)"
+    local wrapped = registry.inspect(wrapped_ua)
+    eq(wrapped.canonical_name, "facebookexternalhit",
+       "wrapped automation keeps its canonical principal")
+    eq(wrapped.browser_wrapped, true,
+       "unified registry identifies browser-wrapped automation")
+
+    local compatible_before = registry.inspect(
+        "Mozilla/5.0 AppleWebKit/605 Safari/604.1 " ..
+        "(compatible; facebookexternalhit/1.1; +http://example.test)")
+    eq(compatible_before.browser_wrapped, false,
+       "canonical compatible crawler cannot buy browser-wrapped status")
+
+    local compatible_after = registry.inspect(
+        "Mozilla/5.0 AppleWebKit/605 Safari/604.1 " ..
+        "facebookexternalhit/1.1 (compatible; +http://example.test)")
+    eq(compatible_after.browser_wrapped, true,
+       "suffix syntax after the claim cannot erase the browser prefix")
+
     local held = registry.inspect("Google")
     eq(held.operator_claimed, true, "bare Google remains held from human lane")
     eq(held.verification_claimed, false,
@@ -134,6 +158,8 @@ do
        "ua_claim is a facade over unified registry")
     eq(facade.claims_automation("ChatGPT-User/1.0; +https://openai.com/bot"),
        true, "automation facade includes RFC contact clients")
+    eq(facade.is_browser_wrapped(wrapped_ua), true,
+       "browser-wrapped facade uses the unified structural verdict")
 end
 
 local cache, writes, query_mode, query_calls

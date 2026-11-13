@@ -269,6 +269,14 @@ fake_ngx.var = {
     server_name = "example.test", host = "example.test",
     remote_addr = "203.0.113.7", uri = "/shop", request_method = "GET",
 }
+-- Proxy provenance has its own functional contract.  Admission tests use a
+-- deterministic direct-client stub and focus only on budget semantics.
+package.loaded["antibot.core.proxy_origin"] = {
+    run = function(ctx)
+        if ctx.ip_is_aggregate == nil then ctx.ip_is_aggregate = false end
+        return true, false
+    end,
+}
 local admission = require "antibot.l7.admission"
 local actx = { ip = "203.0.113.7", req_class = "navigation", req = {} }
 local _, exit1 = admission.run(actx)
@@ -1897,7 +1905,7 @@ local function pcctx(name, ip, ja3)
         admission_group = "dynamic",
         automation_meter_claimed = true,
         automation_principal = name, automation_tier = "unknown",
-        behind_proxy = false,
+        behind_proxy = false, ip_is_aggregate = false,
     }
 end
 
@@ -1943,11 +1951,21 @@ eq(pc_refine.principal_churn_ja3_count, 1,
 fake_ngx.shared.antibot_cache = Dict.new()
 local pc_proxy = pcctx("one", "203.0.113.10")
 pc_proxy.behind_proxy = true
+pc_proxy.ip_is_aggregate = true
 principal_churn.before(pc_proxy)
 eq(pc_proxy.principal_churn_proxy_skip, true,
    "reverse-proxy edge khong bi coi la mot client churn")
 eq(pc_proxy.principal_churn_ip_count, nil,
    "proxy skip khong cap phat churn counter")
+
+local pc_restored = pcctx("one", "8.8.8.8")
+pc_restored.behind_proxy = true
+pc_restored.proxy_verified = true
+pc_restored.proxy_client_ip_verified = true
+pc_restored.ip_is_aggregate = false
+principal_churn.before(pc_restored)
+eq(pc_restored.principal_churn_ip_count, 1,
+   "restored proxy client van duoc dem rieng")
 
 fake_ngx.shared.antibot_cache = Dict.new()
 cfg.principal_churn.mode = "enforce"

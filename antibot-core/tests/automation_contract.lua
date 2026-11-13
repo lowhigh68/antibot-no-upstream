@@ -195,6 +195,8 @@ package.loaded["antibot.core.redis_pool"] = {
         return nil
     end,
 }
+package.loaded["antibot.core.ua_shape"] =
+    assert(loadfile(src .. "core/ua_shape.lua"))()
 package.loaded["antibot.core.goodbot_registry"] =
     assert(loadfile(src .. "core/goodbot_registry.lua"))()
 package.loaded["antibot.detection.bot.cloud_suffixes"] = {
@@ -256,6 +258,22 @@ local minimal_chrome = {
 ua_check.run(minimal_chrome)
 eq(minimal_chrome.browser_wrapped_claim, true,
    "minimal embedded Chromium UA is recognized without Safari tail")
+
+local suffix_compatible = {
+    ua = "Mozilla/5.0 AppleWebKit/605 Safari/604.1 " ..
+        "facebookexternalhit/1.1 (compatible; +http://example.test)",
+    ip = "198.51.100.203",
+}
+ua_check.run(suffix_compatible)
+eq(suffix_compatible.browser_wrapped_claim, true,
+   "compatible suffix after product does not erase browser wrapper")
+
+local device_classifier = assert(loadfile(
+    src .. "core/fingerprint/device_classifier.lua"))()
+local wrapped_device = device_classifier.classify(
+    wrapped_ctx.ua, "HTTP/2.0", false, wrapped_ctx.browser_wrapped_claim)
+eq(wrapped_device.device_type, "mobile_safari_ios",
+   "browser wrapper keeps browser device semantics instead of crawler")
 
 -- Rao chan nguoc: ngoai le phai HEP. Hai guard duoi day deu chiu tai that —
 -- go bat ky cai nao thi mot trong ba ca sau dat duoc verdict nhe hon.

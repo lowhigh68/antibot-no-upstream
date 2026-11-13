@@ -406,6 +406,9 @@ eq(counts.dynamic_admitted, 1,
    "dynamic thuong nhan dung mot generic source/docroot slot")
 eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
 before("admission", "waf.pre", "admission chay truoc WAF")
+before("ctx.init", "proxy", "proxy provenance chay sau ctx init")
+before("proxy", "classifier.fast", "client IP duoc restore truoc classifier")
+before("proxy", "automation.guard", "client IP duoc restore truoc counter dau tien")
 before("automation.guard", "admission",
     "automation claim duoc do truoc moi admission fast-exit")
 before("proxy", "principal.before",

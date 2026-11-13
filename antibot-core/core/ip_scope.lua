@@ -17,6 +17,7 @@
 
 local _M    = {}
 local cache = ngx.shared.antibot_cache
+local ip_cidr = require "antibot.core.ip_cidr"
 
 -- Dia chi cua CHINH MAY NAY, sinh tai cho boi `nginx/deploy.sh` moi lan deploy
 -- (`ip addr` cho dia chi tren card + `getent` cho dia chi ma hostname tro toi,
@@ -34,7 +35,11 @@ local function load_self_addrs()
     if not f then return t, n end
     for line in f:lines() do
         local a = line:match("^%s*([%x%.:]+)%s*$")
-        if a and a ~= "" then t[a] = true; n = n + 1 end
+        if a and a ~= "" then
+            a = ip_cidr.normalize(a) or a
+            t[a] = true
+            n = n + 1
+        end
     end
     f:close()
     return t, n
@@ -110,13 +115,14 @@ end
 --      BAO GIO khop. Day la hinh thai duy nhat can den `getent` — hostname cua
 --      may tro toi dia chi public, va do la thu duy nhat ben trong may biet
 --      duoc ve dia chi ben ngoai cua no.
-function _M.is_self()
-    local peer = _M.tcp_peer()
+function _M.is_self_ip(ip)
+    local peer = ip_cidr.normalize(ip) or tostring(ip or "")
     if peer == "" then return false end
 
     if SELF_ADDRS[peer] then return true end
 
     local s = ngx.var.server_addr
+    s = ip_cidr.normalize(s) or s
     if s and s ~= "" and peer == s then return true end
 
     -- FILE THIEU HOAC RONG: canh bao, dung im lang.
@@ -138,6 +144,22 @@ function _M.is_self()
     end
 
     return false
+end
+
+-- A verified proxy may safely restore a self address from its authorized
+-- client-IP header.  Without that positive provenance, only the TCP peer is
+-- eligible: this keeps the strongest whitelist boundary unspoofable.
+function _M.is_self(ctx)
+    if ctx and ctx.proxy_verified == true then
+        if ctx.proxy_client_ip_verified == true then
+            return _M.is_self_ip(ctx.ip)
+        end
+        -- The peer is the proxy, not the end client.  A missing/invalid
+        -- client header must not turn every request through a local proxy into
+        -- self traffic and thereby cap score or suppress sentence writes.
+        return false
+    end
+    return _M.is_self_ip(_M.tcp_peer())
 end
 
 return _M

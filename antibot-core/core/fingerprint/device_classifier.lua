@@ -142,7 +142,7 @@ local function is_http_tool(ua)
     return true
 end
 
-function _M.classify(ua, proto, classified_inapp)
+function _M.classify(ua, proto, classified_inapp, browser_wrapped)
     if not ua or ua == "" then
         return {
             device_type                   = "unknown",
@@ -174,7 +174,7 @@ function _M.classify(ua, proto, classified_inapp)
     -- crawler: self-declared bot. http_client: HTTP library (no Mozilla+engine).
     -- Enforcement-neutral (device_type isn't scored) — makes the admin Client
     -- panel meaningful instead of dumping every bot/tool into "unknown".
-    if ua_shape.self_declared_crawler(ua) then
+    if not browser_wrapped and ua_shape.self_declared_crawler(ua) then
         return {
             device_type                   = "crawler",
             device_sec_fetch_expected     = false,
@@ -344,7 +344,8 @@ function _M.run(ctx)
     local ua    = ctx.ua or ""
     local proto = ctx.req and ctx.req.proto or ngx.var.server_protocol or ""
 
-    local info = _M.classify(ua, proto, ctx.req_class == "inapp_browser")
+    local info = _M.classify(ua, proto, ctx.req_class == "inapp_browser",
+        ctx.browser_wrapped_claim == true)
 
     ctx.device_type                  = info.device_type
     ctx.device_sec_fetch_expected    = info.device_sec_fetch_expected

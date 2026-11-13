@@ -222,7 +222,7 @@ function _M.run(ctx)
         -- Dia chi edge cua reverse proxy khong dinh danh ai (xem
         -- `enforcement/ban/ban_store_write.lua`). `ban_enabled` dang `false` nen
         -- nhanh nay chua chay, nhung cong phai dung san cho luc bat.
-        and not ctx.behind_proxy
+        and not ctx.ip_is_aggregate
         and not human_exempt
         and ip_combos >= (gc.ban_ip_combos or 20)
 

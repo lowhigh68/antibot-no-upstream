@@ -254,6 +254,18 @@ escalation.run(strong)
 eq(strong.ban_scope, "global", "direct contradiction selects global scope")
 eq(strong.ban_key, "gban:" .. same_a, "global scope uses separate key family")
 
+local wrapped_strong = {
+    ip = ip,
+    ua = "Mozilla/5.0 AppleWebKit/605 Safari/604.1 facebookexternalhit/1.1",
+    req = { host = "one.test" }, req_class = "unknown",
+    action_reason = "fake_good_bot", browser_wrapped_claim = true,
+}
+escalation.run(wrapped_strong)
+eq(wrapped_strong.ban_scope, "host",
+   "browser-wrapped claim can never select global quarantine")
+ok(wrapped_strong.ban_key:find("qban:one.test:", 1, true) == 1,
+   "browser-wrapped sentence stays inside target host")
+
 -- Writer uses the chosen namespace and a coarse host sentence cannot promote
 -- itself to an IP ban merely because its violation count is high.
 package.loaded["antibot.core.ip_scope"] = { is_self = function() return false end }
@@ -351,6 +363,22 @@ do
        "global fixture reaches fourth incident")
     eq(ttl_map["ban:" .. ip], 86400,
        "global violation history retains 24-hour IP escalation")
+
+    store, writes, ttl_map = {}, {}, {}
+    local wrapped_global = {
+        ip = ip,
+        ua = "Mozilla/5.0 AppleWebKit/605 Safari/604.1 facebookexternalhit/1.1",
+        req = { host = "one.test" }, req_class = "unknown",
+        action = "block", action_reason = "fake_good_bot",
+        browser_wrapped_claim = true, ban_scope = "global",
+        score = 129, effective_score = 84,
+        ip_risk = 1.0, swarm = false, session_richness = 0,
+    }
+    local wrapped_global_keys = quarantine.keys(wrapped_global, "global")
+    store[wrapped_global_keys.viol] = 3
+    writer.run(wrapped_global)
+    eq(ttl_map["ban:" .. ip], nil,
+       "writer defence prevents collective IP ban for browser wrapper")
 
     store, writes, ttl_map = saved_store, saved_writes, saved_ttl
 end
@@ -531,5 +559,38 @@ end
 eq(rewrote_legacy, false, "legacy sentence is never refreshed")
 config.network_quarantine.legacy_read = false
 
+
+-- Rao chan nguoc cho cong `ip_is_aggregate` trong `ip_ban_check`: cong nay
+-- CHIU TAI that (go ra thi edge bi doc ban tap the) nhung truoc day khong
+-- suite nao phu, vi `quarantine_contract` khong he nap module do.
+--
+-- Guard `proxy_client_ip_verified` trong `ip_scope.is_self` KHONG kiem duoc o
+-- day: `ip_scope.lua` can `ngx.shared.antibot_cache` ngay khi nap, con suite
+-- nay chay `resty` khong co shdict. Da xac minh rieng bang probe — go guard
+-- thi `is_self` tra true cho header chua xac minh, tuc mo duong cho
+-- `self_traffic_score_cap` ha moi verdict ve monitor.
+do
+    -- `ip_ban_check` khong duoc doc ban TAP THE cua mot edge chua phan giai.
+    -- Khi proxy tin cay ma header client loi, `ctx.ip` dung lai o IP edge; doc
+    -- `ban:<edge>` la chan moi khach di qua edge do.
+    local reads = {}
+    package.loaded["antibot.core.redis_pool"] = {
+        safe_get = function(k) reads[#reads + 1] = k; return "1" end,
+        safe_set = function() return true end,
+    }
+    local ban_check = assert(loadfile(src .. "l7/ban/ip_ban_check.lua"))()
+
+    local agg_ctx = { ip = "172.69.1.5", ip_is_aggregate = true }
+    local _, agg_exit = ban_check.run(agg_ctx)
+    eq(agg_exit, false, "unresolved proxy edge is never sealed by ban:<ip>")
+    eq(#reads, 0, "aggregate edge does not even read the collective ban key")
+
+    reads = {}
+    local real_ctx = { ip = "203.0.113.77", ip_is_aggregate = false }
+    local _, real_exit = ban_check.run(real_ctx)
+    eq(real_exit, true, "a real client IP still honours its own ban")
+    eq(reads[1], "ban:203.0.113.77", "real client reads its own ban key")
+
+end
 io.write(string.format("quarantine_contract: %d pass, %d fail\n", pass, fail))
 if fail > 0 then os.exit(1) end

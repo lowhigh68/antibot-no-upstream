@@ -8,6 +8,7 @@ local _M  = {}
 local cfg = require "antibot.core.config"
 local policy = require "antibot.core.policy"
 local decision = require "antibot.core.decision"
+local proxy_origin = require "antibot.core.proxy_origin"
 
 local last_dict_error = 0
 
@@ -416,9 +417,9 @@ function _M.run(ctx)
         if exit then return true, true end
     end
 
-    -- IP cua verified reverse proxy la edge tap the. Khong dung no de ket luan
-    -- client, nhung host/global/route circuit breakers phia tren van bat buoc.
-    if clients and not (ctx and ctx.behind_proxy) then
+    -- Only an unresolved aggregate edge is unsuitable for a client verdict.
+    -- A verified/restored client behind a proxy remains fully rate-limited.
+    if clients and not (ctx and ctx.ip_is_aggregate) then
         local ip_spec = limits.ip and (limits.ip[class] or limits.ip.default)
         local ignored, exit = apply_check(ctx, clients,
             "adm:ip:" .. ip .. ":" .. class, ip_spec, "ip_" .. class, c, t)
@@ -433,6 +434,9 @@ end
 function _M.run_endpoint(name)
     local ctx  = (ngx.ctx and ngx.ctx.antibot) or {}
     if ngx.ctx then ngx.ctx.antibot = ctx end
+    -- Content handlers bypass the root access pipeline. Apply the same proxy
+    -- boundary before their per-client admission keys are constructed.
+    proxy_origin.run(ctx)
     local c = conf(ctx)
     if not c.enabled or c.mode == "off" then return true, false end
 

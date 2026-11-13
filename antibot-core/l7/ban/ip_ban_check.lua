@@ -13,6 +13,9 @@ function _M.run(ctx)
     if not ip or ip == "" or ip == "127.0.0.1" or ip == "::1" then
         return true, false
     end
+    -- Missing/invalid client header behind a trusted proxy leaves ctx.ip at
+    -- the shared edge.  Never read a historical collective ban for that edge.
+    if ctx.ip_is_aggregate == true then return true, false end
 
     local banned = pool.safe_get("ban:" .. ip)
     if banned == "1" then

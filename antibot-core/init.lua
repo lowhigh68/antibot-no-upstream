@@ -48,11 +48,13 @@ local policy_store       = require "antibot.core.policy_store"
 -- MOT LAN khi cache WP-root con lanh, roi wp_paths cache ket qua theo docroot.
 local STEPS_ADMISSION = {
     { layer = ctx_layer,         fn = "init"          },
+    -- Restore client identity only after the TCP peer matches a trusted CIDR.
+    -- Must precede every counter, ban lookup and automation observation.
+    { layer = proxy_origin,      fn = "run"           },
     { layer = classifier,        fn = "run_fast"      },
     -- Claim-only, shared-dict telemetry. Runs before all exits so repeated
     -- ban/WAF hits remain measurable; it never changes a verdict in shadow.
     { layer = automation_guard,  fn = "run"           },
-    { layer = proxy_origin,      fn = "run"           },
     -- Generic contradictory-principal telemetry.  It runs after proxy origin
     -- so a shared reverse-proxy edge is never treated as one source.
     { layer = principal_churn,   fn = "before"        },
@@ -110,7 +112,7 @@ local STEPS_COMMON_PRE_ACCESS = {
     -- Đặt SỚM để mọi step sau (rate/burst/scoring) đọc được.
     { layer = session_richness,  fn = "run"           },
     -- proxy_origin + ip_ban_check da chay trong STEPS_ADMISSION, truoc moi
-    -- fast-path. Vi vay ctx.ip/behind_proxy o day da la ket qua da sanitize.
+    -- fast-path. Vi vay ctx.ip/proxy provenance o day da la ket qua sanitize.
     -- iprep: cross-server IP reputation check (Central Redis, 1h local cache).
     -- Runs after ip_ban_check so locally-banned IPs exit before reaching this.
     -- Sets ctx.ext_rep ∈ [0,1]; fails open (ext_rep=0) if Central Redis down.

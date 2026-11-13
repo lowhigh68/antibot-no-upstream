@@ -577,13 +577,14 @@ function _M.run(ctx)
        or ctx.dns_rev_timeout or ctx.dns_rev_degraded
        or ctx.dns_fwd_timeout
        or ctx.dns_fwd_degraded
-       or ctx.verified_human_bot_held_cookie then
+       or ctx.verified_human_bot_held_cookie
+       or ctx.browser_wrapped_claim then
         local function tri(v)
             if v == nil then return "-" end
             return tostring(v)
         end
         gbverify_str = string.format(
-            " gbv=%s gbname=%s gbrev=%s gbfwd=%s gbdeg=%s gbasn=%s gbcor=%s gbhuman=%s",
+            " gbv=%s gbname=%s gbrev=%s gbfwd=%s gbdeg=%s gbasn=%s gbcor=%s gbhuman=%s gbwrap=%s",
             tostring(ctx.bot_ua or "-"),
             tostring(ctx.good_bot_name or "-"),
             tri(ctx.dns_rev_valid),
@@ -598,7 +599,8 @@ function _M.run(ctx)
             -- nhung khong co ve (binh thuong, Googlebot nao cung vay).
             (ctx.verified_human_bot_held_cookie and "held_cookie")
                 or (ctx.verified_human_rejected_bot_claim and "reject")
-                or "-")
+                or "-",
+            tostring(ctx.browser_wrapped_claim == true))
     end
 
     -- Generic automation telemetry. Unlike gbv=, this is emitted for every
@@ -1172,6 +1174,21 @@ function _M.run(ctx)
             tostring(ctx.ip_tier2_warming or false))
     end
 
+    local proxy_str = ""
+    if ctx.proxy_verified or ctx.proxy_spoof or ctx.proxy_degraded then
+        proxy_str = string.format(
+            " px=%s pxv=%s pxcv=%s pxagg=%s pxsrc=%s pxerr=%s pxhops=%s pxsp=%s pxtls=%s",
+            log_token(ctx.proxy_vendor, 32),
+            tostring(ctx.proxy_verified == true),
+            tostring(ctx.proxy_client_ip_verified == true),
+            tostring(ctx.ip_is_aggregate == true),
+            log_token(ctx.client_ip_source, 32),
+            log_token(ctx.proxy_header_error, 32),
+            ctx.proxy_hops == nil and "-" or tostring(ctx.proxy_hops),
+            log_token(ctx.proxy_spoof_header, 32),
+            log_token(ctx.transport_scope, 24))
+    end
+
     -- Beacon coverage state (Step 0 telemetry).
     -- skip = không phải HTML-eligible (resource/api/auth) — beacon không áp dụng
     -- 1    = HTML eligible + có beacon data (canvas/webgl signal khả dụng)
@@ -1313,7 +1330,7 @@ function _M.run(ctx)
     line = line .. endpoint_str .. automation_str
         .. automation_concurrency_str .. principal_churn_str
         .. dynamic_guard_str .. operator_str
-        .. shared_ip_str .. ban_str
+        .. shared_ip_str .. proxy_str .. ban_str
         .. string.format(
             " pver=%s dschema=%s dkind=%s dsrc=%s drule=%s dmode=%s"
             .. " dscope=%s dsubject=%s dttl=%s dup=%s",

@@ -83,10 +83,10 @@ function _M.run(ctx)
        and ctx.ip and ctx.ip ~= ""
        and ip_rate > (cfg.rate.ip_surge_extreme or 5000)
     then
-        -- `not ctx.behind_proxy`: mot edge reverse proxy tap hop luu luong cua
+        -- `not ctx.ip_is_aggregate`: mot edge reverse proxy tap hop luu luong cua
         -- rat nhieu khach, nen `ip_rate` cao o day la binh thuong va `ban:<ip>`
         -- la ban tap the. Xem `enforcement/ban/ban_store_write.lua`.
-        if not ctx.ip_shared_verified and not ctx.behind_proxy then
+        if not ctx.ip_shared_verified and not ctx.ip_is_aggregate then
             local ttl = cfg.rate.ip_surge_ban_ttl or 300
             pool.safe_set("ban:" .. ctx.ip, "1", ttl)
             pool.safe_set("ban:hit:" .. ctx.ip, tostring(ngx.time()), 300)
@@ -117,7 +117,7 @@ function _M.run(ctx)
                 " ip=", ctx.ip,
                 " ip_rate=", ip_rate,
                 " shared_verified=", tostring(ctx.ip_shared_verified),
-                " behind_proxy=", tostring(ctx.behind_proxy))
+                " ip_is_aggregate=", tostring(ctx.ip_is_aggregate))
         end
     end
 

@@ -29,7 +29,15 @@ function _M.check_cookie(ctx, opts)
     if automation_claimed == nil then
         automation_claimed = ua_claim.claims_automation(ua)
     end
-    if automation_claimed then
+    local browser_wrapped = ctx and ctx.browser_wrapped_claim
+    if browser_wrapped == nil then
+        browser_wrapped = ua_claim.is_browser_wrapped(ua)
+    end
+    -- A bot can always remove its self-declared token and present the same
+    -- browser UA, so denying an already verified human solely because an app
+    -- appended that token adds no security.  It only locks out honest in-app
+    -- and preview traffic. Canonical crawler claims keep the old hard gate.
+    if automation_claimed and not browser_wrapped then
         if ctx then
             ctx.verified_human_rejected_bot_claim = true
 

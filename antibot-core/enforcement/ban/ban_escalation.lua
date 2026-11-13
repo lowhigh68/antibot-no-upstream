@@ -3,6 +3,12 @@ local cfg  = require "antibot.core.config"
 local quarantine = require "antibot.core.network_quarantine"
 
 local function choose_scope(ctx)
+    -- A browser-wrapped automation claim is caller-controlled syntax, not
+    -- fleet-wide evidence. Even if another rule blocks the live request, keep
+    -- its sentence inside the target host. A malicious client gains nothing:
+    -- it could already omit the automation token and look like the browser
+    -- prefix, while behavioral/WAF evidence continues to block per host.
+    if ctx.browser_wrapped_claim == true then return "host" end
     local c = cfg.network_quarantine or {}
     local reasons = c.global_reasons or {}
     if reasons[ctx.action_reason or ""] == true then return "global" end

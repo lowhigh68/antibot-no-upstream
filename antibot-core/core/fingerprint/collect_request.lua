@@ -10,7 +10,9 @@ local function calc_header_entropy()
 end
 
 function _M.run(ctx)
-    ctx.ip   = ngx.var.remote_addr or ""
+    -- proxy_origin may already have restored a verified end-client address.
+    -- Never overwrite it with the TCP edge later in the pipeline.
+    ctx.ip   = ctx.ip or ngx.var.remote_addr or ""
     ctx.port = tonumber(ngx.var.remote_port) or 0
 
     ctx.ua = ngx.var.http_user_agent or ""

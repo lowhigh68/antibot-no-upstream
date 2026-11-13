@@ -1930,13 +1930,18 @@ do
             "       `ctx.ip` va mien toan bo pipeline.\n")
     else pass = pass + 1 end
 
-    local lan = wl:match("([^\n]-lan_internal[^\n]*)")
-    if not lan then
+    local p_proxy = wl:find("ctx%.proxy_verified%s*~=%s*true")
+    local p_peer  = wl:find("ip_scope%.is_private%(ctx%.ip_tcp%s+or%s+ip%)")
+    local p_lan   = wl:find('return%s+true,%s+"lan_internal"')
+    if not p_lan then
         bad("  SAI  khong tim thay nhanh `lan_internal` trong whitelist.lua\n")
-    elseif not lan:find("ip_tcp", 1, true) then
+    elseif not p_peer then
         bad("  SAI  nhanh `lan_internal` dang gac tren `ctx.ip` (gia tri CO THE\n" ..
             "       do header dat) thay vi `ctx.ip_tcp`.\n" ..
             "       Mot dong `CF-Connecting-IP: 127.0.0.1` mien toan bo pipeline.\n")
+    elseif not p_proxy or p_proxy > p_peer or p_peer > p_lan then
+        bad("  SAI  nhanh `lan_internal` khong loai trusted proxy peer.\n" ..
+            "       Proxy RFC1918 se whitelist tap the moi client di qua no.\n")
     else pass = pass + 1 end
 
     if wl:find("local function is_private", 1, true) then
@@ -2153,6 +2158,8 @@ end
 -- "crawler", ma `AhrefsSiteAudit` khong co chu nao => bot_name = nil.
 -- `AhrefsBot` (co chu "bot") thi chay dung: 8.879 luot `good_bot_verified`.
 do
+    package.loaded["antibot.core.ua_shape"] =
+        loadfile(SRC .. "core/ua_shape.lua")()
     local parser = loadfile(SRC .. "core/goodbot_registry.lua")
     local gb     = slurp(SRC .. "core/data/goodbot.json")
     local data   = gb and require("cjson.safe").decode(gb) or nil
@@ -2171,15 +2178,13 @@ do
 end
 
 
--- [23] `proxy_spoof` phai duoc dang ky o CA HAI noi, va `proxy_origin` phai
--- KHONG BAO GIO doc GIA TRI header de dat dia chi.
+-- [23] Trusted proxy: header chi duoc dat client IP SAU CIDR gate.
 --
 -- Hai bat bien khac nhau trong cung mot muc:
 --   (a) Tin hieu dang ky mot nua la tin hieu CHET — dung ho voi muc [22]
 --       (`ahrefssiteaudit` dang ky ma khong trich duoc ten).
---   (b) `ctx.ip` KHONG duoc phep lay tu header. Day la bat bien AN NINH: tin
---       gia tri `CF-Connecting-IP` nghia la bat ky ai cung tu khai duoc danh
---       tinh, ma `ctx.ip` la khoa cua ban/rate/reputation.
+--   (b) `ctx.ip` chi duoc lay tu header khi TCP peer khop CIDR da compile.
+--       Header tu direct client van la proxy_spoof va khong doi danh tinh.
 do
     local comp = slurp(SRC .. "intelligence/scoring/compute.lua")
     local po   = slurp(SRC .. "core/proxy_origin.lua")
@@ -2201,40 +2206,62 @@ do
             bad("  SAI  proxy_spoof khong duoc dang ky o dau ca.\n")
         end
 
-        -- (b) khong duoc gan ctx.ip / remote_addr tu header.
-        -- Bo COMMENT truoc khi kiem: chu thich dau file CO Y nhac ten
-        -- `set_real_ip_from` de giai thich vi sao KHONG dung no, va mot phep kiem
-        -- khop ca comment se bao do vinh vien (da mac khi viet chinh muc nay).
-        local po_code = po:gsub("%-%-[^\n]*", "")
-        local viol = po_code:find("ctx%.ip%s*=") or po_code:find("set_real_ip")
-                     or po_code:find("remote_addr%s*=")
-        if viol then
-            bad("  SAI  proxy_origin.lua gan dia chi tu trong module nay. `ctx.ip`\n" ..
-                "       PHAI giu la dia chi TCP that; header chi duoc dung de phat\n" ..
-                "       hien mao danh (ctx.proxy_spoof). Xem chu thich dau file.\n")
+        -- (b) CIDR/peer gate phai nam truoc header extraction va assignment.
+        local p_match   = po:find("matching_rule%(rules, peer%)")
+        local p_extract = po:find("extract_client%(rule, h, rules%)")
+        local p_assign  = po:find("ctx%.ip%s*=%s*client")
+        if not p_match or not p_extract or not p_assign
+           or p_match > p_extract or p_extract > p_assign then
+            bad("  SAI  proxy_origin khong ghim thu tu peer CIDR -> header -> ctx.ip.\n")
+        else pass = pass + 1 end
+        if not po:find("ctx%.ip_tcp") or not po:find("ip_cidr%.contains_any") then
+            bad("  SAI  proxy_origin khong xac minh TCP peer bang CIDR.\n")
+        else pass = pass + 1 end
+        if not po:find("proxy_client_ip_verified")
+           or not po:find("ip_is_aggregate") then
+            bad("  SAI  proxy contract thieu provenance/aggregate state.\n")
         else pass = pass + 1 end
 
-        -- (b2) behind_proxy khong duoc bat tu header
-        local hdr_gate = po:match("if[^\n]-get_headers[^\n]-then[^\n]-behind_proxy%s*=%s*true")
-        if hdr_gate then
-            bad("  SAI  ctx.behind_proxy duoc bat tu header. No CHI duoc bat tu dai\n" ..
-                "       IP da xac minh hoac khai bao operator.\n")
-        else pass = pass + 1 end
-
-        -- (c) thu tu pipeline: proxy_origin PHAI dung truoc ip_ban_check
+        -- (c) proxy_origin phai la buoc DAU sau ctx init, truoc moi counter.
         local p_po = ini:find("layer%s*=%s*proxy_origin")
         local p_bc = ini:find("layer%s*=%s*ip_ban_check")
-        if not p_po or not p_bc then
+        local p_cl = ini:find("layer%s*=%s*classifier")
+        local p_ag = ini:find("layer%s*=%s*automation_guard")
+        if not p_po or not p_bc or not p_cl or not p_ag then
             bad("  SAI  khong tim thay proxy_origin hoac ip_ban_check trong pipeline STEPS_*\n")
-        elseif p_po > p_bc then
-            bad("  SAI  proxy_origin dung SAU ip_ban_check trong pipeline STEPS_* =>\n" ..
-                "       ctx.behind_proxy con false o moi tang khoa theo IP. Dung ho\n" ..
-                "       loi da lam Fix B thanh code chet (doc buoc 6, ghi buoc 10).\n")
+        elseif p_po > p_bc or p_po > p_cl or p_po > p_ag then
+            bad("  SAI  proxy_origin dung sau mot consumer theo IP.\n")
+        else pass = pass + 1 end
+
+        local cr = slurp(SRC .. "core/fingerprint/collect_request.lua") or ""
+        if not cr:find("ctx%.ip%s*=%s*ctx%.ip%s+or") then
+            bad("  SAI  collect_request ghi de client IP da restore.\n")
+        else pass = pass + 1 end
+
+        local adm = slurp(SRC .. "l7/admission.lua") or ""
+        if not adm:find("proxy_origin%.run%(ctx%)") then
+            bad("  SAI  endpoint content handlers bo qua proxy provenance.\n")
+        else pass = pass + 1 end
+
+        local tr = slurp(SRC .. "transport/init.lua") or ""
+        if not tr:find("ctx%.proxy_verified%s*==%s*true") then
+            bad("  SAI  transport van quy JA3/H2 cua edge cho end-client.\n")
+        else pass = pass + 1 end
+
+        local wl = slurp(SRC .. "core/access/whitelist.lua") or ""
+        if not wl:find("ctx%.proxy_verified%s*~=%s*true") then
+            bad("  SAI  trusted private proxy co the bi nham thanh LAN client.\n")
+        else pass = pass + 1 end
+
+        local ips = slurp(SRC .. "core/ip_scope.lua") or ""
+        if not ips:find("ctx%.proxy_client_ip_verified%s*==%s*true")
+           or not ips:find("return false", 1, true) then
+            bad("  SAI  degraded private proxy co the bi nham thanh self traffic.\n")
         else pass = pass + 1 end
     end
 end
 
--- [24] MOI cho ghi `ban:<ip>` phai co cong `ctx.behind_proxy`.
+-- [24] MOI cho doc/ghi `ban:<ip>` phai co cong `ctx.ip_is_aggregate`.
 --
 -- Dia chi edge cua reverse proxy cong cong khong dinh danh ai, nen `ban:<ip>` o
 -- do la ban TAP THE — va vo hieu voi ke tan cong (CF chon edge cho tung ket noi,
@@ -2243,7 +2270,7 @@ end
 --
 -- Bat bien: THEM mot cho ghi `ban:<ip>` ma quen cong nay la mo lai lo hong. Test
 -- nay liet ke moi file co chuoi ghi `ban:` theo ip va doi file do phai nhac
--- `behind_proxy`.
+-- `ip_is_aggregate`.
 do
     local sites = {
         { "enforcement/ban/ban_store_write.lua", "should_ban_ip" },
@@ -2257,19 +2284,24 @@ do
         local src = slurp(SRC .. f)
         if not src then
             bad("  SAI  thieu %s\n", f)
-        elseif not src:find("behind_proxy", 1, true) then
+        elseif not src:find("ip_is_aggregate", 1, true) then
             bad("  SAI  %s ghi `ban:<ip>` (%s) nhung KHONG co cong\n" ..
-                "       `ctx.behind_proxy`. Dia chi edge reverse proxy khong dinh\n" ..
+                "       `ctx.ip_is_aggregate`. Dia chi edge reverse proxy khong dinh\n" ..
                 "       danh ai => ban tap the, va bot di vong bang cach ket noi\n" ..
                 "       lai qua edge khac. Xem ban_store_write.lua.\n", f, what)
         else pass = pass + 1 end
     end
 
-    -- Khong duoc mien `ban:<id>` theo `behind_proxy`: identity la thu DUY NHAT
+    local ipbc = slurp(SRC .. "l7/ban/ip_ban_check.lua") or ""
+    if not ipbc:find("ip_is_aggregate", 1, true) then
+        bad("  SAI  ip_ban_check van doc ban tap the cua unresolved edge.\n")
+    else pass = pass + 1 end
+
+    -- Khong duoc mien `ban:<id>` theo aggregate: identity la thu DUY NHAT
     -- con dung nghia khi `ctx.ip` vo nghia. Mien ca hai la tha bot hoan toan.
     local bs = slurp(SRC .. "l7/ban/ban_store.lua") or ""
-    if bs:find("behind_proxy", 1, true) then
-        bad("  SAI  l7/ban/ban_store.lua doc `behind_proxy`. Ban theo IDENTITY\n" ..
+    if bs:find("ip_is_aggregate", 1, true) then
+        bad("  SAI  l7/ban/ban_store.lua doc `ip_is_aggregate`. Ban theo IDENTITY\n" ..
             "       KHONG duoc mien theo co nay — khi `ctx.ip` vo nghia thi\n" ..
             "       identity la thu duy nhat con phan biet duoc thiet bi.\n")
     else pass = pass + 1 end
@@ -2448,12 +2480,15 @@ do
                     r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
                           { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 } },
                 },
-                behind_proxy = {
+                ip_is_aggregate = {
                     w = "proxy_origin",
                     r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
                           { "detection/ip_tour.lua",               order["ip_tour"]           or 99 },
                           { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 },
                           { "l7/expensive_filter_guard.lua",       order["xfilter_guard"]     or 99 },
+                          { "l7/admission.lua",                    order["l7_admission"]      or 99 },
+                          { "l7/ban/ip_ban_check.lua",             order["ip_ban_check"]      or 99 },
+                          { "l7/principal_churn.lua",              order["principal_churn"]   or 99 },
                           { "l7/rate/adaptive_limit.lua",          L7 },
                           { "intelligence/scoring/compute.lua",    order["intelligence_layer"] or 99 } },
                 },

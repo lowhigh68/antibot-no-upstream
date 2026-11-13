@@ -24,4 +24,8 @@ function _M.claims_automation(ua)
     return registry.claims_automation(ua)
 end
 
+function _M.is_browser_wrapped(ua)
+    return registry.is_browser_wrapped(ua)
+end
+
 return _M

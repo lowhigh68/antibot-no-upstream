@@ -48,6 +48,36 @@ _M.redis = {
     password    = doc_mat_khau(),
 }
 
+-- Trusted reverse-proxy boundary.  This is NOT a whitelist: a matching rule
+-- only authorizes one header to supply the end-client address.  The restored
+-- client still traverses admission, bans, WAF, scoring and endpoint policy.
+--
+-- Cloudflare is built in because its public edge ranges are fleet-wide.  A
+-- custom proxy must be declared here with BOTH its source CIDR and host scope;
+-- declaring a host or seeing X-Forwarded-For alone never grants trust.
+-- Supported headers: cf-connecting-ip, cf-connecting-ipv6, x-forwarded-for,
+-- true-client-ip, x-real-ip. For XFF the engine walks right-to-left and selects the first hop
+-- outside all trusted CIDRs that apply to the host.
+_M.proxy_origin = {
+    enabled = true,
+    cloudflare = {
+        enabled = true,
+        hosts   = { "*" },
+        header  = "cf-connecting-ip",
+    },
+    generic = {
+        rules = {
+            -- Example (disabled until copied without the leading comment):
+            -- {
+            --     name   = "company_proxy",
+            --     cidrs  = { "198.18.0.0/15", "2001:db8:1234::/48" },
+            --     hosts  = { "example.com", "*.example.com" },
+            --     header = "x-forwarded-for",
+            -- },
+        },
+    },
+}
+
 -- NGƯỠNG QUYẾT ĐỊNH — nay là NGUỒN SỰ THẬT DUY NHẤT.
 --
 -- CẢNH BÁO VỀ CON SỐ CŨ TRONG FILE NÀY: bảng này trước ghi `challenge = 80`,

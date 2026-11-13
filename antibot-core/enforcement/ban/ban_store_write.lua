@@ -85,7 +85,7 @@ function _M.run(ctx)
     local ip    = ctx.ip
     local class = ctx.req_class or "unknown"
     local qcfg  = cfg.network_quarantine or {}
-    local self_request = ip_scope.is_self()
+    local self_request = ip_scope.is_self(ctx)
 
     if not keys or not id then
         ngx.log(ngx.ERR, "[ban_write] missing network quarantine key")
@@ -129,6 +129,8 @@ function _M.run(ctx)
             ua          = (ctx.ua or ""):sub(1, 180),
             ip          = ctx.ip or "",
             bot_score   = ctx.bot_score or 0,
+            reason      = ctx.action_reason or "score_block",
+            gbwrap      = ctx.browser_wrapped_claim == true,
         })
         if ok2 then ctx_json_template = json end
     end
@@ -252,6 +254,12 @@ function _M.run(ctx)
     if ctx.action_reason == "fake_good_bot" and current_viol < 3 then
         should_ban_ip = false
     end
+    -- Defence in depth for callers that bypassed/preceded ban_escalation.
+    -- Browser-shaped claims may still receive a host quarantine from real
+    -- behavioral evidence, but never a collective IP sentence.
+    if ctx.browser_wrapped_claim == true then
+        should_ban_ip = false
+    end
 
     -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
     -- (mobile CGNAT / mobile farm / office WAN with real cookied users). One bad
@@ -285,7 +293,7 @@ function _M.run(ctx)
     --
     -- `== true` de fail-closed, giong cong cookie_registry ben duoi: day la trao
     -- MIEN TRU nen khong co bang chung duong tinh thi khong mien.
-    if ctx.behind_proxy == true then
+    if ctx.ip_is_aggregate == true then
         should_ban_ip = false
     end
 

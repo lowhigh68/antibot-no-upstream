@@ -12,6 +12,7 @@
 -- by one parser instead of being hidden in unrelated modules.
 
 local _M = {}
+local ua_shape = require "antibot.core.ua_shape"
 
 local OPERATOR_SUBSTRINGS = {
     "bot", "spider", "crawler", "facebookexternal", "mediapartners",
@@ -285,6 +286,9 @@ function _M.inspect(ua)
     local contact  = contact_claimed(lower)
     local machine  = (not op_claim and not contact)
         and opaque_machine_product(ua) or nil
+    local canonical = name or machine
+    local browser_wrapped = canonical ~= nil
+        and ua_shape.browser_wrapped_claim(ua, canonical) or false
     return {
         operator_claimed      = op_claim,
         verification_claimed = verify,
@@ -294,7 +298,8 @@ function _M.inspect(ua)
         contact_attestable   = contact_attestable(lower),
         contact_domain       = contact_domain(lower),
         machine_claimed      = machine ~= nil,
-        canonical_name       = name or machine,
+        canonical_name       = canonical,
+        browser_wrapped      = browser_wrapped,
         metadata             = name and STATIC[name] or nil,
     }
 end
@@ -306,6 +311,10 @@ end
 function _M.claims_automation(ua)
     if not ua or ua == "" then return false end
     return operator_claimed(ua) or contact_claimed(ua:lower())
+end
+
+function _M.is_browser_wrapped(ua)
+    return _M.inspect(ua).browser_wrapped == true
 end
 
 function _M.metadata(name)

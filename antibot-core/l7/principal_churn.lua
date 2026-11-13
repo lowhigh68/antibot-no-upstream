@@ -167,9 +167,9 @@ local function observe(ctx, include_ja3)
     if not include_ja3 then
         ctx.principal_churn_early_principal = p
     end
-    -- On a verified reverse proxy ctx.ip is the edge, not one client.  Mixing
-    -- tenants there would manufacture churn and is an unacceptable FP source.
-    if ctx.behind_proxy == true then
+    -- Skip only when client restoration failed and ctx.ip is still a shared
+    -- edge. A verified client behind a proxy is a valid per-client subject.
+    if ctx.ip_is_aggregate == true then
         ctx.principal_churn_proxy_skip = true
         return true, false
     end

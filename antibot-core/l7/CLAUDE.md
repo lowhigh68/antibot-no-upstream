@@ -47,7 +47,10 @@ telemetry; never reputation),
 ## ctx fields read
 `ip`, `identity`, `fp_light`, `ua`, `req.uri`, `req_class`, `rate_weight`,
 `score_multiplier`, `session_richness_own`, `session_cookie_known`,
-`ip_shared_verified`, `behind_proxy`, `skip_layers`, `skip_rate`.
+`ip_shared_verified`, `behind_proxy`, `ip_is_aggregate`, `skip_layers`, `skip_rate`.
+`behind_proxy` chỉ mô tả topology; chỉ `ip_is_aggregate=true` (không khôi phục
+được end-client) mới được miễn phán quyết tập thể theo IP. Client đã restore
+vẫn chịu đầy đủ admission/rate/ban như direct traffic.
 
 ## Flow
 ```
