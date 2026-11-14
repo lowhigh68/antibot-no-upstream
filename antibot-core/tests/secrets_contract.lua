@@ -98,6 +98,22 @@ ok(value == nil and tostring(err):find("must differ", 1, true) ~= nil,
 os.remove(path)
 
 bad = valid()
+bad.actor.current = bad.pow.challenge_secret
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("pow.challenge_secret", 1, true) ~= nil,
+   "actor current cannot reuse pow secret")
+os.remove(path)
+
+bad = valid()
+bad.actor.previous = bad.pow.challenge_secret
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("pow.challenge_secret", 1, true) ~= nil,
+   "actor previous cannot reuse pow secret")
+os.remove(path)
+
+bad = valid()
 bad.admin.viewer.username = bad.admin.operator.username
 path = write_tmp(bad)
 value, err = secrets._reset_for_test(path)

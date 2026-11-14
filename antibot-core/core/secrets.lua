@@ -90,6 +90,13 @@ local function validate(obj)
         if obj.actor.previous == obj.actor.current then
             return nil, "actor.previous must differ from actor.current"
         end
+        if obj.actor.current == pow.challenge_secret then
+            return nil, "actor.current must differ from pow.challenge_secret"
+        end
+        if obj.actor.previous ~= nil
+           and obj.actor.previous == pow.challenge_secret then
+            return nil, "actor.previous must differ from pow.challenge_secret"
+        end
         actor_secrets = {
             current  = obj.actor.current,
             previous = obj.actor.previous,
