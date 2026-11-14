@@ -30,6 +30,10 @@ local function valid()
             viewer   = { username = "viewer",   password = "viewer-password-456" },
         },
         pow = { challenge_secret = string.rep("p", 32) },
+        actor = {
+            current  = string.rep("a", 32),
+            previous = string.rep("b", 32),
+        },
     }
 end
 
@@ -40,6 +44,19 @@ eq(#value.admin_accounts, 2, "two roles")
 eq(value.admin_accounts[1].role, "operator", "operator first")
 eq(value.admin_accounts[2].role, "viewer", "viewer second")
 eq(value.pow_secret, string.rep("p", 32), "pow secret loaded")
+eq(value.actor_secrets.current, string.rep("a", 32), "actor current loaded")
+eq(value.actor_secrets.previous, string.rep("b", 32), "actor previous loaded")
+os.remove(path)
+
+local no_actor = valid()
+no_actor.actor = nil
+path = write_tmp(no_actor)
+value, err = secrets._reset_for_test(path)
+ok(value ~= nil and err == nil, "actor block optional for fail-open rollout")
+ok(value.actor_secrets == nil, "missing actor secret is explicit")
+local actor_value, actor_err = secrets.actor_secrets()
+ok(actor_value == nil and type(actor_err) == "string" and actor_err ~= "",
+   "actor accessor fails open with reason")
 os.remove(path)
 
 local no_viewer = valid()
@@ -62,6 +79,22 @@ bad.pow.challenge_secret = "too-short"
 path = write_tmp(bad)
 value, err = secrets._reset_for_test(path)
 ok(value == nil and tostring(err):find("32%-512") ~= nil, "short pow secret rejected")
+os.remove(path)
+
+bad = valid()
+bad.actor.current = "too-short"
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("actor.current", 1, true) ~= nil,
+   "short actor secret rejected")
+os.remove(path)
+
+bad = valid()
+bad.actor.previous = bad.actor.current
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("must differ", 1, true) ~= nil,
+   "actor rotation keys must differ")
 os.remove(path)
 
 bad = valid()

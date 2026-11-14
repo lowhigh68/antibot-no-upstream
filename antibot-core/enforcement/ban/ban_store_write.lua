@@ -4,13 +4,9 @@ local cfg  = require "antibot.core.config"
 local ip_scope = require "antibot.core.ip_scope"
 local quarantine = require "antibot.core.network_quarantine"
 
--- One incident must add exactly one violation, even when many requests from
--- the same network-UA subject reach the engine concurrently.  Redis serializes
--- this script: the first caller creates the seal and advances the ladder;
--- callers arriving behind it only observe the existing sentence.
---
--- KEYS: ban, violation, last-hit, context
--- ARGV: violation_ttl, now, step_count, context_json_template, step_1...
+-- One incident advances the actor ladder exactly once.  Concurrent requests
+-- behind the winner observe the existing seal and only refresh the short hit
+-- marker; they do not become separate offences.
 local BAN_CLAIM_SCRIPT = [[
 local existing = redis.call("EXISTS", KEYS[1])
 if existing == 1 then
@@ -22,7 +18,6 @@ end
 
 local viol = redis.call("INCR", KEYS[2])
 redis.call("EXPIRE", KEYS[2], tonumber(ARGV[1]))
-
 local count = tonumber(ARGV[3]) or 1
 local idx = viol
 if idx < 1 then idx = 1 end
@@ -31,46 +26,37 @@ local ttl = tonumber(ARGV[4 + idx])
 
 redis.call("SETEX", KEYS[1], ttl, "1")
 redis.call("SETEX", KEYS[3], 300, ARGV[2])
-
 local context = ARGV[4]
 if context and context ~= "" then
-    context = string.gsub(
-        context,
+    context = string.gsub(context,
         '"ban_viol":"__BAN_VIOL__"',
-        '"ban_viol":' .. tostring(viol),
-        1)
+        '"ban_viol":' .. tostring(viol), 1)
     redis.call("SETEX", KEYS[4], ttl, context)
 end
-
 return {1, viol, ttl}
 ]]
 
-local function sentence_steps(scope, qcfg)
-    local configured = scope == "global" and cfg.ttl.ban_steps
-        or qcfg.steps
-    local source = configured or {300, 3600, 86400}
-    local steps = {}
+local function sentence_steps(qcfg)
+    local source = qcfg.steps or {300, 3600, 86400}
+    local out = {}
     for i = 1, #source do
         local ttl = math.floor(tonumber(source[i]) or 0)
-        if ttl > 0 then steps[#steps + 1] = ttl end
+        if ttl > 0 then out[#out + 1] = ttl end
     end
-    if #steps == 0 then steps[1] = 300 end
-    return steps
+    if #out == 0 then out[1] = 300 end
+    return out
 end
 
-local function claim_identity(red, keys, steps, violation_ttl, now_ts,
-                              context_template)
+local function claim_actor(red, keys, steps, violation_ttl, now_ts, context)
     local argv = {
         BAN_CLAIM_SCRIPT, 4,
         keys.ban, keys.viol, keys.hit, keys.context,
         tostring(violation_ttl), tostring(now_ts), tostring(#steps),
-        context_template or "",
+        context or "",
     }
     for i = 1, #steps do argv[#argv + 1] = tostring(steps[i]) end
-
     local result, err = red:eval(unpack(argv))
     if not result then return nil, err end
-
     return {
         created   = tonumber(result[1]) == 1,
         violation = tonumber(result[2]) or 0,
@@ -79,420 +65,85 @@ local function claim_identity(red, keys, steps, violation_ttl, now_ts,
 end
 
 function _M.run(ctx)
-    -- The current request may still be blocked, but a proxy edge without a
-    -- verified client IP cannot receive an identity/IP sentence.  Its
-    -- network_id is md5(shared-edge + normalized-UA), hence collective.
-    if not ctx or ctx.ip_is_aggregate == true then
-        if ctx then
-            ctx.ban_created   = false
-            ctx.ban_persisted = false
-            ctx.ban_violation = nil
-        end
+    if not ctx then return end
+    local keys = quarantine.keys(ctx, "host")
+    if not keys or ip_scope.is_self(ctx) then
+        ctx.ban_created   = false
+        ctx.ban_persisted = false
+        ctx.ban_violation = nil
+        ctx.ban_ttl       = nil
+        ctx.ban_suppressed = keys and "self_traffic" or "no_presented_actor"
         return
     end
 
-    local scope = ctx.ban_scope or "host"
-    local keys  = quarantine.keys(ctx, scope)
-    local id    = ctx.ban_id or (keys and keys.id)
-    local ip    = ctx.ip
-    local class = ctx.req_class or "unknown"
-    local qcfg  = cfg.network_quarantine or {}
-    local self_request = ip_scope.is_self(ctx)
-
-    if not keys or not id then
-        ngx.log(ngx.ERR, "[ban_write] missing network quarantine key")
-        return
-    end
-
-    ctx.ban_id_kind = "network_ua"
-    ctx.ban_id       = id
-    ctx.ban_scope    = scope
+    ctx.ban_id_kind = "actor"
+    ctx.ban_id       = keys.id
+    ctx.ban_scope    = "host"
     ctx.ban_host     = keys.host
     ctx.ban_key      = keys.ban
 
-    local red, err = pool.get()
-    if not red then
-        ngx.log(ngx.ERR, "[ban_write] redis unavailable: ", err)
-        return
-    end
-
-    -- The atomic script knows the authoritative violation number.  Encode a
-    -- quoted marker now; the winning script replaces it with the numeric value
-    -- before storing the context in the same transaction as the seal.
-    local ctx_json_template = ""
+    local context = ""
     local ok, cjson = pcall(require, "cjson")
     if ok then
-        local host = (ctx.req and ctx.req.host) or ngx.var.host or "unknown"
-        local ok2, json = pcall(cjson.encode, {
-            domain      = host,
+        local good, encoded = pcall(cjson.encode, {
+            domain      = keys.host,
             score       = math.floor(ctx.score or 0),
             eff_score   = math.floor(ctx.effective_score or 0),
             action      = ctx.action or "block",
-            req_class   = class,
+            reason      = ctx.action_reason or "score_block",
+            req_class   = ctx.req_class or "unknown",
             ts          = ngx.time(),
-            identity    = id or "",
-            network_id  = id or "",
-            ban_scope   = scope,
+            actor_id    = keys.id,
+            actor_kind  = ctx.actor_kind or "signed",
+            network_id  = ctx.network_id or "", -- telemetry, never subject
+            ban_scope   = "host",
             ban_host    = keys.host,
             ban_key     = keys.ban,
             ban_viol    = "__BAN_VIOL__",
-            fp_deg      = ctx.fp_degraded or false,
-            device_type = ctx.device_type or "unknown",
-            ua          = (ctx.ua or ""):sub(1, 180),
             ip          = ctx.ip or "",
-            bot_score   = ctx.bot_score or 0,
-            reason      = ctx.action_reason or "score_block",
-            gbwrap      = ctx.browser_wrapped_claim == true,
+            ua          = (ctx.ua or ""):sub(1, 180),
         })
-        if ok2 then ctx_json_template = json end
+        if good then context = encoded end
     end
 
-    local steps = sentence_steps(scope, qcfg)
-    local now_ts = tostring(ngx.time())
-    if not self_request then
-        local claim, claim_err = claim_identity(
-            red, keys, steps,
-            qcfg.violation_ttl or cfg.ttl.violation or 172800,
-            now_ts, ctx_json_template)
-        if not claim then
-            ctx.ban_created = false
-            ctx.ban_persisted = false
-            pool.put(red)
-            ngx.log(ngx.ERR,
-                "[ban_write] atomic claim failed key=", keys.ban,
-                " err=", tostring(claim_err))
-            return
-        end
-
-        ctx.ban_created       = claim.created
-        ctx.ban_persisted     = true
-        ctx.ban_violation     = claim.violation
-        ctx.ban_ttl           = claim.ttl
-
-        -- `ban_previous_viol` feeds the IP ladder below and means "incidents
-        -- BEFORE this one". Both branches subtract one, and that is correct on
-        -- each for a different reason:
-        --
-        --   created=true   the script just INCRemented, so the number it
-        --                  returned already includes this incident.
-        --   created=false  a sentence was already sealed, which means the
-        --                  winner of this same burst did that INCR — so the
-        --                  plain GET also already includes this incident.
-        --
-        -- The two therefore agree, and a burst cannot hand different IP
-        -- sentences to its members. Worth stating explicitly because the
-        -- asymmetric-looking `created` flag invites a branch here: adding one
-        -- is wrong precisely because the loser is not a separate incident.
-        ctx.ban_previous_viol = math.max(claim.violation - 1, 0)
-    else
-        -- Self traffic is still blocked for the current request, but never
-        -- receives a lasting identity/IP sentence.
-        --
-        -- `ban_violation` stays nil on purpose. There is no incident to count
-        -- here, and writing 1 put a fabricated number in `bviol=` that read
-        -- exactly like a real first offence — the logger already renders nil
-        -- as `-`, which is the honest value.
-        ctx.ban_created = false
+    local red, err = pool.get()
+    if not red then
+        ctx.ban_created   = false
         ctx.ban_persisted = false
-        ctx.ban_ttl = steps[1]
-        ctx.ban_previous_viol = 0
-        ctx.ban_violation = nil
+        ctx.ban_suppressed = "redis_unavailable"
+        ngx.log(ngx.ERR, "[ban_write] redis unavailable: ", tostring(err))
+        return
     end
 
-    local ttl = ctx.ban_ttl
-    local ctx_ttl = (ttl and ttl > 0) and ttl or 86400
-    local ctx_json = ctx_json_template:gsub(
-        '"ban_viol":"__BAN_VIOL__"',
-        '"ban_viol":' .. tostring(ctx.ban_violation or 1), 1)
-
-    local ip_risk_val   = ctx.ip_risk or 0.0
-    -- HAI cơ chế swarm KHÁC NHAU — và chỉ còn MỘT được dùng ở đây.
-    --   ctx.swarm       (cluster/swarm_detect) = uri_cluster>50 OR ip_cluster>30
-    --   ctx.swarm_attack (distributed_swarm)    = distinct /24 per domain+ua
-    --
-    -- `ctx.swarm_attack` ĐÃ BỊ GÁC 10-10-2026 (trọng số 0 ở `compute.lua`), nên
-    -- nó KHÔNG được dùng làm bằng chứng ban ở đây nữa. Trọng số 0 một mình
-    -- KHÔNG đủ: dòng này đọc `ctx.swarm_attack` TRỰC TIẾP, bỏ qua bảng trọng
-    -- số, nên nếu để nguyên thì tín hiệu đã gác vẫn ghi `ban:<ip>` 24h.
-    --
-    -- Chú thích cũ ở đây khẳng định `>=1.0` là "an toàn FP, không dính
-    -- emerging/flash-crowd" vì nó đòi `count >= hard`. Số đo bác bỏ: 10-10 trên
-    -- cloud183-139, `no1computer.vn|Mac` đạt `swn = 326` — gấp **9,3 lần**
-    -- hard=35 — với 7.577 identity, tức ~23 identity trên mỗi /24. Hard không
-    -- phải rào FP; với site đông khách dùng UA phổ biến nó bị vượt bằng lưu
-    -- lượng bình thường. Cùng cửa sổ, KHÔNG một UA bot/scanner nào đạt
-    -- `swn >= 10` trên cả ba máy đo.
-    --
-    -- `ctx.swarm` (cluster) GIỮ NGUYÊN: nó đếm tập trung URI/IP, một phép đo
-    -- khác, chưa có phản ví dụ.
-    local swarm_active  = ctx.swarm == true
-
-    -- Lấy viol counter hiện tại (đọc trước khi incr ở dưới) để escalate IP ban.
-    -- Repeat offender → ban IP bất kể ip_risk thấp; permanent sau viol≥4.
-    -- The atomic claim returned the only authoritative incident count.  Do not
-    -- read Redis again here: a second read can observe a later incident and
-    -- couple this request's IP sentence to another concurrent request.
-    local viol_count = tonumber(ctx.ban_previous_viol) or 0
-
-    -- swarm case: distributed swarm (nhiều IP × ít request/IP) khiến ip_risk
-    -- KHÔNG BAO GIỜ leo tới 0.5 (EMA cần ~4 hit/IP; swarm né đúng điều đó) nên
-    -- gate cũ `ip_risk>=0.5 and swarm` khóa chết nhánh ip_ban_ttl=180 bên dưới.
-    -- swarm_active + score-block đã là bằng chứng đủ → ban ngay hit đầu.
-    -- Guard richness==0: request MANG cookie session (user thật lỡ dính flash-
-    -- crowd trip swarm) KHÔNG bị ban:<ip> — vẫn score-block từng request nhưng
-    -- tự thông khi đám đông tan, tránh khóa cứng 180s. Bot swarm richness=0.
-    local swarm_ban = swarm_active and (ctx.session_richness or 0) == 0
-
-    -- An IP sentence is deliberately a GLOBAL consequence.  A host-scoped
-    -- score block proves only that one network-UA identity misbehaved on one
-    -- tenant; promoting ip_risk/swarm from that incident into `ban:<ip>` would
-    -- also block unrelated browsers behind the same dynamic IP/CGNAT.  The
-    -- host path remains contained by qban:<host>:<network-UA>.  Only a decision
-    -- already classified as global may write the collective IP key.
-    local should_ban_ip = scope == "global" and ip and (
-        ip_risk_val >= 0.7
-        or swarm_ban
-        or viol_count >= 3
-    )
-
-    -- A single registered-crawler mismatch proves only that network-UA
-    -- identity.  Production 09-11-2026: Safari on a customer device carried a
-    -- trailing preview-fetcher token; the identity was correctly isolated, but
-    -- its first global sentence promoted to `ban:<ip>` and blocked every normal
-    -- page/resource from the customer's dynamic address.  Require three fresh
-    -- global incidents before adding the collective IP consequence.  The
-    -- request and `gban:<id>` remain blocked from incident one.
-    local current_viol = tonumber(ctx.ban_violation) or (viol_count + 1)
-    if ctx.action_reason == "fake_good_bot" and current_viol < 3 then
-        should_ban_ip = false
-    end
-    -- Defence in depth for callers that bypassed/preceded ban_escalation.
-    -- Browser-shaped claims may still receive a host quarantine from real
-    -- behavioral evidence, but never a collective IP sentence.
-    if ctx.browser_wrapped_claim == true then
-        should_ban_ip = false
-    end
-
-    -- Tier-2 shared-IP immunity: NEVER ban:<ip> on a proven high-user shared IP
-    -- (mobile CGNAT / mobile farm / office WAN with real cookied users). One bad
-    -- device must not nuke thousands of real users behind the same IP — it is
-    -- still banned PER-IDENTITY (ban:<id>) below. Only ctx.ip_shared_verified
-    -- (Tier 2, requires real-user evidence) grants this; a UA-rotation bot that
-    -- merely looks "shared" (Tier 1) is NOT immune and stays IP-bannable.
-    if ctx.ip_shared_verified then
-        should_ban_ip = false
-    end
-
-    -- KHONG BAO GIO `ban:<ip>` cho dia chi cua mot REVERSE PROXY cong cong.
-    --
-    -- Cung mot ly le voi Tier-2 ngay tren, nhung dai nay CON DONG NGUOI THAT
-    -- HON CGNAT: Cloudflare dinh tuyen theo dia ly nen mot edge phuc vu phan
-    -- lon khach cua mot vung. `ban:104.23.211.47` 30 ngay co the la toan bo
-    -- khach mot vung mat truy cap vao domain do trong mot thang.
-    --
-    -- VA NO VO HIEU VOI KE TAN CONG: CF chon edge cho TUNG ket noi, nen bot bi
-    -- ban mot edge chi can ket noi lai la sang edge khac. Ta tra gia bang khach
-    -- that de doi mot rao chan ma bot di vong trong mot giay.
-    --
-    -- DO 19-09-2026 tren cloud171-96 — day la lo hong DANG DIEN RA, khong phai
-    -- gia thuyet: **72 khoa `ban:<ip>` la IP edge Cloudflare**, TTL ~2.591.000s
-    -- (29,99 ngay) — tuc vua duoc ghi vai chuc giay truoc, dang duoc tao lien
-    -- tuc. Trong so do co `ban:172.68.26.251` va `ban:162.159.104.57` tren
-    -- `in3mien.com`, domain do duoc 391 luot cookie that trong 3h40.
-    --
-    -- KHONG mien `ban:<id>`: identity van bi chan per-device. Chinh vi `ctx.ip`
-    -- vo nghia o day ma ban theo identity moi la thu duy nhat con dung nghia.
-    --
-    -- `== true` de fail-closed, giong cong cookie_registry ben duoi: day la trao
-    -- MIEN TRU nen khong co bang chung duong tinh thi khong mien.
-    if ctx.ip_is_aggregate == true then
-        should_ban_ip = false
-    end
-
-    -- Mien tao `ban:<ip>` cho phien CO BANG CHUNG do chinh host nay cap.
-    --
-    -- Su co 2026-09-12 (bestcargo.vn): mot quan tri vien dang dang nhap luu
-    -- bai bang trinh dung trang — 8 POST `admin-ajax.php`, moi cai 113 KB,
-    -- trong 7 giay — bi ban IP. Anh ta KHONG co duong nao thoat: `ip_ban_check`
-    -- chay o buoc 2 cua STEPS_COMMON, TRUOC ca cookie fast-path, nen engine
-    -- khong bao gio chay va `auth_session_cap` khong bao gio duoc ap. Ban
-    -- theo identity (`ban_store.lua`) da co loi thoat nay tu truoc; ban theo
-    -- IP thi khong co gi ca. Day la vet bat doi xung do.
-    --
-    -- VI SAO DOI CA HAI DIEU KIEN, khong chi richness: gui 500 byte cookie rac
-    -- la dat `richness 0.80` (do 2026-09-12: mot trinh do `/cgi-bin/php5` dat
-    -- nguong do). Mien ban IP chi bang richness se lam mot bot xoay UA tro
-    -- thanh KHONG THE ban theo IP — dung `UA-rotation game` ma Tier-2 o tren
-    -- sinh ra de chan. Doi them mot cookie do CHINH host cap buoc ke tan cong
-    -- phai lay cookie that tu site truoc, va ten do phai nam trong so.
-    --
-    -- CUC `== true`, KHONG phai `~= false`. Day la trao DAC QUYEN nen phai
-    -- fail-closed: khong co bang chung duong tinh thi khong mien. Nguoc voi
-    -- cong o `engine.lua` — cho do LAY DI su bao ve nen viet `~= false` de
-    -- fail-open. Cung mot truong, hai cuc, moi ben chon sao cho huong hong la
-    -- huong an toan. Doi cuc o bat ky ben nao cung tao mot lo hong.
-    local ckr = cfg.cookie_registry
-    if ckr.ip_ban_exempt
-       and ctx.session_cookie_known == true
-       and (ctx.session_richness_own or 0) >= (ckr.richness_min or 0.5) then
-        should_ban_ip = false
-    end
-
-    -- KHONG BAO GIO tu KET AN CHINH MAY NAY — ca theo IP lan theo IDENTITY.
-    --
-    -- Do 14-09 tren cloud186-126, sau khi ban va IP da chay: `123.30.186.126`
-    -- KHONG con dong `banned_ip` nao, nhung van co 8.356 luot `banned_id` —
-    -- ban va truoc chi bit mot nua duong. Mot identity duy nhat:
-    --
-    --     id=aba75ff7ba9f053019a0230d4947e262   ttl=2575401 (29,8 ngay con lai)
-    --       ua=WordPress/7.0.4;_https://indochinapost.vn
-    --       ua=WordPress/7.1;_https://bestcargo.vn
-    --       ua=WordPress/6.2.11;_https://aloinan.com
-    --       ua=WordPress/6.9.7;_https://dichthuatchaua.net
-    --       ua=WordPress/6.8.8;_https://aloduasap.com
-    --
-    -- NAM phien ban WordPress, NAM domain, MOT identity. `normalize_ua` rut
-    -- `WordPress/7.0.4;_https://...` xuong token truoc dau `/` dau tien, tuc
-    -- `"WordPress"`; cong voi IP cua chinh may thi cron cua MOI site tren may
-    -- deu bam ra cung mot identity. Mot site cham nguong => toan bo wp-cron
-    -- cua ca may an an 30 ngay: bai hen gio, kiem tra cap nhat plugin, tac vu
-    -- WooCommerce, backup — chet het tren it nhat 13 domain.
-    --
-    -- Do 13-09 tren cloud186-126: trong 3.604 luot block co `richness>=0.5`,
-    -- 2.010 luot den tu 123.30.186.126 — IP cong cong cua chinh may do. Do la
-    -- may chu tu goi minh: wp-cron, kiem tra cap nhat plugin, HTTP giua cac
-    -- site cung may. Tat ca ghi `id=-` vi `ip_ban_check` thoat truoc khi
-    -- identity duoc tinh. Hau qua: moi wp-cron tren may an 403, im lang, khong
-    -- ai bao — chi lo ra khi dem theo IP.
-    --
-    -- WHITELIST KHONG CUU DUOC. `init.lua` xep `ip_ban_check` TRUOC
-    -- `access_layer`, nen dua IP vao whitelist cung khong bao gio kip chay.
-    -- Dung vet bat doi xung da lam `auth_session_cap` khong cuu duoc admin
-    -- bestcargo.vn hom 12-09. Nen phai chan ngay o cho TAO ban.
-    --
-    -- `remote_addr == server_addr` chi dung khi client la chinh may nay — qua
-    -- ten mien cong cong hoac qua loopback. Client ngoai luon co remote_addr
-    -- khac server_addr, nen phep thu nay khong the bi gia mao tu ben ngoai va
-    -- khong can khai bao IP cho tung may.
-    --
-    -- VI SAO MIEN THEO IDENTITY LA AN TOAN, khong phai mot lo hong moi:
-    -- `identity = md5(VERSION | ip | ua_norm)` — IP NAM TRONG HAM BAM. Nen
-    -- identity `md5(V|123.30.186.126|WordPress)` chi co the sinh ra tu mot
-    -- request co `remote_addr` DUNG BANG dia chi do. Khong client ngoai nao tao
-    -- duoc no. Pham vi mien khit dung mot nhom: luu luong may tu goi minh.
-    --
-    -- Bo ca `viol:<id>`, khong chi `ban:<id>`: `viol` la thu leo thang TTL. Giu
-    -- lai thi ban an khong duoc ghi nhung tien an van tang, va lan sau co ly do
-    -- khac de ban thi no nhay thang len bac 30 ngay. Bo an ma giu tien an la
-    -- nua voi.
-    --
-    -- KHONG phai whitelist: khong short-circuit, pipeline van chay du, va engine
-    -- van chan TUNG REQUEST tu-goi neu no dang chan. Chi BAN AN DAI HAN la
-    -- khong duoc ghi. Mot cron hong van bi throttle, no chi khong con keo theo
-    -- cron cua moi site khac xuong cung.
-    --
-    -- Danh doi: neu chinh may bi chiem va dung de tan cong cac site cua no, ta
-    -- mat lop cam-theo-identity cho luu luong do. Chap nhan — ke da chay duoc ma
-    -- tren may khong can vuot WAF, chan theo tung request van con, con cai gia
-    -- cua hien trang la toan bo wp-cron chet 30 ngay.
-    --
-    -- Gioi han da biet: tien trinh bind mot dia chi cuc bo KHAC dia chi dang
-    -- lang nghe thi khong khop. Chap nhan — no van chan het hai duong pho bien.
-    -- Qua `ip_scope.is_self()`, KHONG so `ctx.ip` voi `server_addr` truc tiep
-    -- nhu ban dau. Hai ly do, phat hien 15-09:
-    --   1. `ctx.ip` CO THE do `real_ip_header` ghi de tu mot header.
-    --      `ctx/init.lua` chi tu choi dia chi NOI BO do header khai, nen dia chi
-    --      CONG CONG cua chinh may van lot. Ma day la cong cap MIEN TRU — so voi
-    --      gia tri client dat duoc la de ke tan cong tu cap dac quyen bang mot
-    --      dong header. `is_self()` so voi `tcp_peer()`, thu khong gia mao duoc.
-    --   2. `detection/ip_tour.lua` nay cung can dung phep kiem ay. Hai ban sao
-    --      cua mot phep kiem cap dac quyen se lech nhau — cung ly do da gom
-    --      `is_private` ve `ip_scope`.
-    if self_request then
-        should_ban_ip = false
-    end
-
-    -- Bậc cuối của thang leo — lấy từ cfg.ttl.ban_steps để KHÔNG lệch với thang
-    -- identity ở l7/ban/ban_store.lua. 2026-08-06: đổi từ 0 (vĩnh viễn) sang
-    -- hữu hạn (30 ngày) — xem chú thích tại config.lua ban_steps.
-    local ip_steps    = cfg.ttl.ban_steps
-    local persist_ttl = ip_steps[#ip_steps]
-
-    local ip_ban_ttl
-    -- Chỉ tiền án GLOBAL mới được nâng thời hạn của án IP. Tiền án host thuộc
-    -- network-UA cụ thể; dùng nó để nâng `ban:<ip>` là quy tội mọi thiết bị
-    -- nhận lại cùng IP động.
-    --
-    -- Sự cố production 21-22/10/2026, cloud168-123: Python-urllib/3.14 bị
-    -- quarantine đúng trên quatructuyen.vn ở vi phạm thứ 4. Vì ip_risk đồng
-    -- thời đủ 0.7, nhánh IP cũng mở; đoạn cũ đọc viol_count=3 mà không kiểm
-    -- scope rồi kéo án IP từ 5 phút lên 24 giờ. Sau 15h33, nhà mạng cấp
-    -- 14.231.226.59 cho Chrome/124 và 62 request người dùng bị `banned_ip`
-    -- trước khi identity/cookie kịp chạy. `ban:hit` không gia hạn án, nhưng TTL
-    -- gốc đã quá dài.
-    --
-    -- Host scope không còn tạo án IP, kể cả khi ip_risk/swarm cao: offender
-    -- tiếp tục bị cô lập chính xác bằng qban theo host + network-UA. Các nhánh
-    -- TTL dưới đây chỉ có hiệu lực sau cổng GLOBAL ở `should_ban_ip`.
-    if scope == "global" and viol_count >= 4 then
-        ip_ban_ttl = persist_ttl -- bậc cuối: confirmed global repeat bot
-    elseif scope == "global" and viol_count >= 3 then
-        ip_ban_ttl = 86400       -- 24h: cảnh báo global nặng
-    elseif ip_risk_val >= 0.95 then
-        ip_ban_ttl = 1800        -- 30 phút: bot tấn công tích cực
-    elseif ip_risk_val >= 0.85 then
-        ip_ban_ttl = 900         -- 15 phút: risk cao
-    elseif ip_risk_val >= 0.7 then
-        ip_ban_ttl = 300         -- 5 phút: ngưỡng tối thiểu
-    else
-        ip_ban_ttl = 180         -- 3 phút: swarm case
-    end
-
-    if should_ban_ip then
-        red:init_pipeline()
-        if ip_ban_ttl > 0 then
-            red:setex("ban:" .. ip, ip_ban_ttl, "1")
-        else
-            red:set("ban:" .. ip, "1")  -- permanent
-        end
-        red:setex("ban:hit:" .. ip, 300, now_ts)
-
-        if ctx_json ~= "" then
-            -- Guard TTL: `SETEX key 0 val` là LỖI trong Redis, và lỗi trong
-            -- pipeline bị nuốt im lặng ⇒ đúng những lệnh cấm nặng nhất lại mất
-            -- hồ sơ bằng chứng. Hồ sơ phải sống ÍT NHẤT bằng bản án, nếu không
-            -- mọi lần rà soát về sau đều mù (đo 2026-08-06: 8.261 lệnh cấm vĩnh
-            -- viễn, chỉ 33 còn ban_ctx).
-            local ip_ctx_ttl = (ip_ban_ttl > 0) and ip_ban_ttl or ctx_ttl
-            red:setex("ban_ctx:" .. ip, ip_ctx_ttl, ctx_json)
-        end
-
-        local results, commit_err = red:commit_pipeline()
-        if not results then
-            ngx.log(ngx.ERR,
-                "[ban_write] IP-ban pipeline failed ip=", ip or "?",
-                " err=", tostring(commit_err))
-        end
-    end
+    local qcfg = cfg.network_quarantine or {}
+    local claim, claim_err = claim_actor(
+        red, keys, sentence_steps(qcfg),
+        qcfg.violation_ttl or cfg.ttl.violation or 172800,
+        ngx.time(), context)
     pool.put(red)
 
-    ngx.log(ngx.WARN,
-        "[ban_write]",
-        " class=", class,
-        " ip=", ip or "?",
-        " ip_risk=", string.format("%.3f", ip_risk_val),
-        " ban_ip=", tostring(should_ban_ip ~= false and should_ban_ip ~= nil),
-        " ip_ttl=", should_ban_ip and ip_ban_ttl or "-",
-        " id=", id and id:sub(1, 8) .. "..." or "nil",
-        " scope=", scope,
+    if not claim then
+        ctx.ban_created   = false
+        ctx.ban_persisted = false
+        ctx.ban_suppressed = "claim_failed"
+        ngx.log(ngx.ERR, "[ban_write] actor claim failed: ", tostring(claim_err))
+        return
+    end
+
+    ctx.ban_created       = claim.created
+    ctx.ban_persisted     = true
+    ctx.ban_violation     = claim.violation
+    ctx.ban_previous_viol = math.max(claim.violation - 1, 0)
+    ctx.ban_ttl           = claim.ttl
+    ctx.ban_suppressed    = nil
+
+    ngx.log(ngx.INFO,
+        "[ban_write] actor=", keys.id:sub(1, 8), "...",
         " host=", keys.host,
-        " key=", keys.ban,
-        " ttl=", ttl == 0 and "permanent" or tostring(ttl) .. "s",
-        " created=", tostring(ctx.ban_created == true),
-        " persisted=", tostring(ctx.ban_persisted == true),
-        " viol=", tostring(ctx.ban_violation or "-"),
-        " score=", ctx.score or 0,
-        " eff=", ctx.effective_score or 0)
+        " created=", tostring(claim.created),
+        " viol=", tostring(claim.violation),
+        " ttl=", tostring(claim.ttl),
+        " reason=", ctx.action_reason or "score_block")
 end
 
 return _M

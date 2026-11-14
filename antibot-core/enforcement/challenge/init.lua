@@ -6,8 +6,13 @@ local nonce_store = require "antibot.enforcement.challenge.nonce_store"
 local pool        = require "antibot.core.redis_pool"
 local cfg         = require "antibot.core.config"
 local decision    = require "antibot.core.decision"
+local actor_token = require "antibot.core.actor_token"
 
 function _M.run(ctx)
+    -- A challenge is a local security response and therefore the safe moment
+    -- to mint a host-bound actor.  It does not become sentence-eligible until
+    -- the browser presents it on a subsequent request.
+    actor_token.issue(ctx)
     local _, issue_err = issue_token.run(ctx)
     if issue_err then
         -- A missing secret is a deployment failure, not evidence against the

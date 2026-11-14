@@ -1987,12 +1987,14 @@ do
 
     -- 1b. cuc NGUOC LAI o mien tru ban IP: trao dac quyen => fail-CLOSED.
     local bsw = slurp(SRC .. "enforcement/ban/ban_store_write.lua") or ""
-    if bsw:find("session_cookie_known%s*~=%s*false") then
+    if bsw:find("session_cookie_known", 1, true)
+       or bsw:find('\"ban:\"%s*%.%.%s*ip') then
         bad("  SAI  mien tru ban IP dung `session_cookie_known ~= false`.\n" ..
             "       Do la TRAO DAC QUYEN nen phai fail-CLOSED: `== true`.\n" ..
             "       Viet `~= false` bien moi host CHUA CO SO thanh khong the\n" ..
             "       ban theo IP — mat phong tuyen re nhat truoc tan cong dung luong.\n")
-    elseif not bsw:find("session_cookie_known%s*==%s*true") then
+    elseif not bsw:find("quarantine%.keys")
+       or not bsw:find('ban_id_kind%s*=%s*\"actor\"') then
         bad("  SAI  ban_store_write khong doc `ctx.session_cookie_known == true`\n")
     else pass = pass + 1 end
 
@@ -2055,7 +2057,6 @@ end
 do
     local files = {
         "antibot-core/l7/ban/ip_ban_check.lua",
-        "antibot-core/l7/ban/ban_store.lua",
         "antibot-core/l7/expensive_filter_guard.lua",
         "antibot-core/core/access/whitelist.lua",
         "antibot-core/detection/fleet/trusted.lua",
@@ -2277,7 +2278,6 @@ end
 -- `ip_is_aggregate`.
 do
     local sites = {
-        { "enforcement/ban/ban_store_write.lua", "should_ban_ip" },
         { "detection/ip_tour.lua",               "strike_ban"    },
         { "detection/wp_hardening.lua",          "xmlrpc"        },
         { "l7/expensive_filter_guard.lua",       "ip_bannable"   },
@@ -2317,19 +2317,19 @@ do
         bad("  SAI  fleet check_block doc fl:dyn truoc cong aggregate edge.\n")
     else pass = pass + 1 end
 
-    -- network_id = md5(IP + ua_norm). Khi IP la aggregate proxy edge, no cung
-    -- la identity TAP THE; reader va writer deu phai fail-open cho an dai han.
+    -- Durable state is actor-scoped. A valid signed actor stays precise behind
+    -- an aggregate proxy, so q2 must not depend on the edge/client IP at all.
     local nq = slurp(SRC .. "core/network_quarantine.lua") or ""
     local bw = slurp(SRC .. "enforcement/ban/ban_store_write.lua") or ""
-    local nq_guard = nq:find("ctx%.ip_is_aggregate%s*==%s*true")
-    local nq_build = nq:find("local%s+id%s*=%s*identity%.build_from")
-    if not nq_guard or not nq_build or nq_guard > nq_build then
-        bad("  SAI  network quarantine bam aggregate edge thanh identity tap the.\n")
+    if not nq:find("actor_presented%s*~=%s*true")
+       or not nq:find('ban%s*=%s*\"q2:\"') then
+        bad("  SAI  durable quarantine khong doi actor presented -> q2.\n")
     else pass = pass + 1 end
-    local bw_guard = bw:find("ctx%.ip_is_aggregate%s*==%s*true")
-    local bw_keys  = bw:find("quarantine%.keys")
-    if not bw_guard or not bw_keys or bw_guard > bw_keys then
-        bad("  SAI  ban writer ghi an truoc cong aggregate edge.\n")
+    if bw:find('\"ban:\"%s*%.%.%s*ip')
+       or bw:find('\"qban:\"', 1, true) or bw:find('\"gban:\"', 1, true) then
+        bad("  SAI  q2 writer van ghi namespace collective cu.\n")
+    elseif not bw:find("quarantine%.keys") then
+        bad("  SAI  q2 writer khong dung hop dong quarantine keys.\n")
     else pass = pass + 1 end
 end
 
@@ -2497,19 +2497,13 @@ do
             -- chet" (xem khoi DINH CHINH trong `l7/ban/ban_store.lua`).
             local L7 = order["l7_layer"] or 99
             local guarded = {
-                ip_shared = {
-                    w = "ip_tour",
-                    r = { { "l7/ban/ban_store.lua", L7 } },
-                },
                 ip_shared_verified = {
                     w = "ip_tour",
-                    r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
-                          { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 } },
+                    r = { { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 } },
                 },
                 ip_is_aggregate = {
                     w = "proxy_origin",
-                    r = { { "enforcement/ban/ban_store_write.lua", order["enforcement_layer"] or 99 },
-                          { "detection/ip_tour.lua",               order["ip_tour"]           or 99 },
+                    r = { { "detection/ip_tour.lua",               order["ip_tour"]           or 99 },
                           { "detection/wp_hardening.lua",          order["detection_layer"]   or 99 },
                           { "l7/expensive_filter_guard.lua",       order["xfilter_guard"]     or 99 },
                           { "l7/admission.lua",                    order["l7_admission"]      or 99 },

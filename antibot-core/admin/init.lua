@@ -102,10 +102,9 @@ local function scan_keys(red, pattern, limit, max_iter)
     return results
 end
 
--- Clear every namespace used by a network-UA subject. Host quarantine keys
--- carry the host before the id, so an operator action must discover them; an
--- exact legacy DEL alone would otherwise report success while the seal stayed
--- active. The id is an MD5 hex string, which also keeps SCAN MATCH literal.
+-- Clear every historical network namespace plus the current host-scoped actor
+-- namespace. q2 carries the host before the actor id, so an operator action
+-- must discover it; an exact legacy DEL alone would report false success.
 local function clear_network_identity(red, id)
     red:del("ban:" .. id)
     red:del("ban:hit:" .. id)
@@ -127,7 +126,15 @@ local function clear_network_identity(red, id)
         red:del("qviol:" .. suffix)
         red:del("qctx:" .. suffix)
     end
-    return #found
+    local q2_found = scan_keys(red, "q2:*:" .. id, 20000, 800)
+    for _, ban_key in ipairs(q2_found) do
+        local suffix = ban_key:sub(#"q2:" + 1)
+        red:del(ban_key)
+        red:del("q2hit:" .. suffix)
+        red:del("q2v:" .. suffix)
+        red:del("q2ctx:" .. suffix)
+    end
+    return #found + #q2_found
 end
 
 local function time_ago(ts)
@@ -204,6 +211,7 @@ local function handle_whitelist_api(principal)
     if action == "wl_ip_add" and req.ip then
         red:set("wl:" .. req.ip, "1")
         red:del("ban:" .. req.ip)
+        red:del("ban:manual:" .. req.ip)
         result = {ok=true, msg="IP "..req.ip.." whitelisted & unbanned"}
 
     elseif action == "wl_ip_del" and req.ip then
@@ -212,6 +220,7 @@ local function handle_whitelist_api(principal)
 
     elseif action == "unban_ip" and req.ip then
         red:del("ban:" .. req.ip)
+        red:del("ban:manual:" .. req.ip)
         red:del("rep:" .. req.ip)
         result = {ok=true, msg="IP "..req.ip.." unbanned"}
 

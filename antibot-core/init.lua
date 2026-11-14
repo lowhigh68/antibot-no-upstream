@@ -4,6 +4,7 @@ local classifier         = require "antibot.core.req_classifier"
 local ctx_layer          = require "antibot.core.ctx"
 local session_richness   = require "antibot.core.session_richness"
 local proxy_origin       = require "antibot.core.proxy_origin"
+local actor_token        = require "antibot.core.actor_token"
 local cookie_registry    = require "antibot.core.cookie_registry"
 local fleet              = require "antibot.detection.fleet"
 local fleet_check_block  = require "antibot.detection.fleet.check_block"
@@ -51,6 +52,10 @@ local STEPS_ADMISSION = {
     -- Restore client identity only after the TCP peer matches a trusted CIDR.
     -- Must precede every counter, ban lookup and automation observation.
     { layer = proxy_origin,      fn = "run"           },
+    -- Resolve the signed, host-bound actor before any durable-ban lookup.
+    -- Invalid/missing cookies grant no trust and fail open for persistence;
+    -- live WAF/L7/scoring decisions remain unchanged.
+    { layer = actor_token,       fn = "resolve"       },
     { layer = classifier,        fn = "run_fast"      },
     -- Claim-only, shared-dict telemetry. Runs before all exits so repeated
     -- ban/WAF hits remain measurable; it never changes a verdict in shadow.

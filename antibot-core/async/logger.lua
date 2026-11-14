@@ -847,9 +847,24 @@ function _M.run(ctx)
             tostring(ctx.operator_network_bind or "-"))
     end
 
-    -- Network-UA quarantine telemetry. `network_id` is intentionally coarse;
-    -- scope and host are part of the decision contract, not display metadata.
-    -- Do not emit the full Redis key into the request log.
+    -- Actor quarantine telemetry. `network_id` remains a coarse correlation
+    -- key and is never the durable subject. `apresent=true` means this request
+    -- supplied a valid host-bound SID; `aissued=true` only describes the
+    -- response and can never authorize a q2 write in the same request.
+    local actor_str = string.format(
+        " aid=%s akind=%s apresent=%s avalid=%s aissued=%s ainvalid=%s aqclear=%s bsup=%s ipold=%s ipoldttl=%s ipmanual=%s",
+        log_token(ctx.actor_id, 40),
+        log_token(ctx.actor_kind, 32),
+        tostring(ctx.actor_presented == true),
+        tostring(ctx.actor_valid == true),
+        tostring(ctx.actor_issued == true),
+        log_token(ctx.actor_invalid or ctx.actor_issue_error, 64),
+        tostring(ctx.actor_quarantine_cleared == true),
+        log_token(ctx.ban_suppressed, 32),
+        tostring(ctx.ip_ban_legacy_ignored == true),
+        tostring(ctx.ip_ban_legacy_ttl or "-"),
+        tostring(ctx.ip_ban_manual == true))
+
     local ban_str = ""
     if ctx.ban_scope or ctx.ban_id_kind then
         ban_str = string.format(
@@ -1330,7 +1345,7 @@ function _M.run(ctx)
     line = line .. endpoint_str .. automation_str
         .. automation_concurrency_str .. principal_churn_str
         .. dynamic_guard_str .. operator_str
-        .. shared_ip_str .. proxy_str .. ban_str
+        .. shared_ip_str .. proxy_str .. actor_str .. ban_str
         .. string.format(
             " pver=%s dschema=%s dkind=%s dsrc=%s drule=%s dmode=%s"
             .. " dscope=%s dsubject=%s dttl=%s dup=%s",

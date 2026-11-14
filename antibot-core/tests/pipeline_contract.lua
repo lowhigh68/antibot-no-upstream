@@ -85,6 +85,7 @@ package.loaded["antibot.core.req_classifier"] = {
     run = function() event("classifier.full"); return true, false end,
 }
 package.loaded["antibot.core.proxy_origin"] = layer("proxy", "run")
+package.loaded["antibot.core.actor_token"] = layer("actor.resolve", "resolve")
 package.loaded["antibot.core.session_richness"] = layer("richness", "run")
 package.loaded["antibot.core.iprep"] = layer("iprep", "check")
 package.loaded["antibot.core.fingerprint.asn"] = layer("asn", "run")
@@ -407,6 +408,8 @@ eq(counts.dynamic_admitted, 1,
 eq(event_count("surge.admit"), 1, "dynamic thuong goi admit dung mot lan")
 before("admission", "waf.pre", "admission chay truoc WAF")
 before("ctx.init", "proxy", "proxy provenance chay sau ctx init")
+before("proxy", "actor.resolve", "actor chi resolve sau proxy boundary")
+before("actor.resolve", "classifier.fast", "actor duoc resolve truoc durable lookup")
 before("proxy", "classifier.fast", "client IP duoc restore truoc classifier")
 before("proxy", "automation.guard", "client IP duoc restore truoc counter dau tien")
 before("automation.guard", "admission",

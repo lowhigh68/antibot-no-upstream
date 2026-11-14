@@ -75,6 +75,13 @@ function _M.init(ctx)
 
     ctx.identity       = nil
     ctx.network_id     = nil       -- coarse IP+ua_norm key; never a device identity
+    ctx.actor_id       = nil       -- signed host-bound browser actor, never IP-derived
+    ctx.actor_kind     = nil
+    ctx.actor_presented = false    -- true only for a valid cookie received in this request
+    ctx.actor_valid     = false
+    ctx.actor_invalid   = nil
+    ctx.actor_issued    = false
+    ctx.actor_issue_error = nil
     ctx.ua_norm        = nil
     ctx.fp_light       = nil
     ctx.fp_full        = nil

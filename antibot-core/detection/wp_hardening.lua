@@ -56,7 +56,9 @@ local ZONE_COMMENT = "comment"
 -- và còn phải lặp 20 lần. Giữ miễn trừ IP dùng chung đã chứng minh (Tier-2).
 local HARD_EXIT_WINDOW  = 3600
 local HARD_EXIT_STRIKES = 20
-local HARD_EXIT_BAN_TTL = 86400
+-- IP is a capacity subject, not a durable identity. Keep the emergency brake
+-- short so DHCP/CGNAT reassignment cannot punish the next subscriber all day.
+local HARD_EXIT_BAN_TTL = 300
 
 local function escalate_xmlrpc(ctx)
     local ip = ctx.ip or ""

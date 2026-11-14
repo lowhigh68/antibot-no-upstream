@@ -176,6 +176,7 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/proxy_origin_contract.lua" || rc=1
 
 echo "-- protected secret contract -----------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/secrets_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/actor_token_contract.lua" || rc=1
 
 echo "-- admin mutation security contract ----------------------"
 lua_suite "$RESTY" --shdict "antibot_cache 1m" \

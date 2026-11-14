@@ -4,6 +4,8 @@ local cfg  = require "antibot.core.config"
 local identity_mod = require "antibot.core.fingerprint.identity"
 local admission = require "antibot.l7.admission"
 local decision = require "antibot.core.decision"
+local actor_token = require "antibot.core.actor_token"
+local quarantine  = require "antibot.core.network_quarantine"
 
 local ffi = require "ffi"
 local C   = ffi.C
@@ -210,6 +212,33 @@ local function json_str(s)
     return '"' .. s:gsub('[\\"]', "\\%0") .. '"'
 end
 
+local function append_set_cookie(value)
+    local current = ngx.header["Set-Cookie"]
+    if current == nil then
+        ngx.header["Set-Cookie"] = value
+    elseif type(current) == "table" then
+        current[#current + 1] = value
+        ngx.header["Set-Cookie"] = current
+    else
+        ngx.header["Set-Cookie"] = { current, value }
+    end
+end
+
+local function clear_actor_quarantine(ctx)
+    local keys = quarantine.keys(ctx, "host")
+    if not keys then return end
+    local red = pool.get()
+    if not red then return end
+    red:init_pipeline()
+    red:del(keys.ban)
+    red:del(keys.hit)
+    red:del(keys.viol)
+    red:del(keys.context)
+    red:commit_pipeline()
+    pool.put(red)
+    ctx.actor_quarantine_cleared = true
+end
+
 local function grant_verified(ctx, id, verified_ttl, canvas_hash, dest_arg)
     -- Key 1: cookie key (primary)
     pool.safe_set("verified:" .. id, "1", verified_ttl)
@@ -256,7 +285,13 @@ local function grant_verified(ctx, id, verified_ttl, canvas_hash, dest_arg)
     if scheme == "https" then
         cookie_flags = cookie_flags .. "; Secure"
     end
-    ngx.header["Set-Cookie"] = cookie_flags
+    append_set_cookie(cookie_flags)
+
+    -- Solving the host challenge is explicit recovery evidence for this exact
+    -- actor. Clear both the seal and its ladder; no network/IP subject is
+    -- touched. If an old challenge had no SID, issue one for future requests.
+    clear_actor_quarantine(ctx)
+    actor_token.issue(ctx)
 
     ctx.verified = true
     ctx.action = "allow"
@@ -498,6 +533,7 @@ function _M.handle()
     ctx.ip = ngx.var.remote_addr
     local _, limited = admission.run_endpoint("verify")
     if limited then return end
+    actor_token.resolve(ctx)
     _M.run(ctx)
 end
 

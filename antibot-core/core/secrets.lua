@@ -74,12 +74,35 @@ local function validate(obj)
         return nil, "pow.challenge_secret must be 32-512 bytes"
     end
 
+    -- Actor signing is optional at schema level so a node can fail open while
+    -- the fleet is being rolled out.  It is never allowed to borrow the PoW
+    -- secret: the two keys have different rotation and exposure boundaries.
+    local actor_secrets
+    if obj.actor ~= nil then
+        if type(obj.actor) ~= "table"
+           or not nonempty(obj.actor.current, 32, 512) then
+            return nil, "actor.current must be 32-512 bytes"
+        end
+        if obj.actor.previous ~= nil
+           and not nonempty(obj.actor.previous, 32, 512) then
+            return nil, "actor.previous must be 32-512 bytes when present"
+        end
+        if obj.actor.previous == obj.actor.current then
+            return nil, "actor.previous must differ from actor.current"
+        end
+        actor_secrets = {
+            current  = obj.actor.current,
+            previous = obj.actor.previous,
+        }
+    end
+
     local accounts = { operator }
     if viewer then accounts[#accounts + 1] = viewer end
     return {
         schema_version = 1,
         admin_accounts = accounts,
         pow_secret     = pow.challenge_secret,
+        actor_secrets  = actor_secrets,
     }
 end
 
@@ -138,6 +161,15 @@ end
 function _M.pow_secret()
     local value, err = _M.load(false)
     return value and value.pow_secret or nil, err
+end
+
+function _M.actor_secrets()
+    local value, err = _M.load(false)
+    if not value then return nil, err end
+    if not value.actor_secrets then
+        return nil, "actor secret is not configured"
+    end
+    return value.actor_secrets, nil
 end
 
 function _M.path()

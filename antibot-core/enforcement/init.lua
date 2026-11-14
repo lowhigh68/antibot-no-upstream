@@ -5,6 +5,7 @@ local explain   = require "antibot.enforcement.decision.explain"
 local challenge = require "antibot.enforcement.challenge"
 local ban       = require "antibot.enforcement.ban"
 local decision  = require "antibot.core.decision"
+local actor_token = require "antibot.core.actor_token"
 
 function _M.run(ctx)
     local action = engine.run(ctx)
@@ -15,13 +16,13 @@ function _M.run(ctx)
     end
 
     if action == "block" then
+        actor_token.issue(ctx)
         ban.run(ctx)
         decision.set(ctx, {
             kind = "security", source = "scoring_engine",
             rule = ctx.action_reason or "score_block", mode = "enforce",
-            scope = ctx.ban_scope == "global" and "network_ua_global"
-                or "network_ua_host",
-            subject = ctx.ban_id or ctx.network_id or ctx.identity,
+            scope = ctx.ban_persisted == true and "actor_host" or "request",
+            subject = ctx.ban_persisted == true and ctx.actor_id or nil,
             ttl = ctx.ban_ttl, upstream = false,
         })
         -- Serve 403 NGAY cho request hiện tại, không chỉ ghi ban cho request sau.

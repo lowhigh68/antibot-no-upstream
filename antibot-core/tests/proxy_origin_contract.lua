@@ -9,17 +9,46 @@ end
 
 local src = os.getenv("ANTIBOT_SRC") or "./antibot-core/"
 if src:sub(-1) ~= "/" then src = src .. "/" end
+
+-- Keep this contract composable if the runner later executes several suites
+-- inside one Lua VM.  Every module/global changed below is restored at EOF.
+local original_ngx = _G.ngx
+local touched_modules = {
+    "antibot.core.config",
+    "antibot.core.proxy_origin",
+    "antibot.core.ip_scope",
+    "antibot.core.ip_cidr",
+    "antibot.core.data.cloudflare_cidrs",
+    "antibot.core.redis_pool",
+    "antibot.core.fingerprint.identity",
+    "antibot.detection.bot.ua_claim",
+    "antibot.core.access.verified_human",
+    "antibot.core.access.whitelist",
+    "antibot.transport.tls",
+    "antibot.transport.http2",
+    "antibot.transport",
+}
+local original_loaded = {}
+for i = 1, #touched_modules do
+    local name = touched_modules[i]
+    original_loaded[name] = {
+        present = package.loaded[name] ~= nil,
+        value = package.loaded[name],
+    }
+end
+
 -- The deployed directory is named `antibot`, while the repository directory
 -- is `antibot-core`.  Resolve the namespace explicitly so this contract runs
 -- in both places without creating a source-tree symlink.
-table.insert(package.loaders, 1, function(name)
+local test_loader = function(name)
     local rel = name:match("^antibot%.(.+)$")
     if not rel then return nil end
     rel = rel:gsub("%.", "/")
     local f = loadfile(src .. rel .. ".lua")
     if f then return f end
     return loadfile(src .. rel .. "/init.lua")
-end)
+end
+table.insert(package.loaders, 1, test_loader)
 
 local current_headers = {}
 local cache = {}
@@ -40,6 +69,8 @@ _G.ngx = {
 }
 
 local cfg = require "antibot.core.config"
+local original_cf_hosts = cfg.proxy_origin.cloudflare.hosts
+local original_generic_rules = cfg.proxy_origin.generic.rules
 eq(#(cfg.proxy_origin.cloudflare.hosts or {}), 0,
    "Cloudflare production default has no global Host grant")
 
@@ -295,6 +326,28 @@ do
     eq(calls.tls, 1, "direct transport still runs TLS")
     eq(calls.h2, 1, "direct transport still runs H2")
 end
+
+-- Restore mutable config before restoring package.loaded: another suite may
+-- already hold the same config table by reference.
+cfg.proxy_origin.cloudflare.hosts = original_cf_hosts
+cfg.proxy_origin.generic.rules = original_generic_rules
+eq(cfg.proxy_origin.cloudflare.hosts, original_cf_hosts,
+   "contract restores Cloudflare host policy")
+eq(cfg.proxy_origin.generic.rules, original_generic_rules,
+   "contract restores generic proxy policy")
+
+for i = #package.loaders, 1, -1 do
+    if package.loaders[i] == test_loader then
+        table.remove(package.loaders, i)
+        break
+    end
+end
+for i = 1, #touched_modules do
+    local name = touched_modules[i]
+    local old = original_loaded[name]
+    package.loaded[name] = old.present and old.value or nil
+end
+_G.ngx = original_ngx
 
 print(("proxy_origin_contract: %d qua, %d hong"):format(pass, fail))
 if fail > 0 then os.exit(1) end

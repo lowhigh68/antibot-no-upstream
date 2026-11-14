@@ -221,26 +221,25 @@ _M.ttl = {
     whitelist_cache  = 60,
 }
 
--- P1 network-UA quarantine.  This is deliberately separate from `_M.ttl`:
--- the old ladder is still used by IP/global hard bans, while a coarse
--- (IP, normalized-UA) subject must not receive a fleet-wide 30-day sentence.
---
--- Do not add OS, language, Client-Hints or browser build to this key merely to
--- split office NATs.  Managed-company machines are commonly cloned and updated
--- together, so those fields still collide while making the key churn on update.
--- Collision recovery belongs to host scope + challenge-first browser handling.
+-- Durable host actor quarantine. `network_id` remains available to short
+-- counters, but no q2 reader/writer can address state without a signed actor
+-- cookie presented by the client. Old identity ban:/qban:/gban: subjects are
+-- not read; `ban:<IPv4>` survives only as a <=1h capacity brake.
 _M.network_quarantine = {
     enabled       = true,
     steps         = {300, 3600, 86400}, -- 5m -> 1h -> 24h, never 30d
     violation_ttl = 172800,              -- only fresh block decisions increment
-    -- Migration closed after the seven-node FP audit (2026-11-08).  The
-    -- current writer never creates or refreshes `ban:<id>`; continuing to read
-    -- that global namespace only lets an old cross-tenant identity collision
-    -- keep blocking traffic.  Host/global quarantine namespaces remain active.
-    legacy_read   = false,
-    global_reasons = {
-        fake_good_bot = true,            -- registered identity contradicted by proof
-    },
+}
+
+-- Host-bound browser actor used only for durable quarantine state.  This is
+-- deliberately independent from `antibot_fp` (PoW trust) and from
+-- `network_id` (coarse IP + normalized UA correlation).  A freshly issued SID
+-- is not eligible for a sentence until the client presents it on a later
+-- request; stateless scanners therefore cannot fill Redis with orphan q2 keys.
+_M.actor = {
+    cookie_name = "antibot_sid",
+    ttl         = 2592000, -- 30 days; the signed token and cookie expire together
+    future_skew = 300,
 }
 
 _M.rate = {

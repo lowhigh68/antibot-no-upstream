@@ -11,6 +11,9 @@ Use `secrets.example.json` as the schema. Requirements:
 - Admin passwords are 16–512 bytes and usernames must be distinct.
 - `pow.challenge_secret` is 32–512 random bytes. Rotate the former source-code
   secret because repository history must be treated as exposed.
+- `actor.current` is a separate 32-512 byte random signing key for the
+  host-bound `antibot_sid`. `actor.previous` is optional during rotation and
+  must differ from `current`. Never reuse the PoW secret here.
 
 Recommended ownership is `root:<openresty-worker-group>` with mode `0640`, and
 the parent directory should be `0750`. Do not pass secret values on a command
@@ -24,3 +27,6 @@ Failure behavior is deliberate:
   provisioning error.
 - Existing verified cookies and already stored one-time challenge records are
   not invalidated by this loader.
+- A missing actor key disables SID issuance and durable `q2:` sentences, while
+  live WAF/L7/scoring decisions continue to work. This is a measurable FN, not
+  a reason to fall back to collective IP/UA identity.
