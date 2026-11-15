@@ -111,7 +111,6 @@ lua_suite() {
     return $rc0
 }
 
-
 # `policy_test` chay DAU TIEN: registry/policy/telemetry la nen cua moi phan con
 # lai, va mot registry lech detector thi bon bo test sau se bao loi kho doc thay
 # vi chi ra dung nguyen nhan.
@@ -421,5 +420,13 @@ sh_suite costrank_test "$HERE/costrank_test.sh" || rc=1
 echo
 echo "-- autthr.sh (ai bi chan that, truc nao vuot) ---------"
 sh_suite autthr_test "$HERE/autthr_test.sh" || rc=1
+
+# `actor24.sh` la duong do DUY NHAT cho chu the moi cua an dai han (actor/q2,
+# 02a0914). Khong co no thi `bsup=no_presented_actor` va `fp_candidate` chi
+# doc duoc bang mat tren log 300 MB. Bo kiem chay CHINH no tren mot cay
+# `mktemp -d` co dap an biet truoc -- khong cham /var/log, khong cham Redis.
+echo
+echo "-- actor24.sh (actor/q2 telemetry, rotated logs) ------"
+sh_suite actor24_test "$HERE/actor24_test.sh" || rc=1
 
 exit $rc
