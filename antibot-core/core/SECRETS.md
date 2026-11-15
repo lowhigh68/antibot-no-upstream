@@ -30,3 +30,17 @@ Failure behavior is deliberate:
 - A missing actor key disables SID issuance and durable `q2:` sentences, while
   live WAF/L7/scoring decisions continue to work. This is a measurable FN, not
   a reason to fall back to collective IP/UA identity.
+
+Operational gates:
+
+- `nginx/deploy.sh` validates `actor.current` with the production Lua loader
+  before sync/reload, normalizes `/etc/antibot` to `0750 root:<worker-group>`
+  and `secrets.json` to `0640`, then verifies worker readability. Runtime stays
+  fail-open for unexpected faults, but a planned deploy cannot knowingly create
+  an actor-disabled worker generation.
+- `waf/scripts/actor_health.sh 15` is the fast post-deploy monitor. `OK` and
+  `NO_DATA` exit zero; `DEGRADED` (for example `secret_unavailable`) and
+  `CRITICAL` (secret preflight or scope invariant failure) exit non-zero.
+- Logger fields separate ownership: `ainvalid=` is a rejected client cookie;
+  `aissueerr=` is a local issuance/deployment error. `actor24.sh` remains
+  compatible with old logs that stored `secret_unavailable` in `ainvalid=`.

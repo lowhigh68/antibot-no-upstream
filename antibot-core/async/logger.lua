@@ -852,13 +852,19 @@ function _M.run(ctx)
     -- supplied a valid host-bound SID; `aissued=true` only describes the
     -- response and can never authorize a q2 write in the same request.
     local actor_str = string.format(
-        " aid=%s akind=%s apresent=%s avalid=%s aissued=%s ainvalid=%s aqclear=%s bsup=%s ipold=%s ipoldttl=%s ipmanual=%s",
+        " aid=%s akind=%s apresent=%s avalid=%s aissued=%s ainvalid=%s aissueerr=%s aqclear=%s bsup=%s ipold=%s ipoldttl=%s ipmanual=%s",
         log_token(ctx.actor_id, 40),
         log_token(ctx.actor_kind, 32),
         tostring(ctx.actor_presented == true),
         tostring(ctx.actor_valid == true),
         tostring(ctx.actor_issued == true),
-        log_token(ctx.actor_invalid or ctx.actor_issue_error, 64),
+        -- A rejected cookie and a local signing failure have opposite owners:
+        -- the former is untrusted client input, the latter is a deployment
+        -- fault.  Do not collapse both into `ainvalid`; the first 9-node
+        -- actor rollout then made 107,021 `secret_unavailable` rows look like
+        -- invalid client tokens until the raw distribution was inspected.
+        log_token(ctx.actor_invalid, 64),
+        log_token(ctx.actor_issue_error, 64),
         tostring(ctx.actor_quarantine_cleared == true),
         log_token(ctx.ban_suppressed, 32),
         tostring(ctx.ip_ban_legacy_ignored == true),

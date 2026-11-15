@@ -6,6 +6,7 @@ end
 
 local cjson = require "cjson"
 local secrets = require "antibot.core.secrets"
+local actor_checker = assert(loadfile(SRC .. "waf/scripts/actor_secret_check.lua"))()
 local pass, fail = 0, 0
 
 local function ok(value, name)
@@ -46,6 +47,10 @@ eq(value.admin_accounts[2].role, "viewer", "viewer second")
 eq(value.pow_secret, string.rep("p", 32), "pow secret loaded")
 eq(value.actor_secrets.current, string.rep("a", 32), "actor current loaded")
 eq(value.actor_secrets.previous, string.rep("b", 32), "actor previous loaded")
+local actor_state, actor_check_err = actor_checker.check(SRC, path)
+ok(actor_state ~= nil and actor_check_err == nil, "actor preflight accepts valid file")
+eq(actor_state.current_bytes, 32, "actor preflight reports length without value")
+eq(actor_state.has_previous, true, "actor preflight reports rotation state")
 os.remove(path)
 
 local no_actor = valid()
@@ -58,6 +63,9 @@ eq(secrets.path(), "<test>", "fixture remains isolated from production path")
 local actor_value, actor_err = secrets.actor_secrets()
 ok(actor_value == nil and type(actor_err) == "string" and actor_err ~= "",
    "actor accessor fails open with reason")
+actor_state, actor_check_err = actor_checker.check(SRC, path)
+ok(actor_state == nil and tostring(actor_check_err):find("not configured", 1, true) ~= nil,
+   "actor deploy preflight rejects missing actor block")
 os.remove(path)
 
 local no_viewer = valid()

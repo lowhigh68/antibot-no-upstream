@@ -429,4 +429,11 @@ echo
 echo "-- actor24.sh (actor/q2 telemetry, rotated logs) ------"
 sh_suite actor24_test "$HERE/actor24_test.sh" || rc=1
 
+# Fast post-deploy monitor.  It shares the production secret validator with
+# deploy.sh, separates cookie rejection from local signing failure, and exits
+# non-zero on secret/scope degradation so an external monitor can alert.
+echo
+echo "-- actor_health.sh (secret + recent actor/q2 health) --"
+sh_suite actor_health_test "$HERE/actor_health_test.sh" || rc=1
+
 exit $rc

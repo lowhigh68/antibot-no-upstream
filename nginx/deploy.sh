@@ -244,6 +244,34 @@ if [ -x "$RESTY" ] && [ -x "$REPO_DIR/antibot-core/waf/scripts/run.sh" ]; then
     trap - EXIT INT TERM
 fi
 
+# Actor/q2 is now the only automatic durable-sentence namespace.  Runtime
+# deliberately fails open when its key is unavailable, but a planned deploy
+# must not reload a fleet into that measurable FN.  Validate the per-node file
+# with the SAME Lua validator workers use; jq-only checks would duplicate and
+# eventually drift from core/secrets.lua.
+echo "[3c] Actor secret preflight..."
+if ! _actor_preflight=$(
+    ANTIBOT_SRC="$SOURCE_DIR" ANTIBOT_SECRETS_FILE=/etc/antibot/secrets.json \
+    "$RESTY" -e '
+        local root = assert(os.getenv("ANTIBOT_SRC"))
+        local checker = assert(loadfile(root .. "waf/scripts/actor_secret_check.lua"))()
+        local state, err = checker.check(root, os.getenv("ANTIBOT_SECRETS_FILE"))
+        if not state then
+            io.stderr:write("ACTOR_SECRET_ERROR ", tostring(err), "\n")
+            os.exit(1)
+        end
+        io.write("ACTOR_SECRET_OK current_bytes=", state.current_bytes,
+                 " previous=", state.has_previous and "yes" or "no", "\n")
+    ' 2>&1
+); then
+    echo "HUY: actor secret khong san sang; KHONG sync/reload."
+    echo "    $_actor_preflight"
+    echo "    Sua /etc/antibot/secrets.json: actor.current >=32 byte," \
+         "khac pow.challenge_secret."
+    exit 1
+fi
+echo "    $_actor_preflight"
+
 echo "[4] Sync core folder..."
 rsync -avz --delete "$SOURCE_DIR" "$TARGET_DIR"
 
@@ -535,6 +563,36 @@ for _f in "$TARGET_DIR/core/config.lua" "$TARGET_DIR/admin/init.lua"; do
         echo "    ${_f##*/}: $_m $_og — ok"
     fi
 done
+
+# Protected JSON is external to rsync, but it is read from init_worker after
+# nginx has dropped privileges.  Root-readable is not worker-readable; the
+# first actor rollout proved that distinction on six nodes.  Normalize both
+# directory traversal and file mode, then verify as the actual worker user.
+_secrets_json=/etc/antibot/secrets.json
+if [ -e "$_secrets_json" ]; then
+    _sd=${_secrets_json%/*}
+    _dm=$(stat -c '%a %U:%G' "$_sd" 2>/dev/null)
+    if [ "$_dm" != "750 root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_sd" 2>/dev/null || :
+        chmod 0750 "$_sd" 2>/dev/null || :
+        echo "    $_sd: $_dm -> $(stat -c '%a %U:%G' "$_sd" 2>/dev/null)"
+    fi
+    _sm=$(stat -c '%a %U:%G' "$_secrets_json" 2>/dev/null)
+    if [ "$_sm" != "640 root:$NGX_USER" ]; then
+        chown "root:$NGX_USER" "$_secrets_json" 2>/dev/null || :
+        chmod 0640 "$_secrets_json" 2>/dev/null || :
+        echo "    secrets.json: $_sm -> $(stat -c '%a %U:%G' "$_secrets_json" 2>/dev/null)"
+    fi
+    if command -v runuser >/dev/null 2>&1; then
+        if ! runuser -u "$NGX_USER" -- test -r "$_secrets_json"; then
+            echo "HUY: worker $NGX_USER khong doc duoc $_secrets_json. KHONG reload."
+            exit 1
+        fi
+        echo "    secrets.json: worker_readable=yes"
+    else
+        echo "    *** thieu runuser; da chuan hoa mode nhung khong impersonate worker ***"
+    fi
+fi
 # `redis.pass`: phai KHONG world-readable, nhung PHAI de worker doc duoc.
 _pw=/etc/antibot/redis.pass
 if [ -e "$_pw" ]; then
