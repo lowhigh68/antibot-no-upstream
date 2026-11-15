@@ -186,7 +186,17 @@ end
 -- Test hooks never accept individual secrets through production call sites.
 function _M._reset_for_test(path)
     cached, cached_error, cached_path = nil, nil, nil
-    if path then return _M.load(true, path) end
+    if path then
+        local value, err = _M.load(true, path)
+        -- A fixture loaded by the test hook must remain the source for later
+        -- public accessor calls.  Leaving the temporary pathname here makes
+        -- actor_secrets()/pow_secret()/admin_accounts() switch back to the
+        -- production file because configured_path() differs.  That made the
+        -- same suite pass on a machine without /etc/antibot/secrets.json and
+        -- fail on a production node where the real file contains actor keys.
+        cached_path = "<test>"
+        return value, err
+    end
 end
 
 function _M._set_for_test(value)

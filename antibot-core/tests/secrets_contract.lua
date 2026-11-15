@@ -54,6 +54,7 @@ path = write_tmp(no_actor)
 value, err = secrets._reset_for_test(path)
 ok(value ~= nil and err == nil, "actor block optional for fail-open rollout")
 ok(value.actor_secrets == nil, "missing actor secret is explicit")
+eq(secrets.path(), "<test>", "fixture remains isolated from production path")
 local actor_value, actor_err = secrets.actor_secrets()
 ok(actor_value == nil and type(actor_err) == "string" and actor_err ~= "",
    "actor accessor fails open with reason")
