@@ -91,7 +91,8 @@ function getv(name) { return (name in field) ? field[name] : "-" }
     reason = getv("reason")
     if (reason == "actor_quarantine" || reason == "actor_quarantine_challenge") {
         q2++
-        if (getv("bkind") != "actor" || getv("bscope") != "host") bad_q2++
+        if (!("bkind" in field) || !("bscope" in field)) q2_scope_missing++
+        else if (getv("bkind") != "actor" || getv("bscope") != "host") bad_q2++
     }
     if (getv("bpersist") == "true") {
         persisted++
@@ -113,6 +114,7 @@ END {
     printf "q2_total=%d\n", q2 + 0
     printf "bad_persist_scope=%d\n", bad_persist + 0
     printf "bad_q2_scope=%d\n", bad_q2 + 0
+    printf "q2_scope_missing=%d\n", q2_scope_missing + 0
 }
 ')
 

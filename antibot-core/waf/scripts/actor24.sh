@@ -182,7 +182,23 @@ function map_size(values, key, n) {
                 q2_challenge_sample[q2_challenge_sample_count] = $0
             }
         }
-        if (bkind != "actor" || bscope != "host") bad_q2_scope++
+        # The active log can be read while its last line is still being
+        # appended. `reason=` appears near the front, while actor/scope
+        # telemetry is appended near the end. Absence is therefore an
+        # incomplete observation, not proof of a wrong runtime scope.
+        if (!("bkind" in field) || !("bscope" in field)) {
+            q2_scope_missing++
+            if (q2_scope_missing_sample_count < 10) {
+                q2_scope_missing_sample_count++
+                q2_scope_missing_sample[q2_scope_missing_sample_count] = $0
+            }
+        } else if (bkind != "actor" || bscope != "host") {
+            bad_q2_scope++
+            if (bad_q2_scope_sample_count < 10) {
+                bad_q2_scope_sample_count++
+                bad_q2_scope_sample[bad_q2_scope_sample_count] = $0
+            }
+        }
     }
 
     if (getv("aqclear") == "true") {
@@ -264,6 +280,7 @@ END {
     metric("fn_no_presented_actor", fn_no_actor)
     metric("bad_persist_scope", bad_persist_scope)
     metric("bad_q2_scope", bad_q2_scope)
+    metric("q2_scope_missing", q2_scope_missing)
     metric("old_ip_ignored", old_ip_ignored)
     metric("manual_ip", manual_ip)
     printf "actor_health=%s\n", health
@@ -329,6 +346,14 @@ END {
     for (i = 1; i <= clear_sample_count; i++) print clear_sample[i]
 
     print ""
+    print "=== SAMPLE Q2 BAD SCOPE MAX 10 ==="
+    for (i = 1; i <= bad_q2_scope_sample_count; i++) print bad_q2_scope_sample[i]
+
+    print ""
+    print "=== SAMPLE Q2 SCOPE MISSING MAX 10 ==="
+    for (i = 1; i <= q2_scope_missing_sample_count; i++) print q2_scope_missing_sample[i]
+
+    print ""
     print "=== SAMPLE NO PRESENTED ACTOR MAX 10 ==="
     for (i = 1; i <= no_actor_sample_count; i++) print no_actor_sample[i]
 }
@@ -338,7 +363,7 @@ gzip -f -- "$REPORT"
 trap - EXIT HUP INT TERM
 
 SUMMARY=$(gzip -cd -- "$ARCHIVE" | LC_ALL=C awk -F= '
-    /^(rows|actor_issue_error|q2_total|q2_unique_actor|fp_candidate_v2|fn_no_presented_actor|actor_invalid)=/ {
+    /^(rows|actor_issue_error|q2_total|q2_unique_actor|fp_candidate_v2|fn_no_presented_actor|actor_invalid|bad_q2_scope|q2_scope_missing)=/ {
         printf "%s%s", separator, $0
         separator = " "
     }
