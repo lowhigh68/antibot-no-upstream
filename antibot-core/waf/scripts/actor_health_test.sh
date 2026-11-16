@@ -6,15 +6,16 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/log"
-cat > "$TMP/resty" <<'EOF'
-#!/bin/bash
-if [ "${FAKE_SECRET_FAIL:-0}" = "1" ]; then
-    echo "ACTOR_SECRET_ERROR fixture"
-    exit 1
-fi
-echo "ACTOR_SECRET_OK current_bytes=32 previous=no"
-EOF
-chmod +x "$TMP/resty"
+
+# Never create an executable fixture below /tmp. Several production nodes
+# intentionally mount /tmp with `noexec`; access(X_OK) then rejects a file even
+# after chmod +x and makes this monitor-only test block an otherwise valid
+# deploy. The production checker itself is covered by secrets_contract.lua.
+# Here /bin/true and /bin/false model only its success/failure exit contract.
+TRUE_BIN=/bin/true
+FALSE_BIN=/bin/false
+[ -x "$TRUE_BIN" ]
+[ -x "$FALSE_BIN" ]
 
 NOW=$(date +%s)
 cat > "$TMP/log/antibot.log" <<EOF
@@ -23,7 +24,7 @@ cat > "$TMP/log/antibot.log" <<EOF
 [x] ts=$((NOW - 5)) domain=a.test class=unknown reason=actor_quarantine aid=a apresent=true avalid=true aissued=false ainvalid=- aissueerr=- bpersist=-
 EOF
 
-OUT=$(RESTY="$TMP/resty" bash "$HERE/actor_health.sh" 15 "$TMP/log")
+OUT=$(RESTY="$TRUE_BIN" bash "$HERE/actor_health.sh" 15 "$TMP/log")
 printf '%s\n' "$OUT" | grep -q 'status=OK'
 printf '%s\n' "$OUT" | grep -q '^actor_issue_error=0$'
 printf '%s\n' "$OUT" | grep -q '^q2_total=2$'
@@ -35,7 +36,7 @@ cat >> "$TMP/log/antibot.log" <<EOF
 EOF
 
 set +e
-OUT=$(RESTY="$TMP/resty" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
+OUT=$(RESTY="$TRUE_BIN" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
 RC=$?
 set -e
 [ "$RC" -eq 1 ]
@@ -47,7 +48,7 @@ cat >> "$TMP/log/antibot.log" <<EOF
 EOF
 
 set +e
-OUT=$(RESTY="$TMP/resty" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
+OUT=$(RESTY="$TRUE_BIN" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
 RC=$?
 set -e
 [ "$RC" -eq 1 ]
@@ -55,7 +56,7 @@ printf '%s\n' "$OUT" | grep -q 'status=CRITICAL'
 printf '%s\n' "$OUT" | grep -q '^bad_q2_scope=1$'
 
 set +e
-OUT=$(FAKE_SECRET_FAIL=1 RESTY="$TMP/resty" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
+OUT=$(RESTY="$FALSE_BIN" bash "$HERE/actor_health.sh" 15 "$TMP/log" 2>&1)
 RC=$?
 set -e
 [ "$RC" -eq 1 ]
