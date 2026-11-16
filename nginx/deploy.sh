@@ -250,6 +250,10 @@ fi
 # with the SAME Lua validator workers use; jq-only checks would duplicate and
 # eventually drift from core/secrets.lua.
 echo "[3c] Actor secret preflight..."
+if [ ! -x "$RESTY" ]; then
+    echo "HUY: resty khong ton tai hoac khong executable: $RESTY. KHONG sync/reload."
+    exit 1
+fi
 if ! _actor_preflight=$(
     ANTIBOT_SRC="$SOURCE_DIR" ANTIBOT_SECRETS_FILE=/etc/antibot/secrets.json \
     "$RESTY" -e '

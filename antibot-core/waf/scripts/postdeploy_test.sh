@@ -630,6 +630,27 @@ else
       "bootstrap hong phai abort deploy truoc reload"
 fi
 
+# Actor preflight invokes resty unconditionally. Missing/non-executable resty
+# must produce an explicit deploy abort, rather than a shell error hidden in
+# command substitution after the optional [3b] suite was silently skipped.
+_actor_line=$(grep -n '^echo "\[3c\] Actor secret preflight' "$DEPLOY" \
+              | head -1 | cut -d: -f1)
+_resty_guard_line=$(grep -nF 'if [ ! -x "$RESTY" ]; then' "$DEPLOY" \
+                    | head -1 | cut -d: -f1)
+if [ -n "$_resty_guard_line" ] && [ -n "$_actor_line" ] \
+   && [ "$_resty_guard_line" -gt "$_actor_line" ]; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' \
+      "actor preflight phai guard RESTY executable (actor=$_actor_line guard=$_resty_guard_line)"
+fi
+if grep -qF 'resty khong ton tai hoac khong executable' "$DEPLOY"; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); printf 'HONG  %s\n' \
+      "RESTY guard phai bao loi van hanh ro rang"
+fi
+
 
 printf '\n── muc 23: conf moi hon master -> canh bao ──\n'
 # Lop loi: mot thay doi `lua_shared_dict` nam tren dia MA KHONG CO HIEU LUC, va

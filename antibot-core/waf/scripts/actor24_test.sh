@@ -21,6 +21,7 @@ cat > "$LOGDIR/antibot.log" <<EOF
 [x] ts=$((SINCE + 500)) domain=b.test class=unknown reason=score action=block aid=- apresent=false avalid=false aissued=false ainvalid=- aissueerr=secret_unavailable aqclear=false bsup=no_presented_actor bpersist=false bkind=- bscope=- ckn=- richness=0.00 rown=0.00 dev=desktop_other ipold=false ipmanual=false
 [x] ts=$((SINCE + 600)) domain=b.test class=unknown reason=actor_quarantine action=block aid=actor-b apresent=true avalid=true aissued=false ainvalid=- aissueerr=- aqclear=false bsup=- bpersist=- bkind=actor bscope=host ckn=false richness=0.10 rown=0.10 dev=desktop_other ipold=false ipmanual=false
 [x] ts=$((SINCE + 650)) domain=c.test class=unknown reason=actor_quarantine action=block aid=actor-c apresent=true avalid=true aissued=false ainvalid=- aissueerr=- aqclear=false bsup=- bpersist=- ckn=false richness=0.10 rown=0.10 dev=desktop_other
+[x] ts=$((SINCE + 675)) domain=d.test class=unknown reason=actor_quarantine action=block aid=actor-d apresent=true avalid=true aissued=false ainvalid=- aissueerr=- aqclear=false bsup=- bpersist=- bkind=network bscope=global ckn=false richness=0.10 rown=0.10 dev=desktop_other
 [x] ts=$((SINCE + 700)) domain=a.test class=navigation reason=verify_success action=allow aid=actor-a apresent=true avalid=true aissued=false ainvalid=- aissueerr=- aqclear=true bsup=- bpersist=- bkind=- bscope=- ckn=true richness=0.60 rown=0.60 dev=desktop_chrome ipold=false ipmanual=false
 EOF
 
@@ -48,11 +49,11 @@ check() {
     PASS=$((PASS + 1))
 }
 
-check '^rows=9$'
+check '^rows=10$'
 check '^actor_issued=1$'
-check '^actor_presented=5$'
-check '^actor_valid_presented=5$'
-check '^actor_unique_valid=3$'
+check '^actor_presented=6$'
+check '^actor_valid_presented=6$'
+check '^actor_unique_valid=4$'
 check '^actor_invalid=3$'
 check '^actor_cookie_invalid=1$'
 check '^actor_issue_attempts=3$'
@@ -61,9 +62,9 @@ check '^actor_secret_unavailable=2$'
 check '^legacy_issue_error_rows=1$'
 check '^q2_persisted=1$'
 check '^q2_unique_persist_actor=1$'
-check '^q2_total=3$'
-check '^q2_unique_actor=3$'
-check '^q2_block=2$'
+check '^q2_total=4$'
+check '^q2_unique_actor=4$'
+check '^q2_block=3$'
 check '^q2_challenge=1$'
 check '^q2_cleared=1$'
 check '^q2_unique_cleared_actor=1$'
@@ -74,7 +75,7 @@ check '^fp_candidate=1$'
 check '^fp_candidate_v2=1$'
 check '^fn_no_presented_actor=4$'
 check '^bad_persist_scope=0$'
-check '^bad_q2_scope=0$'
+check '^bad_q2_scope=1$'
 check '^q2_scope_missing=1$'
 check '^old_ip_ignored=1$'
 check '^1 signature$'
