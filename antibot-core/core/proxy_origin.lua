@@ -11,10 +11,11 @@ local cfg       = require "antibot.core.config"
 local ip_scope  = require "antibot.core.ip_scope"
 local ip_cidr   = require "antibot.core.ip_cidr"
 local cf_cidrs  = require "antibot.core.data.cloudflare_cidrs"
+local origin_proof = require "antibot.core.origin_proof"
 
 local CLAIM_HEADERS = {
     "cf-connecting-ip", "cf-connecting-ipv6", "true-client-ip",
-    "x-forwarded-for", "x-real-ip",
+    "x-forwarded-for", "x-real-ip", "x-antibot-origin-proof",
 }
 local ALLOWED_HEADERS = {
     ["cf-connecting-ip"] = true,
@@ -60,6 +61,9 @@ local function compile_rule(raw, fallback_name)
             and tostring(raw.fallback_header):lower() or nil,
         hosts  = raw.hosts or {},
         ranges = ranges,
+        require_origin_proof = raw.require_origin_proof == true,
+        proof_header = tostring(raw.proof_header
+            or "x-antibot-origin-proof"):lower(),
     }
 end
 
@@ -70,28 +74,17 @@ local function build_rules()
 
     local cf = c.cloudflare or {}
     if cf.enabled ~= false then
-        local cf_hosts = {}
-        for i = 1, #(cf.hosts or {}) do
-            local h = normalize_host(cf.hosts[i])
-            if h == "*" then
-                -- Cloudflare is a shared multi-tenant network.  A global Host
-                -- grant would let an unrelated Worker reach an origin and
-                -- supply client-IP headers.  Keep edge topology recognition,
-                -- but deliberately discard this unsafe header grant.
-                if ngx and ngx.log then
-                    ngx.log(ngx.ERR,
-                        "[proxy_origin] rejected cloudflare hosts=*; list verified hostnames")
-                end
-            elseif h ~= "" then
-                cf_hosts[#cf_hosts + 1] = h
-            end
-        end
         local rule = compile_rule({
             name   = "cloudflare",
             header = cf.header or "cf-connecting-ip",
             fallback_header = "cf-connecting-ipv6",
-            hosts  = cf_hosts,
+            -- Cloudflare is a shared multi-tenant network. CIDR membership is
+            -- topology, not authority. A host-bound HMAC proof replaces the
+            -- manual host inventory and is mandatory for header restoration.
+            hosts  = {},
             cidrs  = cf_cidrs,
+            require_origin_proof = true,
+            proof_header = cf.proof_header,
         }, "cloudflare")
         if rule then out[#out + 1] = rule end
     end
@@ -124,7 +117,10 @@ end
 local function applicable_rules(host)
     local out = {}
     for i = 1, #RULES do
-        if host_matches(RULES[i].hosts, host) then out[#out + 1] = RULES[i] end
+        if RULES[i].require_origin_proof
+           or host_matches(RULES[i].hosts, host) then
+            out[#out + 1] = RULES[i]
+        end
     end
     return out
 end
@@ -257,17 +253,18 @@ function _M.run(ctx)
     ctx.proxy_degraded           = false
     ctx.proxy_spoof              = false
     ctx.proxy_spoof_header       = nil
+    ctx.proxy_proof_state        = nil
+    ctx.proxy_proof_zone         = nil
     ctx.behind_proxy             = false
     ctx.ip_is_aggregate          = false
     ctx.client_ip_source         = "tcp"
     ctx.transport_scope          = "client"
 
     if not rule then
-        -- Cloudflare CIDRs prove edge topology globally, but they do NOT grant
-        -- header trust globally.  For an unlisted Host, retain the edge as an
-        -- aggregate address and ignore every client-IP claim.  This avoids
-        -- both attacks through arbitrary Workers and collective edge bans
-        -- while the operator is still building the explicit host inventory.
+        -- Cloudflare CIDRs prove edge topology globally, but never grant
+        -- client-header trust by themselves. This fallback also covers a
+        -- disabled/malformed rule: retain the edge as aggregate and ignore
+        -- every claim.
         local edge_rule = matching_named_rule(RULES, peer, "cloudflare")
         if edge_rule then
             ctx.ip                       = peer
@@ -306,6 +303,30 @@ function _M.run(ctx)
     ctx.proxy_edge_ip   = peer
     ctx.proxy_header    = rule.header
     ctx.transport_scope = "proxy_edge"
+
+    if rule.require_origin_proof then
+        local raw_proof, proof_header_err = header_value(h, rule.proof_header)
+        local proof_ok, proof_state, proof_zone
+        if raw_proof then
+            proof_ok, proof_state, proof_zone = origin_proof.verify(
+                raw_proof, host, rule.name)
+        else
+            proof_state = proof_header_err or "missing"
+        end
+        ctx.proxy_proof_state = proof_state
+        ctx.proxy_proof_zone  = proof_zone
+        if not proof_ok then
+            ctx.ip                       = peer
+            ctx.proxy_client_ip_verified = false
+            ctx.client_ip_source         = "proxy_edge"
+            ctx.proxy_header_error       = "proof_" .. tostring(proof_state or "invalid")
+            ctx.proxy_degraded           = true
+            ctx.ip_is_aggregate          = true
+            return true, false
+        end
+    else
+        ctx.proxy_proof_state = "not_required"
+    end
 
     local client, err, hops, source = extract_client(rule, h, rules)
     if client then

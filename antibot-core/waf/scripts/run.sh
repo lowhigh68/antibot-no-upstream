@@ -436,4 +436,8 @@ echo
 echo "-- actor_health.sh (secret + recent actor/q2 health) --"
 sh_suite actor_health_test "$HERE/actor_health_test.sh" || rc=1
 
+echo
+echo "-- measure.sh (proxy proof + timestamp window) -----------"
+sh_suite measure_test "$HERE/measure_test.sh" || rc=1
+
 exit $rc

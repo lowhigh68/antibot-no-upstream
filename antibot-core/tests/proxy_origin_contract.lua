@@ -16,6 +16,8 @@ local original_ngx = _G.ngx
 local touched_modules = {
     "antibot.core.config",
     "antibot.core.proxy_origin",
+    "antibot.core.origin_proof",
+    "antibot.core.secrets",
     "antibot.core.ip_scope",
     "antibot.core.ip_cidr",
     "antibot.core.data.cloudflare_cidrs",
@@ -69,14 +71,19 @@ _G.ngx = {
 }
 
 local cfg = require "antibot.core.config"
-local original_cf_hosts = cfg.proxy_origin.cloudflare.hosts
 local original_generic_rules = cfg.proxy_origin.generic.rules
-eq(#(cfg.proxy_origin.cloudflare.hosts or {}), 0,
-   "Cloudflare production default has no global Host grant")
+local secrets = require "antibot.core.secrets"
+secrets._set_for_test({
+    origin_proof_secrets = {
+        current = string.rep("o", 32),
+        previous = string.rep("r", 32),
+    },
+})
+local proof = require "antibot.core.origin_proof"
 
 -- A future config edit must not be able to reopen fleet-wide header trust by
--- replacing the empty list with "*".  The edge rule remains for topology,
--- but its header-grant host set must stay empty.
+-- reintroducing hosts="*". Cloudflare ignores host inventory and requires a
+-- rule+zone proof for every client-IP restoration.
 cfg.proxy_origin.cloudflare.hosts = { "*" }
 package.loaded["antibot.core.proxy_origin"] = nil
 local star_proxy = require "antibot.core.proxy_origin"
@@ -85,9 +92,11 @@ for _, r in ipairs(star_proxy.rules_for_test()) do
     if r.name == "cloudflare" then star_cf = r; break end
 end
 eq(star_cf and #(star_cf.hosts or {}) or -1, 0,
-   "Cloudflare hosts=* is rejected, not compiled as a header grant")
+   "Cloudflare hosts=* cannot become a header grant")
+eq(star_cf and star_cf.require_origin_proof, true,
+   "Cloudflare always requires origin proof")
 
-cfg.proxy_origin.cloudflare.hosts = { "example.test", "*.cf.example" }
+cfg.proxy_origin.cloudflare.hosts = nil
 cfg.proxy_origin.generic.rules = {
     {
         name = "company_proxy",
@@ -109,6 +118,12 @@ package.loaded["antibot.core.proxy_origin"] = nil
 package.loaded["antibot.core.ip_scope"] = nil
 local proxy = require "antibot.core.proxy_origin"
 local cidr  = require "antibot.core.ip_cidr"
+
+local function origin_header(zone, rule)
+    local token, err = proof.issue(zone, rule or "cloudflare")
+    assert(token, err)
+    return token
+end
 
 local function request(peer, headers, host, opts)
     opts = opts or {}
@@ -140,38 +155,48 @@ do
 end
 
 do
-    local c = request("8.8.8.8", { ["cf-connecting-ip"] = "1.1.1.1" })
+    local c = request("8.8.8.8", {
+        ["cf-connecting-ip"] = "1.1.1.1",
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
+    })
     eq(c.ip, "8.8.8.8", "untrusted header cannot replace IP")
     eq(c.proxy_spoof, true, "untrusted proxy claim is observable")
 end
 
 do
-    local c = request("173.245.48.10", { ["cf-connecting-ip"] = "8.8.4.4" })
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
+    })
     eq(c.ip, "8.8.4.4", "Cloudflare restores IPv4 client")
     eq(c.proxy_vendor, "cloudflare", "Cloudflare provider")
     eq(c.proxy_client_ip_verified, true, "Cloudflare client proof")
     eq(c.ip_is_aggregate, false, "restored client remains bannable")
     eq(c.transport_scope, "proxy_edge", "transport belongs to edge")
+    eq(c.proxy_proof_state, "signed_current", "Cloudflare current proof")
+    eq(c.proxy_proof_zone, "example.test", "Cloudflare proof zone")
 end
 
 do
     local c = request("173.245.48.10", {
         ["cf-connecting-ip"] = "8.8.4.4",
     }, "not-listed.example")
-    eq(c.ip, "173.245.48.10", "unlisted Host cannot consume Cloudflare header")
-    eq(c.proxy_verified, true, "unlisted Host still recognizes Cloudflare topology")
+    eq(c.ip, "173.245.48.10", "missing proof cannot consume Cloudflare header")
+    eq(c.proxy_verified, true, "proofless Host still recognizes Cloudflare topology")
     eq(c.proxy_client_ip_verified, false,
-       "unlisted Host has no client-IP provenance")
-    eq(c.proxy_header_error, "host_untrusted",
-       "unlisted Host emits explicit degraded reason")
+       "proofless Host has no client-IP provenance")
+    eq(c.proxy_header_error, "proof_missing",
+       "proofless Host emits explicit degraded reason")
     eq(c.ip_is_aggregate, true,
-       "unlisted Cloudflare edge cannot receive collective IP verdict")
+       "proofless Cloudflare edge cannot receive collective IP verdict")
     eq(c.proxy_spoof, false,
        "known Cloudflare topology is degraded, not a direct-header spoof")
 end
 
 do
-    local c = request("173.245.48.10", {})
+    local c = request("173.245.48.10", {
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
+    })
     eq(c.ip, "173.245.48.10", "missing header retains edge")
     eq(c.proxy_degraded, true, "missing header is degraded")
     eq(c.proxy_header_error, "missing", "missing reason")
@@ -179,7 +204,10 @@ do
 end
 
 do
-    local c = request("173.245.48.10", { ["cf-connecting-ip"] = "10.0.0.7" })
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "10.0.0.7",
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
+    })
     eq(c.ip, "173.245.48.10", "private header cannot become client")
     eq(c.proxy_header_error, "invalid_client", "private client rejected")
     eq(c.ip_is_aggregate, true, "invalid client leaves collective edge")
@@ -188,6 +216,7 @@ end
 do
     local c = request("2606:4700::1234", {
         ["cf-connecting-ip"] = "2001:4860:4860::8888",
+        ["x-antibot-origin-proof"] = origin_header("cf.example"),
     }, "api.cf.example")
     eq(c.proxy_verified, true, "Cloudflare IPv6 edge recognized")
     eq(c.ip, "2001:4860:4860:0:0:0:0:8888", "IPv6 client normalized")
@@ -197,6 +226,7 @@ do
     local c = request("173.245.48.10", {
         ["cf-connecting-ip"] = "240.1.2.3",
         ["cf-connecting-ipv6"] = "2001:4860:4860::8844",
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
     })
     eq(c.ip, "2001:4860:4860:0:0:0:0:8844", "Pseudo IPv4 restores original IPv6")
     eq(c.client_ip_source, "cf-connecting-ipv6", "Pseudo IPv4 provenance")
@@ -205,7 +235,10 @@ end
 do
     -- Coexists safely if nginx RealIP is enabled later: peer still comes from
     -- realip_remote_addr while current remote_addr is already the client.
-    local c = request("173.245.48.10", { ["cf-connecting-ip"] = "8.8.4.4" },
+    local c = request("173.245.48.10", {
+            ["cf-connecting-ip"] = "8.8.4.4",
+            ["x-antibot-origin-proof"] = origin_header("example.test"),
+        },
         "example.test", {
             remote_addr = "8.8.4.4", realip_remote_addr = "173.245.48.10",
         })
@@ -291,9 +324,53 @@ end
 do
     local c = request("173.245.48.10", {
         ["cf-connecting-ip"] = { "8.8.8.8", "1.1.1.1" },
+        ["x-antibot-origin-proof"] = origin_header("example.test"),
     })
     eq(c.proxy_header_error, "duplicate", "duplicate single-IP header rejected")
     eq(c.ip_is_aggregate, true, "duplicate header cannot sentence edge")
+end
+
+do
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = origin_header("other.test"),
+    }, "example.test")
+    eq(c.ip, "173.245.48.10", "cross-zone proof cannot restore client")
+    eq(c.proxy_header_error, "proof_zone_mismatch", "cross-zone proof reason")
+    eq(c.proxy_proof_zone, "other.test", "mismatch zone remains observable")
+    eq(c.ip_is_aggregate, true, "cross-zone failure remains aggregate")
+end
+
+do
+    local token = origin_header("example.test")
+    token = token:sub(1, -2) .. (token:sub(-1) == "0" and "1" or "0")
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = token,
+    }, "example.test")
+    eq(c.proxy_header_error, "proof_signature", "bad proof signature rejected")
+    eq(c.ip_is_aggregate, true, "bad proof cannot create individual IP")
+end
+
+do
+    local previous_secret = string.rep("r", 32)
+    local current_secret = string.rep("o", 32)
+    -- Generate with the previous key as current, then restore the rotation
+    -- pair before verification.
+    secrets._set_for_test({ origin_proof_secrets = { current = previous_secret } })
+    proof._reset_cache_for_test()
+    local previous_token = assert(proof.issue("example.test", "cloudflare"))
+    secrets._set_for_test({ origin_proof_secrets = {
+        current = current_secret, previous = previous_secret,
+    } })
+    proof._reset_cache_for_test()
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = previous_token,
+    }, "www.example.test")
+    eq(c.ip, "8.8.4.4", "previous proof key remains valid during rotation")
+    eq(c.proxy_proof_state, "signed_previous", "previous proof telemetry")
+    eq(c.proxy_proof_zone, "example.test", "apex proof covers subdomain")
 end
 
 do
@@ -329,10 +406,8 @@ end
 
 -- Restore mutable config before restoring package.loaded: another suite may
 -- already hold the same config table by reference.
-cfg.proxy_origin.cloudflare.hosts = original_cf_hosts
+cfg.proxy_origin.cloudflare.hosts = nil
 cfg.proxy_origin.generic.rules = original_generic_rules
-eq(cfg.proxy_origin.cloudflare.hosts, original_cf_hosts,
-   "contract restores Cloudflare host policy")
 eq(cfg.proxy_origin.generic.rules, original_generic_rules,
    "contract restores generic proxy policy")
 

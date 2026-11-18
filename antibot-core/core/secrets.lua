@@ -103,6 +103,45 @@ local function validate(obj)
         }
     end
 
+    -- Origin proof is optional so nodes that do not front any site through a
+    -- shared proxy keep operating.  Missing proof material fails closed only
+    -- for client-IP restoration: the proxy edge remains aggregate and the
+    -- request still traverses WAF/L7/scoring.
+    local origin_proof_secrets
+    if obj.origin_proof ~= nil then
+        if type(obj.origin_proof) ~= "table"
+           or not nonempty(obj.origin_proof.current, 32, 512) then
+            return nil, "origin_proof.current must be 32-512 bytes"
+        end
+        if obj.origin_proof.previous ~= nil
+           and not nonempty(obj.origin_proof.previous, 32, 512) then
+            return nil, "origin_proof.previous must be 32-512 bytes when present"
+        end
+        if obj.origin_proof.previous == obj.origin_proof.current then
+            return nil, "origin_proof.previous must differ from origin_proof.current"
+        end
+        local reserved = { pow.challenge_secret }
+        if actor_secrets then
+            reserved[#reserved + 1] = actor_secrets.current
+            if actor_secrets.previous then
+                reserved[#reserved + 1] = actor_secrets.previous
+            end
+        end
+        for i = 1, #reserved do
+            if obj.origin_proof.current == reserved[i] then
+                return nil, "origin_proof.current must not reuse another secret"
+            end
+            if obj.origin_proof.previous ~= nil
+               and obj.origin_proof.previous == reserved[i] then
+                return nil, "origin_proof.previous must not reuse another secret"
+            end
+        end
+        origin_proof_secrets = {
+            current  = obj.origin_proof.current,
+            previous = obj.origin_proof.previous,
+        }
+    end
+
     local accounts = { operator }
     if viewer then accounts[#accounts + 1] = viewer end
     return {
@@ -110,6 +149,7 @@ local function validate(obj)
         admin_accounts = accounts,
         pow_secret     = pow.challenge_secret,
         actor_secrets  = actor_secrets,
+        origin_proof_secrets = origin_proof_secrets,
     }
 end
 
@@ -177,6 +217,15 @@ function _M.actor_secrets()
         return nil, "actor secret is not configured"
     end
     return value.actor_secrets, nil
+end
+
+function _M.origin_proof_secrets()
+    local value, err = _M.load(false)
+    if not value then return nil, err end
+    if not value.origin_proof_secrets then
+        return nil, "origin proof secret is not configured"
+    end
+    return value.origin_proof_secrets, nil
 end
 
 function _M.path()

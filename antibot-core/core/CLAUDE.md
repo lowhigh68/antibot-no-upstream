@@ -43,6 +43,19 @@ None at init phase — first module to run.
 - Adding a verified good bot → extend `goodbot.json` and, only when static infrastructure proof exists, `core/goodbot_registry.lua`; the behavioral matrix must parse every JSON name
 
 ## Update log
+- 2026-11-18 — **Origin proof thay thế inventory host Cloudflare thủ công.**
+  `core/proxy_origin.lua` vẫn bắt buộc TCP peer thuộc CIDR đã compile, nhưng
+  Cloudflare chỉ được khôi phục `CF-Connecting-IP` khi có thêm
+  `X-Antibot-Origin-Proof: v1.<zone>.<HMAC>` hợp lệ. MAC được bind với cả tên
+  rule và zone; token apex chỉ phủ apex/subdomain đúng biên, không xuyên zone.
+  Edge phải **ghi đè** header, không phải thêm khi thiếu. Current/previous key
+  nằm riêng trong `/etc/antibot/secrets.json`, không dùng lại PoW/actor secret.
+  Thiếu/sai proof không block request: giữ edge trong `ctx.ip`, đặt
+  `ip_is_aggregate=true`, bỏ toàn bộ phán quyết tập thể theo edge và tiếp tục
+  WAF/L7/scoring. Vì actor/q2 đã tách án dài hạn khỏi IP+UA, proof chỉ mở lại
+  định danh client tức thời, không hồi sinh án xuyên CGNAT/proxy. Proxy generic
+  riêng vẫn dùng CIDR+host; mạng proxy dùng chung có thể bật cùng proof bằng
+  `require_origin_proof=true` mà không cần inventory host.
 - 2026-09-19 — **`proxy_origin.lua` (MỚI) — domain sau Cloudflare: `ctx.ip` là địa chỉ EDGE nên mọi tầng khoá theo IP đang gom hàng trăm khách thật thành một thực thể.**
   - **Số liệu buộc phải có tầng này (cloud171-96, `in3mien.com`):** **431 IP edge phục vụ 456 identity**, trong đó **218 lượt có cookie thật** (`rown` 0,65 và 0,80). `rate:<ip>`, `ip_risk:<ip>`, `ext_rep`, `ip_tour` đều tính họ như một. Quy mô: **6 host sau CF trên 171-96, 5 trên 183-139**.
   - **Cơ chế mới:** `core/proxy_origin.lua` ghép **TCP peer CIDR + host scope + đúng một header được phép**. Cloudflare có IPv4/IPv6 chính thức; proxy khác khai rule trong `cfg.proxy_origin`. Client IP hợp lệ được khôi phục vào `ctx.ip` và vẫn chịu toàn pipeline. Chỉ khi header thiếu/hỏng mới đặt `ctx.ip_is_aggregate=true` để cấm phán quyết IP tập thể. Không còn `SADD waf:proxyhosts <host>` vì host đơn độc không chứng minh được proxy.

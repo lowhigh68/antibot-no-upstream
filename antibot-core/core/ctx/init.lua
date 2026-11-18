@@ -120,6 +120,8 @@ function _M.init(ctx)
     ctx.proxy_degraded           = false
     ctx.proxy_spoof              = false
     ctx.proxy_spoof_header       = nil
+    ctx.proxy_proof_state        = nil
+    ctx.proxy_proof_zone         = nil
     ctx.ip_is_aggregate          = false
     ctx.client_ip_source         = "tcp"
     ctx.transport_scope          = "client"

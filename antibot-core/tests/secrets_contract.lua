@@ -35,6 +35,10 @@ local function valid()
             current  = string.rep("a", 32),
             previous = string.rep("b", 32),
         },
+        origin_proof = {
+            current  = string.rep("o", 32),
+            previous = string.rep("r", 32),
+        },
     }
 end
 
@@ -47,6 +51,10 @@ eq(value.admin_accounts[2].role, "viewer", "viewer second")
 eq(value.pow_secret, string.rep("p", 32), "pow secret loaded")
 eq(value.actor_secrets.current, string.rep("a", 32), "actor current loaded")
 eq(value.actor_secrets.previous, string.rep("b", 32), "actor previous loaded")
+eq(value.origin_proof_secrets.current, string.rep("o", 32),
+   "origin proof current loaded")
+eq(value.origin_proof_secrets.previous, string.rep("r", 32),
+   "origin proof previous loaded")
 local actor_state, actor_check_err = actor_checker.check(SRC, path)
 ok(actor_state ~= nil and actor_check_err == nil, "actor preflight accepts valid file")
 eq(actor_state.current_bytes, 32, "actor preflight reports length without value")
@@ -74,6 +82,16 @@ path = write_tmp(no_viewer)
 value, err = secrets._reset_for_test(path)
 ok(value ~= nil and err == nil, "viewer optional")
 eq(#value.admin_accounts, 1, "one operator account")
+os.remove(path)
+
+local no_origin_proof = valid()
+no_origin_proof.origin_proof = nil
+path = write_tmp(no_origin_proof)
+value, err = secrets._reset_for_test(path)
+ok(value ~= nil and err == nil, "origin proof optional for fail-safe rollout")
+local origin_value, origin_err = secrets.origin_proof_secrets()
+ok(origin_value == nil and tostring(origin_err):find("not configured", 1, true) ~= nil,
+   "origin proof accessor fails closed with reason")
 os.remove(path)
 
 local bad = valid()
@@ -120,6 +138,38 @@ path = write_tmp(bad)
 value, err = secrets._reset_for_test(path)
 ok(value == nil and tostring(err):find("pow.challenge_secret", 1, true) ~= nil,
    "actor previous cannot reuse pow secret")
+os.remove(path)
+
+bad = valid()
+bad.origin_proof.current = "too-short"
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("origin_proof.current", 1, true) ~= nil,
+   "short origin proof secret rejected")
+os.remove(path)
+
+bad = valid()
+bad.origin_proof.previous = bad.origin_proof.current
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("must differ", 1, true) ~= nil,
+   "origin proof rotation keys must differ")
+os.remove(path)
+
+bad = valid()
+bad.origin_proof.current = bad.actor.current
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("must not reuse", 1, true) ~= nil,
+   "origin proof cannot reuse actor secret")
+os.remove(path)
+
+bad = valid()
+bad.origin_proof.previous = bad.pow.challenge_secret
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("must not reuse", 1, true) ~= nil,
+   "origin proof previous cannot reuse PoW secret")
 os.remove(path)
 
 bad = valid()

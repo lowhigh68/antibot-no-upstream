@@ -69,21 +69,35 @@ fi
 if [ ! -r "$LOG" ]; then echo "khong doc duoc $LOG"; exit 2; fi
 
 if [ -n "$MARK" ]; then
+    # Chap nhan ca `[YYYY-MM-DD HH:MM:SS]` lay truc tiep tu log, nhung dua ve
+    # dung 19 byte timestamp truoc khi so sanh.
+    MARK=${MARK#\[}
+    MARK=${MARK%%\]*}
+    MARK=${MARK:0:19}
+    case "$MARK" in
+        ????-??-??\ ??:??:??) ;;
+        *) echo "moc khong hop le: can YYYY-MM-DD HH:MM:SS"; exit 2 ;;
+    esac
     echo "### moc=$MARK   now=$(date '+%F %T')   log=$LOG"
 else
     echo "### DOC CA FILE (khong co moc)   now=$(date '+%F %T')   log=$LOG"
 fi
 echo
 
-# length(t)==0 la BAT BUOC: thieu no thi moc rong khop MOI dong va ket qua
-# tuong la "sau moc" trong khi thuc ra la ca file.
-since() { awk -v t="$MARK" 'length(t)==0 || $0 >= t' "$LOG"; }
+# Log bat dau bang `[YYYY-MM-DD HH:MM:SS]`. So sanh ca dong `$0 >= t` la SAI
+# vi ky tu `[` luon lon hon chu so dau cua moc, nen moi dong cu deu lot. Tach
+# dung 19 byte timestamp; dong khong co schema thoi gian khong duoc tu nhan la
+# nam trong cua so.
+since() { awk -v t="$MARK" '
+    length(t)==0 { print; next }
+    substr($0,1,1)=="[" && substr($0,2,19)>=t { print }
+' "$LOG"; }
 
-# Dai IP reverse proxy cong cong — GIU DONG BO voi CF_V4_CIDRS trong
-# core/proxy_origin.lua (day la dang regex cua cung danh sach do).
-# KHONG dung tien to chuoi kieu 104.1[6-9]: khoi 104.16.0.0/13 trai dai
-# 104.16..104.23 nen tien to vua bo sot 104.2x vua bat lam 104.160.*.
-CF_LOG='ip=(172\.6[4-9]\.|172\.7[01]\.|162\.15[89]\.|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|108\.162\.(19[2-9]|2[0-5][0-9])\.|104\.1[6-9]\.|104\.2[0-7]\.|103\.2[12]\.|103\.31\.|190\.93\.|188\.114\.|197\.234\.|198\.41\.1[2-9]|131\.0\.7)'
+# `ip=` khong con la edge khi origin proof khoi phuc client thanh cong.  Dung
+# provenance do logger ghi, neu khong mau so se chi con cac request degraded va
+# lam ty le proof hop le bang 0 mot cach gia.
+CF_LOG='px=cloudflare'
+# Regex nay chi dung quet namespace ban cu o Redis, noi khoa van chua raw IP.
 CF_KEY='ban:(172\.(6[4-9]|7[01])\.|162\.15[89]\.|104\.1[6-9]\.|104\.2[0-7]\.|141\.101\.|108\.162\.|103\.2[12]\.|103\.31\.|190\.93\.|188\.114\.|197\.234\.|198\.41\.1[2-9]|131\.0\.7)'
 
 # Tach truong an toan. Logger khu khoang trang trong gia tri nen moi truong la
@@ -137,6 +151,16 @@ cf)
       | perl -ne '($i)=/ ip=(\S+)/; ($d)=/domain=(\S+)/;
                   print(($i // "-") . " | " . ($d // "-") . "\n")' \
       | sort | uniq -c | sort -rn | head -8
+
+    echo
+    echo "--- [7] origin proof tren reverse-proxy traffic:"
+    echo "        signed_current/previous + pxcv=true = client IP duoc khoi phuc."
+    echo "        missing/signature/zone_mismatch = fail-safe, giu edge aggregate."
+    since | grep -E " $CF_LOG" | field pxpf | sort | uniq -c | sort -rn
+    echo "  --- degraded theo domain/state ---"
+    since | grep -E " $CF_LOG" | grep ' pxcv=false ' \
+      | awk '{d="-"; p="-"; e="-"; for(i=1;i<=NF;i++){if($i~/^domain=/)d=substr($i,8); if($i~/^pxpf=/)p=substr($i,6); if($i~/^pxerr=/)e=substr($i,7)} print d" | "p" | "e}' \
+      | sort | uniq -c | sort -rn | head -20
     ;;
 
 ban)

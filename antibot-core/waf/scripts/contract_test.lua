@@ -2222,9 +2222,10 @@ do
            or not po:find("ip_is_aggregate") then
             bad("  SAI  proxy contract thieu provenance/aggregate state.\n")
         else pass = pass + 1 end
-        if not po:find('proxy_header_error%s*=%s*"host_untrusted"')
-           or not po:find('matching_named_rule%(RULES, peer, "cloudflare"%)') then
-            bad("  SAI  Cloudflare peer tren Host chua tin khong fail-closed aggregate.\n")
+        if not po:find("origin_proof%.verify")
+           or not po:find('proxy_header_error%s*=%s*"proof_"')
+           or not po:find("ctx%.ip_is_aggregate%s*=%s*true") then
+            bad("  SAI  Cloudflare thieu/sai origin proof khong fail-safe aggregate.\n")
         else pass = pass + 1 end
 
         -- (c) proxy_origin phai la buoc DAU sau ctx init, truoc moi counter.

@@ -52,9 +52,15 @@ _M.redis = {
 -- only authorizes one header to supply the end-client address.  The restored
 -- client still traverses admission, bans, WAF, scoring and endpoint policy.
 --
--- Cloudflare is built in because its public edge ranges are fleet-wide.  A
--- custom proxy must be declared here with BOTH its source CIDR and host scope;
--- declaring a host or seeing X-Forwarded-For alone never grants trust.
+-- Cloudflare is built in because its public edge ranges are fleet-wide, but a
+-- shared CIDR never grants header trust.  Cloudflare additionally requires a
+-- host-bound X-Antibot-Origin-Proof generated from `origin_proof.current` in
+-- /etc/antibot/secrets.json.  The edge must OVERWRITE this header.  A token for
+-- example.com covers example.com and its subdomains, never another zone.
+--
+-- A dedicated custom proxy may keep explicit host scope.  A shared custom
+-- proxy can set `require_origin_proof=true` and omit hosts, using the same
+-- proof format bound to that rule's `name`.
 -- Supported headers: cf-connecting-ip, cf-connecting-ipv6, x-forwarded-for,
 -- true-client-ip, x-real-ip. For XFF the engine walks right-to-left and selects the first hop
 -- outside all trusted CIDRs that apply to the host.
@@ -62,14 +68,8 @@ _M.proxy_origin = {
     enabled = true,
     cloudflare = {
         enabled = true,
-        -- Fail-closed: chi hostname DA XAC NHAN dang orange-cloud moi duoc
-        -- phep dung CF-Connecting-IP.  KHONG dung { "*" }: Cloudflare la
-        -- mang multi-tenant va Worker cua nguoi khac cung co TCP peer thuoc
-        -- cac CIDR nay. Host chua khai van duoc nhan la aggregate CF edge de
-        -- tranh ban tap the, nhung header cua no khong bao gio duoc tin.
-        -- Vi du: { "example.com", "*.example.com" }
-        hosts   = {},
-        header  = "cf-connecting-ip",
+        header       = "cf-connecting-ip",
+        proof_header = "x-antibot-origin-proof",
     },
     generic = {
         rules = {
@@ -79,6 +79,7 @@ _M.proxy_origin = {
             --     cidrs  = { "198.18.0.0/15", "2001:db8:1234::/48" },
             --     hosts  = { "example.com", "*.example.com" },
             --     header = "x-forwarded-for",
+            --     require_origin_proof = false,
             -- },
         },
     },
