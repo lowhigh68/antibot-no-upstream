@@ -39,6 +39,9 @@ local function valid()
             current  = string.rep("o", 32),
             previous = string.rep("r", 32),
         },
+        cloudflare = {
+            api_token = "cloudflare-api-token-fixture-1234567890",
+        },
     }
 end
 
@@ -55,6 +58,10 @@ eq(value.origin_proof_secrets.current, string.rep("o", 32),
    "origin proof current loaded")
 eq(value.origin_proof_secrets.previous, string.rep("r", 32),
    "origin proof previous loaded")
+eq(value.cloudflare_api.api_token, "cloudflare-api-token-fixture-1234567890",
+   "Cloudflare API token loaded")
+local cf_value, cf_err = secrets.cloudflare_api()
+ok(cf_value ~= nil and cf_err == nil, "Cloudflare accessor returns configured token")
 local actor_state, actor_check_err = actor_checker.check(SRC, path)
 ok(actor_state ~= nil and actor_check_err == nil, "actor preflight accepts valid file")
 eq(actor_state.current_bytes, 32, "actor preflight reports length without value")
@@ -92,6 +99,16 @@ ok(value ~= nil and err == nil, "origin proof optional for fail-safe rollout")
 local origin_value, origin_err = secrets.origin_proof_secrets()
 ok(origin_value == nil and tostring(origin_err):find("not configured", 1, true) ~= nil,
    "origin proof accessor fails closed with reason")
+os.remove(path)
+
+local no_cloudflare = valid()
+no_cloudflare.cloudflare = nil
+path = write_tmp(no_cloudflare)
+value, err = secrets._reset_for_test(path)
+ok(value ~= nil and err == nil, "Cloudflare API block optional")
+cf_value, cf_err = secrets.cloudflare_api()
+ok(cf_value == nil and tostring(cf_err):find("not configured", 1, true) ~= nil,
+   "Cloudflare accessor fails closed with reason")
 os.remove(path)
 
 local bad = valid()
@@ -170,6 +187,22 @@ path = write_tmp(bad)
 value, err = secrets._reset_for_test(path)
 ok(value == nil and tostring(err):find("must not reuse", 1, true) ~= nil,
    "origin proof previous cannot reuse PoW secret")
+os.remove(path)
+
+bad = valid()
+bad.cloudflare.api_token = "too-short"
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("cloudflare.api_token", 1, true) ~= nil,
+   "short Cloudflare API token rejected")
+os.remove(path)
+
+bad = valid()
+bad.cloudflare.api_token = "valid-length-token-with-newline\n"
+path = write_tmp(bad)
+value, err = secrets._reset_for_test(path)
+ok(value == nil and tostring(err):find("printable", 1, true) ~= nil,
+   "Cloudflare API token control bytes rejected")
 os.remove(path)
 
 bad = valid()

@@ -6,6 +6,7 @@ local pool      = require "antibot.core.redis_pool"
 local inventory = require "antibot.core.domain_inventory"
 local registry  = require "antibot.core.origin_registry"
 local proof     = require "antibot.core.origin_proof"
+local cf_api    = require "antibot.core.cloudflare_api"
 local security  = require "antibot.admin.security"
 
 local RULE = "cloudflare"
@@ -61,6 +62,7 @@ function _M.render()
         if not present[zone] then orphaned[#orphaned + 1] = state end
     end
     table.sort(orphaned, function(a, b) return a.zone < b.zone end)
+    local cf_configured, cf_err = cf_api.status()
     return reply(200, {
         ok = true,
         inventory_ok = inv_err == nil,
@@ -68,6 +70,8 @@ function _M.render()
         inventory_source = source,
         domains = domains,
         orphaned = orphaned,
+        cloudflare_api_configured = cf_configured == true,
+        cloudflare_api_error = cf_configured and nil or tostring(cf_err),
     })
 end
 
@@ -84,8 +88,11 @@ local function next_state(old, status, gen, principal)
     }
 end
 
-local function persist(red, state)
+local function persist(state)
+    local red, redis_err = pool.get()
+    if not red then return nil, "Redis: " .. tostring(redis_err) end
     local ok, err = registry.persist(red, state)
+    pool.put(red)
     if not ok then return nil, tostring(err) end
     return true
 end
@@ -114,6 +121,7 @@ function _M.mutate(principal)
         return reply(503, { ok = false, error = "Redis: " .. tostring(redis_err) })
     end
     local old = registry.read(red, RULE, zone)
+    pool.put(red)
     local before = old and (old.state .. ":" .. old.generation:sub(1, 8)) or "off"
     local result, status = nil, 200
 
@@ -130,22 +138,35 @@ function _M.mutate(principal)
             if not gen then
                 result, status = { ok = false, error = "secure random unavailable" }, 503
             else
-                local state = next_state(old, "pending", gen, principal)
-                state.zone = zone
-                local saved, save_err = persist(red, state)
-                if not saved then
-                    result, status = { ok = false, error = save_err }, 503
+                local token, token_err = proof.issue(zone, RULE, gen)
+                if not token then
+                    result, status = { ok = false, error = token_err }, 503
                 else
-                    local token, token_err = proof.issue(zone, RULE, gen)
-                    if not token then
-                        result, status = { ok = false, error = token_err }, 503
+                    -- Install/repair the edge rule before publishing pending
+                    -- state.  If Cloudflare fails, no new local generation is
+                    -- created.  If local persistence then fails, the edge
+                    -- token is still unauthorized and request IP restoration
+                    -- remains fail-closed.
+                    local managed, manage_err = cf_api.ensure_origin_rule(zone, token)
+                    if not managed then
+                        result, status = {
+                            ok = false,
+                            error = "Cloudflare API: " .. tostring(manage_err),
+                        }, 502
                     else
-                        result = {
-                            ok = true, state = "pending", zone = zone,
-                            generation = gen, token = token,
-                            header = "X-Antibot-Origin-Proof",
-                            instruction = "Cloudflare must OVERWRITE this header, then wait for seen=true before Activate",
-                        }
+                        local state = next_state(old, "pending", gen, principal)
+                        state.zone = zone
+                        local saved, save_err = persist(state)
+                        if not saved then
+                            result, status = { ok = false, error = save_err }, 503
+                        else
+                            result = {
+                                ok = true, state = "pending", zone = zone,
+                                generation = gen,
+                                cloudflare = managed,
+                                instruction = "Cloudflare rule installed; wait for seen=true before Activate",
+                            }
+                        end
                     end
                 end
             end
@@ -158,9 +179,31 @@ function _M.mutate(principal)
         else
             local state = next_state(old, "active", old.generation, principal)
             state.zone = zone
-            local saved, save_err = persist(red, state)
+            local saved, save_err = persist(state)
             if not saved then result, status = {ok=false,error=save_err}, 503
             else result = {ok=true,state="active",zone=zone,generation=old.generation} end
+        end
+    elseif req.action == "proxy_cf_sync" then
+        if not old or old.state == "revoked" then
+            result, status = { ok = false, error = "zone has no live proof to sync" }, 409
+        else
+            local token, token_err = proof.issue(zone, RULE, old.generation)
+            if not token then
+                result, status = { ok = false, error = token_err }, 503
+            else
+                local managed, manage_err = cf_api.ensure_origin_rule(zone, token)
+                if not managed then
+                    result, status = {
+                        ok = false,
+                        error = "Cloudflare API: " .. tostring(manage_err),
+                    }, 502
+                else
+                    result = {
+                        ok = true, state = old.state, zone = zone,
+                        generation = old.generation, cloudflare = managed,
+                    }
+                end
+            end
         end
     elseif req.action == "proxy_cf_disable" then
         if not old then
@@ -170,13 +213,22 @@ function _M.mutate(principal)
         else
             local state = next_state(old, "revoked", old.generation, principal)
             state.zone = zone
-            local saved, save_err = persist(red, state)
+            local saved, save_err = persist(state)
             if not saved then result, status = {ok=false,error=save_err}, 503
-            else result = {ok=true,state="revoked",zone=zone} end
+            else
+                -- Revoke locally FIRST.  Even if Cloudflare is unavailable,
+                -- the old proof becomes inert immediately and can no longer
+                -- restore a client IP.  Edge cleanup is therefore best-effort
+                -- and reported explicitly rather than rolling authorization
+                -- back to active.
+                local removed, remove_err = cf_api.remove_origin_rule(zone)
+                result = {ok=true,state="revoked",zone=zone}
+                if removed then result.cloudflare = removed
+                else result.warning = "Cloudflare cleanup pending: " .. tostring(remove_err) end
+            end
         end
     end
 
-    pool.put(red)
     local after = result and result.state or (result and result.error) or "unknown"
     security.audit(principal, req.action, zone,
                    result and result.ok and "ok" or "denied", before, after)

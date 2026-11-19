@@ -144,6 +144,8 @@ ok(valid({action="ja3_block", hash=string.rep("a", 32)}, 64), "JA3 valid")
 ok(not valid({action="ja3_block", hash="not-a-hash"}, 64), "JA3 invalid")
 ok(valid({action="proxy_cf_enable", zone="Example.COM."}, 64),
    "Cloudflare zone mutation valid")
+ok(valid({action="proxy_cf_sync", zone="example.com"}, 64),
+   "Cloudflare repair mutation valid")
 ok(not valid({action="proxy_cf_disable", zone="evil_example.com"}, 64),
    "unsafe Cloudflare zone rejected")
 ok(not valid({action="future_action"}, 32), "unknown action rejected")

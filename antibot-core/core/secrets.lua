@@ -142,6 +142,22 @@ local function validate(obj)
         }
     end
 
+    -- One Cloudflare API token manages every zone visible to that token.  It
+    -- is optional because many nodes have no Cloudflare-managed zones; the
+    -- Admin mutation fails closed when an operator tries to enable API-managed
+    -- origin proof without this credential.  Keep the token opaque: Cloudflare
+    -- may change its printable format, so only length/control-byte invariants
+    -- belong here.
+    local cloudflare_api
+    if obj.cloudflare ~= nil then
+        if type(obj.cloudflare) ~= "table"
+           or not nonempty(obj.cloudflare.api_token, 20, 2048)
+           or obj.cloudflare.api_token:find("[%c]") then
+            return nil, "cloudflare.api_token must be 20-2048 printable bytes"
+        end
+        cloudflare_api = { api_token = obj.cloudflare.api_token }
+    end
+
     local accounts = { operator }
     if viewer then accounts[#accounts + 1] = viewer end
     return {
@@ -150,6 +166,7 @@ local function validate(obj)
         pow_secret     = pow.challenge_secret,
         actor_secrets  = actor_secrets,
         origin_proof_secrets = origin_proof_secrets,
+        cloudflare_api = cloudflare_api,
     }
 end
 
@@ -226,6 +243,15 @@ function _M.origin_proof_secrets()
         return nil, "origin proof secret is not configured"
     end
     return value.origin_proof_secrets, nil
+end
+
+function _M.cloudflare_api()
+    local value, err = _M.load(false)
+    if not value then return nil, err end
+    if not value.cloudflare_api then
+        return nil, "cloudflare API token is not configured"
+    end
+    return value.cloudflare_api, nil
 end
 
 function _M.path()

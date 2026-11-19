@@ -208,7 +208,8 @@ local JA3_ACTIONS = {
     ja3_allow = true, ja3_block = true, ja3_remove = true,
 }
 local PROXY_ACTIONS = {
-    proxy_cf_enable = true, proxy_cf_activate = true, proxy_cf_disable = true,
+    proxy_cf_enable = true, proxy_cf_activate = true, proxy_cf_sync = true,
+    proxy_cf_disable = true,
 }
 
 local function plain_string(value, minimum, maximum)

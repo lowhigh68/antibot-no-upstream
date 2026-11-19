@@ -173,6 +173,7 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
 echo "-- trusted proxy / Cloudflare provenance contract --------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/proxy_origin_contract.lua" || rc=1
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/origin_registry_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/cloudflare_api_contract.lua" || rc=1
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/domain_inventory_contract.lua" || rc=1
 
 echo "-- protected secret contract -----------------------------"

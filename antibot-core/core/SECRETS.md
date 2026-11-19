@@ -14,6 +14,13 @@ Use `secrets.example.json` as the schema. Requirements:
 - `actor.current` is a separate 32-512 byte random signing key for the
   host-bound `antibot_sid`. `actor.previous` is optional during rotation and
   must differ from `current`. Never reuse the PoW secret here.
+- `origin_proof.current` signs the host/generation-bound V2 proof; its optional
+  `previous` value exists only for secret rotation and may not reuse another
+  AntiBot secret.
+- `cloudflare.api_token` is optional globally but required when AdminUI manages
+  a Cloudflare zone. One token covers all zones visible to that Cloudflare
+  account. Give it only `Zone Read`, `Transform Rules Edit`, and the read access
+  Cloudflare requires for account rulesets. Never create one token per domain.
 
 Recommended ownership is `root:<openresty-worker-group>` with mode `0640`, and
 the parent directory should be `0750`. Do not pass secret values on a command
@@ -38,6 +45,10 @@ Operational gates:
   and `secrets.json` to `0640`, then verifies worker readability. Runtime stays
   fail-open for unexpected faults, but a planned deploy cannot knowingly create
   an actor-disabled worker generation.
+- A missing/invalid Cloudflare API token does not affect public traffic. It only
+  makes `Enable`/`Sync CF` fail before a new pending generation is persisted.
+  `Disable` still revokes locally first, so an API outage cannot restore a
+  previously revoked client-IP proof.
 - `waf/scripts/actor_health.sh 15` is the fast post-deploy monitor. `OK` and
   `NO_DATA` exit zero; `DEGRADED` (for example `secret_unavailable`) and
   `CRITICAL` (secret preflight or scope invariant failure) exit non-zero.

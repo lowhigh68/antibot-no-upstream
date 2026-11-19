@@ -1365,20 +1365,14 @@ tr:hover td{background:#1c2129}
     <div class="card">
       <h2>Cloudflare origin proof</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
-        Inventory comes from DirectAdmin, not observed Host headers. Enable creates
-        a pending V2 token. Cloudflare must <b>overwrite</b>
-        <code>X-Antibot-Origin-Proof</code>; Activate is allowed only after the
-        pending token has reached this origin. Disable revokes the generation
-        immediately; enabling again creates a different generation.
+        Inventory comes from DirectAdmin, not observed Host headers. Enable uses
+        the configured Cloudflare API token to find the exact zone and manage one
+        AntiBot-owned request-header rule. Activate is allowed only after the
+        pending V2 proof has reached this origin. Disable revokes the generation
+        locally before removing the Cloudflare rule; enabling again creates a
+        different generation.
       </div>
       <div id="proxy-inventory-status" class="msg" style="display:none"></div>
-      <div id="proxy-token-box" style="display:none;margin-bottom:12px">
-        <div style="font-size:12px;color:#f0883e;margin-bottom:5px">
-          Copy this token now. Configure an OVERWRITE rule, wait for Seen, then Activate.
-        </div>
-        <textarea id="proxy-token" class="inp" readonly
-          style="width:100%;height:72px;font-family:monospace"></textarea>
-      </div>
       <table><thead><tr>
         <th>Domain / zone</th><th>Owner</th><th>State</th>
         <th>Generation</th><th>Seen at origin</th><th>Action</th>
@@ -1724,10 +1718,7 @@ function proxyAction(action,zone){
     body:JSON.stringify({action:action,zone:zone})
   }).then(async r=>({ok:r.ok,data:await r.json()})).then(x=>{
     if(!x.ok||!x.data.ok){alert(x.data.error||'Proxy update failed');return}
-    if(x.data.token){
-      document.getElementById('proxy-token').value=x.data.token
-      document.getElementById('proxy-token-box').style.display='block'
-    }
+    if(x.data.warning)alert(x.data.warning)
     loadProxyDomains()
   }).catch(e=>alert(String(e)))
 }
@@ -1735,9 +1726,10 @@ function loadProxyDomains(){
   fetch('/antibot-admin/proxy',{credentials:'include'})
   .then(r=>r.json()).then(d=>{
     var status=document.getElementById('proxy-inventory-status')
-    if(!d.ok||!d.inventory_ok){
+    if(!d.ok||!d.inventory_ok||!d.cloudflare_api_configured){
       status.className='msg err';status.style.display='block'
-      status.textContent=d.error||d.inventory_error||'Domain inventory unavailable'
+      status.textContent=d.error||d.inventory_error||d.cloudflare_api_error||
+        'Cloudflare API credential unavailable'
     }else{status.style.display='none'}
     var body=document.getElementById('t-proxy-domains')
     if(!body)return
@@ -1762,6 +1754,8 @@ function loadProxyDomains(){
       }
       if(x.proxy_state==='off'||x.proxy_state==='revoked')button('Enable','btn-green','proxy_cf_enable')
       if(x.proxy_state==='pending'&&x.seen)button('Activate','btn-blue','proxy_cf_activate')
+      if(x.proxy_state==='pending')button('Sync CF','btn-gray','proxy_cf_sync')
+      if(x.proxy_state==='active')button('Repair CF','btn-gray','proxy_cf_sync')
       if(x.proxy_state==='pending'||x.proxy_state==='active')button('Disable','btn-red','proxy_cf_disable')
       tr.appendChild(act);body.appendChild(tr)
     })
