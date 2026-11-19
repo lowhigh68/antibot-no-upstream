@@ -1198,7 +1198,7 @@ function _M.run(ctx)
     local proxy_str = ""
     if ctx.proxy_verified or ctx.proxy_spoof or ctx.proxy_degraded then
         proxy_str = string.format(
-            " px=%s pxv=%s pxcv=%s pxagg=%s pxsrc=%s pxerr=%s pxhops=%s pxsp=%s pxtls=%s pxpf=%s pxpz=%s",
+            " px=%s pxv=%s pxcv=%s pxagg=%s pxsrc=%s pxerr=%s pxhops=%s pxsp=%s pxtls=%s pxpf=%s pxpz=%s pxpg=%s",
             log_token(ctx.proxy_vendor, 32),
             tostring(ctx.proxy_verified == true),
             tostring(ctx.proxy_client_ip_verified == true),
@@ -1209,7 +1209,8 @@ function _M.run(ctx)
             log_token(ctx.proxy_spoof_header, 32),
             log_token(ctx.transport_scope, 24),
             log_token(ctx.proxy_proof_state, 32),
-            log_token(ctx.proxy_proof_zone, 253))
+            log_token(ctx.proxy_proof_zone, 253),
+            log_token(ctx.proxy_proof_generation, 32))
     end
 
     -- Beacon coverage state (Step 0 telemetry).

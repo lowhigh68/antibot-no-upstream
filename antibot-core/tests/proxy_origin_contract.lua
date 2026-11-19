@@ -17,6 +17,7 @@ local touched_modules = {
     "antibot.core.config",
     "antibot.core.proxy_origin",
     "antibot.core.origin_proof",
+    "antibot.core.origin_registry",
     "antibot.core.secrets",
     "antibot.core.ip_scope",
     "antibot.core.ip_cidr",
@@ -80,6 +81,21 @@ secrets._set_for_test({
     },
 })
 local proof = require "antibot.core.origin_proof"
+local generation = "0123456789abcdef0123456789abcdef"
+local registry_mode = "active"
+local pending_observed = false
+package.loaded["antibot.core.origin_registry"] = {
+    check = function(_, _, got_generation)
+        if got_generation ~= generation then return nil, "generation_mismatch" end
+        if registry_mode ~= "active" then return nil, registry_mode end
+        return true, "active"
+    end,
+    observe_pending = function()
+        pending_observed = true
+        return true
+    end,
+    start = function() return true end,
+}
 
 -- A future config edit must not be able to reopen fleet-wide header trust by
 -- reintroducing hosts="*". Cloudflare ignores host inventory and requires a
@@ -120,7 +136,7 @@ local proxy = require "antibot.core.proxy_origin"
 local cidr  = require "antibot.core.ip_cidr"
 
 local function origin_header(zone, rule)
-    local token, err = proof.issue(zone, rule or "cloudflare")
+    local token, err = proof.issue(zone, rule or "cloudflare", generation)
     assert(token, err)
     return token
 end
@@ -353,13 +369,57 @@ do
 end
 
 do
+    local old_v1 = "v1.example.test." .. string.rep("0", 64)
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = old_v1,
+    }, "example.test")
+    eq(c.proxy_header_error, "proof_format", "V1 token cannot bypass V2 registry")
+end
+
+do
+    local other_generation = "11111111111111111111111111111111"
+    local token = assert(proof.issue(
+        "example.test", "cloudflare", other_generation))
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = token,
+    }, "example.test")
+    eq(c.proxy_header_error, "proof_registry_generation_mismatch",
+       "signed but inactive generation is rejected")
+end
+
+do
+    -- Warm the cryptographic cache first, then revoke authorization outside
+    -- that cache.  A cache hit must still consult the live registry.
+    local token = origin_header("example.test")
+    registry_mode = "active"
+    request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = token,
+    }, "example.test")
+    registry_mode = "pending"
+    pending_observed = false
+    local c = request("173.245.48.10", {
+        ["cf-connecting-ip"] = "8.8.4.4",
+        ["x-antibot-origin-proof"] = token,
+    }, "example.test")
+    eq(c.ip, "173.245.48.10", "pending registry revokes cached proof")
+    eq(c.proxy_header_error, "proof_registry_pending",
+       "pending registry has explicit reason")
+    eq(pending_observed, true, "pending proof observation is recorded")
+    registry_mode = "active"
+end
+
+do
     local previous_secret = string.rep("r", 32)
     local current_secret = string.rep("o", 32)
     -- Generate with the previous key as current, then restore the rotation
     -- pair before verification.
     secrets._set_for_test({ origin_proof_secrets = { current = previous_secret } })
     proof._reset_cache_for_test()
-    local previous_token = assert(proof.issue("example.test", "cloudflare"))
+    local previous_token = assert(proof.issue(
+        "example.test", "cloudflare", generation))
     secrets._set_for_test({ origin_proof_secrets = {
         current = current_secret, previous = previous_secret,
     } })

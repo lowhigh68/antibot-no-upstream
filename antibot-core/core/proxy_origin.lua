@@ -12,6 +12,7 @@ local ip_scope  = require "antibot.core.ip_scope"
 local ip_cidr   = require "antibot.core.ip_cidr"
 local cf_cidrs  = require "antibot.core.data.cloudflare_cidrs"
 local origin_proof = require "antibot.core.origin_proof"
+local origin_registry = require "antibot.core.origin_registry"
 
 local CLAIM_HEADERS = {
     "cf-connecting-ip", "cf-connecting-ipv6", "true-client-ip",
@@ -306,15 +307,29 @@ function _M.run(ctx)
 
     if rule.require_origin_proof then
         local raw_proof, proof_header_err = header_value(h, rule.proof_header)
-        local proof_ok, proof_state, proof_zone
+        local proof_ok, proof_state, proof_zone, proof_generation
         if raw_proof then
-            proof_ok, proof_state, proof_zone = origin_proof.verify(
+            proof_ok, proof_state, proof_zone, proof_generation = origin_proof.verify(
                 raw_proof, host, rule.name)
         else
             proof_state = proof_header_err or "missing"
         end
         ctx.proxy_proof_state = proof_state
         ctx.proxy_proof_zone  = proof_zone
+        ctx.proxy_proof_generation = proof_generation
+        if proof_ok then
+            local active, registry_state = origin_registry.check(
+                rule.name, proof_zone, proof_generation)
+            if not active then
+                if registry_state == "pending" then
+                    origin_registry.observe_pending(
+                        rule.name, proof_zone, proof_generation)
+                end
+                proof_ok = false
+                proof_state = "registry_" .. tostring(registry_state or "invalid")
+                ctx.proxy_proof_state = proof_state
+            end
+        end
         if not proof_ok then
             ctx.ip                       = peer
             ctx.proxy_client_ip_verified = false
@@ -355,6 +370,12 @@ end
 
 function _M.rules_for_test()
     return RULES
+end
+
+-- init_worker itself cannot use Redis cosockets.  The registry owns the
+-- deferred timer and keeps request-path authorization in shared memory.
+function _M.init_worker()
+    return origin_registry.start()
 end
 
 return _M

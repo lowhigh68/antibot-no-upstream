@@ -41,6 +41,7 @@
 # sai hom 19-09.
 
 set -u
+export LC_ALL=C
 LOG=${LOG:-/var/log/antibot/antibot.log}
 RCLI=${RCLI:-redis-cli}
 # Tep nay goi `$RCLI` KHONG trong dau nhay o ca 8 cho, nen word-splitting cho phep
@@ -66,7 +67,11 @@ if [ $# -gt 0 ]; then
     if [ -r "$1" ]; then MARK=$(head -1 "$1"); else MARK="$*"; fi
 fi
 
-if [ ! -r "$LOG" ]; then echo "khong doc duoc $LOG"; exit 2; fi
+_have_log=0
+for _lf in "$LOG"*; do
+    [ -f "$_lf" ] && [ -r "$_lf" ] && _have_log=1
+done
+if [ "$_have_log" -ne 1 ]; then echo "khong doc duoc $LOG hoac log rotate"; exit 2; fi
 
 if [ -n "$MARK" ]; then
     # Chap nhan ca `[YYYY-MM-DD HH:MM:SS]` lay truc tiep tu log, nhung dua ve
@@ -78,9 +83,9 @@ if [ -n "$MARK" ]; then
         ????-??-??\ ??:??:??) ;;
         *) echo "moc khong hop le: can YYYY-MM-DD HH:MM:SS"; exit 2 ;;
     esac
-    echo "### moc=$MARK   now=$(date '+%F %T')   log=$LOG"
+    echo "### moc=$MARK   now=$(date '+%F %T')   log=${LOG}*"
 else
-    echo "### DOC CA FILE (khong co moc)   now=$(date '+%F %T')   log=$LOG"
+    echo "### DOC CA FILE (khong co moc)   now=$(date '+%F %T')   log=${LOG}*"
 fi
 echo
 
@@ -88,10 +93,23 @@ echo
 # vi ky tu `[` luon lon hon chu so dau cua moc, nen moi dong cu deu lot. Tach
 # dung 19 byte timestamp; dong khong co schema thoi gian khong duoc tu nhan la
 # nam trong cua so.
-since() { awk -v t="$MARK" '
+read_logs() {
+    # Stream current + rotated logs; never materialize a multi-GB window in
+    # /tmp.  Re-reading costs CPU, but this is a manual control-plane tool and
+    # bounded disk usage is the safer production tradeoff.
+    for f in "$LOG"*; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        case "$f" in
+            *.gz) gzip -cd -- "$f" 2>/dev/null ;;
+            *)    cat -- "$f" ;;
+        esac
+    done
+}
+
+since() { read_logs | awk -v t="$MARK" '
     length(t)==0 { print; next }
     substr($0,1,1)=="[" && substr($0,2,19)>=t { print }
-' "$LOG"; }
+'; }
 
 # `ip=` khong con la edge khi origin proof khoi phuc client thanh cong.  Dung
 # provenance do logger ghi, neu khong mau so se chi con cac request degraded va

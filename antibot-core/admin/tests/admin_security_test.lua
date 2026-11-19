@@ -142,6 +142,10 @@ ok(not valid({action="goodbot_dns_add", name="crawler:bad",
               suffixes="example.com"}, 128), "unsafe registry name rejected")
 ok(valid({action="ja3_block", hash=string.rep("a", 32)}, 64), "JA3 valid")
 ok(not valid({action="ja3_block", hash="not-a-hash"}, 64), "JA3 invalid")
+ok(valid({action="proxy_cf_enable", zone="Example.COM."}, 64),
+   "Cloudflare zone mutation valid")
+ok(not valid({action="proxy_cf_disable", zone="evil_example.com"}, 64),
+   "unsafe Cloudflare zone rejected")
 ok(not valid({action="future_action"}, 32), "unknown action rejected")
 ok(not valid({action="ua_sync"}, 9000), "decoded body size bounded")
 

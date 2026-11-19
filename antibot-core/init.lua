@@ -532,6 +532,12 @@ function _M.init_worker()
         -- lại file nếu ai đó lỡ xoá.
         waf_logger.ensure()
 
+        local ok_proxy, proxy_err = proxy_origin.init_worker()
+        if not ok_proxy then
+            ngx.log(ngx.ERR, "[init_worker] origin registry timer failed: ",
+                    tostring(proxy_err))
+        end
+
         local ok, err = ngx.timer.at(0, function(premature)
             if premature then return end
             local ok2, seed = pcall(require, "antibot.core.goodbot_seed")

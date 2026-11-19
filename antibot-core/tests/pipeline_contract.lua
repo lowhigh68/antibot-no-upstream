@@ -85,6 +85,10 @@ package.loaded["antibot.core.req_classifier"] = {
     run = function() event("classifier.full"); return true, false end,
 }
 package.loaded["antibot.core.proxy_origin"] = layer("proxy", "run")
+package.loaded["antibot.core.proxy_origin"].init_worker = function()
+    counts.proxy_registry_starts = (counts.proxy_registry_starts or 0) + 1
+    return true
+end
 package.loaded["antibot.core.actor_token"] = layer("actor.resolve", "resolve")
 package.loaded["antibot.core.session_richness"] = layer("richness", "run")
 package.loaded["antibot.core.iprep"] = layer("iprep", "check")
@@ -581,6 +585,8 @@ reset()
 worker_id = 1
 root.init_worker()
 eq(counts.memory_starts, 0, "worker khac 0 khong chay memory guard")
+eq(counts.proxy_registry_starts or 0, 0,
+   "worker khac 0 khong khoi dong origin registry timer")
 eq(counts.policy_loaded, 1,
    "moi worker nap active/LKG tren dia truoc khi phuc vu request")
 reset()
@@ -588,6 +594,8 @@ worker_id = 0
 root.init_worker()
 eq(counts.memory_starts, 1, "worker 0 chay memory guard dung mot lan")
 eq(counts.fleet_timer, 1, "worker 0 van khoi dong fleet timer")
+eq(counts.proxy_registry_starts, 1,
+   "worker 0 khoi dong origin registry dung mot lan")
 eq(counts.policy_loaded, 1,
    "worker 0 cung nap active/LKG dung mot lan")
 

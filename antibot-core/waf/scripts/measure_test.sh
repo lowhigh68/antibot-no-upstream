@@ -5,6 +5,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TMP=$(mktemp -d) || exit 2
 trap 'rm -rf "$TMP"' EXIT
 LOGF="$TMP/antibot.log"
+ROTF="$TMP/antibot.log.1"
 pass=0
 fail=0
 
@@ -15,14 +16,16 @@ ok() {
 }
 
 for i in 1 2 3 4 5; do
-    printf '[2026-11-18 10:00:0%s] [antibot] ts=1 domain=old.test class=navigation id=o%s ip=172.64.1.1 ua=x action=allow reason=score=0 px=cloudflare pxv=true pxcv=false pxagg=true pxsrc=proxy_edge pxerr=proof_missing pxhops=- pxsp=- pxtls=proxy_edge pxpf=missing pxpz=-\n' "$i" "$i" >> "$LOGF"
+    printf '[2026-11-18 10:00:0%s] [antibot] ts=1 domain=old.test class=navigation id=o%s ip=172.64.1.1 ua=x action=allow reason=score=0 px=cloudflare pxv=true pxcv=false pxagg=true pxsrc=proxy_edge pxerr=proof_missing pxhops=- pxsp=- pxtls=proxy_edge pxpf=missing pxpz=-\n' "$i" "$i" >> "$ROTF"
     printf '[2026-11-18 11:00:0%s] [antibot] ts=2 domain=new.test class=navigation id=n%s ip=8.8.8.%s ua=y action=allow reason=score=0 px=cloudflare pxv=true pxcv=true pxagg=false pxsrc=cf-connecting-ip pxerr=- pxhops=1 pxsp=- pxtls=proxy_edge pxpf=signed_current pxpz=new.test\n' "$i" "$i" "$i" >> "$LOGF"
 done
+printf '[2026-11-18 12:00:00] [antibot] ts=3 domain=rotated.test class=navigation id=r1 ip=8.8.4.4 ua=z action=allow reason=score=0 px=cloudflare pxv=true pxcv=true pxagg=false pxsrc=cf-connecting-ip pxerr=- pxhops=1 pxsp=- pxtls=proxy_edge pxpf=signed_current pxpz=rotated.test\n' >> "$ROTF"
+gzip "$ROTF"
 
 OUT=$(LOG="$LOGF" RCLI=/bin/true bash "$HERE/measure.sh" cf \
     "2026-11-18 10:30:00")
-ok grep -q '^5$' <<<"$OUT"
-ok grep -qE '^[[:space:]]*5 signed_current$' <<<"$OUT"
+ok grep -q '^6$' <<<"$OUT"
+ok grep -qE '^[[:space:]]*6 signed_current$' <<<"$OUT"
 ok grep -q 'new.test' <<<"$OUT"
 if grep -q 'old.test' <<<"$OUT"; then
     fail=$((fail+1)); echo "FAIL measure: row before marker leaked" >&2
@@ -30,7 +33,7 @@ else pass=$((pass+1)); fi
 
 OUT2=$(LOG="$LOGF" RCLI=/bin/true bash "$HERE/measure.sh" cf \
     "[2026-11-18 10:30:00]")
-ok grep -qE '^[[:space:]]*5 signed_current$' <<<"$OUT2"
+ok grep -qE '^[[:space:]]*6 signed_current$' <<<"$OUT2"
 
 LOG="$LOGF" RCLI=/bin/true bash "$HERE/measure.sh" cf bad-marker \
     >"$TMP/bad.out" 2>&1

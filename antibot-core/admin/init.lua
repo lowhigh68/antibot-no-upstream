@@ -2,6 +2,7 @@ local _M = {}
 local pool = require "antibot.core.redis_pool"
 local cjson = require "cjson"
 local admin_security = require "antibot.admin.security"
+local proxy_admin = require "antibot.admin.proxy"
 
 -- `limit` chỉ chặn số KẾT QUẢ, KHÔNG chặn số vòng quét — đó là lỗ hổng chi phí.
 -- Một mẫu ít khoá (`fl:dyn:*` 1 khoá / trần 500, `nonce:*`, `ban_ctx:*`) không
@@ -1361,6 +1362,28 @@ tr:hover td{background:#1c2129}
         <tbody id="t-ban-domain"></tbody>
       </table>
     </div>
+    <div class="card">
+      <h2>Cloudflare origin proof</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
+        Inventory comes from DirectAdmin, not observed Host headers. Enable creates
+        a pending V2 token. Cloudflare must <b>overwrite</b>
+        <code>X-Antibot-Origin-Proof</code>; Activate is allowed only after the
+        pending token has reached this origin. Disable revokes the generation
+        immediately; enabling again creates a different generation.
+      </div>
+      <div id="proxy-inventory-status" class="msg" style="display:none"></div>
+      <div id="proxy-token-box" style="display:none;margin-bottom:12px">
+        <div style="font-size:12px;color:#f0883e;margin-bottom:5px">
+          Copy this token now. Configure an OVERWRITE rule, wait for Seen, then Activate.
+        </div>
+        <textarea id="proxy-token" class="inp" readonly
+          style="width:100%;height:72px;font-family:monospace"></textarea>
+      </div>
+      <table><thead><tr>
+        <th>Domain / zone</th><th>Owner</th><th>State</th>
+        <th>Generation</th><th>Seen at origin</th><th>Action</th>
+      </tr></thead><tbody id="t-proxy-domains"></tbody></table>
+    </div>
   </div>
 
 </div><!-- -->
@@ -1687,6 +1710,69 @@ function adminCsrf(){
 }
 function adminHeaders(){
   return {'Content-Type':'application/json','X-Antibot-CSRF':adminCsrf()}
+}
+function proxyCell(tr,value,mono){
+  var td=document.createElement('td')
+  td.textContent=value===undefined||value===null?'-':String(value)
+  if(mono)td.className='mono'
+  tr.appendChild(td)
+  return td
+}
+function proxyAction(action,zone){
+  if(action==='proxy_cf_disable' && !confirm('Revoke Cloudflare proof for '+zone+'?'))return
+  fetch('/antibot-admin/proxy',{method:'POST',credentials:'include',headers:adminHeaders(),
+    body:JSON.stringify({action:action,zone:zone})
+  }).then(async r=>({ok:r.ok,data:await r.json()})).then(x=>{
+    if(!x.ok||!x.data.ok){alert(x.data.error||'Proxy update failed');return}
+    if(x.data.token){
+      document.getElementById('proxy-token').value=x.data.token
+      document.getElementById('proxy-token-box').style.display='block'
+    }
+    loadProxyDomains()
+  }).catch(e=>alert(String(e)))
+}
+function loadProxyDomains(){
+  fetch('/antibot-admin/proxy',{credentials:'include'})
+  .then(r=>r.json()).then(d=>{
+    var status=document.getElementById('proxy-inventory-status')
+    if(!d.ok||!d.inventory_ok){
+      status.className='msg err';status.style.display='block'
+      status.textContent=d.error||d.inventory_error||'Domain inventory unavailable'
+    }else{status.style.display='none'}
+    var body=document.getElementById('t-proxy-domains')
+    if(!body)return
+    body.textContent=''
+    var rows=(d.domains||[]).concat((d.orphaned||[]).map(function(x){
+      return {domain:x.zone,owner:'not in inventory',proxy_state:x.state,
+              generation:x.generation,seen:x.seen,orphan:true}
+    }))
+    rows.forEach(function(x){
+      var tr=document.createElement('tr')
+      proxyCell(tr,x.domain,true);proxyCell(tr,x.owner||'-')
+      var st=proxyCell(tr,x.proxy_state||'off')
+      st.style.color=x.proxy_state==='active'?'#3fb950':
+                     x.proxy_state==='pending'?'#f0883e':'#8b949e'
+      proxyCell(tr,x.generation?x.generation.substring(0,8):'-',true)
+      proxyCell(tr,x.seen?'yes':'no')
+      var act=document.createElement('td')
+      function button(label,cls,action){
+        var b=document.createElement('button');b.textContent=label
+        b.className='btn '+cls;b.style.marginRight='5px'
+        b.onclick=function(){proxyAction(action,x.domain)};act.appendChild(b)
+      }
+      if(x.proxy_state==='off'||x.proxy_state==='revoked')button('Enable','btn-green','proxy_cf_enable')
+      if(x.proxy_state==='pending'&&x.seen)button('Activate','btn-blue','proxy_cf_activate')
+      if(x.proxy_state==='pending'||x.proxy_state==='active')button('Disable','btn-red','proxy_cf_disable')
+      tr.appendChild(act);body.appendChild(tr)
+    })
+    if(rows.length===0){
+      var tr=document.createElement('tr');var td=document.createElement('td')
+      td.colSpan=6;td.textContent='No domains in DirectAdmin inventory';tr.appendChild(td);body.appendChild(tr)
+    }
+  }).catch(function(e){
+    var status=document.getElementById('proxy-inventory-status')
+    if(status){status.className='msg err';status.style.display='block';status.textContent=String(e)}
+  })
 }
 function wlAction(action,field,inputId){
   var val=document.getElementById(inputId).value.trim()
@@ -2018,6 +2104,7 @@ function renderWafFim(domain){
 function load(){
   renderFim()
   renderWafFim()
+  loadProxyDomains()
   fetch('/antibot-admin/data', {credentials:'include'})
   .then(r=>{
     if(!r.ok) throw new Error('HTTP '+r.status)
@@ -3332,6 +3419,21 @@ function _M.router()
     end
     if uri == "/antibot-admin/data" then
         return render_data()
+    end
+    if uri == "/antibot-admin/proxy" and method == "GET" then
+        return proxy_admin.render()
+    end
+    if uri == "/antibot-admin/proxy" and method == "POST" then
+        local allowed, status, message = admin_security.authorize_mutation(principal)
+        if not allowed then
+            admin_security.audit(principal, "proxy_mutation_gate", uri, "denied",
+                                 "-", message)
+            return admin_security.deny_mutation(status, message)
+        end
+        return proxy_admin.mutate(principal)
+    elseif uri == "/antibot-admin/proxy" then
+        ngx.header["Allow"] = "GET, POST"
+        return admin_security.deny_mutation(405, "GET or POST required")
     end
     if uri == "/antibot-admin/wl" and method == "POST" then
         local allowed, status, message = admin_security.authorize_mutation(principal)

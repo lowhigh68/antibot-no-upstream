@@ -207,6 +207,9 @@ local GOODBOT_DELETE_ACTIONS = {
 local JA3_ACTIONS = {
     ja3_allow = true, ja3_block = true, ja3_remove = true,
 }
+local PROXY_ACTIONS = {
+    proxy_cf_enable = true, proxy_cf_activate = true, proxy_cf_disable = true,
+}
 
 local function plain_string(value, minimum, maximum)
     return type(value) == "string"
@@ -292,6 +295,21 @@ function _M.validate_payload(req, body_size)
         if type(req.hash) ~= "string" or #req.hash ~= 32
            or req.hash:match("^[0-9A-Fa-f]+$") == nil then
             return false, "invalid JA3 hash"
+        end
+        return true
+    end
+    if PROXY_ACTIONS[action] then
+        if not plain_string(req.zone, 3, 253) then return false, "invalid zone" end
+        local zone = req.zone:lower():gsub("%.$", "")
+        if not zone:find("%.") or zone:find("..", 1, true) then
+            return false, "invalid zone"
+        end
+        for label in zone:gmatch("[^.]+") do
+            if #label > 63
+               or (not label:match("^[a-z0-9][a-z0-9%-]*[a-z0-9]$")
+                   and not label:match("^[a-z0-9]$")) then
+                return false, "invalid zone"
+            end
         end
         return true
     end

@@ -46,7 +46,7 @@ None at init phase — first module to run.
 - 2026-11-18 — **Origin proof thay thế inventory host Cloudflare thủ công.**
   `core/proxy_origin.lua` vẫn bắt buộc TCP peer thuộc CIDR đã compile, nhưng
   Cloudflare chỉ được khôi phục `CF-Connecting-IP` khi có thêm
-  `X-Antibot-Origin-Proof: v1.<zone>.<HMAC>` hợp lệ. MAC được bind với cả tên
+  `X-Antibot-Origin-Proof: v2.<zone>.<generation>.<HMAC>` hợp lệ. MAC được bind với cả tên
   rule và zone; token apex chỉ phủ apex/subdomain đúng biên, không xuyên zone.
   Edge phải **ghi đè** header, không phải thêm khi thiếu. Current/previous key
   nằm riêng trong `/etc/antibot/secrets.json`, không dùng lại PoW/actor secret.
@@ -56,6 +56,15 @@ None at init phase — first module to run.
   định danh client tức thời, không hồi sinh án xuyên CGNAT/proxy. Proxy generic
   riêng vẫn dùng CIDR+host; mạng proxy dùng chung có thể bật cùng proof bằng
   `require_origin_proof=true` mà không cần inventory host.
+  Token V2 không tự cấp quyền chỉ vì MAC đúng: `core/origin_registry.lua` đọc
+  Redis ở worker-0 timer, đưa `(rule, zone, generation, state)` vào shared dict,
+  và hot path chỉ chấp nhận đúng generation đang `active`. Admin liệt kê domain
+  từ `/etc/virtual/domainowners`; Enable tạo `pending`, request edge đầu tiên chỉ
+  đánh dấu `seen` và vẫn aggregate, Activate mới restore client IP. Disable đổi
+  sang `revoked`; re-enable sinh generation mới. Chữ ký cache không cache trạng
+  thái registry, nên revoke có hiệu lực cả khi token đã từng cache hợp lệ.
+  Timer chỉ được root pipeline khởi động trên worker 0. Đồng bộ nhiều zone dùng
+  `SMEMBERS + MGET` (hai round-trip cố định), không dùng một `GET` cho mỗi zone.
 - 2026-09-19 — **`proxy_origin.lua` (MỚI) — domain sau Cloudflare: `ctx.ip` là địa chỉ EDGE nên mọi tầng khoá theo IP đang gom hàng trăm khách thật thành một thực thể.**
   - **Số liệu buộc phải có tầng này (cloud171-96, `in3mien.com`):** **431 IP edge phục vụ 456 identity**, trong đó **218 lượt có cookie thật** (`rown` 0,65 và 0,80). `rate:<ip>`, `ip_risk:<ip>`, `ext_rep`, `ip_tour` đều tính họ như một. Quy mô: **6 host sau CF trên 171-96, 5 trên 183-139**.
   - **Cơ chế mới:** `core/proxy_origin.lua` ghép **TCP peer CIDR + host scope + đúng một header được phép**. Cloudflare có IPv4/IPv6 chính thức; proxy khác khai rule trong `cfg.proxy_origin`. Client IP hợp lệ được khôi phục vào `ctx.ip` và vẫn chịu toàn pipeline. Chỉ khi header thiếu/hỏng mới đặt `ctx.ip_is_aggregate=true` để cấm phán quyết IP tập thể. Không còn `SADD waf:proxyhosts <host>` vì host đơn độc không chứng minh được proxy.

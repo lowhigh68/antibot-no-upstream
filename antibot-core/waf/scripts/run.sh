@@ -172,6 +172,8 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/pipeline_contract.lua" || rc=1
 
 echo "-- trusted proxy / Cloudflare provenance contract --------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/proxy_origin_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/origin_registry_contract.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}tests/domain_inventory_contract.lua" || rc=1
 
 echo "-- protected secret contract -----------------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/secrets_contract.lua" || rc=1
@@ -180,6 +182,7 @@ lua_suite "$RESTY" "${ANTIBOT_SRC}tests/actor_token_contract.lua" || rc=1
 echo "-- admin mutation security contract ----------------------"
 lua_suite "$RESTY" --shdict "antibot_cache 1m" \
   "${ANTIBOT_SRC}admin/tests/admin_security_test.lua" || rc=1
+lua_suite "$RESTY" "${ANTIBOT_SRC}admin/tests/proxy_admin_test.lua" || rc=1
 
 echo "-- canonical decision ledger contract --------------------"
 lua_suite "$RESTY" "${ANTIBOT_SRC}tests/decision_contract.lua" || rc=1

@@ -57,6 +57,10 @@ _M.redis = {
 -- host-bound X-Antibot-Origin-Proof generated from `origin_proof.current` in
 -- /etc/antibot/secrets.json.  The edge must OVERWRITE this header.  A token for
 -- example.com covers example.com and its subdomains, never another zone.
+-- V2 tokens also carry a 128-bit generation.  Cryptography is not enough:
+-- `origin_registry` must mark the exact (rule, zone, generation) active in the
+-- shared-memory registry. Admin disable/re-enable therefore revokes old tokens
+-- without rotating the fleet secret or reloading workers.
 --
 -- A dedicated custom proxy may keep explicit host scope.  A shared custom
 -- proxy can set `require_origin_proof=true` and omit hosts, using the same
