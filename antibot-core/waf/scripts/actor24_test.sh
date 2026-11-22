@@ -39,13 +39,24 @@ else
 fi
 ARCHIVE=$(printf '%s\n' "$OUTPUT" | sed -n 's/^ACTOR24_READY file=//p')
 
-[ -f "$ARCHIVE" ]
+fail() {
+    echo "FAIL actor24_test: $*" >&2
+    exit 1
+}
+
+[ -n "$ARCHIVE" ] || fail "actor24.sh did not return an archive path"
+[ -f "$ARCHIVE" ] || fail "archive not found: $ARCHIVE"
 REPORT=$(gzip -cd "$ARCHIVE")
 
 PASS=0
 check() {
     local pattern=$1
-    printf '%s\n' "$REPORT" | grep -qE "$pattern"
+    # Do not use `printf REPORT | grep -q` under pipefail.  On a host with a
+    # small pipe buffer grep exits after the first match, printf receives
+    # SIGPIPE, and a TRUE assertion silently becomes rc=141.  A here-string
+    # has no producer process and therefore behaves identically on every node.
+    grep -qE "$pattern" <<< "$REPORT" \
+        || fail "missing report pattern: $pattern"
     PASS=$((PASS + 1))
 }
 
