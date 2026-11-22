@@ -721,6 +721,7 @@ function _M.run(ctx)
             " dgmode=%s dgscope=%s dgtn=%s/%s dgsn=%s/%s" ..
             " dgwould=%s dgthr=%s dgcause=%s" ..
             " dgph=%s/%s dgpd=%s/%s dgpc=%s/%s dgpath=%s dguri=%s" ..
+            " qch=%s qcd=%s" ..
             " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
             " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
             " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
@@ -751,6 +752,8 @@ function _M.run(ctx)
             tostring(ctx.dynamic_path_costly_limit or "-"),
             tostring(ctx.dynamic_path_candidate or false),
             tostring(ctx.dynamic_uri_shape or "-"),
+            tostring(ctx.query_churn_hits or "-"),
+            tostring(ctx.query_churn_distinct or "-"),
             tostring(ctx.dynamic_pressure_open or false),
             tostring(ctx.dynamic_pressure_mode or "-"),
             tostring(ctx.dynamic_pressure_would_reject or false),

@@ -1027,6 +1027,24 @@ _M.dynamic_guard = {
         costly_seconds = 2.0,
         status         = 429,
     },
+    -- Generic query-mutation telemetry.  This is deliberately not a
+    -- WooCommerce or parameter-name rule: it measures query-bearing requests
+    -- and distinct query fingerprints for each source/docroot/page lane.
+    --
+    -- Incident 22-11-2026, linhnhataudio.com: one source produced 99 valid
+    -- HTML navigations in 50s, 305.943 upstream-seconds and only 1-4 paths per
+    -- 10s window.  `path_spray` saw hits/cost but correctly missed because its
+    -- diversity axis is URI-only.  That single incident proves the axis, not
+    -- an enforcement threshold: production needs a real-user distribution
+    -- (including legitimate filters/search) before any candidate or 429.
+    -- Query values are represented by bounded hash shards; no raw name or
+    -- value enters a key or log.
+    query_churn = {
+        mode           = "shadow",
+        window         = 10,
+        query_shards   = 64,
+        max_query_bytes = 2048,
+    },
     -- Protocol invariant, not a content signature: one request-target path
     -- must not contain a second absolute HTTP target serialized after a list
     -- separator.  Production saw the candidate only from distributed no-cookie

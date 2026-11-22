@@ -665,6 +665,19 @@ do
        "path spray can da dang path")
     eq((dg.path_spray or {}).min_costly, 2,
        "path spray can completed-cost evidence")
+    eq((dg.query_churn or {}).mode, "shadow",
+       "generic query churn chi do production distribution")
+    eq((dg.query_churn or {}).window, 10,
+       "query churn co cua so do co dinh")
+    eq((dg.query_churn or {}).query_shards, 64,
+       "query churn distinct co key-space bi chan")
+    for _, threshold in ipairs({
+        "min_hits", "min_queries", "max_paths", "min_costly",
+        "min_inflight", "status",
+    }) do
+        eq((dg.query_churn or {})[threshold], nil,
+           "query churn phase 1 khong co verdict threshold " .. threshold)
+    end
     eq((dg.uri_integrity or {}).mode, "enforce",
        "generic URI integrity enforce protocol invariant")
     eq((dg.pressure or {}).mode, "enforce",
@@ -830,6 +843,7 @@ do
         " dgmode=", " dgscope=", " dgtn=", " dgsn=", " dgwould=",
         " dgthr=", " dgcause=", " dgph=", " dgpd=", " dgpc=",
         " dgpath=", " dguri=", " dgpopen=", " dgpmode=",
+        " qch=", " qcd=",
         " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
         " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
         " dgppol=", " dgpsel=", " dgpswould=", " dgpsthr=",

@@ -229,7 +229,7 @@ end
 -- Accept both a map (`navigation=true`) and an array (`{"navigation"}`) so a
 -- compiled JSON policy can express the same bounded class set as the builtin
 -- policy.  With no explicit set, preserve the safe builtin default.
-local function path_spray_lane(ctx, spec)
+local function semantic_lane(ctx, spec)
     local class = tostring((ctx and ctx.req_class) or "unknown")
     local classes = spec.enforce_classes
     local enforce_class
@@ -264,7 +264,7 @@ end
 
 local function observe_paths(dict, ctx, c, scope, source, t)
     local spec = type(c.path_spray) == "table" and c.path_spray or {}
-    local lane, mode = path_spray_lane(ctx, spec)
+    local lane, mode = semantic_lane(ctx, spec)
     ctx.dynamic_path_lane = lane
     ctx.dynamic_path_mode = mode
     if mode == "off" then return false end
@@ -325,6 +325,99 @@ local function observe_paths(dict, ctx, c, scope, source, t)
         and costly >= min_costly
     ctx.dynamic_path_candidate = candidate
     return candidate
+end
+
+-- Measure query-bearing hits and distinct query fingerprints.  The query is
+-- never parsed into a framework/parameter vocabulary and never retained:
+-- only a bounded hash-shard number is used.  There is deliberately no
+-- candidate or verdict here.  One attack incident proves that this axis is
+-- useful, but not where legitimate filter/search traffic sits on p95/p99.
+local function bounded_query_material(raw, max_bytes)
+    raw = tostring(raw or "")
+    if raw == "" then return nil end
+    max_bytes = math.max(math.min(math.floor(
+        tonumber(max_bytes) or 2048), 8192), 128)
+    if #raw <= max_bytes then return raw end
+    local half = math.floor((max_bytes - 24) / 2)
+    return raw:sub(1, half) .. ":" .. tostring(#raw) .. ":"
+        .. raw:sub(-half)
+end
+
+local function query_source(ctx, fallback)
+    -- Prefer the signed host-bound actor only when the client PRESENTED it.
+    -- `actor_issued_id` from this response is telemetry and must never become
+    -- a subject.  This keeps office/CGNAT users separate without letting an
+    -- attacker supply an arbitrary key.
+    local actor = ctx and ctx.actor_id
+    if ctx and ctx.actor_presented == true and ctx.actor_valid == true
+       and type(actor) == "string" and #actor == 32
+       and actor:match("^[0-9a-f]+$") then
+        return digest("actor:" .. actor), "actor"
+    end
+
+    -- Label aggregate/shared populations so their distribution can be split
+    -- from direct clients during analysis.  This module has no verdict while
+    -- query churn is telemetry-only.
+    local collective = ctx and (ctx.ip_is_aggregate == true
+        or ctx.ip_shared_verified == true)
+    return fallback, collective and "aggregate" or "ip"
+end
+
+local function observe_query_churn(dict, ctx, c, scope, source, t)
+    local spec = type(c.query_churn) == "table" and c.query_churn or {}
+    local lane, mode = semantic_lane(ctx, spec)
+    local query_id, source_kind = query_source(ctx, source)
+    ctx.dynamic_query_lane = lane
+    ctx.dynamic_query_mode = mode
+    ctx.dynamic_query_source_kind = source_kind
+    if mode == "off" then return false end
+
+    local method = tostring(ngx.var.request_method
+        or (ctx.req and ctx.req.method) or "GET"):upper()
+    if method ~= "GET" and method ~= "HEAD" then return false end
+
+    local material = bounded_query_material(
+        ngx.var.args, spec.max_query_bytes)
+    if not material then return false end
+
+    local window = math.max(math.floor(tonumber(spec.window) or 10), 1)
+    local bucket = math.floor(t / window)
+    local ttl = window * 2 + 2
+    local base = "dg:query:" .. scope .. ":" .. query_id .. ":" .. lane
+        .. ":" .. tostring(bucket)
+    local hits, hit_err = increment(dict, base .. ":hits", 1, ttl)
+    if not hits then
+        ctx.dynamic_guard_degraded = true
+        log_dict_error("query_hits", hit_err)
+        return false
+    end
+
+    local query_shards = math.max(math.min(math.floor(
+        tonumber(spec.query_shards) or 64), 128), 8)
+    local query_shard = path_shard(material, query_shards)
+    local query_key = base .. ":queries"
+    local queries = tonumber(dict:get(query_key)) or 0
+    if queries < query_shards then
+        local added, add_err = dict:add(
+            base .. ":qseen:" .. tostring(query_shard), 1, ttl)
+        if added then
+            local n, nerr = increment(dict, query_key, 1, ttl)
+            if n then
+                queries = n
+            else
+                ctx.dynamic_guard_degraded = true
+                log_dict_error("query_distinct", nerr)
+            end
+        elseif add_err ~= "exists" then
+            ctx.dynamic_guard_degraded = true
+            log_dict_error("query_seen", add_err)
+        end
+    end
+
+    ctx.dynamic_query_observed = true
+    ctx.query_churn_hits = hits
+    ctx.query_churn_distinct = queries
+    return false
 end
 
 -- A request-target is one URI.  A second absolute HTTP target serialized into
@@ -939,6 +1032,13 @@ function _M.admit(ctx)
     local spray_mode = tostring(ctx.dynamic_path_mode
         or spray_spec.mode or "off")
     if spray then add("path_spray", spray_mode) end
+
+    -- Query churn is independent from URI diversity.  Phase 1 only records
+    -- qch/qcd for a real-user distribution; it never adds a cause or verdict.
+    -- Static misses are excluded so broken asset fan-out does not pollute it.
+    if not miss_bypass then
+        observe_query_churn(dict, ctx, c, scope, source, t)
+    end
 
     local uri_invalid, uri_mode = observe_uri_integrity(ctx, c)
     if uri_invalid then add("uri_integrity", uri_mode) end

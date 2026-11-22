@@ -14,7 +14,7 @@ security signals and reject identities that already have a supported ban.
 |---|---|---|
 | `admission.lua` | Mandatory local fixed-bucket budgets: global, host, host-group, route-shard and IP. Reuses the existing `antibot_cache`; internal endpoint handlers call it directly. Returns 429 only, never writes reputation/ban. **Static MISS is charged to the `dynamic` budget, not `resource`** — it probes `document_root .. uri` on disk (cached, short TTL) because `try_files` sends a miss to `@static_backend` → Apache/PHP, which is dynamic load whatever the extension says |
 | `surge_guard.lua` | Lua-only per-host dynamic in-flight guard. `before()` rejects an already-full host early in enforce mode; `admit()` atomically acquires only after WAF/antibot allows the request; `after()` releases exactly once in log phase. Static hits, subrequests and local blocks do not consume slots. Shadow by default; `sgdur` vs `sgup` exposes slow-client/buffering overcount before enforcement |
-| `dynamic_guard.lua` | Generic docroot/source and server/source live concurrency, bounded distinct-path spray, request-target integrity and completed-upstream-work pressure. No CMS/endpoint/plugin patterns; all axes ship shadow and fail open |
+| `dynamic_guard.lua` | Generic docroot/source and server/source live concurrency, bounded distinct-path spray, query-mutation distribution telemetry (`qch`/`qcd` only; no verdict yet), request-target integrity and completed-upstream-work pressure. No CMS/endpoint/plugin patterns; all axes fail open |
 | `principal_churn.lua` | Generic temporary quarantine telemetry when one IP or IP+JA3 claims several canonical automation principals. Reverse-proxy edges are skipped; no score or durable ban; shadow by default |
 | `circuit_breaker.lua` | Per-host backend health gate. Learns **only** from requests that reached an upstream (`ngx.var.upstream_status`), and only from dynamic ones — so static hits keep being served while an unhealthy PHP path is open. Only hard failures (502/503/504) open the state machine; a slow 200 is recorded as `cbslowcand` but **never** sheds traffic. 503 + `Retry-After`, never a ban |
 | `init.lua` | Per-class Redis L7 orchestrator: `ban_store`, `rate.counter`, `adaptive_limit`, `burst_counter`, `burst_decision` |
@@ -37,7 +37,7 @@ security signals and reject identities that already have a supported ban.
 `surge_state/mode/inflight/limit/use/remaining/would_reject/transition/degraded`,
 `surge_duration/upstream_time/sampled/slot_expired` (capacity telemetry, never reputation),
 `dynamic_guard_*`, `dynamic_tenant_*`, `dynamic_server_*`, `dynamic_path_*`,
-`dynamic_uri_*`, `dynamic_pressure_*`, `principal_churn_*` (generic capacity
+`query_churn_*` (`qch`/`qcd`), `dynamic_uri_*`, `dynamic_pressure_*`, `principal_churn_*` (generic capacity
 telemetry; never reputation),
 `circuit_state/mode/cause/would_reject/probe/probe_stale/no_sample/degraded`,
 `circuit_total/rps/slow_ratio/hard_ratio/slow_candidate/open_until/transition`,
@@ -47,7 +47,8 @@ telemetry; never reputation),
 ## ctx fields read
 `ip`, `identity`, `fp_light`, `ua`, `req.uri`, `req_class`, `rate_weight`,
 `score_multiplier`, `session_richness_own`, `session_cookie_known`,
-`ip_shared_verified`, `behind_proxy`, `ip_is_aggregate`, `skip_layers`, `skip_rate`.
+`actor_id`, `actor_presented`, `actor_valid`, `ip_shared_verified`,
+`behind_proxy`, `ip_is_aggregate`, `skip_layers`, `skip_rate`.
 `behind_proxy` chỉ mô tả topology; chỉ `ip_is_aggregate=true` (không khôi phục
 được end-client) mới được miễn phán quyết tập thể theo IP. Client đã restore
 vẫn chịu đầy đủ admission/rate/ban như direct traffic.
@@ -72,7 +73,8 @@ FULL/INT → ban_store             → 403 if identity ban is enforceable
          → burst_decision        → burst signal
 ALLOW    → principal_churn.admit  → add JA3-backed churn evidence if present
          → dynamic_guard.admit    → acquire (docroot,IP) + (server,IP) slots;
-                                     observe bounded path/URI shape
+                                     observe bounded path/URI shape and
+                                     query qch/qcd distribution (no verdict)
          → surge_guard.admit      → atomically acquire one host dynamic slot
                                      after all local block/challenge decisions
 LOG      → dynamic_guard.after    → release source slots; learn completed

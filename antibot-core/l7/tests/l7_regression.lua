@@ -2817,6 +2817,173 @@ eq(page3.action_reason, "dynamic_guard:path_spray",
 eq(exits[#exits], 429, "page lane still returns configured 429")
 dynamic_guard.after(page2)
 
+-- Query mutation is a separate generic axis from URI diversity.  Production
+-- 22-11 showed 99 slow navigations with many query values but only 1-4 paths
+-- per window: path-spray had enough hits/cost and still (correctly) stayed
+-- false.  Query churn must catch that shape without naming a CMS, plugin or
+-- parameter and without retaining raw query data.
+local function query_churn_contract()
+fake_ngx.shared.antibot_cache = Dict.new()
+local old_tenant_mode = cfg.dynamic_guard.tenant_client.mode
+local old_server_mode = cfg.dynamic_guard.server_client.mode
+local old_path_mode = cfg.dynamic_guard.path_spray.mode
+local old_query_churn = cfg.dynamic_guard.query_churn
+cfg.dynamic_guard.tenant_client.mode = "off"
+cfg.dynamic_guard.server_client.mode = "off"
+cfg.dynamic_guard.path_spray.mode = "off"
+cfg.dynamic_guard.query_churn = {
+    mode = "shadow", window = 10,
+    query_shards = 64, max_query_bytes = 256,
+}
+clock = 3370
+exits = {}
+
+-- Phase 1 measures the distribution only.  Four different query
+-- fingerprints must produce qch=4/qcd=4 without a candidate, cause or 429.
+local query_items = {}
+for i = 1, 4 do
+    local path = i <= 2 and "/catalog/one" or "/catalog/two"
+    fake_ngx.var.uri = path
+    fake_ngx.var.request_uri = path .. "?choice=" .. tostring(i)
+    fake_ngx.var.args = "choice=" .. tostring(i)
+    fake_ngx.var.request_method = "GET"
+    local item = dgctx("198.51.100.125", path)
+    item.req_class = "navigation"
+    query_items[i] = item
+    local _, query_exit = dynamic_guard.admit(item)
+    eq(query_exit, false, "query telemetry khong tao verdict")
+    eq(item.query_churn_hits, i, "qch dem query-bearing arrival")
+    eq(item.query_churn_distinct, i, "qcd dem fingerprint khac nhau")
+    eq(item.dynamic_query_candidate, nil,
+       "phase 1 khong ton tai query candidate")
+    ok(item.action_reason ~= "dynamic_guard:query_churn",
+       "phase 1 khong tao query cause")
+end
+for key in pairs(fake_ngx.shared.antibot_cache.data) do
+    ok(not tostring(key):find("choice=", 1, true),
+       "query raw khong nam trong shared-dict key")
+end
+eq(#exits, 0, "query telemetry khong goi ngx.exit")
+
+-- Repeating one legitimate filter/refresh increases qch but not qcd.  This is
+-- the production distribution needed before choosing any min_churn.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3380
+local repeat_last
+for i = 1, 5 do
+    fake_ngx.var.uri = "/search"
+    fake_ngx.var.request_uri = "/search?q=stable"
+    fake_ngx.var.args = "q=stable"
+    local item = dgctx("198.51.100.126", "/search")
+    item.req_class = "navigation"
+    local _, repeat_exit = dynamic_guard.admit(item)
+    eq(repeat_exit, false, "query lap lai chi telemetry")
+    repeat_last = item
+end
+eq(repeat_last.query_churn_hits, 5,
+   "qch giu tong query-bearing request")
+eq(repeat_last.query_churn_distinct, 1,
+   "qcd giu mot fingerprint cho query lap")
+
+-- Application and page traffic have separate populations so an editor/REST
+-- fan-out cannot distort the customer-navigation percentile.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3390
+for i = 1, 3 do
+    fake_ngx.var.uri = "/api/items"
+    fake_ngx.var.request_uri = "/api/items?v=" .. tostring(i)
+    fake_ngx.var.args = "v=" .. tostring(i)
+    local item = dgctx("198.51.100.127", "/api/items")
+    item.req_class = "interaction"
+    local _, app_exit = dynamic_guard.admit(item)
+    eq(app_exit, false, "application query chi telemetry")
+    eq(item.dynamic_query_lane, "application",
+       "application query co population rieng")
+end
+fake_ngx.var.uri = "/page"
+fake_ngx.var.request_uri = "/page?v=page"
+fake_ngx.var.args = "v=page"
+local clean_page = dgctx("198.51.100.127", "/page")
+clean_page.req_class = "navigation"
+local _, clean_page_exit = dynamic_guard.admit(clean_page)
+eq(clean_page_exit, false, "page query chi telemetry")
+eq(clean_page.dynamic_query_lane, "page", "page query co population rieng")
+eq(clean_page.query_churn_hits, 1,
+   "application telemetry khong poison page distribution")
+
+-- Static misses rewritten through PHP are not customer query churn and must
+-- not enter qch/qcd, even when the missing asset itself carries a query.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3400
+fake_ngx.var.uri = "/assets/missing.css"
+fake_ngx.var.request_uri = "/assets/missing.css?v=one"
+fake_ngx.var.args = "v=one"
+local query_miss = dgctx("198.51.100.128", "/assets/missing.css")
+query_miss.req_class = "resource"
+query_miss.admission_group = "dynamic"
+query_miss.resource_actual = false
+local _, query_miss_exit = dynamic_guard.admit(query_miss)
+eq(query_miss_exit, false, "static miss query khong bi phan quyet")
+eq(query_miss.query_churn_hits, nil,
+   "static miss khong vao qch distribution")
+eq(query_miss.query_churn_distinct, nil,
+   "static miss khong vao qcd distribution")
+
+-- A returned signed actor is the measurement subject.  Two devices sharing
+-- one IP must not inflate each other's qch/qcd values.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3410
+local function actor_query(actor, value)
+    fake_ngx.var.uri = "/actor-filter"
+    fake_ngx.var.request_uri = "/actor-filter?v=" .. value
+    fake_ngx.var.args = "v=" .. value
+    local item = dgctx("198.51.100.129", "/actor-filter")
+    item.req_class = "navigation"
+    item.actor_id = actor
+    item.actor_presented = true
+    item.actor_valid = true
+    return item, select(2, dynamic_guard.admit(item))
+end
+local actor_a = string.rep("a", 32)
+local actor_b = string.rep("b", 32)
+local actor_a1, actor_a1_exit = actor_query(actor_a, "one")
+eq(actor_a1_exit, false, "actor A telemetry qua")
+local actor_b1, actor_b1_exit = actor_query(actor_b, "two")
+eq(actor_b1_exit, false, "actor B telemetry qua")
+eq(actor_b1.query_churn_hits, 1,
+   "actor B khong ke thua qch cua actor A")
+eq(actor_b1.query_churn_distinct, 1,
+   "actor B khong ke thua qcd cua actor A")
+local actor_a2, actor_a2_exit = actor_query(actor_a, "three")
+eq(actor_a2_exit, false, "actor A van chi telemetry")
+eq(actor_a2.query_churn_hits, 2, "actor A co qch rieng")
+eq(actor_a2.query_churn_distinct, 2, "actor A co qcd rieng")
+eq(actor_a2.dynamic_query_source_kind, "actor",
+   "signed presented actor la measurement subject")
+
+-- No query means no row in the churn distribution.
+fake_ngx.shared.antibot_cache = Dict.new()
+fake_ngx.var.uri = "/plain"
+fake_ngx.var.request_uri = "/plain"
+fake_ngx.var.args = nil
+local no_query = dgctx("198.51.100.130", "/plain")
+no_query.req_class = "navigation"
+local _, no_query_exit = dynamic_guard.admit(no_query)
+eq(no_query_exit, false, "request khong query van qua")
+eq(no_query.query_churn_hits, nil, "khong query thi qch rong")
+eq(no_query.query_churn_distinct, nil, "khong query thi qcd rong")
+
+fake_ngx.var.args = nil
+fake_ngx.var.request_method = nil
+fake_ngx.var.upstream_status = nil
+fake_ngx.var.upstream_response_time = nil
+cfg.dynamic_guard.tenant_client.mode = old_tenant_mode
+cfg.dynamic_guard.server_client.mode = old_server_mode
+cfg.dynamic_guard.path_spray.mode = old_path_mode
+cfg.dynamic_guard.query_churn = old_query_churn
+end
+query_churn_contract()
+
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_cache.full = true
 local de_full = dgctx("198.51.100.121")
