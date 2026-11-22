@@ -13,7 +13,7 @@ IP=108.206.38.169
 
 cat > "$PLAIN" <<'EOF'
 108.206.38.169 - - [22/Nov/2026:17:48:09 +0700] "GET /old?a=old HTTP/2.0" 200 1 "-" "ua"
-108.206.38.169 - - [22/Nov/2026:17:48:10 +0700] "GET /audio?a=1 HTTP/2.0" 200 1 "-" "ua"
+108.206.38.169 [22/Nov/2026:17:48:10 +0700] "GET /audio?a=1 HTTP/2.0" 200 score=- action=- fp=- tls13=- ja3_partial=- 0.231s
 108.206.38.169 - - [22/Nov/2026:17:48:11 +0700] "GET /audio?a=2 HTTP/2.0" 200 1 "-" "ua"
 108.206.38.169 - - [22/Nov/2026:17:48:12 +0700] "GET /audio HTTP/2.0" 200 1 "-" "ua"
 203.0.113.9 - - [22/Nov/2026:17:48:12 +0700] "GET /audio?a=other HTTP/2.0" 200 1 "-" "ua"
@@ -21,7 +21,7 @@ not-an-access-line
 EOF
 
 cat > "$TMP/rotated" <<'EOF'
-108.206.38.169 - - [22/Nov/2026:17:48:12 +0700] "HEAD /audio?a=3 HTTP/1.1" 200 1 "-" "ua"
+108.206.38.169 [22/Nov/2026:17:48:12 +0700] "HEAD /audio?a=3 HTTP/1.1" 200 score=- action=- fp=- tls13=- ja3_partial=- 0.112s
 108.206.38.169 - - [22/Nov/2026:17:48:13 +0700] "GET /audio?a=4 HTTP/1.1" 200 1 "-" "ua"
 EOF
 gzip -c "$TMP/rotated" > "$ROTATED"

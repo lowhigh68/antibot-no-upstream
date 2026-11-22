@@ -42,7 +42,14 @@ end
 
 local function parse_line(line)
     local ip, day, mon, year, hour, minute, second, zone, method, target =
-        line:match('^(%S+)%s+%S+%s+%S+%s+%[(%d%d)/(%a%a%a)/(%d%d%d%d):(%d%d):(%d%d):(%d%d)%s+([+-]%d%d%d%d)%]%s+"([A-Z]+)%s+([^%s]+)%s+HTTP/')
+        line:match('^(%S+)%s+%[(%d%d)/(%a%a%a)/(%d%d%d%d):(%d%d):(%d%d):(%d%d)%s+([+-]%d%d%d%d)%]%s+"([A-Z]+)%s+([^%s]+)%s+HTTP/')
+    if not ip then
+        -- Apache/Combined format.  The OpenResty front log above deliberately
+        -- omits the two identity fields, so keep both grammars explicit: a
+        -- permissive "anything before [" pattern could accept unrelated logs.
+        ip, day, mon, year, hour, minute, second, zone, method, target =
+            line:match('^(%S+)%s+%S+%s+%S+%s+%[(%d%d)/(%a%a%a)/(%d%d%d%d):(%d%d):(%d%d):(%d%d)%s+([+-]%d%d%d%d)%]%s+"([A-Z]+)%s+([^%s]+)%s+HTTP/')
+    end
     local month = months[mon]
     if not ip or not month then return nil end
     local ts = civil_epoch(tonumber(year), month, tonumber(day),
