@@ -1434,6 +1434,17 @@ end
 package.preload["antibot.core.redis_pool"] = function()
     return { safe_get = function() return nil end, safe_mget = function() return nil end }
 end
+-- `waf/init.lua` now records canonical decisions.  This end-to-end fixture
+-- loads the WAF directly from the source tree, outside the production
+-- lua_package_path, so every real root dependency must be wired explicitly.
+-- Missing these two modules used to make all 68 section 29/30 assertions
+-- return an empty string while stderr was discarded.
+package.preload["antibot.core.policy_meta"] = function()
+    return dofile(SRC .. "core/policy_meta.lua")
+end
+package.preload["antibot.core.decision"] = function()
+    return dofile(SRC .. "core/decision.lua")
+end
 local pool = require("antibot.core.redis_pool")
 local waf  = dofile(SRC .. "waf/init.lua")
 

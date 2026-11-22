@@ -32,7 +32,7 @@ PASS=0
 
 check() {
     local pattern=$1
-    printf '%s\n' "$OUT" | grep -qE "$pattern"
+    grep -qE "$pattern" <<< "$OUT"
     PASS=$((PASS + 1))
 }
 
@@ -45,9 +45,42 @@ check '^QCHREPLAY_OK$'
 
 PREFIX_OUT=$(QCH_PATH_PREFIX=/none/ bash "$HERE/qchreplay.sh" \
     "$FROM" "$TO" "$IP" "$PLAIN" "$ROTATED")
-printf '%s\n' "$PREFIX_OUT" | grep -q '^QCHREPLAY_EMPTY$'
-printf '%s\n' "$PREFIX_OUT" | grep -q '^path_prefix=/none/$'
+grep -q '^QCHREPLAY_EMPTY$' <<< "$PREFIX_OUT"
+grep -q '^path_prefix=/none/$' <<< "$PREFIX_OUT"
 PASS=$((PASS + 2))
+
+# Bucket identity must include the source.  Without the IP component the
+# second source below is folded into the first source's bucket, inflating qch
+# and turning unrelated visitors into one apparent campaign.
+ALL_OUT=$(bash "$HERE/qchreplay.sh" "$FROM" "$TO" - "$PLAIN" "$ROTATED")
+grep -q '^read=8 parsed=7 selected=6 path_skipped=0 bad=1 query_events=5 sources=2 buckets=2$' \
+    <<< "$ALL_OUT"
+PASS=$((PASS + 1))
+
+# These raw queries collide when a mutant uses only the first four MD5 hex
+# characters modulo 64, but occupy different shards with the production eight
+# characters.  Four ordinary queries cannot distinguish those algorithms.
+HASHLOG="$TMP/hash.log"
+cat > "$HASHLOG" <<'EOF'
+108.206.38.169 [22/Nov/2026:17:48:20 +0700] "GET /audio?probe9 HTTP/2.0" 200 score=- action=- 0.100s
+108.206.38.169 [22/Nov/2026:17:48:21 +0700] "GET /audio?probe10 HTTP/2.0" 200 score=- action=- 0.100s
+EOF
+HASH_OUT=$(bash "$HERE/qchreplay.sh" "$FROM" "$TO" "$IP" "$HASHLOG")
+HASH_BUCKET=$((FROM + 10))
+grep -q "^$HASH_BUCKET $IP 2 2$" <<< "$HASH_OUT"
+PASS=$((PASS + 1))
+
+# Shards are represented by a bounded per-bucket bitmap.  Removing the upper
+# bound changes the memory contract, so exercise the rejection boundary rather
+# than testing only the default value 64.
+set +e
+SHARD_OUT=$(QCH_SHARDS=129 bash "$HERE/qchreplay.sh" \
+    "$FROM" "$TO" "$IP" "$PLAIN" 2>&1)
+SHARD_RC=$?
+set -e
+[ "$SHARD_RC" -eq 2 ]
+grep -q 'QCHREPLAY_ERROR invalid window/shards' <<< "$SHARD_OUT"
+PASS=$((PASS + 1))
 
 set +e
 bash "$HERE/qchreplay.sh" bad "$TO" "$IP" "$PLAIN" \
