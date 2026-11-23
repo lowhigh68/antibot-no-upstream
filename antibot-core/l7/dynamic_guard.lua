@@ -382,7 +382,15 @@ local function observe_query_churn(dict, ctx, c, scope, source, t)
 
     local window = math.max(math.floor(tonumber(spec.window) or 10), 1)
     local bucket = math.floor(t / window)
-    local ttl = window * 2 + 2
+    local min_queries = math.max(math.floor(
+        tonumber(spec.min_queries) or 10), 1)
+    local min_buckets = math.max(math.floor(
+        tonumber(spec.min_buckets) or 3), 1)
+    -- Keep enough completed buckets to measure persistence, but cap the
+    -- retention so a malformed policy cannot turn this into an unbounded
+    -- shared-dict population.
+    min_buckets = math.min(min_buckets, 12)
+    local ttl = window * (min_buckets + 1) + 2
     local base = "dg:query:" .. scope .. ":" .. query_id .. ":" .. lane
         .. ":" .. tostring(bucket)
     local hits, hit_err = increment(dict, base .. ":hits", 1, ttl)
@@ -417,6 +425,47 @@ local function observe_query_churn(dict, ctx, c, scope, source, t)
     ctx.dynamic_query_observed = true
     ctx.query_churn_hits = hits
     ctx.query_churn_distinct = queries
+
+    -- Shadow-only candidate telemetry.  A bucket is evidence when it has at
+    -- least min_queries distinct query shards.  Count the current bucket and
+    -- the immediately preceding buckets; no URI/parameter vocabulary is
+    -- retained and no cause/verdict is added here.
+    local bucket_count = 0
+    for back = 0, min_buckets - 1 do
+        local prior = bucket - back
+        local prior_key = "dg:query:" .. scope .. ":" .. query_id .. ":"
+            .. lane .. ":" .. tostring(prior) .. ":queries"
+        local prior_queries = tonumber(dict:get(prior_key)) or 0
+        if prior_queries >= min_queries then bucket_count = bucket_count + 1 end
+    end
+    local richness = tonumber(ctx.session_richness_own) or 0
+    local exempt_richness = tonumber(spec.exempt_richness) or 0.5
+    local exclusive = richness < exempt_richness
+    -- The denominator is deliberately docroot/lane/bucket-wide: qcr means
+    -- "what share of this domain's query traffic belongs to this source", not
+    -- "what share of this source is exclusive".  The numerator remains
+    -- source-local so two sources can be compared in the same bucket.
+    local eligible_key = "dg:query:" .. scope .. ":" .. lane .. ":"
+        .. tostring(bucket) .. ":srcall"
+    local exclusive_key = base .. ":exclusive"
+    local eligible = increment(dict, eligible_key, 1, ttl)
+    local exclusive_count = tonumber(dict:get(exclusive_key)) or 0
+    if exclusive then
+        local n = increment(dict, exclusive_key, 1, ttl)
+        if n then exclusive_count = n end
+    end
+    ctx.query_churn_bucket_count = bucket_count
+    ctx.query_churn_exclusive = exclusive
+    ctx.query_churn_exclusive_ratio = eligible and eligible > 0
+        and (exclusive_count / eligible) or nil
+    local candidate = queries >= min_queries
+        and bucket_count >= min_buckets
+        and exclusive
+    -- Keep the pre-candidate shape nil (as qch/qcd do for non-query traffic)
+    -- so callers can distinguish "not a candidate" from an observed false
+    -- verdict.  The logger emits qcw=false for both cases intentionally.
+    ctx.dynamic_query_candidate = candidate and true or nil
+    ctx.dynamic_query_would_reject = candidate and true or nil
     return false
 end
 

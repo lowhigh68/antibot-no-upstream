@@ -109,6 +109,8 @@ table.sort(events, function(a, b)
 end)
 
 local buckets, qch_values, qcd_values = {}, {}, {}
+local debug_shards = os.getenv("QCH_DEBUG_SHARDS") == "1"
+local debug_seen = {}
 for i = 1, #events do
     local event = events[i]
     local bucket_id = math.floor(event.ts / window)
@@ -123,6 +125,10 @@ for i = 1, #events do
     end
     bucket.hits = bucket.hits + 1
     local shard = query_shard(event.query)
+    if debug_shards and not debug_seen[event.query] then
+        debug_seen[event.query] = true
+        print(string.format("DEBUG_SHARD %s %d", event.query, shard))
+    end
     if not bucket.seen[shard] then
         bucket.seen[shard] = true
         bucket.distinct = bucket.distinct + 1

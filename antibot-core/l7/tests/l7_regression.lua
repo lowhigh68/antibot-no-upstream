@@ -2885,6 +2885,186 @@ eq(repeat_last.query_churn_hits, 5,
 eq(repeat_last.query_churn_distinct, 1,
    "qcd giu mot fingerprint cho query lap")
 
+-- Candidate telemetry is deliberately shadow-only.  Three consecutive
+-- buckets with ten distinct fingerprints produce would_qch/bucket_count,
+-- but never a cause, reject, or ngx.exit.  This pins both the persistence
+-- gate and the no-verdict contract before any future enforcement decision.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3500
+local candidate_last
+for bucket = 0, 2 do
+    for i = 1, 10 do
+        clock = 3500 + bucket * 10 + i - 1
+        fake_ngx.var.uri = "/catalog"
+        local filter = "q" .. tostring(bucket) .. "-" .. tostring(i)
+        fake_ngx.var.request_uri = "/catalog?filter=" .. filter
+        fake_ngx.var.args = "filter=" .. filter
+        local item = dgctx("198.51.100.131", "/catalog")
+        item.req_class = "navigation"
+        local _, candidate_exit = dynamic_guard.admit(item)
+        eq(candidate_exit, false, "query candidate shadow khong reject")
+        candidate_last = item
+    end
+end
+eq(candidate_last.query_churn_distinct, 10,
+   "query candidate qcd dat nguong")
+eq(candidate_last.query_churn_bucket_count, 3,
+   "query candidate du ba bucket")
+eq(candidate_last.dynamic_query_candidate, true,
+   "query candidate would_qch duoc ghi")
+eq(candidate_last.dynamic_query_would_reject, true,
+   "query candidate chi la telemetry shadow")
+eq(candidate_last.query_churn_exclusive, true,
+   "query candidate la luong exclusive")
+eq(candidate_last.query_churn_exclusive_ratio, 1,
+   "query candidate exclusive ratio")
+ok(candidate_last.action_reason ~= "dynamic_guard:query_churn",
+   "query candidate khong tao cause")
+eq(#exits, 0, "query candidate khong goi ngx.exit")
+
+-- One-bucket high churn is not enough evidence.  This directly pins the
+-- persistence gate that separates a one-shot crawler from a campaign.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3800
+local one_bucket_last
+for i = 1, 10 do
+    clock = 3800 + i - 1
+    fake_ngx.var.uri = "/one-bucket"
+    local filter = "one-" .. tostring(i)
+    fake_ngx.var.request_uri = "/one-bucket?filter=" .. filter
+    fake_ngx.var.args = "filter=" .. filter
+    local item = dgctx("198.51.100.136", "/one-bucket")
+    item.req_class = "navigation"
+    local _, one_exit = dynamic_guard.admit(item)
+    eq(one_exit, false, "one bucket shadow khong reject")
+    one_bucket_last = item
+end
+eq(one_bucket_last.query_churn_distinct, 10,
+   "one bucket qcd dat nguong")
+eq(one_bucket_last.query_churn_bucket_count, 1,
+   "one bucket khong du do ben")
+eq(one_bucket_last.dynamic_query_candidate, nil,
+   "one bucket khong la candidate")
+
+-- A source that stops churning must lose persistence as the rolling window
+-- advances: three qualifying buckets, then low-qcd buckets, then no candidate.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3900
+local function churn_bucket(ip, base, count)
+    local last
+    for i = 1, count do
+        clock = base + i - 1
+        fake_ngx.var.uri = "/taper"
+        local filter = "taper-" .. tostring(base) .. "-" .. tostring(i)
+        fake_ngx.var.request_uri = "/taper?filter=" .. filter
+        fake_ngx.var.args = "filter=" .. filter
+        local item = dgctx(ip, "/taper")
+        item.req_class = "navigation"
+        local _, exit = dynamic_guard.admit(item)
+        eq(exit, false, "taper bucket shadow khong reject")
+        last = item
+    end
+    return last
+end
+churn_bucket("198.51.100.137", 3900, 10)
+churn_bucket("198.51.100.137", 3910, 10)
+local taper_three = churn_bucket("198.51.100.137", 3920, 10)
+eq(taper_three.query_churn_bucket_count, 3,
+   "taper dat ba bucket")
+eq(taper_three.dynamic_query_candidate, true,
+   "taper ba bucket la candidate shadow")
+local taper_two = churn_bucket("198.51.100.137", 3930, 1)
+eq(taper_two.query_churn_bucket_count, 2,
+   "taper giam con hai bucket")
+eq(taper_two.dynamic_query_candidate, nil,
+   "taper hai bucket khong candidate")
+local taper_one = churn_bucket("198.51.100.137", 3940, 1)
+eq(taper_one.query_churn_bucket_count, 1,
+   "taper giam con mot bucket")
+eq(taper_one.dynamic_query_candidate, nil,
+   "taper mot bucket khong candidate")
+
+-- First-party richness suppresses the candidate signal, while telemetry
+-- remains available for analysing legitimate high-churn sessions.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3600
+local rich_last
+for bucket = 0, 2 do
+    for i = 1, 10 do
+        clock = 3600 + bucket * 10 + i - 1
+        fake_ngx.var.uri = "/catalog"
+        local filter = "r" .. tostring(bucket) .. "-" .. tostring(i)
+        fake_ngx.var.request_uri = "/catalog?filter=" .. filter
+        fake_ngx.var.args = "filter=" .. filter
+        local item = dgctx("198.51.100.132", "/catalog")
+        item.req_class = "navigation"
+        item.session_richness_own = 0.8
+        local _, rich_exit = dynamic_guard.admit(item)
+        eq(rich_exit, false, "rich query shadow khong reject")
+        rich_last = item
+    end
+end
+eq(rich_last.query_churn_bucket_count, 3,
+   "rich query van do bucket")
+eq(rich_last.dynamic_query_candidate, nil,
+   "rich query duoc mien candidate")
+eq(rich_last.query_churn_exclusive, false,
+   "rich query khong exclusive")
+eq(rich_last.query_churn_exclusive_ratio, 0,
+   "rich query exclusive ratio")
+
+-- qcr is a source share within one docroot/lane/bucket, not a per-source
+-- boolean in disguise. Ten exclusive requests from A and ten first-party
+-- requests from B must yield 10/20 for A.
+fake_ngx.shared.antibot_cache = Dict.new()
+clock = 3700
+for i = 1, 9 do
+    clock = 3700 + i - 1
+    fake_ngx.var.uri = "/share"
+    local filter = "share-a-" .. tostring(i)
+    fake_ngx.var.request_uri = "/share?filter=" .. filter
+    fake_ngx.var.args = "filter=" .. filter
+    local item = dgctx("198.51.100.133", "/share")
+    item.req_class = "navigation"
+    local _, share_exit = dynamic_guard.admit(item)
+    eq(share_exit, false, "share source A telemetry qua")
+end
+for i = 1, 10 do
+    clock = 3700 + i - 1
+    fake_ngx.var.uri = "/share"
+    local filter = "share-b-" .. tostring(i)
+    fake_ngx.var.request_uri = "/share?filter=" .. filter
+    fake_ngx.var.args = "filter=" .. filter
+    local item = dgctx("198.51.100.134", "/share")
+    item.req_class = "navigation"
+    item.session_richness_own = 0.8
+    local _, share_exit = dynamic_guard.admit(item)
+    eq(share_exit, false, "share source B telemetry qua")
+end
+-- A different semantic lane in the same docroot must not dilute the page
+-- denominator.  This catches a mutant that drops `lane` from eligible_key.
+for i = 1, 10 do
+    clock = 3700 + i - 1
+    fake_ngx.var.uri = "/share-api"
+    local filter = "share-app-" .. tostring(i)
+    fake_ngx.var.request_uri = "/share-api?filter=" .. filter
+    fake_ngx.var.args = "filter=" .. filter
+    local item = dgctx("198.51.100.135", "/share-api")
+    item.req_class = "interaction"
+    local _, share_exit = dynamic_guard.admit(item)
+    eq(share_exit, false, "share application lane telemetry qua")
+end
+clock = 3709
+fake_ngx.var.uri = "/share"
+fake_ngx.var.request_uri = "/share?filter=share-a-final"
+fake_ngx.var.args = "filter=share-a-final"
+local share_last = dgctx("198.51.100.133", "/share")
+share_last.req_class = "navigation"
+local _, share_exit = dynamic_guard.admit(share_last)
+eq(share_exit, false, "share source A reread telemetry qua")
+eq(share_last.query_churn_exclusive_ratio, 0.5,
+   "qcr la thi phan source trong docroot")
+
 -- Application and page traffic have separate populations so an editor/REST
 -- fan-out cannot distort the customer-navigation percentile.
 fake_ngx.shared.antibot_cache = Dict.new()

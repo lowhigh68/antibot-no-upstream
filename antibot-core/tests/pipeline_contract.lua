@@ -671,9 +671,14 @@ do
        "query churn co cua so do co dinh")
     eq((dg.query_churn or {}).query_shards, 64,
        "query churn distinct co key-space bi chan")
+    eq((dg.query_churn or {}).min_queries, 10,
+       "query churn shadow co nguong qcd toi thieu")
+    eq((dg.query_churn or {}).min_buckets, 3,
+       "query churn shadow can ba bucket")
+    eq((dg.query_churn or {}).exempt_richness, 0.5,
+       "query churn shadow mien richness rieng")
     for _, threshold in ipairs({
-        "min_hits", "min_queries", "max_paths", "min_costly",
-        "min_inflight", "status",
+        "min_hits", "max_paths", "min_costly", "min_inflight", "status",
     }) do
         eq((dg.query_churn or {})[threshold], nil,
            "query churn phase 1 khong co verdict threshold " .. threshold)
@@ -843,7 +848,7 @@ do
         " dgmode=", " dgscope=", " dgtn=", " dgsn=", " dgwould=",
         " dgthr=", " dgcause=", " dgph=", " dgpd=", " dgpc=",
         " dgpath=", " dguri=", " dgpopen=", " dgpmode=",
-        " qch=", " qcd=",
+        " qch=", " qcd=", " qcw=", " qcb=", " qcx=", " qcr=",
         " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
         " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
         " dgppol=", " dgpsel=", " dgpswould=", " dgpsthr=",

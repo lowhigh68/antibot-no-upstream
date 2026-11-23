@@ -64,9 +64,10 @@ function getv(name) { return (name in field) ? field[name] : "-" }
     qcd = getv("qcd")
     if (qch !~ /^[0-9]+$/ || qcd !~ /^[0-9]+$/) next
     numeric++
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
         qch, qcd, getv("class"), getv("domain"), getv("ckn"),
-        getv("rown"), getv("apresent"), getv("dgup"), getv("dgtn")
+        getv("rown"), getv("apresent"), getv("dgup"), getv("dgtn"),
+        getv("qcw"), getv("qcb"), getv("qcx"), getv("qcr")
 }
 END { printf "%d %d %d\n", rows + 0, schema + 0, numeric + 0 > meta }
 ' > "$DATA"
@@ -136,6 +137,19 @@ summary first_party_strong "$TMP/first_party"
 summary upstream_ge_2s "$TMP/slow"
 
 echo
+echo "=== QUERY CHURN SHADOW TELEMETRY ==="
+echo "would_qch=$(LC_ALL=C awk -F '\t' '$10 == "true" {n++} END {print n+0}' "$DATA")"
+echo "exclusive=$(LC_ALL=C awk -F '\t' '$12 == "true" {n++} END {print n+0}' "$DATA")"
+LC_ALL=C awk -F '\t' 'BEGIN {n=0; x=0} {n++; if ($12 == "true") x++} END {
+    if (n) printf "exclusive_rate=%.3f (%d/%d)\n", x/n, x, n
+    else print "exclusive_rate=- (0/0)"
+}' "$DATA"
+LC_ALL=C awk -F '\t' '$13 ~ /^[0-9]+([.][0-9]+)?$/ {v=$13+0; n++; sum+=v} END {
+    if (n) printf "exclusive_ratio_mean=%.3f samples=%d\n", sum/n, n
+    else print "exclusive_ratio_mean=- samples=0"
+}' "$DATA"
+
+echo
 echo "=== PAGE DOMAIN MAX (TOP 20 BY MAX_QCD) ==="
 echo "domain rows max_qch max_qcd"
 LC_ALL=C awk -F '\t' '
@@ -153,7 +167,7 @@ END {
 
 echo
 echo "=== HIGHEST PAGE ROWS (TOP 20) ==="
-echo "qch qcd class domain ckn rown apresent dgup dgtn"
+echo "qch qcd class domain ckn rown apresent dgup dgtn qcw qcb qcx qcr"
 LC_ALL=C sort -t $'\t' -k2,2nr -k1,1nr "$TMP/page" | sed -n '1,20p' | \
     tr '\t' ' '
 

@@ -1044,6 +1044,12 @@ _M.dynamic_guard = {
         window         = 10,
         query_shards   = 64,
         max_query_bytes = 2048,
+        -- Shadow candidate only: qcd >= min_queries in min_buckets of the
+        -- recent buckets, excluding requests with first-party richness.
+        -- These fields do not create a verdict until a later policy change.
+        min_queries    = 10,
+        min_buckets    = 3,
+        exempt_richness = 0.5,
     },
     -- Protocol invariant, not a content signature: one request-target path
     -- must not contain a second absolute HTTP target serialized after a list

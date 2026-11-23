@@ -69,6 +69,23 @@ HASH_OUT=$(bash "$HERE/qchreplay.sh" "$FROM" "$TO" "$IP" "$HASHLOG")
 HASH_BUCKET=$((FROM + 10))
 grep -q "^$HASH_BUCKET $IP 2 2$" <<< "$HASH_OUT"
 PASS=$((PASS + 1))
+HASH_DEBUG=$(QCH_DEBUG_SHARDS=1 bash "$HERE/qchreplay.sh" \
+    "$FROM" "$TO" "$IP" "$HASHLOG")
+grep -q '^DEBUG_SHARD probe9 37$' <<< "$HASH_DEBUG"
+grep -q '^DEBUG_SHARD probe10 4$' <<< "$HASH_DEBUG"
+PASS=$((PASS + 2))
+
+# Repeated identical queries must increment qch but only one distinct shard.
+# This guards the per-bucket `seen` bitmap; removing it makes qcd == qch.
+DUPLOG="$TMP/duplicate.log"
+cat > "$DUPLOG" <<EOF
+108.206.38.169 [22/Nov/2026:17:48:20 +0700] "GET /audio?dup=1 HTTP/2.0" 200 score=- action=- 0.100s
+108.206.38.169 [22/Nov/2026:17:48:21 +0700] "GET /audio?dup=1 HTTP/2.0" 200 score=- action=- 0.100s
+108.206.38.169 [22/Nov/2026:17:48:22 +0700] "GET /audio?dup=2 HTTP/2.0" 200 score=- action=- 0.100s
+EOF
+DUP_OUT=$(bash "$HERE/qchreplay.sh" "$FROM" "$TO" "$IP" "$DUPLOG")
+grep -qE '^[0-9]+ 108\.206\.38\.169 3 2$' <<< "$DUP_OUT"
+PASS=$((PASS + 1))
 
 # Shards are represented by a bounded per-bucket bitmap.  Removing the upper
 # bound changes the memory contract, so exercise the rejection boundary rather

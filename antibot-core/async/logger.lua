@@ -721,7 +721,7 @@ function _M.run(ctx)
             " dgmode=%s dgscope=%s dgtn=%s/%s dgsn=%s/%s" ..
             " dgwould=%s dgthr=%s dgcause=%s" ..
             " dgph=%s/%s dgpd=%s/%s dgpc=%s/%s dgpath=%s dguri=%s" ..
-            " qch=%s qcd=%s" ..
+            " qch=%s qcd=%s qcw=%s qcb=%s qcx=%s qcr=%s" ..
             " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
             " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
             " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
@@ -754,6 +754,12 @@ function _M.run(ctx)
             tostring(ctx.dynamic_uri_shape or "-"),
             tostring(ctx.query_churn_hits or "-"),
             tostring(ctx.query_churn_distinct or "-"),
+            tostring(ctx.dynamic_query_would_reject or false),
+            tostring(ctx.query_churn_bucket_count or "-"),
+            tostring(ctx.query_churn_exclusive or false),
+            ctx.query_churn_exclusive_ratio
+                and string.format("%.3f", ctx.query_churn_exclusive_ratio)
+                or "-",
             tostring(ctx.dynamic_pressure_open or false),
             tostring(ctx.dynamic_pressure_mode or "-"),
             tostring(ctx.dynamic_pressure_would_reject or false),
