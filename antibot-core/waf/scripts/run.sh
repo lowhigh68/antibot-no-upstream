@@ -445,6 +445,10 @@ echo "-- qchstat.sh (query-churn distribution, rotated logs) --"
 sh_suite qchstat_test "$HERE/qchstat_test.sh" || rc=1
 
 echo
+echo "-- cwbstat.sh (completed-work distribution, deduplicated) --"
+sh_suite cwbstat_test "$HERE/cwbstat_test.sh" || rc=1
+
+echo
 echo "-- qchreplay.sh (offline historical incident replay) ----"
 sh_suite qchreplay_test "$HERE/qchreplay_test.sh" || rc=1
 
