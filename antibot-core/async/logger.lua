@@ -940,6 +940,25 @@ function _M.run(ctx)
             ctx.sess_clients, tostring(ctx.sess_shared or false))
     end
 
+    -- Trust-discount telemetry, SHADOW to 08-12-2026 (engine.lua).  Emitted
+    -- only on a request that actually received the discount, so its absence
+    -- means "not discounted", never "measured as zero".
+    --   trust=  which branch granted it (trusted_session | active_session)
+    --   trustev= the evidence that existed AT THAT MOMENT:
+    --     ro= session_richness_own, ck= session_cookie_known (- = host has
+    --     learned no cookie name yet), ap= a valid actor cookie came in,
+    --     sl= sess_len, the request count that opened the discount.
+    -- The question being measured: `sess:<fp_light>` holds no cookie, so does
+    -- the half-score discount rest on any first-party proof at all?
+    --   grep -oP 'trust=\S+ trustev=ro=\S+ ck=\S+ ap=\S+' antibot.log \
+    --     | sort | uniq -c | sort -rn
+    local trust_str = ""
+    if ctx.trust_reason then
+        trust_str = string.format(" trust=%s trustev=%s",
+            tostring(ctx.trust_reason),
+            tostring(ctx.trust_evidence or "-"))
+    end
+
     -- Telemetry swarm (detection/distributed_swarm.lua) — CHAN DOAN, khong phai
     -- dau vao quyet dinh.
     --
@@ -1241,7 +1260,7 @@ function _M.run(ctx)
         " ip=%s rip=%s ua=%s tls13=%s h2=%s ja3=%s ja3p=%s ja3c=%d j3m=%.2f" ..
         " score=%.1f eff=%s mult=%s action=%s beacon=%s richness=%.2f rown=%s ckn=%s inapp=%.2f" ..
         " dev=%s sf=%d chm=%d m=%s ct=%s cl=%d rl=%d na=%d" ..
-        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        " top=%s reason=%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
         os.date("%Y-%m-%d %H:%M:%S"),
         ngx.time(),
         host,
@@ -1345,6 +1364,7 @@ function _M.run(ctx)
         na_log,
         top_str,
         tostring(ctx.action_reason or "-"),
+        trust_str,
         throttle_str,
         tier_str,
         gbrate_str,

@@ -396,6 +396,47 @@ local function calc_fp_penalty(ctx)
     return penalty
 end
 
+-- SHADOW 24-11-2026 .. 08-12-2026: does the discount rest on any evidence?
+--
+-- The session this reads is keyed `sess:<fp_light>` and `fp_light` is
+-- md5(ip + raw ua + asn + ja3) -- see config.lua -- so NO cookie, actor or
+-- first-party proof takes part in it.  `sess_len` therefore counts only "how
+-- many requests this network+browser tuple has already sent", which a crawler
+-- accumulates by crawling: past five requests it is called `trusted_session`
+-- and every later request is scored at half.  Measured on 168-117 at
+-- 20:39 24-11 on buuchinhdongduong.com: three Google Cloud sources walking
+-- tags/pages sequentially scored raw 58.1 and came out `eff=29.1`
+-- (58.1 x 0.5 = 29.05), i.e. below CHALLENGE=55 purely because of this
+-- discount, with `richness=0.00 rown=0.00 ckn=- apresent=false` on every row.
+-- `sess_flag` cannot catch them either: it needs a repeated URI, and a
+-- sequential crawl never repeats one, so the better-behaved the crawl the
+-- longer the discount holds.
+--
+-- Compare `auth_session_cap` below, which demands `session_richness_own`,
+-- `not good_bot_claimed`, a UA and `session_cookie_known ~= false` before it
+-- will cap anything.  This function asks for none of that, and the asymmetry
+-- is the suspicion under test, not yet a verdict.
+--
+-- This pass only RECORDS what evidence existed when the discount was granted:
+-- `trustev=` in the log carries richness_own / cookie_known / actor presence.
+-- No threshold moves and no multiplier changes until the distribution is read.
+--
+-- REFUTATION, written before the data (do not revise it afterwards): if over
+-- the window most `trustev=` rows on discounted requests show real first-party
+-- proof -- `ro>0` AND `ck=true` -- then the discount is reaching real visitors
+-- and must NOT be gated on evidence; the crawler case is then a scoring-weight
+-- problem instead.  Gate it only if a large share shows `ro=0.00 ck=-/false`
+-- with no actor, which is the shape above.  Expiry 08-12-2026: decide or
+-- remove the column.
+local function trust_evidence(ctx)
+    local known = ctx.session_cookie_known
+    return string.format("ro=%.2f ck=%s ap=%s sl=%d",
+        tonumber(ctx.session_richness_own) or 0,
+        known == nil and "-" or tostring(known),
+        tostring(ctx.actor_presented == true),
+        tonumber(ctx.sess_len) or 0)
+end
+
 local function calc_trust_multiplier(ctx)
     local trust     = cfg.trust
     local sess_len  = ctx.sess_len  or 0
@@ -410,10 +451,12 @@ local function calc_trust_multiplier(ctx)
     if sess_flag >= trust.session_flag_max then return 1.0, nil end
 
     if sess_len >= trust.session_min then
+        ctx.trust_evidence = trust_evidence(ctx)
         return trust.score_multiplier, "trusted_session"
     end
 
     if sess_len >= trust.session_active_min then
+        ctx.trust_evidence = trust_evidence(ctx)
         return trust.score_mult_active, "active_session"
     end
 

@@ -567,5 +567,120 @@ do
        "after grace only first-party cardinality grants Tier-2 immunity")
 end
 
+-- N. The trust discount records the evidence it rested on.
+--
+-- `sess:<fp_light>` is keyed on md5(ip + ua + asn + ja3): no cookie, no actor.
+-- So a source can reach `sess_len >= session_min` by crawling alone and then
+-- be scored at half as `trusted_session`.  This case pins the SHADOW column
+-- that measures whether that discount has any first-party proof behind it.
+-- It drives the real engine file, not a stand-in, so a mutation to
+-- `calc_trust_multiplier` has to show up here.
+do
+  for _, k in ipairs({ "antibot.core.config", "antibot.core.redis_pool",
+      "antibot.l7.automation_guard", "antibot.core.operator_network",
+      "antibot.core.state_scope", "antibot.core.goodbot_registry" }) do
+    package.loaded[k] = nil
+  end
+  package.loaded["antibot.core.config"] = {
+    trust = { session_min = 5, session_active_min = 3,
+              session_flag_max = 0.4, score_multiplier = 0.5,
+              score_mult_active = 0.75, action_cap = "monitor" },
+    thresholds = { monitor = 25, challenge = 55, block = 95 },
+    ttl = { verified = 7200 },
+    scoring = {}, pow = {}, ban = {},
+  }
+  package.loaded["antibot.core.redis_pool"] = {
+    safe_get = function() return nil end,
+    safe_set = function() return true end,
+    safe_incr = function() return 1 end,
+  }
+  package.loaded["antibot.l7.automation_guard"] = {
+    late_enforce = function() return true, false end,
+    evaluate = function() return true, false end,
+  }
+  package.loaded["antibot.core.operator_network"] = {
+    lookup = function() return nil, nil end,
+  }
+  package.loaded["antibot.core.state_scope"] = {
+    is_self = function() return false end,
+    fingerprint_seed = function(_, s) return s end,
+  }
+  package.loaded["antibot.core.goodbot_registry"] =
+    assert(loadfile(src .. "core/goodbot_registry.lua"))()
+
+  local logs = {}
+  ngx = {
+    INFO = 0, WARN = 1, ERR = 2, DEBUG = 3, null = {},
+    log = function(_, ...) logs[#logs + 1] = table.concat({ ... }) end,
+    time = function() return 1700000000 end,
+    md5 = resty_md5,
+    var = { uri = "/tag/x/", antibot_debug = "0" },
+    header = {}, status = 200,
+    say = function() end, exit = function() end,
+    re = { find = function() return nil end,
+           match = function() return nil end },
+  }
+  local engine = assert(loadfile(src .. "enforcement/decision/engine.lua"))()
+
+  -- The measured production shape: a sequential crawler with no cookie at all.
+  local crawler = {
+    score = 58.1, req_class = "navigation", score_multiplier = 1.0,
+    sess_len = 7, session_flag = 0.0,
+    session_richness_own = 0, session_cookie_known = nil,
+    actor_presented = false, ip = "34.40.92.76",
+    identity = "crawler-fp", fp_light = "crawler-fp",
+    ua = "Mozilla/5.0 Firefox/160.0", fp_quality = 1.0,
+  }
+  local act = engine.run(crawler)
+  eq(crawler.trust_reason, "trusted_session",
+     "sess_len alone grants the discount, with no cookie present")
+  ok(crawler.trust_evidence ~= nil,
+     "a granted discount always records its evidence")
+  ok(tostring(crawler.trust_evidence):find("ro=0.00", 1, true) ~= nil,
+     "trustev reports richness_own=0 for the cookieless crawler")
+  ok(tostring(crawler.trust_evidence):find("ck=-", 1, true) ~= nil,
+     "trustev distinguishes `unknown cookie` from `false`")
+  ok(tostring(crawler.trust_evidence):find("ap=false", 1, true) ~= nil,
+     "trustev reports no actor cookie")
+  ok(tostring(crawler.trust_evidence):find("sl=7", 1, true) ~= nil,
+     "trustev carries the sess_len that opened the discount")
+  -- The whole point of the shadow pass: 58.1 is over CHALLENGE but the
+  -- halved score is not, and this pass must NOT have changed that yet.
+  eq(string.format("%.1f", crawler.effective_score), "29.1",
+     "58.1 x 0.5 = 29.1, the discount still applies unchanged")
+  eq(act, "monitor", "shadow pass changes no verdict")
+
+  -- A real visitor with first-party proof must look different in the column,
+  -- otherwise the measurement cannot separate the two populations.
+  local human = {
+    score = 58.1, req_class = "navigation", score_multiplier = 1.0,
+    sess_len = 7, session_flag = 0.0,
+    session_richness_own = 0.62, session_cookie_known = true,
+    actor_presented = true, ip = "203.0.113.77",
+    identity = "human-fp", fp_light = "human-fp",
+    ua = "Mozilla/5.0 Chrome/145.0", fp_quality = 1.0,
+  }
+  engine.run(human)
+  eq(human.trust_reason, "trusted_session", "a real session also gets it")
+  ok(tostring(human.trust_evidence):find("ro=0.62", 1, true) ~= nil,
+     "trustev separates a real session by richness_own")
+  ok(tostring(human.trust_evidence):find("ck=true", 1, true) ~= nil,
+     "trustev separates a real session by cookie_known")
+  ok(tostring(human.trust_evidence):find("ap=true", 1, true) ~= nil,
+     "trustev separates a real session by actor presence")
+
+  -- No discount, no column: absence must never read as "measured zero".
+  local fresh = {
+    score = 58.1, req_class = "navigation", score_multiplier = 1.0,
+    sess_len = 0, session_flag = 0.0, ip = "203.0.113.78",
+    identity = "fresh-fp", fp_light = "fresh-fp",
+    ua = "Mozilla/5.0 Chrome/145.0", fp_quality = 1.0,
+  }
+  engine.run(fresh)
+  eq(fresh.trust_reason, nil, "no discount for a first request")
+  eq(fresh.trust_evidence, nil,
+     "no evidence column when no discount was granted")
+end
+
 io.write(string.format("trust_contract: %d qua, %d hong\n", pass, fail))
 if fail > 0 then os.exit(1) end
