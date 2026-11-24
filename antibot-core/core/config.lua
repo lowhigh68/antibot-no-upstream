@@ -824,6 +824,24 @@ _M.endpoint_guard = {
             -- disabled before backend.  `wp_oembed_proxy` (editor/admin) is a
             -- separate endpoint and remains available.  Set mode="off" to
             -- restore the measured rate/inflight policy below.
+            --
+            -- EXPIRY 24-12-2026.  A brake without a deadline silently becomes
+            -- the policy it was written to replace, so the review date and the
+            -- number that ends it are fixed here rather than left to judgement.
+            -- Measured 24-11-2026 on 28-246 over 27,925 endpoint_guard rows:
+            -- 6,867 rejects here, 11,896/11,910 of all `emergency` rows carried
+            -- no cookie, and all 14 `epck=present` rows were cloud ranges
+            -- hitting 11 unrelated tenant domains one request per IP -- the
+            -- same distributed shape as the 18-10 incident, not a tenant
+            -- integration.  REOPEN only on >=5 `epcause=emergency` rows with
+            -- `epck=present` on ONE domain from ONE /24 inside the window; a
+            -- real plugin calls from its own server, so that pattern is what
+            -- separates a customer from the swarm.  Below it, keep the brake,
+            -- extend 30 days and record the measured counts.  Every column the
+            -- test needs already ships: `dkind`/`epcause`/`epck`/`domain`.
+            -- This endpoint holds 14/14 of the cookie-bearing rows while
+            -- `wp_rest_tags_read` holds 0, so the two brakes do not carry the
+            -- same risk and must not be reopened together.
             emergency  = { mode = "enforce", status = 429, retry_after = 300 },
             -- Route-shape swarm is independent of caller identity.  It records
             -- whether many source networks converge on this one endpoint;
@@ -925,12 +943,28 @@ _M.endpoint_guard = {
             -- sub-route locally.  This affects every legitimate REST consumer
             -- too; turn only this switch off after the server-inflight
             -- replacement below has been measured and deliberately promoted.
+            --
+            -- EXPIRY 24-12-2026, same test as `wp_oembed_embed` above.
+            -- Measured 24-11-2026 on 28-246: 5,043 rejects here and ZERO rows
+            -- with `epck=present`, against 14 on the oEmbed brake.  On that
+            -- evidence this is the brake to reopen first if either is reopened.
             emergency  = { mode = "enforce", status = 429, retry_after = 300 },
             swarm      = { mode = "shadow", scope = "server", window = 10,
                            requests = 12, networks = 6, hold = 60 },
             -- Emergency prevents backend admission, so this remains empty
             -- until the endpoint is reopened.  Keep shadow; do not infer zero
             -- capacity risk from zero samples while emergency is active.
+            --
+            -- The emptiness is SEMANTIC, not a gap in measurement, and this
+            -- axis therefore cannot be made to fill while the brake is on.
+            -- `swarm` counts an event that already happened and so runs before
+            -- the emergency branch on purpose; `server_inflight` counts what is
+            -- currently holding PHP, as an increment in `admit()` paired with a
+            -- decrement in `after()`.  A rejected request never reaches the
+            -- backend, which is why `admit()` decrements BOTH slots before it
+            -- rejects.  Counting rejects here would publish a refusal count
+            -- under the name of a concurrency count.  Do not "unblock" it by
+            -- moving it earlier.
             server_inflight = { mode = "shadow", limit = 6,
                                 require_swarm = true, status = 503,
                                 retry_after = 5 },
