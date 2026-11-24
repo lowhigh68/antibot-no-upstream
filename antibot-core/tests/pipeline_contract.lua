@@ -677,6 +677,14 @@ do
        "query churn shadow can ba bucket")
     eq((dg.query_churn or {}).exempt_richness, 0.5,
        "query churn shadow mien richness rieng")
+    eq((dg.completed_work_budget or {}).mode, "shadow",
+       "completed work budget chi shadow")
+    eq((dg.completed_work_budget or {}).bucket_seconds, 60,
+       "completed work dung bucket thô 60 giay")
+    eq((dg.completed_work_budget or {}).window_buckets, 10,
+       "completed work cua so 10 bucket")
+    eq((dg.completed_work_budget or {}).budget, nil,
+       "completed work chua dat budget enforce")
     for _, threshold in ipairs({
         "min_hits", "max_paths", "min_costly", "min_inflight", "status",
     }) do
@@ -849,6 +857,7 @@ do
         " dgthr=", " dgcause=", " dgph=", " dgpd=", " dgpc=",
         " dgpath=", " dguri=", " dgpopen=", " dgpmode=",
         " qch=", " qcd=", " qcw=", " qcb=", " qcx=", " qcr=",
+        " cwb=", " cwbn=", " cwbb=", " cwbwould=", " cwbev=",
         " dgpwould=", " dgphalf=", " dgpprobe=", " dgpwork=",
         " dgpn=", " dgpslow=", " dgpcand=", " dgptrans=",
         " dgppol=", " dgpsel=", " dgpswould=", " dgpsthr=",

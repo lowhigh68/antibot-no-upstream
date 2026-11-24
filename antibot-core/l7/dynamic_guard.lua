@@ -1400,6 +1400,99 @@ local function record_pressure(dict, ctx, c, up, t)
     end
 end
 
+-- Completed-work budget is separate from pressure: it measures every
+-- completed upstream request over coarse buckets, so sequential low-rate
+-- crawlers cannot hide below a concurrency peak. It is shadow-only until a
+-- positive budget is configured.
+local function completed_work_config(c)
+    local spec = type(c.completed_work_budget) == "table"
+        and c.completed_work_budget or {}
+    return spec, tostring(spec.mode or "off")
+end
+
+local function completed_work_bucket(base, bucket, suffix)
+    return base .. ":b:" .. tostring(bucket) .. ":" .. suffix
+end
+
+local function sum_completed_work(dict, base, bucket, window_buckets)
+    local work, requests, buckets = 0, 0, 0
+    for b = bucket - window_buckets + 1, bucket do
+        local n = tonumber(dict:get(
+            completed_work_bucket(base, b, "n"))) or 0
+        local w = tonumber(dict:get(
+            completed_work_bucket(base, b, "work"))) or 0
+        requests = requests + n
+        work = work + w
+        if n > 0 then buckets = buckets + 1 end
+    end
+    return work, requests, buckets
+end
+
+local function record_completed_work(dict, ctx, c, up, t)
+    local spec, mode = completed_work_config(c)
+    if mode == "off" or not up or not ctx.dynamic_guard_scope then return end
+
+    local bucket_seconds = math.max(math.min(math.floor(
+        tonumber(spec.bucket_seconds) or 60), 300), 30)
+    local window_buckets = math.max(math.min(math.floor(
+        tonumber(spec.window_buckets) or 10), 60), 2)
+    local ttl = bucket_seconds * (window_buckets + 1) + 10
+    local cohort_id = ctx.dynamic_pressure_cohort_id
+        or select(1, pressure_cohort(ctx))
+    local bucket = math.floor(t / bucket_seconds)
+    local base = "dg:cwb:" .. ctx.dynamic_guard_scope .. ":c:"
+        .. tostring(cohort_id)
+
+    -- Keep only a tiny gate for one-off cohort churn. The complete work
+    -- series is created after repeated arrivals in the current bucket.
+    local activation = math.max(math.min(math.floor(
+        tonumber(spec.activation_requests) or 2), 10), 1)
+    local gate, gate_err = increment(dict, base .. ":g:" .. tostring(bucket),
+        1, ttl)
+    if not gate then
+        ctx.dynamic_guard_degraded = true
+        log_dict_error("completed_work_gate", gate_err)
+        return
+    end
+    if gate < activation then return end
+
+    local _, nerr = increment(dict,
+        completed_work_bucket(base, bucket, "n"), 1, ttl)
+    local _, werr = increment(dict,
+        completed_work_bucket(base, bucket, "work"), tonumber(up), ttl)
+    if nerr or werr then
+        ctx.dynamic_guard_degraded = true
+        log_dict_error("completed_work_record", nerr or werr)
+        return
+    end
+
+    local work, requests, buckets = sum_completed_work(
+        dict, base, bucket, window_buckets)
+    local exempt_richness = tonumber(spec.exempt_richness) or 0.5
+    local cookie = ctx.session_cookie_known == true
+    local richness = (tonumber(ctx.session_richness_own) or 0)
+        >= exempt_richness
+    local actor = ctx.actor_presented == true and ctx.actor_valid == true
+    local verified = ctx.verified == true
+    local first_party = (cookie and richness) or actor or verified
+    local budget = tonumber(spec.budget)
+    local min_requests = math.max(math.floor(
+        tonumber(spec.min_requests) or 20), 1)
+    local min_buckets = math.max(math.min(math.floor(
+        tonumber(spec.min_buckets) or 3), window_buckets), 1)
+    local candidate = budget and budget > 0
+        and work >= budget and requests >= min_requests
+        and buckets >= min_buckets and not first_party
+
+    ctx.completed_work = work
+    ctx.completed_work_requests = requests
+    ctx.completed_work_buckets = buckets
+    ctx.completed_work_would_reject = candidate and true or false
+    ctx.completed_work_evidence = string.format("ro=%.2f ck=%s ap=%s v=%s",
+        tonumber(ctx.session_richness_own) or 0,
+        tostring(cookie), tostring(actor), tostring(verified))
+end
+
 local function record_server_pressure(dict, ctx, c, up, t)
     local spec, mode = server_pressure_config(c)
     if mode == "off" or not up then return end
@@ -1621,6 +1714,7 @@ function _M.after(ctx)
         ctx.dynamic_guard_outcome_recorded = true
         record_path_cost(dict, ctx, c, up, t)
         record_pressure(dict, ctx, c, up, t)
+        record_completed_work(dict, ctx, c, up, t)
         record_server_pressure(dict, ctx, c, up, t)
     end
 end

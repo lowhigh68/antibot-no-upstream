@@ -3164,6 +3164,166 @@ cfg.dynamic_guard.query_churn = old_query_churn
 end
 query_churn_contract()
 
+-- Completed-work budget: every completed upstream request is accumulated in
+-- coarse buckets, but no budget is configured in production yet.  The test
+-- enables a tiny synthetic budget to pin the telemetry and first-party gate.
+local function completed_work_contract()
+    fake_ngx.shared.antibot_cache = Dict.new()
+    local old_work = cfg.dynamic_guard.completed_work_budget
+    local old_pressure = cfg.dynamic_guard.pressure.mode
+    local old_server_pressure = cfg.dynamic_guard.server_pressure.mode
+    cfg.dynamic_guard.pressure.mode = "off"
+    cfg.dynamic_guard.server_pressure.mode = "off"
+    cfg.dynamic_guard.completed_work_budget = {
+        mode = "shadow", bucket_seconds = 30, window_buckets = 3,
+        activation_requests = 2, min_requests = 5, min_buckets = 3,
+        exempt_richness = 0.5, budget = 5,
+    }
+    clock = 4000
+    local last
+    for bucket = 0, 2 do
+        for i = 1, 3 do
+            clock = 4000 + bucket * 30 + i - 1
+            fake_ngx.var.uri = "/slow-page"
+            fake_ngx.var.request_uri = "/slow-page"
+            fake_ngx.var.args = nil
+            fake_ngx.var.request_method = "GET"
+            fake_ngx.var.upstream_status = "200"
+            fake_ngx.var.upstream_response_time = "1.000"
+            local item = dgctx("198.51.100.140", "/slow-page")
+            item.req_class = "navigation"
+            local _, exit = dynamic_guard.admit(item)
+            eq(exit, false, "completed work shadow admit")
+            dynamic_guard.after(item)
+            last = item
+        end
+    end
+    ok(last.completed_work ~= nil, "completed work ghi work")
+    ok(last.completed_work_requests >= 6,
+       "completed work dem moi request sau activation")
+    eq(last.completed_work_buckets, 3,
+       "completed work dem ba bucket")
+    eq(last.completed_work_would_reject, true,
+       "completed work would chi la shadow")
+    ok(last.action_reason ~= "dynamic_guard:completed_work_budget",
+       "completed work khong tao cause")
+
+    -- A first-party request in the same expensive cohort must never become a
+    -- candidate merely because the cohort accumulated work anonymously.
+    fake_ngx.var.upstream_status = "200"
+    fake_ngx.var.upstream_response_time = "1.000"
+    local human = dgctx("198.51.100.140", "/slow-page")
+    human.req_class = "navigation"
+    human.session_cookie_known = true
+    human.session_richness_own = 0.8
+    local _, human_exit = dynamic_guard.admit(human)
+    eq(human_exit, false, "completed work first party admit")
+    dynamic_guard.after(human)
+    eq(human.completed_work_would_reject, false,
+       "completed work first party khong candidate")
+
+    -- Three mutations survived the cases above, each because the fixture
+    -- could not tell the real branch from the broken one.  They are pinned
+    -- here by construction, not by a larger sample.
+
+    -- (a) ACTIVATION GATE.  Above, three requests per bucket against
+    -- activation=2 means removing the gate only shifts 6 recorded requests to
+    -- 9, and `>= 6` holds either way.  A cohort that sends exactly ONE request
+    -- in a bucket must record NOTHING: that is the whole cardinality bound
+    -- replacing "only slow work creates a key".
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.dynamic_guard.completed_work_budget = {
+        mode = "shadow", bucket_seconds = 30, window_buckets = 3,
+        activation_requests = 2, min_requests = 5, min_buckets = 3,
+        exempt_richness = 0.5, budget = 5,
+    }
+    clock = 7000
+    fake_ngx.var.uri = "/one-shot"
+    fake_ngx.var.request_uri = "/one-shot"
+    fake_ngx.var.args = nil
+    fake_ngx.var.request_method = "GET"
+    fake_ngx.var.upstream_status = "200"
+    fake_ngx.var.upstream_response_time = "9.000"
+    local lone = dgctx("198.51.100.141", "/one-shot")
+    lone.req_class = "navigation"
+    dynamic_guard.admit(lone)
+    dynamic_guard.after(lone)
+    eq(lone.completed_work, nil,
+       "mot request le duoi activation KHONG ghi work")
+    eq(lone.completed_work_requests, nil,
+       "duoi activation thi khong co chuoi work nao")
+
+    -- (b) MIN_BUCKETS.  Above, buckets == min_buckets == 3, so the clause is
+    -- true whether or not it is evaluated.  Spread the same work over only
+    -- TWO buckets: requests and budget are both satisfied, so only the
+    -- bucket-count clause can keep this from becoming a candidate.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    clock = 8000
+    local short_chain
+    for bucket = 0, 1 do
+        for i = 1, 4 do
+            clock = 8000 + bucket * 30 + i - 1
+            fake_ngx.var.uri = "/two-bucket"
+            fake_ngx.var.request_uri = "/two-bucket"
+            fake_ngx.var.upstream_status = "200"
+            fake_ngx.var.upstream_response_time = "2.000"
+            local item = dgctx("198.51.100.142", "/two-bucket")
+            item.req_class = "navigation"
+            dynamic_guard.admit(item)
+            dynamic_guard.after(item)
+            short_chain = item
+        end
+    end
+    eq(short_chain.completed_work_buckets, 2,
+       "chuoi hai bucket chi dem hai bucket")
+    ok(short_chain.completed_work_requests >= 5,
+       "hai bucket van du min_requests")
+    ok(short_chain.completed_work >= 5,
+       "hai bucket van vuot budget tong hop")
+    eq(short_chain.completed_work_would_reject, false,
+       "du work va du request, THIEU bucket thi khong candidate")
+
+    -- (c) BUDGET ABSENT.  Production ships with no budget, which is the only
+    -- reason this axis cannot reject anything today, yet every case above set
+    -- budget=5 and so never exercised that branch.  Same traffic as the
+    -- original case, budget removed: telemetry must still be written and
+    -- `would_reject` must be false.
+    fake_ngx.shared.antibot_cache = Dict.new()
+    cfg.dynamic_guard.completed_work_budget = {
+        mode = "shadow", bucket_seconds = 30, window_buckets = 3,
+        activation_requests = 2, min_requests = 5, min_buckets = 3,
+        exempt_richness = 0.5,
+    }
+    clock = 9000
+    local nobudget
+    for bucket = 0, 2 do
+        for i = 1, 3 do
+            clock = 9000 + bucket * 30 + i - 1
+            fake_ngx.var.uri = "/no-budget"
+            fake_ngx.var.request_uri = "/no-budget"
+            fake_ngx.var.upstream_status = "200"
+            fake_ngx.var.upstream_response_time = "5.000"
+            local item = dgctx("198.51.100.143", "/no-budget")
+            item.req_class = "navigation"
+            dynamic_guard.admit(item)
+            dynamic_guard.after(item)
+            nobudget = item
+        end
+    end
+    ok(nobudget.completed_work >= 25,
+       "khong co budget thi VAN ghi work day du")
+    eq(nobudget.completed_work_buckets, 3, "khong co budget van dem bucket")
+    eq(nobudget.completed_work_would_reject, false,
+       "budget vang la KHONG BAO GIO candidate, du vuot moi nguong khac")
+
+    cfg.dynamic_guard.completed_work_budget = old_work
+    cfg.dynamic_guard.pressure.mode = old_pressure
+    cfg.dynamic_guard.server_pressure.mode = old_server_pressure
+    fake_ngx.var.upstream_status = nil
+    fake_ngx.var.upstream_response_time = nil
+end
+completed_work_contract()
+
 fake_ngx.shared.antibot_cache = Dict.new()
 fake_ngx.shared.antibot_cache.full = true
 local de_full = dgctx("198.51.100.121")

@@ -722,6 +722,7 @@ function _M.run(ctx)
             " dgwould=%s dgthr=%s dgcause=%s" ..
             " dgph=%s/%s dgpd=%s/%s dgpc=%s/%s dgpath=%s dguri=%s" ..
             " qch=%s qcd=%s qcw=%s qcb=%s qcx=%s qcr=%s" ..
+            " cwb=%s cwbn=%s cwbb=%s cwbwould=%s cwbev=%s" ..
             " dgpopen=%s dgpmode=%s dgpwould=%s dgphalf=%s dgpprobe=%s" ..
             " dgpwork=%s dgpn=%s dgpslow=%s dgpcand=%s dgptrans=%s" ..
             " dgppol=%s dgpsel=%s dgpswould=%s dgpsthr=%s dgpr=%s/%s" ..
@@ -760,6 +761,12 @@ function _M.run(ctx)
             ctx.query_churn_exclusive_ratio
                 and string.format("%.3f", ctx.query_churn_exclusive_ratio)
                 or "-",
+            ctx.completed_work
+                and string.format("%.3f", ctx.completed_work) or "-",
+            tostring(ctx.completed_work_requests or "-"),
+            tostring(ctx.completed_work_buckets or "-"),
+            tostring(ctx.completed_work_would_reject or false),
+            tostring(ctx.completed_work_evidence or "-"),
             tostring(ctx.dynamic_pressure_open or false),
             tostring(ctx.dynamic_pressure_mode or "-"),
             tostring(ctx.dynamic_pressure_would_reject or false),

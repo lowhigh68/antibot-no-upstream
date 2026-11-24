@@ -1085,6 +1085,19 @@ _M.dynamic_guard = {
         min_buckets    = 3,
         exempt_richness = 0.5,
     },
+    -- Cumulative completed backend work for sequential low-rate crawlers.
+    -- No budget is set during the measurement phase: the axis records only
+    -- shadow telemetry until a fleet-wide first-party p99 is known.
+    completed_work_budget = {
+        mode               = "shadow",
+        bucket_seconds     = 60,
+        window_buckets     = 10,
+        activation_requests = 2,
+        min_requests       = 20,
+        min_buckets        = 3,
+        exempt_richness    = 0.5,
+        -- budget intentionally absent; absence means no candidate/enforcement.
+    },
     -- Protocol invariant, not a content signature: one request-target path
     -- must not contain a second absolute HTTP target serialized after a list
     -- separator.  Production saw the candidate only from distributed no-cookie
