@@ -32,9 +32,20 @@ function v(k) { return (k in f) ? f[k] : "-" }
   ts=v("ts")+0; w=v("cwb"); n=v("cwbn"); b=v("cwbb")
   if (ts<since || ts>until) next
   if (w !~ /^[0-9]+([.][0-9]+)?$/ || n !~ /^[0-9]+$/ || b !~ /^[0-9]+$/) next
-  ev=v("cwbev"); ro="-"
+  ev=v("cwbev"); ro="-"; ckn="-"
   if (ev ~ /^ro=[0-9]+([.][0-9]+)?$/) ro=substr(ev,4)
-  ck=v("ck"); ap=v("ap"); ver=v("v")
+  # Evidence fields occur after cwbev; parse that span so a global `ckn=`
+  # earlier in the log cannot overwrite the raw three-state value.
+  if (match($0,/cwbev=ro=[^ ]+ ck=[^ ]+ ckn=[^ ]+ ap=[^ ]+ v=[^ ]+/)) {
+    evspan=substr($0,RSTART,RLENGTH)
+    if (match(evspan,/ckn=[^ ]+/)) ckn=substr(evspan,RSTART+4,RLENGTH-4)
+    if (match(evspan,/ck=[^ ]+/)) ck=substr(evspan,RSTART+3,RLENGTH-3)
+    if (match(evspan,/ap=[^ ]+/)) ap=substr(evspan,RSTART+3,RLENGTH-3)
+    # Require a token boundary: `cwbev=` itself ends in the characters `v=`.
+    if (match(evspan,/ v=[^ ]+/)) ver=substr(evspan,RSTART+3,RLENGTH-3)
+  } else {
+    ck=v("ck"); ap=v("ap"); ver=v("v")
+  }
   # First-party requires request-own richness plus its cookie, or an actor/
   # verified proof. Cookie-known alone is intentionally not enough.
   fp=(ap=="true" || ver=="true" ||
@@ -43,7 +54,7 @@ function v(k) { return (k in f) ? f[k] : "-" }
   key=dom SUBSEP cid SUBSEP bucket
   if (!(key in maxw) || w+0 > maxw[key]+0) {
     maxw[key]=w+0; maxn[key]=n+0; maxb[key]=b+0
-    outdom[key]=dom; outcid[key]=cid; outbucket[key]=bucket
+    outdom[key]=dom; outcid[key]=cid; outbucket[key]=bucket; outckn[key]=ckn
   }
   if (fp) fp_seen[key]=1; else anon_seen[key]=1
 }
@@ -52,7 +63,7 @@ END {
     if (fp_seen[key] && anon_seen[key]) cls="mixed"
     else if (fp_seen[key]) cls="first_party"
     else cls="anonymous"
-    print cls, maxw[key], maxn[key], maxb[key], outdom[key], outcid[key], outbucket[key]
+    print cls, maxw[key], maxn[key], maxb[key], outdom[key], outcid[key], outbucket[key], outckn[key]
   }
 }' > "$RAW"
 
@@ -60,6 +71,7 @@ echo "=== CWB DISTRIBUTION ==="
 echo "since=$SINCE until=$UNTIL"
 echo "dedupe_key=domain+dgpcid+bucket60"
 echo "rows=$(wc -l < "$RAW" | tr -d ' ')"
+echo "cookie_state=$(awk '{n[$8]++} END {printf "true=%d false=%d unknown=%d\n",n["true"]+0,n["false"]+0,n["-"]+0}' "$RAW")"
 for cls in anonymous first_party mixed; do
   echo "--- $cls (cwbn>=20,cwbb>=3) ---"
   awk -v c="$cls" '$1==c && $3>=20 && $4>=3 {print $2}' "$RAW" | sort -n |

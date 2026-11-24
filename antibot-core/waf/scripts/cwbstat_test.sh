@@ -44,34 +44,35 @@ echo $((NOW - 600)) > "$MARK"
 # cohort4: no cookie at all but a valid actor -> first_party.
 # cohort5: verified -> first_party.
 {
-  echo "[x] ts=$((NOW-9)) domain=a.test class=navigation dgpcid=cohort1 cwb=100 cwbn=25 cwbb=3 cwbev=ro=0.00 ck=false ap=false v=false"
-  echo "[x] ts=$((NOW-8)) domain=a.test class=navigation dgpcid=cohort1 cwb=101 cwbn=26 cwbb=3 cwbev=ro=0.80 ck=true ap=false v=false"
-  echo "[x] ts=$((NOW-7)) domain=a.test class=navigation dgpcid=cohort1 cwb=102 cwbn=27 cwbb=3 cwbev=ro=0.00 ck=false ap=false v=false"
-  echo "[x] ts=$((NOW-6)) domain=b.test class=navigation dgpcid=cohort2 cwb=300 cwbn=30 cwbb=4 cwbev=ro=0.80 ck=true ap=false v=false"
-  echo "[x] ts=$((NOW-6)) domain=c.test class=navigation dgpcid=cohort3 cwb=400 cwbn=40 cwbb=5 cwbev=ro=0.20 ck=true ap=false v=false"
-  echo "[x] ts=$((NOW-6)) domain=d.test class=navigation dgpcid=cohort4 cwb=500 cwbn=41 cwbb=5 cwbev=ro=0.00 ck=false ap=true v=false"
-  echo "[x] ts=$((NOW-6)) domain=e.test class=navigation dgpcid=cohort5 cwb=600 cwbn=42 cwbb=5 cwbev=ro=0.00 ck=false ap=false v=true"
+  echo "[x] ts=$((NOW-9)) domain=a.test class=navigation dgpcid=cohort1 cwb=100 cwbn=25 cwbb=3 cwbev=ro=0.00 ck=false ckn=- ap=false v=false"
+  echo "[x] ts=$((NOW-8)) domain=a.test class=navigation dgpcid=cohort1 cwb=101 cwbn=26 cwbb=3 cwbev=ro=0.80 ck=true ckn=true ap=false v=false"
+  echo "[x] ts=$((NOW-7)) domain=a.test class=navigation dgpcid=cohort1 cwb=102 cwbn=27 cwbb=3 cwbev=ro=0.00 ck=false ckn=false ap=false v=false"
+  echo "[x] ts=$((NOW-6)) domain=b.test class=navigation dgpcid=cohort2 cwb=300 cwbn=30 cwbb=4 cwbev=ro=0.80 ck=true ckn=true ap=false v=false"
+  echo "[x] ts=$((NOW-6)) domain=c.test class=navigation dgpcid=cohort3 cwb=400 cwbn=40 cwbb=5 cwbev=ro=0.20 ck=true ckn=true ap=false v=false"
+  echo "[x] ts=$((NOW-6)) domain=d.test class=navigation dgpcid=cohort4 cwb=500 cwbn=41 cwbb=5 cwbev=ro=0.00 ck=false ckn=false ap=true v=false"
+  echo "[x] ts=$((NOW-6)) domain=e.test class=navigation dgpcid=cohort5 cwb=600 cwbn=42 cwbb=5 cwbev=ro=0.00 ck=false ckn=- ap=false v=true"
   # Two DIFFERENT cohorts on the SAME domain in the SAME bucket.  Without the
   # cohort in the dedupe key these two collapse into one row and the larger
   # value hides the smaller, so this pair is what makes the key observable.
-  echo "[x] ts=$((NOW-5)) domain=f.test class=navigation dgpcid=cohortA cwb=700 cwbn=43 cwbb=5 cwbev=ro=0.00 ck=false ap=false v=false"
-  echo "[x] ts=$((NOW-5)) domain=f.test class=navigation dgpcid=cohortB cwb=800 cwbn=44 cwbb=5 cwbev=ro=0.00 ck=false ap=false v=false"
+  echo "[x] ts=$((NOW-5)) domain=f.test class=navigation dgpcid=cohortA cwb=700 cwbn=43 cwbb=5 cwbev=ro=0.00 ck=false ckn=- ap=false v=false"
+  echo "[x] ts=$((NOW-5)) domain=f.test class=navigation dgpcid=cohortB cwb=800 cwbn=44 cwbb=5 cwbev=ro=0.00 ck=false ckn=- ap=false v=false"
 } > "$TMP/log/antibot.log"
 
 # Same cohort, a DIFFERENT 60s bucket: proves the bucket is part of the key.
 # Rotated .gz must be read too.
 printf '%s\n' \
-  "[x] ts=$((NOW-200)) domain=a.test class=navigation dgpcid=cohort1 cwb=90 cwbn=22 cwbb=3 cwbev=ro=0.00 ck=false ap=false v=false" \
+  "[x] ts=$((NOW-200)) domain=a.test class=navigation dgpcid=cohort1 cwb=90 cwbn=22 cwbb=3 cwbev=ro=0.00 ck=false ckn=- ap=false v=false" \
   | gzip -c > "$TMP/log/antibot.log.1.gz"
 
 # Before the marker: must be excluded entirely.
-echo "[x] ts=$((NOW-99999)) domain=z.test class=navigation dgpcid=oldcohort cwb=9999 cwbn=99 cwbb=9 cwbev=ro=0.00 ck=false ap=false v=false" \
+echo "[x] ts=$((NOW-99999)) domain=z.test class=navigation dgpcid=oldcohort cwb=9999 cwbn=99 cwbb=9 cwbev=ro=0.00 ck=false ckn=- ap=false v=false" \
   >> "$TMP/log/antibot.log"
 
 OUT=$(bash "$HERE/cwbstat.sh" "$TMP/log" "$MARK")
 
 has  "header names the dedupe key" '^dedupe_key=domain\+dgpcid\+bucket60$'
 has  "script completes"            '^CWBSTAT_OK$'
+has  "cookie state preserves unknown" '^cookie_state=true=2 false=2 unknown=4$'
 # 5 cohorts in the current bucket + cohort1 in an older bucket from the .gz.
 has  "rows counts cohort-buckets, not log lines" '^rows=8$'
 # Raw rows print only for the mixed class, so two ANONYMOUS cohorts sharing

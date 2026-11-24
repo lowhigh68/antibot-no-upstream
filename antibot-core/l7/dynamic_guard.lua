@@ -1488,9 +1488,14 @@ local function record_completed_work(dict, ctx, c, up, t)
     ctx.completed_work_requests = requests
     ctx.completed_work_buckets = buckets
     ctx.completed_work_would_reject = candidate and true or false
-    ctx.completed_work_evidence = string.format("ro=%.2f ck=%s ap=%s v=%s",
+    local cookie_state = cookie and "true"
+        or (ctx.session_cookie_known == nil and "-" or "false")
+    -- `ck` is the boolean evidence actually used by the first-party gate;
+    -- `ckn` preserves cookie_registry's three-state raw value for telemetry.
+    ctx.completed_work_evidence = string.format(
+        "ro=%.2f ck=%s ckn=%s ap=%s v=%s",
         tonumber(ctx.session_richness_own) or 0,
-        tostring(cookie), tostring(actor), tostring(verified))
+        tostring(cookie), cookie_state, tostring(actor), tostring(verified))
 end
 
 local function record_server_pressure(dict, ctx, c, up, t)
