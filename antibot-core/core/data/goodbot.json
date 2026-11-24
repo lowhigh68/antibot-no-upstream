@@ -7,7 +7,8 @@
     "facebot",
     "meta-externalagent",
     "meta-externalfetcher",
-    "meta-externalads"
+    "meta-externalads",
+    "meta-webindexer"
   ],
   "bots": {
     "googlebot":              ["googlebot.com", "google.com"],
@@ -47,6 +48,7 @@
     "meta-externalagent":     ["facebook.com", "fbsv.net"],
     "meta-externalfetcher":   ["facebook.com", "fbsv.net"],
     "meta-externalads":       ["facebook.com", "fbsv.net"],
+    "meta-webindexer":        ["facebook.com", "fbsv.net"],
 
     "coccocbot-web":          ["coccoc.com"],
     "coccocbot-image":        ["coccoc.com"],

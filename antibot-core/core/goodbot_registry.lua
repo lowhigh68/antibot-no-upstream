@@ -16,7 +16,7 @@ local ua_shape = require "antibot.core.ua_shape"
 
 local OPERATOR_SUBSTRINGS = {
     "bot", "spider", "crawler", "facebookexternal", "mediapartners",
-    "bingpreview", "meta-external", "google-", "googleother",
+    "bingpreview", "meta-external", "meta-webindexer", "google-", "googleother",
     "googledocs", "playstore-google", "feedfetcher",
     "chrome privacy preserving", "ahrefssiteaudit",
 }
@@ -142,7 +142,7 @@ end
 -- substrings. This preserves ua_check.lua's pre-P1.2 lane admission exactly.
 local VERIFY_TOKENS = {
     "bot", "spider", "crawler", "scraper",
-    "facebookexternalhit", "meta%-external",
+    "facebookexternalhit", "meta%-external", "meta%-webindexer",
     "google%-agent", "google%-site%-verifier", "googleother",
     "apis%-google", "mediapartners", "bingpreview",
 }
@@ -156,6 +156,13 @@ local STATIC = {
     ["meta-externalagent"]   = { ptr_only = true, asns = { 32934 } },
     ["meta-externalfetcher"] = { ptr_only = true, asns = { 32934 } },
     ["meta-externalads"]     = { ptr_only = true, asns = { 32934 } },
+    -- Cung ha tang va cung AS32934 nhu ba crawler Meta tren. Do tren
+    -- 168-117 va 28-246 (24-11-2026): 18.626 dong `autp=meta-webindexer`
+    -- deu co `gbasn=32934`, khong mot dong ASN nao khac. Thieu entry nay
+    -- lam `asn_fallback_verify` khong khop nen no dung o
+    -- `gbv=automation_unknown` trong khi `meta-externalagent` cung ASN
+    -- thanh `good_bot_asn_verified`.
+    ["meta-webindexer"]      = { ptr_only = true, asns = { 32934 } },
 
     ["googlebot"]             = { asns = { 15169 } },
     ["googlebot-image"]       = { asns = { 15169 } },
@@ -255,6 +262,7 @@ local function extract_name(ua, lower)
         or product_lower:match("(facebookexternalhit)")
         or product_lower:match("(facebot)")
         or product_lower:match("(meta%-external%w+)")
+        or product_lower:match("(meta%-webindexer)")
         or product_lower:match("(mediapartners%-google)")
         or product_lower:match("(googleother%-image)")
         or product_lower:match("(googleother%-video)")

@@ -107,6 +107,38 @@ do
     eq(registry.is_ptr_only(meta.canonical_name), true,
        "Meta ptr-only policy comes from unified registry")
 
+    -- `meta-webindexer` phai duoc doi xu y het ba crawler Meta con lai. Do
+    -- tren 168-117 va 28-246 (24-11-2026): 18.626 dong `autp=meta-webindexer`
+    -- deu mang `gbasn=32934`, khong mot dong ASN nao khac. Thieu bat ky mot
+    -- trong bon thuoc tinh duoi day thi `asn_fallback_verify` khong khop va no
+    -- dung o `gbv=automation_unknown` trong khi `meta-externalagent` cung ASN,
+    -- cung ha tang, thanh `good_bot_asn_verified`.
+    local webindexer_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " ..
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 " ..
+        "Safari/537.36 (compatible; meta-webindexer/1.1; " ..
+        "+https://developers.facebook.com/docs/sharing/webmasters/crawler)"
+    local webindexer = registry.inspect(webindexer_ua)
+    eq(webindexer.canonical_name, "meta-webindexer",
+       "meta-webindexer co canonical name rieng")
+    eq(webindexer.operator_claimed, true,
+       "meta-webindexer vao lane operator nhu ba crawler Meta kia")
+    eq(webindexer.verification_claimed, true,
+       "meta-webindexer vao DNS verification")
+    eq(registry.is_ptr_only("meta-webindexer"), true,
+       "meta-webindexer la ptr_only: dai IP Meta xoay nen forward A khong khop")
+    eq((registry.asns("meta-webindexer") or {})[1], 32934,
+       "meta-webindexer mang dung AS32934 do duoc tren hai may")
+    -- UA tran, khong contact URL: van phai nhan dien duoc, vi `extract_name`
+    -- chay doc lap voi lane admission. Ca nay la rao chan cho dong trong
+    -- `VERIFY_TOKENS`: UA day du o tren vao verification nho token "crawler"
+    -- trong contact URL, nen chi mot UA KHONG co token nao khac moi chung
+    -- minh duoc dong do la can thiet.
+    local bare = registry.inspect("meta-webindexer/1.1")
+    eq(bare.canonical_name, "meta-webindexer",
+       "meta-webindexer tran van ra canonical name")
+    eq(bare.verification_claimed, true,
+       "meta-webindexer tran vao verification qua VERIFY_TOKENS")
+
     local wrapped_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) " ..
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 " ..
         "Mobile/15E148 Safari/604.1 facebookexternalhit/1.1 " ..
