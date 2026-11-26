@@ -38,7 +38,8 @@ ctx.whitelisted=true → action=allow, reason=whitelisted, RETURN
 ctx.good_bot_verified=true → action=allow, reason=good_bot_verified|good_bot_asn_verified|good_bot_asn_lite (preserved), RETURN
 
 raw_score = ctx.score
-multiplier = score_multiplier × trust_multiplier (trust if sess_len≥session_min, sess_flag<flag_max)
+multiplier = score_multiplier × trust_multiplier (trust requires sess_len threshold,
+              first-party evidence, and sess_flag<flag_max)
 effective_score = raw × multiplier + fp_penalty + resource_boost (resource only)
               capped at RESOURCE_MAX_SCORE for resource
 

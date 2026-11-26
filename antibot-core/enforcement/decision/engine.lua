@@ -396,7 +396,8 @@ local function calc_fp_penalty(ctx)
     return penalty
 end
 
--- SHADOW 24-11-2026 .. 08-12-2026: does the discount rest on any evidence?
+-- The session counter is only a network+browser continuity signal. It is not
+-- first-party evidence, so it must never grant a score discount by itself.
 --
 -- The session this reads is keyed `sess:<fp_light>` and `fp_light` is
 -- md5(ip + raw ua + asn + ja3) -- see config.lua -- so NO cookie, actor or
@@ -417,17 +418,13 @@ end
 -- will cap anything.  This function asks for none of that, and the asymmetry
 -- is the suspicion under test, not yet a verdict.
 --
--- This pass only RECORDS what evidence existed when the discount was granted:
--- `trustev=` in the log carries richness_own / cookie_known / actor presence.
--- No threshold moves and no multiplier changes until the distribution is read.
+-- `trustev=` records the evidence used for an allowed discount. The gate is
+-- deliberately fail-closed for this *bonus*: unknown cookie state does not
+-- count as proof. This avoids rewarding crawlers that simply reach sess_len.
 --
--- REFUTATION, written before the data (do not revise it afterwards): if over
--- the window most `trustev=` rows on discounted requests show real first-party
--- proof -- `ro>0` AND `ck=true` -- then the discount is reaching real visitors
--- and must NOT be gated on evidence; the crawler case is then a scoring-weight
--- problem instead.  Gate it only if a large share shows `ro=0.00 ck=-/false`
--- with no actor, which is the shape above.  Expiry 08-12-2026: decide or
--- remove the column.
+-- The production window showed the opposite shape: most discounts had
+-- `ro=0.00`, `ckn=-`, and no actor.  The gate below therefore promotes only
+-- evidence-backed sessions; anonymous sessions retain their full score.
 local function trust_evidence(ctx)
     local known = ctx.session_cookie_known
     return string.format("ro=%.2f ck=%s ap=%s sl=%d",
@@ -449,6 +446,21 @@ local function calc_trust_multiplier(ctx)
 
     if sess_len <= 0 then return 1.0, nil end
     if sess_flag >= trust.session_flag_max then return 1.0, nil end
+
+    if trust.require_first_party ~= false then
+        local richness = tonumber(ctx.session_richness_own) or 0
+        local cookie_known = ctx.session_cookie_known == true
+        local actor = ctx.actor_presented == true and ctx.actor_valid == true
+        local verified = ctx.verified == true
+        local proof = (cookie_known and richness >=
+                       (tonumber(trust.first_party_richness) or 0.5))
+            or actor or verified
+        if not proof or ctx.good_bot_claimed then
+            ctx.trust_evidence = trust_evidence(ctx)
+            ctx.trust_suppressed = true
+            return 1.0, nil
+        end
+    end
 
     if sess_len >= trust.session_min then
         ctx.trust_evidence = trust_evidence(ctx)

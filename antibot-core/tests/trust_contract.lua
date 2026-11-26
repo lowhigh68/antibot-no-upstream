@@ -567,7 +567,8 @@ do
        "after grace only first-party cardinality grants Tier-2 immunity")
 end
 
--- N. The trust discount records the evidence it rested on.
+-- N. The trust discount records the evidence it rested on and never rewards
+-- a network+UA session without first-party proof.
 --
 -- `sess:<fp_light>` is keyed on md5(ip + ua + asn + ja3): no cookie, no actor.
 -- So a source can reach `sess_len >= session_min` by crawling alone and then
@@ -622,7 +623,8 @@ do
   }
   local engine = assert(loadfile(src .. "enforcement/decision/engine.lua"))()
 
-  -- The measured production shape: a sequential crawler with no cookie at all.
+  -- A sequential crawler can reach sess_len, but that is not first-party proof
+  -- and must no longer receive the score discount.
   local crawler = {
     score = 58.1, req_class = "navigation", score_multiplier = 1.0,
     sess_len = 7, session_flag = 0.0,
@@ -632,10 +634,10 @@ do
     ua = "Mozilla/5.0 Firefox/160.0", fp_quality = 1.0,
   }
   local act = engine.run(crawler)
-  eq(crawler.trust_reason, "trusted_session",
-     "sess_len alone grants the discount, with no cookie present")
+  eq(crawler.trust_reason, nil,
+     "sess_len alone never grants the discount")
   ok(crawler.trust_evidence ~= nil,
-     "a granted discount always records its evidence")
+     "a suppressed discount records its evidence")
   ok(tostring(crawler.trust_evidence):find("ro=0.00", 1, true) ~= nil,
      "trustev reports richness_own=0 for the cookieless crawler")
   ok(tostring(crawler.trust_evidence):find("ck=-", 1, true) ~= nil,
@@ -644,11 +646,11 @@ do
      "trustev reports no actor cookie")
   ok(tostring(crawler.trust_evidence):find("sl=7", 1, true) ~= nil,
      "trustev carries the sess_len that opened the discount")
-  -- The whole point of the shadow pass: 58.1 is over CHALLENGE but the
-  -- halved score is not, and this pass must NOT have changed that yet.
-  eq(string.format("%.1f", crawler.effective_score), "29.1",
-     "58.1 x 0.5 = 29.1, the discount still applies unchanged")
-  eq(act, "monitor", "shadow pass changes no verdict")
+  eq(string.format("%.1f", crawler.effective_score), "58.1",
+     "anonymous session keeps its full score")
+  eq(act, "challenge", "anonymous session is no longer hidden by trust discount")
+  eq(crawler.trust_suppressed, true,
+     "anonymous session records that trust was suppressed")
 
   -- A real visitor with first-party proof must look different in the column,
   -- otherwise the measurement cannot separate the two populations.
@@ -668,6 +670,30 @@ do
      "trustev separates a real session by cookie_known")
   ok(tostring(human.trust_evidence):find("ap=true", 1, true) ~= nil,
      "trustev separates a real session by actor presence")
+
+  -- Known cookie without sufficient host-owned richness is not enough.
+  local weak = {
+    score = 58.1, req_class = "navigation", score_multiplier = 1.0,
+    sess_len = 7, session_flag = 0.0,
+    session_richness_own = 0.2, session_cookie_known = true,
+    actor_presented = false, actor_valid = false, ip = "203.0.113.79",
+    identity = "weak-fp", fp_light = "weak-fp",
+    ua = "Mozilla/5.0 Chrome/145.0", fp_quality = 1.0,
+  }
+  engine.run(weak)
+  eq(weak.trust_reason, nil, "known cookie without richness gets no discount")
+
+  -- A valid actor is an independent first-party proof.
+  local actor = {
+    score = 58.1, req_class = "navigation", score_multiplier = 1.0,
+    sess_len = 7, session_flag = 0.0,
+    session_richness_own = 0, session_cookie_known = nil,
+    actor_presented = true, actor_valid = true, ip = "203.0.113.80",
+    identity = "actor-fp", fp_light = "actor-fp",
+    ua = "Mozilla/5.0 Chrome/145.0", fp_quality = 1.0,
+  }
+  engine.run(actor)
+  eq(actor.trust_reason, "trusted_session", "valid actor permits discount")
 
   -- No discount, no column: absence must never read as "measured zero".
   local fresh = {

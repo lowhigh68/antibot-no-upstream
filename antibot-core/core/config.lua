@@ -1286,6 +1286,11 @@ _M.trust = {
     session_flag_max   = 0.4,
     score_multiplier   = 0.5,
     score_mult_active  = 0.75,
+    -- A network+UA session counter is not first-party evidence. Require
+    -- host-known cookie richness (or a verified actor/session) before it can
+    -- lower a score; otherwise a crawler earns the discount by crawling.
+    require_first_party = true,
+    first_party_richness = 0.5,
     action_cap         = "monitor",
 }
 
